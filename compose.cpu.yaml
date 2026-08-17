@@ -1,0 +1,20 @@
+# CPU-only alternative for NAS systems without /dev/dri.
+# Run: docker compose -f compose.cpu.yaml up -d
+services:
+  slideshow:
+    image: ghcr.io/birdy1974/slideshow:latest
+    container_name: slideshow
+    restart: unless-stopped
+    user: "${PUID:-1026}:${PGID:-100}"
+    ports: ["${SLIDESHOW_PORT:-8080}:8080"]
+    environment:
+      TZ: "${TZ:-Europe/Amsterdam}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      RENDER_WORKERS: "${RENDER_WORKERS:-1}"
+    volumes:
+      - "${CONFIG_PATH:-./data/config}:/config"
+      - "${PHOTOS_PATH:-./data/photos}:/photos:ro"
+      - "${VIDEOS_PATH:-./data/videos}:/videos:ro"
+      - "${MUSIC_PATH:-./data/music}:/music:ro"
+      - "${OUTPUT_PATH:-./data/output}:/output"
+    security_opt: ["no-new-privileges:true"]

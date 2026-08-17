@@ -1,0 +1,35 @@
+services:
+  slideshow:
+    image: ghcr.io/birdy1974/slideshow:latest
+    container_name: slideshow
+    restart: unless-stopped
+    # DSM's default first-user IDs are commonly 1026:100. Change these values
+    # to the owner of your mounted folders (`id YOUR_USERNAME` over SSH).
+    user: "${PUID:-1026}:${PGID:-100}"
+    ports:
+      - "${SLIDESHOW_PORT:-8080}:8080"
+    environment:
+      TZ: "${TZ:-Europe/Amsterdam}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      RENDER_WORKERS: "${RENDER_WORKERS:-1}"
+    volumes:
+      - "${CONFIG_PATH:-./data/config}:/config"
+      - "${PHOTOS_PATH:-./data/photos}:/photos:ro"
+      - "${VIDEOS_PATH:-./data/videos}:/videos:ro"
+      - "${MUSIC_PATH:-./data/music}:/music:ro"
+      - "${OUTPUT_PATH:-./data/output}:/output"
+    # Intel Quick Sync on the DS918+. Remove this section if /dev/dri does not
+    # exist; Auto encoding then safely uses CPU/libx264.
+    devices:
+      - /dev/dri:/dev/dri
+    # Set VIDEO_GID to the numeric group shown by `ls -ln /dev/dri`.
+    group_add:
+      - "${VIDEO_GID:-937}"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

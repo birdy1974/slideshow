@@ -1,0 +1,65 @@
+"""Safe browsing and path resolution inside configured Docker mounts."""
+from __future__ import annotations
+
+import mimetypes
+from pathlib import Path
+from typing import Any
+
+from .config import Settings
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
+
+
+class UnsafePath(ValueError):
+    pass
+
+
+def safe_path(root: Path, relative: str = "") -> Path:
+    root = root.resolve()
+    candidate = (root / relative.lstrip("/")).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise UnsafePath("Path escapes its configured media root")
+    return candidate
+
+
+def mounted_path(settings: Settings, value: str, name: str = "") -> Path:
+    """Resolve UI paths such as /photos/Holiday plus a filename safely."""
+    normalized = value.replace("\\", "/")
+    for key, root in settings.media_roots.items():
+        prefix = f"/{key}"
+        if normalized == prefix or normalized.startswith(prefix + "/"):
+            relative = normalized[len(prefix):].lstrip("/")
+            base = safe_path(root, relative)
+            return safe_path(base, name) if name else base
+    raise UnsafePath(f"Path must start with one of: {', '.join('/'+x for x in settings.media_roots)}")
+
+
+def browse(settings: Settings, root_name: str, relative: str = "") -> dict[str, Any]:
+    if root_name not in settings.media_roots or root_name == "output":
+        raise UnsafePath("Unknown or non-browsable media root")
+    root = settings.media_roots[root_name]
+    folder = safe_path(root, relative)
+    if not folder.exists() or not folder.is_dir():
+        raise FileNotFoundError(str(folder))
+    accepted = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
+    entries = []
+    for child in sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold())):
+        if child.name.startswith("."):
+            continue
+        if not child.is_dir() and child.suffix.lower() not in accepted:
+            continue
+        stat = child.stat()
+        kind = "directory"
+        if child.is_file():
+            ext = child.suffix.lower()
+            kind = "image" if ext in IMAGE_EXTENSIONS else "video" if ext in VIDEO_EXTENSIONS else "audio"
+        rel = child.relative_to(root).as_posix()
+        entries.append({
+            "name": child.name, "path": f"/{root_name}/{rel}", "relativePath": rel,
+            "kind": kind, "size": stat.st_size, "modified": stat.st_mtime,
+            "mime": mimetypes.guess_type(child.name)[0],
+        })
+    parent = Path(relative).parent.as_posix() if relative and Path(relative).parent != Path(".") else ""
+    return {"root": root_name, "path": relative, "parent": parent, "entries": entries}
