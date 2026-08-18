@@ -36,9 +36,11 @@ def mounted_path(settings: Settings, value: str, name: str = "") -> Path:
     raise UnsafePath(f"Path must start with one of: {', '.join('/'+x for x in settings.media_roots)}")
 
 
-def browse(settings: Settings, root_name: str, relative: str = "") -> dict[str, Any]:
-    if root_name not in settings.media_roots or root_name == "output":
+def browse(settings: Settings, root_name: str, relative: str = "", folders_only: bool = False) -> dict[str, Any]:
+    if root_name not in settings.media_roots:
         raise UnsafePath("Unknown or non-browsable media root")
+    if root_name == "output" and not folders_only:
+        raise UnsafePath("The output root is only browsable when picking a destination folder")
     root = settings.media_roots[root_name]
     folder = safe_path(root, relative)
     if not folder.exists() or not folder.is_dir():
@@ -48,7 +50,10 @@ def browse(settings: Settings, root_name: str, relative: str = "") -> dict[str, 
     for child in sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold())):
         if child.name.startswith("."):
             continue
-        if not child.is_dir() and child.suffix.lower() not in accepted:
+        if folders_only:
+            if not child.is_dir():
+                continue
+        elif not child.is_dir() and child.suffix.lower() not in accepted:
             continue
         stat = child.stat()
         kind = "directory"

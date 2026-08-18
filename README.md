@@ -61,7 +61,8 @@ npm run build
 - `GET /api/health` — FFmpeg and Quick Sync capabilities
 - `GET|POST /api/projects` — list/create projects
 - `GET|PUT|DELETE /api/projects/{id}` — lossless project persistence
-- `GET /api/media/browse?root=photos&path=...` — constrained mounted-folder browser
+- `GET /api/media/browse?root=photos&path=...` — constrained mounted-folder browser (`&folders=true` lists only directories; the `output` root is browsable in that folder-pick mode only)
+- `GET /api/media/file?root=music&path=...` — stream a media file from a mounted root, e.g. MP3 preview playback in the browser
 - `POST /api/projects/{id}/jobs` — enqueue `{ "kind": "preview" | "render" }`
 - `GET /api/jobs` and `GET /api/jobs/{id}` — persistent job status
 - `GET /api/jobs/{id}/file` — range-capable MP4 response
