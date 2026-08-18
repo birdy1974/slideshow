@@ -46,6 +46,31 @@ type AudioTrack = { id: number; name: string; path: string; duration: string; co
 
 const initialMedia: MediaItem[] = []
 
+// --- Shared timing rules ---------------------------------------------------
+// These mirror the backend renderer exactly: every clip runs at least 0.2 s,
+// and each transition is clamped so it can never overlap more than the
+// remaining time of either clip it joins. Keeping the two sides in sync means
+// the estimated total shown in the UI always equals the rendered MP4 length,
+// even after extreme transition/duration edits.
+const MIN_CLIP_SECONDS = 0.2
+const MIN_TRANSITION_SECONDS = 0.05
+const MIN_TEXT_SECONDS = 0.1
+const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max))
+const safeDuration = (value: number) => Math.max(MIN_CLIP_SECONDS, Number.isFinite(value) ? value : 5)
+function timelineModel(items: MediaItem[]) {
+  const durations = items.map(item => safeDuration(item.duration))
+  const starts: number[] = [0]
+  const transitions: number[] = []
+  for (let i = 1; i < items.length; i++) {
+    const transition = clampNumber(items[i - 1].transitionTime ?? 1, MIN_TRANSITION_SECONDS, Math.min(starts[i - 1] + durations[i - 1] - MIN_TRANSITION_SECONDS, durations[i] - MIN_TRANSITION_SECONDS))
+    transitions.push(transition)
+    starts.push(starts[i - 1] + durations[i - 1] - transition)
+  }
+  const total = items.length ? starts[items.length - 1] + durations[items.length - 1] : 0
+  return { durations, starts, transitions, total }
+}
+const formatClock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+
 // FFmpeg's complete built-in xfade catalogue, plus two clearly-labelled
 // experimental GLSL choices. Friendly labels are mapped to filter names later.
 const transitionGroups = {
@@ -84,26 +109,31 @@ function TimelineRuler({ start, duration, zoom }: { start:number, duration:numbe
 }
 
 function TimelineTextBox({ item, update, selected, onSelect }: { item: MediaItem, update: (change: Partial<MediaItem>) => void, selected: string[], onSelect: (edge:'enter'|'exit')=>void }) {
+  // Caption timing is always kept inside the clip, even for projects saved
+  // before the current time rules existed.
+  const duration = safeDuration(item.duration)
+  const textEnd = clampNumber(Number.isFinite(item.textEnd) ? item.textEnd : duration, MIN_TEXT_SECONDS, duration)
+  const textStart = clampNumber(item.textStart, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
   const changeTiming = (edge: 'start'|'end', event: React.PointerEvent) => {
     event.preventDefault(); event.stopPropagation()
     const lane = event.currentTarget.parentElement?.parentElement
     if (!lane) return
     const rect = lane.getBoundingClientRect()
     const move = (e: PointerEvent) => {
-      const seconds = Math.max(0, Math.min(item.duration, ((e.clientX - rect.left) / rect.width) * item.duration))
-      if (edge === 'start') update({ textStart: Math.min(seconds, item.textEnd - .1) })
-      else update({ textEnd: Math.max(seconds, item.textStart + .1) })
+      const seconds = Math.max(0, Math.min(duration, ((e.clientX - rect.left) / rect.width) * duration))
+      if (edge === 'start') update({ textStart: Math.min(seconds, textEnd - MIN_TEXT_SECONDS) })
+      else update({ textEnd: Math.max(seconds, textStart + MIN_TEXT_SECONDS) })
     }
     const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop) }
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop)
   }
-  const left = item.textStart / item.duration * 100
-  const width = Math.max(3, (item.textEnd - item.textStart) / item.duration * 100)
+  const left = textStart / duration * 100
+  const width = Math.max(3, (textEnd - textStart) / duration * 100)
   return <div className="timed-text" style={{left:`${left}%`,width:`${width}%`}}>
     <button className={`text-transition enter ${selected.includes(`${item.id}-enter`)?'selected':''}`} title={`Appear: ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>onSelect('enter')}>{transitionSymbol(item.textEnter)}</button>
-    <i className="timing-handle left" title={`Appears at ${item.textStart.toFixed(1)}s`} onPointerDown={e=>changeTiming('start',e)}/>
+    <i className="timing-handle left" title={`Appears at ${textStart.toFixed(1)}s`} onPointerDown={e=>changeTiming('start',e)}/>
     <input value={item.text} placeholder="+ Add text" onChange={e=>update({text:e.target.value})}/>
-    <i className="timing-handle right" title={`Disappears at ${item.textEnd.toFixed(1)}s`} onPointerDown={e=>changeTiming('end',e)}/>
+    <i className="timing-handle right" title={`Disappears at ${textEnd.toFixed(1)}s`} onPointerDown={e=>changeTiming('end',e)}/>
     <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Disappear: ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>onSelect('exit')}>{transitionSymbol(item.textExit)}</button>
   </div>
 }
@@ -164,8 +194,13 @@ function App() {
   const [draggedAudioId, setDraggedAudioId] = useState<number | null>(null)
   const [showFolderPicker, setShowFolderPicker] = useState(false)
   const [showProjectLoader, setShowProjectLoader] = useState(false)
+  const [showNewProjectConfirm, setShowNewProjectConfirm] = useState(false)
+  const [overwritePath, setOverwritePath] = useState<string | null>(null)
 
-  const total = useMemo(() => Math.max(0, media.reduce((sum, item) => sum + item.duration, 0) - media.slice(0, -1).reduce((sum, item) => sum + item.transitionTime, 0)), [media])
+  // Estimated timeline using the same clamped transition rules the renderer
+  // applies, so the on-screen total can never drift or go negative.
+  const timeline = useMemo(() => timelineModel(media), [media])
+  const total = timeline.total
   const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => { const [m,s] = track.duration.split(':').map(Number); return sum + (Number.isFinite(m)&&Number.isFinite(s)?m*60+s:0) }, 0), [audioTracks])
   const estimatedRows = Math.max(1, Math.ceil(media.length / 6))
   const visibleRows = timelineRows === 'auto' ? estimatedRows : Number(timelineRows)
@@ -202,14 +237,47 @@ function App() {
     output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename:outputFilename },
     timeline: { rows:timelineRows, zoom:timelineZoom },
   })
-  const persistProject = async (silent=false):Promise<number> => {
-    const snapshot=projectSnapshot()
+  const persistSnapshot = async (snapshot:any, silent=false, createNew=false):Promise<number> => {
     localStorage.setItem('slideshow.project.mock',JSON.stringify(snapshot))
-    const response=await fetch(projectId?`/api/projects/${projectId}`:'/api/projects',{method:projectId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(snapshot)})
+    // createNew forces a fresh project row (used by "New project", whose
+    // state reset has not been applied to this closure yet).
+    const id=createNew?null:projectId
+    const response=await fetch(id?`/api/projects/${id}`:'/api/projects',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(snapshot)})
     if(!response.ok){const detail=await response.text();throw new Error(detail||`Save failed (${response.status})`)}
     const saved=await response.json();setProjectId(saved.id);setBackendOnline(true)
     if(!silent)notify(`Project saved to SQLite · revision ${saved.revision}`)
     return saved.id
+  }
+  const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
+  const blankProjectSnapshot = () => ({
+    schemaVersion: 1, project: { name: 'Untitled', randomOrder: false }, media: [],
+    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false },
+    soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2 },
+    output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: 'slideshow' },
+    timeline: { rows: 'auto', zoom: 1 },
+  })
+  // Wipe the editor back to a completely blank project. The blank project is
+  // persisted right away so a refresh does not resurrect the previous one.
+  const startNewProject = () => {
+    setProjectId(null)
+    setProjectName('Untitled')
+    setMedia([])
+    setRandomOrder(false)
+    setAudioTracks([])
+    setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true)
+    setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
+    setOutputPath('/output'); setOutputFilename('slideshow')
+    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false)
+    setTimelineRows('auto'); setTimelineZoom(1)
+    setSelectedIds([]); setSelectedTransitions([]); setSelectedTextTransitions([])
+    setDetailTextEditor(null); setEditingTextFrame(null)
+    setShowNewProjectConfirm(false); setShowProjectLoader(false)
+    void persistSnapshot(blankProjectSnapshot(), true, true).then(() => notify('Started a new blank project')).catch(() => notify('Started a new blank project — save it once the backend is back'))
+  }
+  const requestNewProject = () => {
+    setShowProjectLoader(false)
+    if (media.length || audioTracks.length) setShowNewProjectConfirm(true)
+    else startNewProject()
   }
   const saveProject = async () => {
     try{await persistProject()}catch(error){setBackendOnline(false);notify(`SQLite save failed: ${error instanceof Error?error.message:'Unknown error'}`)}
@@ -226,6 +294,31 @@ function App() {
     }catch(error){notify(`Load failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
   const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
+  // Clamp a transition so it respects the time rules of both clips it joins
+  // (and the cumulative timeline, matching the renderer's xfade offsets).
+  const clampTransitionFor = (items: MediaItem[], index: number, value: number) => {
+    if (index < 0 || index >= items.length - 1) return value
+    const model = timelineModel(items)
+    const max = Math.min(model.starts[index] + model.durations[index] - MIN_TRANSITION_SECONDS, model.durations[index + 1] - MIN_TRANSITION_SECONDS)
+    return clampNumber(value, MIN_TRANSITION_SECONDS, max)
+  }
+  const updateTransition = (id: number, value: number) => setMedia(items => items.map((item, index) => item.id === id && Number.isFinite(value) ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
+  // Changing a clip's length also keeps its caption timing inside the clip and
+  // re-clamps the transitions on both sides of it.
+  const updateDuration = (id: number, value: number) => setMedia(items => {
+    const index = items.findIndex(item => item.id === id)
+    if (index < 0 || !Number.isFinite(value)) return items
+    const next = items.map(item => ({ ...item }))
+    const duration = safeDuration(value)
+    const item = next[index]
+    const textEnd = clampNumber(Number.isFinite(item.textEnd) ? item.textEnd : duration, MIN_TEXT_SECONDS, duration)
+    const textStart = clampNumber(item.textStart, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
+    next[index] = { ...item, duration, textStart, textEnd }
+    if (index > 0) next[index - 1] = { ...next[index - 1], transitionTime: clampTransitionFor(next, index - 1, next[index - 1].transitionTime ?? 1) }
+    if (index < next.length - 1) next[index] = { ...next[index], transitionTime: clampTransitionFor(next, index, next[index].transitionTime ?? 1) }
+    return next
+  })
+  const updateSelectedTransitionTimes = (value: number) => setMedia(items => items.map((item, index) => selectedTransitions.includes(item.id) && Number.isFinite(value) ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
   const move = (index: number, direction: -1 | 1) => setMedia(items => {
     const next = [...items]; const target = index + direction
     if (target < 0 || target >= next.length) return next
@@ -304,7 +397,7 @@ function App() {
   })))
   const applyDuration = () => {
     const value = Math.min(5, Math.max(.1, Number(globalDuration) || 1.2))
-    setMedia(items => items.map(item => ({ ...item, transitionTime: value })))
+    setMedia(items => items.map((item, index) => ({ ...item, transitionTime: clampTransitionFor(items, index, value) })))
     notify(`Applied ${value.toFixed(1)}s to all transitions`)
   }
   const waitForJob = async (jobId:string) => {
@@ -324,12 +417,19 @@ function App() {
     }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`)}
     finally{kind==='preview'?setPreviewing(false):setRendering(false)}
   }
-  const startJob = async (kind:'preview'|'render') => {
+  const startJob = async (kind:'preview'|'render', overwrite=false) => {
     kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1)
     try{
       const id=await persistProject(true)
-      const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind})})
-      if(!response.ok)throw new Error(await response.text())
+      const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,overwrite})})
+      if(!response.ok){
+        const text=await response.text()
+        // The backend refuses to overwrite an existing output file until the
+        // user acknowledges it; surface the confirmation instead of failing.
+        if(response.status===409&&kind==='render'){
+          try{const detail=JSON.parse(text);if(detail?.code==='output_exists'){setOverwritePath(String(detail.path||''));setRendering(false);return}}catch{/* not the overwrite signal */}}
+        throw new Error(text)
+      }
       const created=await response.json()
       await trackJob(created.id,kind)
     }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`);kind==='preview'?setPreviewing(false):setRendering(false)}
@@ -364,24 +464,26 @@ function App() {
     {activeTab === 'renders' ? <RenderQueue projectId={projectId} onBack={() => setActiveTab('editor')} /> : <main>
       <section className="project-heading">
         <div><div className="eyebrow">PROJECT / UNTITLED</div><input value={projectName} onChange={e=>setProjectName(e.target.value)} aria-label="Project name"/><p>Assemble your media, shape the motion, and export a finished story.</p></div>
-        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button></div>
+        <div className="heading-actions"><button className="btn ghost" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={16}/> New project</button><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button></div>
       </section>
 
       <div className="workspace">
         <div className="left-column">
           <section className="panel timeline-panel">
-            <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.round(total % 60)}s estimated</p></div></div><div className="toolbar"><label className="switch-label"><input type="checkbox" checked={randomOrder} onChange={e => setRandomOrder(e.target.checked)}/><span className="switch"/>Random order</label><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button></div></div>
+            <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><label className="switch-label"><input type="checkbox" checked={randomOrder} onChange={e => setRandomOrder(e.target.checked)}/><span className="switch"/>Random order</label><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button></div></div>
             {randomOrder && <div className="notice amber"><Shuffle size={16}/><span><strong>Random order enabled.</strong> A new order will be chosen at render time. The arrangement below remains unchanged.</span></div>}
 
             <div className="overview-head"><div><strong>OVERALL TIMELINE</strong><span>Drag selected clips as a group · edit text above each clip · click transitions</span></div><div className="story-layout"><label>Lines</label><Select value={timelineRows} onChange={setTimelineRows}><option value="auto">Auto ({estimatedRows})</option>{[1,2,3,4,5,6].map(x => <option value={x} key={x}>{x}</option>)}</Select></div><button className="text-random" onClick={randomizeTextTransitions}><Shuffle size={12}/> Text transitions</button><div className="zoom-controls"><button onClick={() => setTimelineZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out"><ZoomOut size={14}/></button><span>{Math.round(timelineZoom * 100)}%</span><button onClick={() => setTimelineZoom(z => Math.min(2.4, +(z + .2).toFixed(1)))} title="Zoom in"><ZoomIn size={14}/></button><button className="fit-button" onClick={() => setTimelineZoom(1)} title="Reset zoom to show complete timeline">Fit</button></div></div>
             <div className="timeline-overview">{media.length===0&&<button className="empty-story" onClick={()=>setShowBrowser(true)}><FolderOpen size={22}/><strong>Your storyline is empty</strong><span>Browse the mounted /photos and /videos folders to begin.</span></button>}{timelineLines.map((line, lineIndex) => {
               const firstIndex = media.findIndex(x => x.id === line[0]?.id)
-              const lineStart = media.slice(0, firstIndex).reduce((sum,item,index) => sum + item.duration - (index < firstIndex ? item.transitionTime : 0), 0)
-              const lineDuration = line.reduce((sum,item,index) => sum + item.duration - (index < line.length - 1 ? item.transitionTime : 0), 0)
+              const lastIndex = media.findIndex(x => x.id === line[line.length - 1]?.id)
+              const lineStart = timeline.starts[firstIndex] ?? 0
+              const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
+              const lineDuration = lineEnd - lineStart
               return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={() => dropOn(item.id)} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src && <img src={item.src}/>}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom}/></div></div>
             })}</div>
 
-            {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><div className="duration-input"><input type="number" step=".1" min=".1" value={media.find(x => x.id === selectedTransitions[0])?.transitionTime || 1.2} onChange={e => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transitionTime:Number(e.target.value)} : item))}/><b>sec</b></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><div className="duration-input"><input type="number" step=".1" min=".1" value={media.find(x => x.id === selectedTransitions[0])?.transitionTime || 1.2} onChange={e => updateSelectedTransitionTimes(Number(e.target.value))}/><b>sec</b></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
             {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><div className="duration-input"><input type="number" step=".1" min=".1" value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration||.5:item?.textExitDuration||.5})()} onChange={e=>updateSelectedTextTransitions(undefined,Number(e.target.value))}/><b>sec</b></div><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
 
             <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><button className="random-button" onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
@@ -393,14 +495,14 @@ function App() {
                 <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                 <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src ? <img src={item.src}/> : <span className="title-symbol">T</span>}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
                 <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><div className="mini-duration"><Clock3 size={12}/><input type="number" step=".1" min=".1" value={detailTextEditor.edge==='enter'?item.textEnterDuration:item.textExitDuration} onChange={e=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:Number(e.target.value)}:{textExitDuration:Number(e.target.value)})}/><span>s</span></div><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
-                <div className="clip-duration"><input aria-label={`${item.name} duration`} type="number" value={item.duration} onChange={e => patch(item.id, { duration: Number(e.target.value) })}/><span>sec</span></div>
+                <div className="clip-duration"><input aria-label={`${item.name} duration`} type="number" value={item.duration} onChange={e => updateDuration(item.id, Number(e.target.value))}/><span>sec</span></div>
                 <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
-                {index < media.length - 1 ? <div className="transition-cell"><Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => patch(item.id, { transition: v })}><TransitionOptions/></Select><div className="mini-duration"><Clock3 size={12}/><input type="number" step=".1" value={item.transitionTime} onChange={e => patch(item.id, { transitionTime: Number(e.target.value) })}/><span>s</span></div></div> : <div className="end-card"><Check size={13}/> End of story</div>}
+                {index < media.length - 1 ? <div className="transition-cell"><Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => patch(item.id, { transition: v })}><TransitionOptions/></Select><div className="mini-duration"><Clock3 size={12}/><input type="number" step=".1" value={item.transitionTime} onChange={e => updateTransition(item.id, Number(e.target.value))}/><span>s</span></div></div> : <div className="end-card"><Check size={13}/> End of story</div>}
                 <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
               </div>)}
             </div>
             <button className="add-strip" onClick={() => setShowBrowser(true)}><Plus size={17}/> Add photos or videos from mounted folders</button>
-            <div className="story-total"><Clock3 size={15}/><div><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{Math.floor(total/60)}:{String(Math.round(total%60)).padStart(2,'0')}</strong></div><small>Includes media durations minus overlapping transitions</small></div>
+            <div className="story-total"><Clock3 size={15}/><div><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong></div><small>Includes media durations minus overlapping transitions</small></div>
           </section>
 
           <section className="panel audio-panel">
@@ -416,7 +518,7 @@ function App() {
             <div className="form-grid two"><div><FieldLabel>Video bitrate</FieldLabel><Select value={bitrate} onChange={setBitrate}><option>4 Mbps · Standard</option><option>8 Mbps · High</option><option>12 Mbps · Very high</option><option>20 Mbps · Maximum</option></Select></div><div><FieldLabel>Encoder</FieldLabel><Select value={encoder} onChange={setEncoder}><option>Auto · Quick Sync</option><option>Intel Quick Sync</option><option>CPU · x264</option></Select></div></div>
             <div><FieldLabel>Output folder</FieldLabel><div className="path-field"><FolderOpen size={15}/><input value={outputPath} onChange={e=>setOutputPath(e.target.value)}/><button onClick={()=>setShowFolderPicker(true)} title="Browse the mounted /output volume">Browse</button></div></div>
             <div><FieldLabel>Filename</FieldLabel><div className="filename"><input value={outputFilename} onChange={e=>setOutputFilename(e.target.value)}/><span>.mp4</span></div></div>
-            <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~29 MB</strong><small>H.264 · AAC stereo · {Math.floor(total / 60)}:{String(Math.round(total % 60)).padStart(2,'0')}</small></div>
+            <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~29 MB</strong><small>H.264 · AAC stereo · {formatClock(total)}</small></div>
           </section>
 
           <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>Ready to render</h3><p>All checks passed</p></div><span><Check size={14}/></span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li></ul><button className="btn preview-btn" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button>{rendering && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite.</p></section>
@@ -430,7 +532,9 @@ function App() {
     {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {setMedia(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path.replace(`/${file.name}`,''),src:'',type:file.kind as 'image'|'video',duration:file.kind==='video'?10:5,effect:file.kind==='video'?'Original motion':'Ken Burns · Zoom in',transition:'Fade',transitionTime:1,text:'',textMode:'overlay' as const,textStart:0,textEnd:file.kind==='video'?10:5,textEnter:'Fade',textExit:'Fade',textEnterDuration:.5,textExitDuration:.5,textX:50,textY:72,frameBackground:'#30382a'}))]);setShowBrowser(false);notify(`${files.length} mounted media files added`) }}/>} 
     {showPreview && <Preview media={media} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
-    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onClose={()=>setShowProjectLoader(false)}/>}
+    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)}/>}
+    {showNewProjectConfirm && <ConfirmDialog title="Start a new blank project?" message="This clears the current storyline, soundtracks and settings from the editor. Projects already saved in SQLite are not affected." confirmLabel="New project" onConfirm={startNewProject} onCancel={()=>setShowNewProjectConfirm(false)}/>}
+    {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -470,10 +574,21 @@ function FolderPicker({ current, onSelect, onClose }: { current: string, onSelec
 
 // Lists projects persisted in SQLite and loads the chosen one's full config
 // (media, captions, soundtrack, output, timeline) into the editor.
-function ProjectLoader({ onPick, onClose }: { onPick: (id: number) => void, onClose: () => void }) {
+function ProjectLoader({ onPick, onNew, onClose }: { onPick: (id: number) => void, onNew?: () => void, onClose: () => void }) {
   const [projects,setProjects]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
   useEffect(()=>{setLoading(true);setError('');fetch('/api/projects').then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(setProjects).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[])
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}{projects.map(p=><button className="project-row" key={p.id} onClick={()=>onPick(p.id)}><div><strong>{p.name||`Project #${p.id}`}</strong><span>Project #{p.id} · revision {p.revision}</span></div><small>Updated {new Date(p.updated_at).toLocaleString()}</small><FolderOpen size={17}/></button>)}</div><div className="modal-foot"><span>Loading replaces the current editor contents.</span><button className="btn ghost" onClick={onClose}>Cancel</button></div></div></div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}{projects.map(p=><button className="project-row" key={p.id} onClick={()=>onPick(p.id)}><div><strong>{p.name||`Project #${p.id}`}</strong><span>Project #{p.id} · revision {p.revision}</span></div><small>Updated {new Date(p.updated_at).toLocaleString()}</small><FolderOpen size={17}/></button>)}</div><div className="modal-foot"><span>Loading replaces the current editor contents.</span>{onNew&&<button className="btn ghost" onClick={onNew}><Plus size={15}/> New blank project</button>}<button className="btn ghost" onClick={onClose}>Cancel</button></div></div></div>
+}
+
+// Small acknowledgement dialog for destructive actions (new project, overwriting
+// an existing output file). The confirm button is the deliberate choice.
+function ConfirmDialog({ title, message, confirmLabel, onConfirm, onCancel }: { title: string, message: string, confirmLabel: string, onConfirm: () => void, onCancel: () => void }) {
+  return <div className="modal-backdrop" onMouseDown={onCancel}><div className="confirm-modal" onMouseDown={e=>e.stopPropagation()}>
+    <div className="confirm-icon"><AlertTriangle size={24}/></div>
+    <h2>{title}</h2>
+    <p>{message}</p>
+    <div className="confirm-actions"><button className="btn ghost" onClick={onCancel}>Cancel</button><button className="btn dark" onClick={onConfirm}>{confirmLabel}</button></div>
+  </div></div>
 }
 
 function Preview({ media, previewUrl, playing, setPlaying, onClose }: { media: MediaItem[], previewUrl:string|null, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {

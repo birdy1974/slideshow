@@ -19,7 +19,7 @@ import mimetypes
 from .config import settings
 from .database import Database
 from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, mounted_path, safe_path
-from .renderer import Renderer
+from .renderer import OutputExistsError, Renderer
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ class ProjectPayload(BaseModel):
 
 class JobRequest(BaseModel):
     kind: Literal["preview", "render"] = "render"
+    overwrite: bool = False
 
 
 def validate_mount_references(payload: dict[str, Any]) -> None:
@@ -140,8 +141,10 @@ def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str =
 
 @app.post("/api/projects/{project_id}/jobs", status_code=202)
 def create_job(project_id: int, request: JobRequest) -> dict[str, Any]:
-    try: return renderer.submit(project_id, request.kind)
+    try: return renderer.submit(project_id, request.kind, overwrite=request.overwrite)
     except KeyError as exc: raise HTTPException(404, "Project not found") from exc
+    except OutputExistsError as exc:
+        raise HTTPException(409, detail={"code": "output_exists", "path": str(exc)}) from exc
 
 
 @app.get("/api/jobs")
