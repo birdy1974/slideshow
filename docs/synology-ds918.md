@@ -51,7 +51,7 @@ Open `http://NAS-IP:8080/api/health`. A DS918+ configured for hardware encoding 
 {"status":"ok","capabilities":{"ffmpeg":true,"quickSync":true,"cpuEncoding":true}}
 ```
 
-`quickSync: true` means the render device exists. The renderer still automatically retries with CPU/x264 if FFmpeg cannot initialize QSV.
+`quickSync: true` means a short test encode succeeded with the renderer's bitrate settings, not merely that the render device exists. If the probe fails, the UI reports CPU fallback and the renderer uses x264 directly. Even with an explicit Quick Sync selection, any `h264_qsv` failure at render time automatically retries the same composition with CPU/x264, so a broken QSV runtime can never fail the whole job.
 
 ## Storage and backups
 

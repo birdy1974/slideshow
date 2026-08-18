@@ -88,6 +88,10 @@ class RenderError(RuntimeError):
     pass
 
 
+class OutputExistsError(RuntimeError):
+    """A render target already exists and the user has not acknowledged overwriting it."""
+
+
 class Renderer:
     def __init__(self, db: Database, settings: Settings):
         self.db, self.settings = db, settings
@@ -95,6 +99,8 @@ class Renderer:
         self.cancel_events: dict[str, threading.Event] = {}
         self._xfade_supported: set[str] | None = None
         self._xfade_lock = threading.Lock()
+        self._qsv_encodable: bool | None = None
+        self._qsv_lock = threading.Lock()
 
     def xfade_supported(self) -> set[str]:
         """Lazily probe (once) which xfade transitions this FFmpeg build has."""
@@ -120,19 +126,74 @@ class Renderer:
 
     def capabilities(self) -> dict[str, Any]:
         ffmpeg = shutil.which(self.settings.ffmpeg_bin)
-        qsv = Path("/dev/dri/renderD128").exists()
         version = None
         if ffmpeg:
             try:
                 version = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True, timeout=3).stdout.splitlines()[0]
             except Exception:
                 pass
-        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": version, "quickSync": qsv, "cpuEncoding": bool(ffmpeg)}
+        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": version, "quickSync": self.qsv_encodable(), "cpuEncoding": bool(ffmpeg)}
 
-    def submit(self, project_id: int, kind: str) -> dict[str, Any]:
+    def qsv_encodable(self) -> bool:
+        """Whether h264_qsv actually encodes on this host, verified by a probe.
+
+        Merely having /dev/dri/renderD128 is not enough: runtimes differ in the
+        rate control modes, pixel formats and resolutions they accept (the
+        DS918+ in particular). A tiny test encode mirrors the renderer's
+        bitrate-based settings, so "Auto" can pick the working encoder up front.
+        """
+        with self._qsv_lock:
+            if self._qsv_encodable is None:
+                self._qsv_encodable = self._probe_qsv()
+        return self._qsv_encodable
+
+    def _probe_qsv(self) -> bool:
+        if not Path("/dev/dri/renderD128").exists():
+            return False
+        try:
+            result = subprocess.run(
+                [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25",
+                 "-frames:v", "12", "-c:v", "h264_qsv", "-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M",
+                 "-f", "null", "-"],
+                capture_output=True, text=True, timeout=30)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def effective_transitions(media: list[dict[str, Any]]) -> list[float]:
+        """Clamped xfade durations in timeline order, mirroring the filter chain.
+
+        Every transition is limited so it can never overlap more than the
+        remaining time of either clip it joins. This is the single source of
+        truth for the composed duration; the frontend estimate uses the same
+        rules.
+        """
+        durations = [max(.2, float(item.get("duration", 5))) for item in media]
+        transitions: list[float] = []
+        cumulative = durations[0] if durations else 0.0
+        for index in range(1, len(durations)):
+            transition = max(.05, min(float(media[index - 1].get("transitionTime", 1)), cumulative - .05, durations[index] - .05))
+            transitions.append(transition)
+            cumulative += durations[index] - transition
+        return transitions
+
+    def render_output_path(self, project: dict[str, Any]) -> Path:
+        """Destination MP4 for a final render, shared by submit and render."""
+        output_settings = project.get("output", {})
+        target_dir = mounted_path(self.settings, str(output_settings.get("path", "/output")))
+        stem = Path(str(output_settings.get("filename", "slideshow"))).stem or "slideshow"
+        return target_dir / f"{stem}.mp4"
+
+    def submit(self, project_id: int, kind: str, overwrite: bool = False) -> dict[str, Any]:
         project = self.db.get_project(project_id)
         if not project:
             raise KeyError(project_id)
+        if kind == "render":
+            output = self.render_output_path(project)
+            if output.exists() and not overwrite:
+                raise OutputExistsError(str(output))
         job_id = uuid.uuid4().hex
         job = {"id": job_id, "project_id": project_id, "kind": kind, "settings": project.get("output", {})}
         self.db.create_job(job)
@@ -210,16 +271,18 @@ class Renderer:
         soundtrack = self._make_soundtrack(project, work, cancelled, log_file)
         if soundtrack and project.get("soundtrack",{}).get("policy") == "Fit slideshow to audio":
             audio_duration = self._probe_duration(soundtrack)
-            transition_total = sum(float(x.get("transitionTime",1)) for x in media[:-1])
-            duration_total = sum(float(x.get("duration",5)) for x in media)
+            transition_total = sum(self.effective_transitions(media))
+            duration_total = sum(max(.2, float(x.get("duration",5))) for x in media)
             if audio_duration > transition_total and duration_total > 0:
                 factor = (audio_duration + transition_total) / duration_total
                 media = [{**item,"duration":max(.2,float(item.get("duration",5))*factor),"textEnd":min(float(item.get("textEnd",item.get("duration",5)))*factor,max(.2,float(item.get("duration",5))*factor))} for item in media]
         segments: list[Path] = []
+        durations = [max(.2, float(item.get("duration", 5))) for item in media]
+        transitions = self.effective_transitions(media)
         progress(2, "Normalizing media")
         for index, item in enumerate(media):
             if cancelled.is_set(): raise RenderError("Render cancelled by user")
-            duration = max(.2, float(item.get("duration", 5)))
+            duration = durations[index]
             segment = work / f"segment-{index:04d}.mp4"
             kind_name = item.get("type", "image")
             base_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
@@ -252,15 +315,15 @@ class Renderer:
         if len(segments) == 1:
             filter_graph = "[0:v]setpts=PTS-STARTPTS[vout]"
         else:
-            chains=[]; cumulative=float(media[0].get("duration",5)); previous="[0:v]"
+            chains=[]; cumulative=durations[0]; previous="[0:v]"
             for index in range(1,len(media)):
-                transition=max(.05,min(float(media[index-1].get("transitionTime",1)), cumulative-.05, float(media[index].get("duration",5))-.05))
+                transition=transitions[index-1]
                 offset=max(.01,cumulative-transition)
                 out=f"[x{index}]" if index<len(media)-1 else "[vout]"
                 chains.append(f"{previous}[{index}:v]xfade=transition={self.resolve_xfade(str(media[index-1].get('transition','Fade')))}:duration={transition}:offset={offset}{out}")
-                previous=out; cumulative += float(media[index].get("duration",5))-transition
+                previous=out; cumulative += durations[index]-transition
             filter_graph=";".join(chains)
-        total_duration = sum(float(x.get("duration",5)) for x in media) - sum(float(x.get("transitionTime",1)) for x in media[:-1])
+        total_duration = sum(durations) - sum(transitions)
 
         audio_args: list[str] = []; audio_map: list[str] = []
         if soundtrack:
@@ -274,23 +337,41 @@ class Renderer:
             filter_graph += f";[{audio_index}:a]{af}[aout]"
             audio_map=["-map","[aout]","-c:a","aac","-b:a","192k"]
         progress(55, "Composing transitions and soundtrack")
-        target_dir = self.settings.preview_dir if kind == "preview" else mounted_path(self.settings, str(output_settings.get("path", "/output")))
+        if kind == "preview":
+            target_dir = self.settings.preview_dir
+            filename = f"project-{project.get('id','new')}-preview-{uuid.uuid4().hex[:8]}.mp4"
+        else:
+            output = self.render_output_path(project)
+            target_dir = output.parent
+            filename = output.name
         target_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"project-{project.get('id','new')}-preview-{uuid.uuid4().hex[:8]}.mp4" if kind == "preview" else Path(str(output_settings.get("filename","slideshow"))).stem + ".mp4"
         output = target_dir / filename
-        encoder_label=str(output_settings.get("encoder","Auto")); encoder="h264_qsv" if "Quick Sync" in encoder_label and Path("/dev/dri/renderD128").exists() else "libx264"
-        encode_args=["-c:v",encoder,"-b:v",bitrate,"-maxrate",bitrate,"-bufsize",f"{parse_number(bitrate,2)*2:g}M"]
-        if encoder=="libx264": encode_args += ["-preset","medium"]
-        command=[self.settings.ffmpeg_bin,"-hide_banner","-y",*inputs,*audio_args,"-filter_complex",filter_graph,"-map","[vout]",*audio_map,*encode_args,"-pix_fmt","yuv420p","-movflags","+faststart","-t",str(total_duration),str(output)]
+        encoder_label = str(output_settings.get("encoder", "Auto"))
+        bitrate_value = parse_number(bitrate, 2)
+        encoder = "h264_qsv" if "Quick Sync" in encoder_label and self.qsv_encodable() else "libx264"
+
+        def compose_command(codec: str) -> list[str]:
+            # QSV needs nv12 and its own rate control tolerance; libx264 uses
+            # yuv420p plus a medium preset. Everything else is shared.
+            if codec == "h264_qsv":
+                encode_args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "nv12"]
+            else:
+                encode_args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-preset", "medium", "-pix_fmt", "yuv420p"]
+            return [self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs, *audio_args, "-filter_complex", filter_graph, "-map", "[vout]", *audio_map, *encode_args, "-movflags", "+faststart", "-t", str(total_duration), str(output)]
+
+        command = compose_command(encoder)
         try:
-            self._run_ffmpeg(command,cancelled,log_file)
+            self._run_ffmpeg(command, cancelled, log_file)
         except RenderError:
-            if encoder=="h264_qsv" and "Auto" in encoder_label:
-                progress(70,"Quick Sync unavailable; retrying on CPU")
-                command[command.index("h264_qsv")]="libx264"
-                self._run_ffmpeg(command,cancelled,log_file)
-            else: raise
-        progress(98,"Finalizing MP4")
+            if encoder != "h264_qsv":
+                raise
+            # Quick Sync runtimes differ: rate control modes, pixel formats and
+            # resolutions accepted by one device fail on another. Never let that
+            # break a render — retry the identical composition on CPU.
+            progress(70, "Quick Sync unavailable; retrying on CPU")
+            log.warning("h264_qsv failed for %s; falling back to libx264", output)
+            self._run_ffmpeg(compose_command("libx264"), cancelled, log_file)
+        progress(98, "Finalizing MP4")
         return output
 
     def _probe_duration(self, path: Path) -> float:

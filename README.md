@@ -6,12 +6,15 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 
 - Safe server-side browsing inside read-only `/photos`, `/videos`, and `/music` mounts
 - Mixed photos, videos, generated text frames, drag ordering, multi-selection, and multi-line timelines
+- One-click "New project" that starts a completely blank project without touching saved ones
 - FFmpeg xfade catalogue, per-transition timing, random/bulk assignment, and GLSL-to-dissolve portability fallback
 - Ken Burns controls with selected-item and random bulk assignment
 - Timed captions, appear/disappear transitions, draggable title placement, typography, and frame backgrounds
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming
 - Real 480p proxy previews streamed from the backend
 - 480p, 720p, 1080p, and 4K output presets with CPU/x264 and Intel Quick Sync selection
+- Output overwrite protection: rendering asks for acknowledgement before replacing an existing MP4
+- Shared timeline math between UI and renderer, so the estimated total always matches the rendered length
 - Background jobs, live progress, downloadable output, persistent diagnostics, and render history
 - Atomic, lossless SQLite save/load with normalized tables and a canonical full-project snapshot
 - Production Docker image containing FFmpeg, fonts, Intel media drivers, frontend, API, and renderer
@@ -78,7 +81,9 @@ SQLite uses WAL mode, foreign keys, a 30-second busy timeout, and schema migrati
 
 ## Rendering notes
 
-All media is first normalized to one resolution, frame rate, time base, SAR, and `yuv420p`, then composed through `xfade`. Text appearance/disappearance choices currently render with smooth alpha fades while their exact selected transition names remain stored for a later shader/text-animation renderer. Experimental GLSL frame transitions fall back to dissolve on the DS918+ portability path. Quick Sync is used when selected and available; **Auto** retries on CPU/x264 if QSV initialization fails.
+All media is first normalized to one resolution, frame rate, time base, SAR, and `yuv420p`, then composed through `xfade`. Text appearance/disappearance choices currently render with smooth alpha fades while their exact selected transition names remain stored for a later shader/text-animation renderer. Experimental GLSL frame transitions fall back to dissolve on the DS918+ portability path.
+
+Transition durations are clamped so a transition can never overlap more than the remaining time of either clip it joins — the same rules drive the UI's estimated total time and the renderer, so the two always agree. Quick Sync availability is verified at startup with a short test encode; any `h264_qsv` failure (unsupported rate control, pixel format, or resolution — common on the DS918+) automatically retries the same composition with CPU/x264 instead of failing the job. Final renders refuse to overwrite an existing output file until acknowledged by the user.
 
 The initial deployment assumes a trusted LAN and does not include authentication. Do not expose it directly to the internet.
 

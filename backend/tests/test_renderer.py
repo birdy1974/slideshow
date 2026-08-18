@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 import unittest
 from pathlib import Path
 
 from app.database import Database
 from app.config import Settings
-from app.renderer import Renderer, _parse_xfade_help, parse_number, xfade_name
+from app.renderer import OutputExistsError, Renderer, _parse_xfade_help, parse_number, xfade_name
 
 # Shape of `ffmpeg -h filter=xfade` on an FFmpeg 5.x NAS build: the catalogue
 # stops at fadeslow; hlwind/hrwind/vuwind/vdwind and cover*/reveal* are absent.
@@ -65,6 +66,96 @@ class RendererFallbackTest(unittest.TestCase):
     def test_failed_probe_keeps_full_catalogue(self) -> None:
         self.renderer._xfade_supported = set()
         self.assertEqual("hrwind", self.renderer.resolve_xfade("Horizontal right wind"))
+
+
+class TransitionTimingTest(unittest.TestCase):
+    def test_effective_transitions_clamp_to_remaining_clip_time(self) -> None:
+        media = [
+            {"duration": 2, "transitionTime": 3},   # oversized: limited to min(1.95, next 0.95)
+            {"duration": 1, "transitionTime": .5},  # fits both sides
+            {"duration": 5, "transitionTime": 1},   # last item's transition is never used
+        ]
+        transitions = Renderer.effective_transitions(media)
+        self.assertEqual([0.95, 0.5], transitions)
+        durations = [2, 1, 5]
+        self.assertEqual(2 + 1 - 0.95 + 5 - 0.5, sum(durations) - sum(transitions))
+
+    def test_effective_transitions_cannot_exceed_cumulative_time(self) -> None:
+        # A chain of minimum-length clips with maximum transitions must still
+        # yield a positive total and never a negative remaining time.
+        media = [
+            {"duration": .2, "transitionTime": 5},
+            {"duration": .2, "transitionTime": 5},
+            {"duration": .2, "transitionTime": 5},
+        ]
+        transitions = Renderer.effective_transitions(media)
+        cumulative = .2
+        for transition, item in zip(transitions, media[:-1]):
+            self.assertGreaterEqual(transition, .05)
+            self.assertLessEqual(transition, cumulative - .05)
+            self.assertAlmostEqual(transition, .15)
+            cumulative += .2 - transition
+        self.assertGreater(cumulative, 0)
+
+    def test_empty_and_single_item_media(self) -> None:
+        self.assertEqual([], Renderer.effective_transitions([]))
+        self.assertEqual([], Renderer.effective_transitions([{"duration": 5, "transitionTime": 99}]))
+
+
+class OutputProtectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(base / "config", base / "photos", base / "videos", base / "music", base / "output")
+        self.db = Database(base / "slideshow.db")
+        self.db.initialize()
+        self.renderer = Renderer(self.db, self.settings)
+        # Queued background renders fail without FFmpeg; keep their tracebacks out of the test output.
+        logging.disable(logging.CRITICAL)
+
+    def tearDown(self) -> None:
+        # Wait while logging is still disabled so background job tracebacks stay quiet.
+        self.renderer.pool.shutdown(wait=True, cancel_futures=True)
+        logging.disable(logging.NOTSET)
+        self.temp.cleanup()
+
+    def project_payload(self) -> dict:
+        return {
+            "schemaVersion": 1,
+            "project": {"name": "Overwrite", "randomOrder": False},
+            "media": [],
+            "soundtrack": {"tracks": []},
+            "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps · High",
+                       "encoder": "Auto · Quick Sync", "path": "/output", "filename": "movie.mp4"},
+        }
+
+    def test_render_output_path_resolves_to_output_mount(self) -> None:
+        saved = self.db.save_project(self.project_payload())
+        self.assertEqual(self.settings.output_dir / "movie.mp4", self.renderer.render_output_path(self.db.get_project(saved["id"])))
+
+    def test_existing_output_requires_overwrite_acknowledgement(self) -> None:
+        saved = self.db.save_project(self.project_payload())
+        target = self.settings.output_dir / "movie.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"previous render")
+        with self.assertRaises(OutputExistsError):
+            self.renderer.submit(saved["id"], "render")
+        # Nothing was queued while the user has not acknowledged the overwrite.
+        self.assertEqual([], self.db.list_jobs(saved["id"]))
+
+    def test_overwrite_acknowledged_queues_the_render(self) -> None:
+        saved = self.db.save_project(self.project_payload())
+        target = self.settings.output_dir / "movie.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"previous render")
+        job = self.renderer.submit(saved["id"], "render", overwrite=True)
+        self.assertEqual("queued", job["status"])
+        self.assertEqual(1, len(self.db.list_jobs(saved["id"])))
+
+    def test_missing_output_file_does_not_block(self) -> None:
+        saved = self.db.save_project(self.project_payload())
+        job = self.renderer.submit(saved["id"], "render")
+        self.assertEqual("queued", job["status"])
 
 
 if __name__ == "__main__":
