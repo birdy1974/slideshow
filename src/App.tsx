@@ -1,10 +1,37 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp,
   Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
   Info, LayoutGrid, ListVideo, Music2, Pause, Play, Plus, RefreshCw, Save,
   Settings2, Shuffle, Sparkles, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
+
+type MediaRoot = 'photos' | 'videos' | 'music'
+
+// Streams a file from a mounted root through the backend (used for MP3 preview playback).
+function mediaFileUrl(root: MediaRoot, serverPath: string) {
+  const relative = serverPath.replace(new RegExp(`^/${root}/?`), '')
+  return `/api/media/file?root=${root}&path=${encodeURIComponent(relative)}`
+}
+
+// One shared <audio> element at a time; returns the key currently playing and a toggle.
+function useAudioPreview(onError: (message: string) => void) {
+  const [playingKey, setPlayingKey] = useState<string | null>(null)
+  const playerRef = useRef<HTMLAudioElement | null>(null)
+  useEffect(() => () => { playerRef.current?.pause(); playerRef.current = null }, [])
+  const toggle = (key: string, src: string, label: string) => {
+    if (playingKey === key) { playerRef.current?.pause(); playerRef.current = null; setPlayingKey(null); return }
+    playerRef.current?.pause()
+    const player = new Audio(src)
+    playerRef.current = player
+    const stop = () => { if (playerRef.current === player) { playerRef.current = null; setPlayingKey(null) } }
+    player.onended = stop
+    player.onerror = () => { stop(); onError(`Could not play ${label}`) }
+    setPlayingKey(key)
+    player.play().catch(() => { stop(); onError(`Could not play ${label}`) })
+  }
+  return { playingKey, toggle }
+}
 
 type MediaItem = {
   id: number; name: string; path: string; src: string; type: 'image' | 'video' | 'title';
@@ -135,6 +162,8 @@ function App() {
   const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([])
   const [draggedAudioId, setDraggedAudioId] = useState<number | null>(null)
+  const [showFolderPicker, setShowFolderPicker] = useState(false)
+  const [showProjectLoader, setShowProjectLoader] = useState(false)
 
   const total = useMemo(() => Math.max(0, media.reduce((sum, item) => sum + item.duration, 0) - media.slice(0, -1).reduce((sum, item) => sum + item.transitionTime, 0)), [media])
   const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => { const [m,s] = track.duration.split(':').map(Number); return sum + (Number.isFinite(m)&&Number.isFinite(s)?m*60+s:0) }, 0), [audioTracks])
@@ -158,13 +187,14 @@ function App() {
     const restore=async()=>{try{
       const health=await fetch('/api/health');if(!health.ok)throw new Error();const healthData=await health.json();setCapabilities(healthData.capabilities);setBackendOnline(true)
       const list=await fetch('/api/projects').then(r=>r.json())
-      if(list.length){const saved=await fetch(`/api/projects/${list[0].id}`).then(r=>r.json());applySavedProject(saved);return}
+      if(list.length){const saved=await fetch(`/api/projects/${list[0].id}`).then(r=>r.json());applySavedProject(saved);await resumeActiveJob(list[0].id);return}
     }catch{setBackendOnline(false)}
       try{const raw=localStorage.getItem('slideshow.project.mock');if(raw)applySavedProject(JSON.parse(raw))}catch{localStorage.removeItem('slideshow.project.mock')}
     };void restore()
   },[])
 
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), 3500) }
+  const audioPreview = useAudioPreview(message => notify(message))
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
     textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline },
@@ -183,6 +213,17 @@ function App() {
   }
   const saveProject = async () => {
     try{await persistProject()}catch(error){setBackendOnline(false);notify(`SQLite save failed: ${error instanceof Error?error.message:'Unknown error'}`)}
+  }
+  const loadProject = async (id:number) => {
+    try{
+      const response=await fetch(`/api/projects/${id}`)
+      if(!response.ok)throw new Error(await response.text()||`Load failed (${response.status})`)
+      const saved=await response.json()
+      applySavedProject(saved)
+      setShowProjectLoader(false)
+      setBackendOnline(true)
+      notify(`Project “${saved.project?.name||`#${id}`}” loaded · revision ${saved.revision}`)
+    }catch(error){notify(`Load failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
   const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
   const move = (index: number, direction: -1 | 1) => setMedia(items => {
@@ -275,17 +316,37 @@ function App() {
       if(job.status==='failed'||job.status==='cancelled')throw new Error(job.error_message||`Job ${job.status}`)
     }
   }
+  const trackJob = async (jobId:string, kind:'preview'|'render') => {
+    try{
+      const completed=await waitForJob(jobId)
+      if(kind==='preview'){setPreviewUrl(`${completed.fileUrl}?v=${Date.now()}`);setShowPreview(true);notify('Real FFmpeg preview is ready')}
+      else notify(`MP4 render complete · ${outputFilename}.mp4`)
+    }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`)}
+    finally{kind==='preview'?setPreviewing(false):setRendering(false)}
+  }
   const startJob = async (kind:'preview'|'render') => {
     kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1)
     try{
       const id=await persistProject(true)
       const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind})})
       if(!response.ok)throw new Error(await response.text())
-      const created=await response.json();const completed=await waitForJob(created.id)
-      if(kind==='preview'){setPreviewUrl(`${completed.fileUrl}?v=${Date.now()}`);setShowPreview(true);notify('Real FFmpeg preview is ready')}
-      else notify(`MP4 render complete · ${outputFilename}.mp4`)
-    }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`)}
-    finally{kind==='preview'?setPreviewing(false):setRendering(false)}
+      const created=await response.json()
+      await trackJob(created.id,kind)
+    }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`);kind==='preview'?setPreviewing(false):setRendering(false)}
+  }
+  // The backend keeps rendering after a page refresh; re-attach to a still-active
+  // job so the Preview/Render buttons show its live progress again.
+  const resumeActiveJob = async (id:number) => {
+    try{
+      const jobs=await fetch(`/api/jobs?project_id=${id}`).then(r=>r.ok?r.json():[])
+      const active=jobs.find((job:any)=>['queued','running','cancelling'].includes(job.status))
+      if(!active)return
+      const kind:'preview'|'render'=active.kind==='preview'?'preview':'render'
+      if(kind==='preview')setPreviewing(true);else setRendering(true)
+      setProgress(Math.max(1,Math.round(active.progress||0)))
+      notify(`${kind==='preview'?'Preview':'MP4 render'} is still running — progress restored`)
+      void trackJob(active.id,kind)
+    }catch{/* job list unavailable; nothing to resume */}
   }
   const startRender = () => void startJob('render')
   const generatePreview = () => void startJob('preview')
@@ -303,7 +364,7 @@ function App() {
     {activeTab === 'renders' ? <RenderQueue projectId={projectId} onBack={() => setActiveTab('editor')} /> : <main>
       <section className="project-heading">
         <div><div className="eyebrow">PROJECT / UNTITLED</div><input value={projectName} onChange={e=>setProjectName(e.target.value)} aria-label="Project name"/><p>Assemble your media, shape the motion, and export a finished story.</p></div>
-        <div className="heading-actions"><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button></div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button></div>
       </section>
 
       <div className="workspace">
@@ -344,7 +405,7 @@ function App() {
 
           <section className="panel audio-panel">
             <div className="panel-title compact"><div><span className="step">03</span><div><h2>Soundtracks</h2><p>Add multiple MP3 files and drag to set their play order.</p></div></div><div className="audio-total"><Clock3 size={14}/><span>Total soundtrack time</span><strong>{Math.floor(audioTotalSeconds/60)}:{String(audioTotalSeconds%60).padStart(2,'0')}</strong></div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><Plus size={14}/> Add MP3</button></div>
-            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span></div><div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
+            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span></div><div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div><button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music',`${track.path}/${track.name}`),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
             <div className="audio-settings"><div><FieldLabel>When audio is shorter than the video</FieldLabel><Select value={audioPolicy} onChange={setAudioPolicy}><option>Loop & trim</option><option>Play once, then silence</option><option>Fit slideshow to audio</option></Select></div><div><FieldLabel>Music volume <span>{audioVolume}%</span></FieldLabel><input className="range" type="range" value={audioVolume} onChange={e=>setAudioVolume(Number(e.target.value))}/></div><label className="check-label"><input type="checkbox" checked={audioFade} onChange={e=>setAudioFade(e.target.checked)}/><span><Check size={11}/></span>Fade out soundtrack <small>2.0s</small></label><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><FolderOpen size={15}/> Add soundtrack</button></div>
           </section>
         </div>
@@ -353,7 +414,7 @@ function App() {
           <section className="panel output-panel"><div className="panel-title compact"><div><span className="step">04</span><div><h2>Output</h2><p>Choose quality and destination.</p></div></div></div>
             <div className="form-grid two"><div><FieldLabel>Resolution</FieldLabel><Select value={resolution} onChange={setResolution}><option>4K UHD · 2160p</option><option>Full HD · 1080p</option><option>HD · 720p</option><option>SD · 480p</option></Select></div><div><FieldLabel>Frame rate</FieldLabel><Select value={frameRate} onChange={setFrameRate}><option>24 fps</option><option>25 fps</option><option>30 fps</option><option>50 fps</option><option>60 fps</option></Select></div></div>
             <div className="form-grid two"><div><FieldLabel>Video bitrate</FieldLabel><Select value={bitrate} onChange={setBitrate}><option>4 Mbps · Standard</option><option>8 Mbps · High</option><option>12 Mbps · Very high</option><option>20 Mbps · Maximum</option></Select></div><div><FieldLabel>Encoder</FieldLabel><Select value={encoder} onChange={setEncoder}><option>Auto · Quick Sync</option><option>Intel Quick Sync</option><option>CPU · x264</option></Select></div></div>
-            <div><FieldLabel>Output folder</FieldLabel><div className="path-field"><FolderOpen size={15}/><input value={outputPath} onChange={e=>setOutputPath(e.target.value)}/><button>Browse</button></div></div>
+            <div><FieldLabel>Output folder</FieldLabel><div className="path-field"><FolderOpen size={15}/><input value={outputPath} onChange={e=>setOutputPath(e.target.value)}/><button onClick={()=>setShowFolderPicker(true)} title="Browse the mounted /output volume">Browse</button></div></div>
             <div><FieldLabel>Filename</FieldLabel><div className="filename"><input value={outputFilename} onChange={e=>setOutputFilename(e.target.value)}/><span>.mp4</span></div></div>
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~29 MB</strong><small>H.264 · AAC stereo · {Math.floor(total / 60)}:{String(Math.round(total % 60)).padStart(2,'0')}</small></div>
           </section>
@@ -368,6 +429,8 @@ function App() {
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{setAudioTracks(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path.replace(`/${file.name}`,''),duration:'unknown',color:['#91a96b','#7898aa','#b78670'][index%3]}))]);setShowAudioBrowser(false);notify(`${files.length} soundtracks added`)}}/>}
     {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {setMedia(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path.replace(`/${file.name}`,''),src:'',type:file.kind as 'image'|'video',duration:file.kind==='video'?10:5,effect:file.kind==='video'?'Original motion':'Ken Burns · Zoom in',transition:'Fade',transitionTime:1,text:'',textMode:'overlay' as const,textStart:0,textEnd:file.kind==='video'?10:5,textEnter:'Fade',textExit:'Fade',textEnterDuration:.5,textExitDuration:.5,textX:50,textY:72,frameBackground:'#30382a'}))]);setShowBrowser(false);notify(`${files.length} mounted media files added`) }}/>} 
     {showPreview && <Preview media={media} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
+    {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
+    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onClose={()=>setShowProjectLoader(false)}/>}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -388,11 +451,29 @@ function TextFrameEditor({item,update,style,onClose}:{item:MediaItem,update:(c:P
 }
 
 function MediaBrowser({ onClose, onAdd, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, audioOnly?:boolean }) {
-  const [root,setRoot]=useState<'photos'|'videos'|'music'>(audioOnly?'music':'photos');const [path,setPath]=useState('');const [entries,setEntries]=useState<any[]>([]);const [selected,setSelected]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  const [root,setRoot]=useState<MediaRoot>(audioOnly?'music':'photos');const [path,setPath]=useState('');const [entries,setEntries]=useState<any[]>([]);const [selected,setSelected]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  const preview=useAudioPreview(message=>setError(message))
   useEffect(()=>{setLoading(true);setError('');fetch(`/api/media/browse?root=${root}&path=${encodeURIComponent(path)}`).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(data=>setEntries(data.entries)).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[root,path])
   const chooseRoot=(value:'photos'|'videos'|'music')=>{setRoot(value);setPath('');setSelected([])}
   const open=(entry:any)=>{if(entry.kind==='directory')setPath(entry.relativePath);else setSelected(items=>items.some(x=>x.path===entry.path)?items.filter(x=>x.path!==entry.path):[...items,entry])}
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={root==='photos'?'active':''} onClick={()=>chooseRoot('photos')}><ImageIcon size={16}/> photos</button><button className={root==='videos'?'active':''} onClick={()=>chooseRoot('videos')}><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map((file,i)=><button className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''}`} key={file.path} onClick={()=>open(file)}><div className="server-file-icon">{file.kind==='directory'?<FolderOpen size={34}/>:file.kind==='video'?<Video size={34}/>:file.kind==='audio'?<Music2 size={34}/>:<ImageIcon size={34}/>} {selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</div><strong>{file.name}</strong><small>{file.kind==='directory'?'Folder':`${(file.size/1024/1024).toFixed(1)} MB`}</small></button>)}</div><div className="browser-info"><Info size={15}/> Server paths are validated against /photos and /videos. Files are never uploaded through the browser.</div></div></div><div className="modal-foot"><span>{selected.length} files selected</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!selected.length} onClick={()=>onAdd(selected)}><Plus size={15}/> Add to storyline</button></div></div></div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={root==='photos'?'active':''} onClick={()=>chooseRoot('photos')}><ImageIcon size={16}/> photos</button><button className={root==='videos'?'active':''} onClick={()=>chooseRoot('videos')}><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map((file,i)=><button className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''}`} key={file.path} onClick={()=>open(file)}><div className="server-file-icon">{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(root,file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='directory'?<FolderOpen size={34}/>:file.kind==='video'?<Video size={34}/>:file.kind==='audio'?<Music2 size={34}/>:<ImageIcon size={34}/>} {selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</div><strong>{file.name}</strong><small>{file.kind==='directory'?'Folder':`${(file.size/1024/1024).toFixed(1)} MB`}</small></button>)}</div><div className="browser-info"><Info size={15}/> Server paths are validated against /photos and /videos. Files are never uploaded through the browser.</div></div></div><div className="modal-foot"><span>{selected.length} files selected</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!selected.length} onClick={()=>onAdd(selected)}><Plus size={15}/> Add to storyline</button></div></div></div>
+}
+
+// Pick a destination folder inside the mounted /output volume. Folders are
+// browsed with the backend's folder-only mode; files are never shown.
+function FolderPicker({ current, onSelect, onClose }: { current: string, onSelect: (path: string) => void, onClose: () => void }) {
+  const [path,setPath]=useState(()=>current.replace(/^\/output\/?/,''));const [entries,setEntries]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  useEffect(()=>{setLoading(true);setError('');fetch(`/api/media/browse?root=output&folders=true&path=${encodeURIComponent(path)}`).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(data=>setEntries(data.entries)).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[path])
+  const chosen=path?`/output/${path}`:'/output'
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal folder-picker" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">OUTPUT DESTINATION</span><h2>Choose output folder</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="picker-body"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>{chosen}</span><button disabled={!path} onClick={()=>setPath('')}>Root</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading output volume…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(dir=><button className="file-card" key={dir.relativePath} onClick={()=>setPath(dir.relativePath)}><div className="server-file-icon"><FolderOpen size={34}/></div><strong>{dir.name}</strong><small>Folder</small></button>)}</div>{!loading&&!error&&entries.length===0&&<div className="browser-info"><Info size={15}/> No subfolders here. Keep this folder or navigate back with “← Parent”.</div>}<div className="browser-info"><Info size={15}/> Renders are written into the selected folder on the mounted /output volume. New subfolders typed manually are created at render time.</div></div><div className="modal-foot"><span>Selected: {chosen}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>{onSelect(chosen);onClose()}}><Check size={15}/> Use this folder</button></div></div></div>
+}
+
+// Lists projects persisted in SQLite and loads the chosen one's full config
+// (media, captions, soundtrack, output, timeline) into the editor.
+function ProjectLoader({ onPick, onClose }: { onPick: (id: number) => void, onClose: () => void }) {
+  const [projects,setProjects]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  useEffect(()=>{setLoading(true);setError('');fetch('/api/projects').then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(setProjects).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[])
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}{projects.map(p=><button className="project-row" key={p.id} onClick={()=>onPick(p.id)}><div><strong>{p.name||`Project #${p.id}`}</strong><span>Project #{p.id} · revision {p.revision}</span></div><small>Updated {new Date(p.updated_at).toLocaleString()}</small><FolderOpen size={17}/></button>)}</div><div className="modal-foot"><span>Loading replaces the current editor contents.</span><button className="btn ghost" onClick={onClose}>Cancel</button></div></div></div>
 }
 
 function Preview({ media, previewUrl, playing, setPlaying, onClose }: { media: MediaItem[], previewUrl:string|null, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {

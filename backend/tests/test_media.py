@@ -31,6 +31,20 @@ class MediaSecurityTest(unittest.TestCase):
         with self.assertRaises(UnsafePath): safe_path(self.settings.photos_dir, "../../etc/passwd")
         with self.assertRaises(UnsafePath): mounted_path(self.settings, "/etc/passwd")
 
+    def test_output_root_is_folder_pick_only(self) -> None:
+        (self.settings.output_dir / "renders").mkdir()
+        (self.settings.output_dir / "renders" / "done.mp4").write_bytes(b"mp4")
+        (self.settings.output_dir / "stray.mp4").write_bytes(b"mp4")
+        with self.assertRaises(UnsafePath): browse(self.settings, "output")
+        result = browse(self.settings, "output", "", folders_only=True)
+        self.assertEqual(["renders"], [x["name"] for x in result["entries"]])
+        self.assertTrue(all(x["kind"] == "directory" for x in result["entries"]))
+
+    def test_folders_only_hides_media_files(self) -> None:
+        result = browse(self.settings, "photos", "", folders_only=True)
+        self.assertEqual(["trip"], [x["name"] for x in result["entries"]])
+        with self.assertRaises(UnsafePath): browse(self.settings, "photos", "../output", folders_only=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,9 +14,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+import mimetypes
+
 from .config import settings
 from .database import Database
-from .media import UnsafePath, browse, mounted_path
+from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, mounted_path, safe_path
 from .renderer import Renderer
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -117,10 +119,23 @@ def delete_project(project_id: int) -> dict[str, bool]:
 
 
 @app.get("/api/media/browse")
-def browse_media(root: str = Query(pattern="^(photos|videos|music)$"), path: str = "") -> dict[str, Any]:
-    try: return browse(settings, root, path)
+def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), path: str = "", folders: bool = False) -> dict[str, Any]:
+    try: return browse(settings, root, path, folders_only=folders)
     except UnsafePath as exc: raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc: raise HTTPException(404, f"Folder not found: {exc}") from exc
+
+
+STREAMABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
+
+
+@app.get("/api/media/file")
+def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str = "") -> FileResponse:
+    """Stream a media file from a read-only mount, e.g. to preview an MP3 in the browser."""
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if target.suffix.lower() not in STREAMABLE_EXTENSIONS: raise HTTPException(403, "File type is not streamable")
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    return FileResponse(target, media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream", filename=target.name)
 
 
 @app.post("/api/projects/{project_id}/jobs", status_code=202)

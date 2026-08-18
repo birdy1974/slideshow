@@ -63,6 +63,27 @@ def xfade_name(label: str) -> str:
     return XFADE.get(label, "dissolve" if label.startswith("GLSL") else "fade")
 
 
+def _parse_xfade_help(text: str) -> set[str]:
+    """Transition constant names from `ffmpeg -h filter=xfade` output."""
+    block = re.search(r"^\s*transition\s+<int>[^\n]*\n(.*?)^\s*duration\s+<duration>", text, re.S | re.M)
+    if not block:
+        return set()
+    return {name for name in re.findall(r"^\s+(\w+)\s+-?\d+\s+\.\.", block.group(1), re.M) if name != "custom"}
+
+
+def probe_xfade_transitions(ffmpeg_bin: str) -> set[str]:
+    """Transitions the installed FFmpeg build actually supports.
+
+    Many NAS packages ship FFmpeg 5.x, whose xfade lacks the wind/cover/reveal
+    catalogue. Returns an empty set when detection is impossible.
+    """
+    try:
+        result = subprocess.run([ffmpeg_bin, "-hide_banner", "-h", "filter=xfade"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return set()
+    return _parse_xfade_help(f"{result.stdout or ''}\n{result.stderr or ''}")
+
+
 class RenderError(RuntimeError):
     pass
 
@@ -72,6 +93,30 @@ class Renderer:
         self.db, self.settings = db, settings
         self.pool = ThreadPoolExecutor(max_workers=settings.render_workers, thread_name_prefix="render")
         self.cancel_events: dict[str, threading.Event] = {}
+        self._xfade_supported: set[str] | None = None
+        self._xfade_lock = threading.Lock()
+
+    def xfade_supported(self) -> set[str]:
+        """Lazily probe (once) which xfade transitions this FFmpeg build has."""
+        with self._xfade_lock:
+            if self._xfade_supported is None:
+                self._xfade_supported = probe_xfade_transitions(self.settings.ffmpeg_bin)
+        return self._xfade_supported
+
+    def resolve_xfade(self, label: str) -> str:
+        """Map a UI transition to one this FFmpeg can run, degrading safely.
+
+        Older FFmpeg builds (e.g. 5.x on the DS918+) lack wind/cover/reveal
+        constants; rather than failing the whole render, fall back to dissolve.
+        An empty probe result means detection failed: keep the mapped name.
+        """
+        name = xfade_name(label)
+        supported = self.xfade_supported()
+        if not supported or name in supported:
+            return name
+        fallback = "dissolve" if "dissolve" in supported else sorted(supported)[0]
+        log.warning("Transition '%s' (%s) is not supported by this FFmpeg build; falling back to '%s'", label, name, fallback)
+        return fallback
 
     def capabilities(self) -> dict[str, Any]:
         ffmpeg = shutil.which(self.settings.ffmpeg_bin)
@@ -212,7 +257,7 @@ class Renderer:
                 transition=max(.05,min(float(media[index-1].get("transitionTime",1)), cumulative-.05, float(media[index].get("duration",5))-.05))
                 offset=max(.01,cumulative-transition)
                 out=f"[x{index}]" if index<len(media)-1 else "[vout]"
-                chains.append(f"{previous}[{index}:v]xfade=transition={xfade_name(str(media[index-1].get('transition','Fade')))}:duration={transition}:offset={offset}{out}")
+                chains.append(f"{previous}[{index}:v]xfade=transition={self.resolve_xfade(str(media[index-1].get('transition','Fade')))}:duration={transition}:offset={offset}{out}")
                 previous=out; cumulative += float(media[index].get("duration",5))-transition
             filter_graph=";".join(chains)
         total_duration = sum(float(x.get("duration",5)) for x in media) - sum(float(x.get("transitionTime",1)) for x in media[:-1])
