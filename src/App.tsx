@@ -146,6 +146,49 @@ function Select({ value, onChange, children, ariaLabel }: { value: string, onCha
   return <div className="select-wrap"><select aria-label={ariaLabel} value={value} onChange={e => onChange?.(e.target.value)}>{children}</select><ChevronDown size={14} /></div>
 }
 
+// Rounds a number to at most 3 decimals for display, returning '' for NaN.
+const round3 = (n: number) => (Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : '')
+
+// A numeric input with − / + stepper buttons. It keeps a local text buffer so
+// typing a value never fights the controlled prop (the old `type="number"`
+// inputs reverted mid-keystroke, making it impossible to type decimals), and
+// commits/clamps only on blur, Enter, or the arrow keys/buttons.
+function NumberStepper({ value, onChange, min, max, step = 0.1, suffix = '', ariaLabel }: {
+  value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number; suffix?: string; ariaLabel?: string;
+}) {
+  const [text, setText] = useState(() => round3(value))
+  const [focused, setFocused] = useState(false)
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const clamp = (n: number) => { let v = n; if (min !== undefined) v = Math.max(min, v); if (max !== undefined) v = Math.min(max, v); return v }
+  useEffect(() => { if (!focused) setText(round3(value)) }, [value, focused])
+  const commit = () => {
+    setFocused(false)
+    const n = Number(text)
+    if (text.trim() !== '' && Number.isFinite(n)) {
+      const next = clamp(n)
+      if (next !== valueRef.current) onChange(next)
+      setText(round3(next))
+    } else {
+      setText(round3(valueRef.current))
+    }
+  }
+  const nudge = (dir: number) => {
+    const parsed = Number(text)
+    const base = text.trim() !== '' && Number.isFinite(parsed) ? parsed : (Number.isFinite(valueRef.current) ? valueRef.current : (min ?? 0))
+    const next = clamp(Math.round((base + dir * step) * 1000) / 1000)
+    onChange(next)
+    setText(round3(next))
+  }
+  return <div className="number-stepper">
+    <button type="button" className="step-btn" tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={() => nudge(-1)} aria-label={`Decrease ${ariaLabel || 'value'}`}>−</button>
+    <input aria-label={ariaLabel} type="text" inputMode="decimal" value={text} onFocus={() => setFocused(true)} onBlur={commit} onChange={e => setText(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur() } else if (e.key === 'ArrowUp') { e.preventDefault(); nudge(1) } else if (e.key === 'ArrowDown') { e.preventDefault(); nudge(-1) } }} />
+    <button type="button" className="step-btn" tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={() => nudge(1)} aria-label={`Increase ${ariaLabel || 'value'}`}>+</button>
+    {suffix && <span className="step-suffix">{suffix}</span>}
+  </div>
+}
+
 function App() {
   const [media, setMedia] = useState(initialMedia)
   const [projectName, setProjectName] = useState('Portugal summer')
@@ -159,7 +202,7 @@ function App() {
   const [showPreview, setShowPreview] = useState(false)
   const [isPlaying, setPlaying] = useState(false)
   const [toast, setToast] = useState('')
-  const [globalDuration, setGlobalDuration] = useState('1.2')
+  const [globalDuration, setGlobalDuration] = useState(1.2)
   const [audioPolicy, setAudioPolicy] = useState('Loop & trim')
   const [audioVolume, setAudioVolume] = useState(78)
   const [audioFade, setAudioFade] = useState(true)
@@ -296,11 +339,17 @@ function App() {
   const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
   // Clamp a transition so it respects the time rules of both clips it joins
   // (and the cumulative timeline, matching the renderer's xfade offsets).
-  const clampTransitionFor = (items: MediaItem[], index: number, value: number) => {
-    if (index < 0 || index >= items.length - 1) return value
+  // The upper bound always accounts for the NEXT clip's full duration, so the
+  // final clip still limits the transition that leads into it.
+  const transitionMaxFor = (items: MediaItem[], index: number) => {
+    if (index < 0 || index >= items.length - 1) return MIN_TRANSITION_SECONDS
     const model = timelineModel(items)
     const max = Math.min(model.starts[index] + model.durations[index] - MIN_TRANSITION_SECONDS, model.durations[index + 1] - MIN_TRANSITION_SECONDS)
-    return clampNumber(value, MIN_TRANSITION_SECONDS, max)
+    return Math.max(MIN_TRANSITION_SECONDS, max)
+  }
+  const clampTransitionFor = (items: MediaItem[], index: number, value: number) => {
+    if (index < 0 || index >= items.length - 1) return value
+    return clampNumber(value, MIN_TRANSITION_SECONDS, transitionMaxFor(items, index))
   }
   const updateTransition = (id: number, value: number) => setMedia(items => items.map((item, index) => item.id === id && Number.isFinite(value) ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
   // Changing a clip's length also keeps its caption timing inside the clip and
@@ -396,8 +445,10 @@ function App() {
     effect: item.type === 'video' ? 'Original motion' : effects[1 + Math.floor(Math.random() * (effects.length - 2))],
   })))
   const applyDuration = () => {
-    const value = Math.min(5, Math.max(.1, Number(globalDuration) || 1.2))
-    setMedia(items => items.map((item, index) => ({ ...item, transitionTime: clampTransitionFor(items, index, value) })))
+    const value = clampNumber(Number(globalDuration) || 1.2, 0.1, 5)
+    // Only the clips that actually lead into another clip carry a transition;
+    // the final clip is deliberately left untouched (it has no "next").
+    setMedia(items => items.map((item, index) => index < items.length - 1 ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
     notify(`Applied ${value.toFixed(1)}s to all transitions`)
   }
   const waitForJob = async (jobId:string) => {
@@ -483,21 +534,21 @@ function App() {
               return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={() => dropOn(item.id)} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src && <img src={item.src}/>}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom}/></div></div>
             })}</div>
 
-            {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><div className="duration-input"><input type="number" step=".1" min=".1" value={media.find(x => x.id === selectedTransitions[0])?.transitionTime || 1.2} onChange={e => updateSelectedTransitionTimes(Number(e.target.value))}/><b>sec</b></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
-            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><div className="duration-input"><input type="number" step=".1" min=".1" value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration||.5:item?.textExitDuration||.5})()} onChange={e=>updateSelectedTextTransitions(undefined,Number(e.target.value))}/><b>sec</b></div><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><NumberStepper value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? 1.2} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} /><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
 
             <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><button className="random-button" onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
 
-            <div className="bulk-bar"><span>TRANSITION DEFAULT</span><div className="duration-input"><input type="number" min="0.1" max="5" step="0.1" value={globalDuration} onChange={e => setGlobalDuration(e.target.value)}/><b>sec</b></div><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
+            <div className="bulk-bar"><span>TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={5} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
             <div className="timeline-head"><span>MEDIA</span><span>SLIDE / CLIP</span><span>EFFECT</span><span>TRANSITION TO NEXT</span><span></span></div>
             <div className="timeline-list">
               {media.map((item, index) => <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={() => dropOn(item.id)}>
                 <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                 <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src ? <img src={item.src}/> : <span className="title-symbol">T</span>}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
-                <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><div className="mini-duration"><Clock3 size={12}/><input type="number" step=".1" min=".1" value={detailTextEditor.edge==='enter'?item.textEnterDuration:item.textExitDuration} onChange={e=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:Number(e.target.value)}:{textExitDuration:Number(e.target.value)})}/><span>s</span></div><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
-                <div className="clip-duration"><input aria-label={`${item.name} duration`} type="number" value={item.duration} onChange={e => updateDuration(item.id, Number(e.target.value))}/><span>sec</span></div>
+                <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
+                <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                 <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
-                {index < media.length - 1 ? <div className="transition-cell"><Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => patch(item.id, { transition: v })}><TransitionOptions/></Select><div className="mini-duration"><Clock3 size={12}/><input type="number" step=".1" value={item.transitionTime} onChange={e => updateTransition(item.id, Number(e.target.value))}/><span>s</span></div></div> : <div className="end-card"><Check size={13}/> End of story</div>}
+                {index < media.length - 1 ? <div className="transition-cell"><Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => patch(item.id, { transition: v })}><TransitionOptions/></Select><NumberStepper value={item.transitionTime ?? 1} min={MIN_TRANSITION_SECONDS} max={transitionMaxFor(media, index)} step={0.1} suffix="s" ariaLabel={`${item.name} transition time`} onChange={v => updateTransition(item.id, v)} /></div> : <div className="end-card"><Check size={13}/> End of story</div>}
                 <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
               </div>)}
             </div>

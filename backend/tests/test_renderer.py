@@ -101,6 +101,22 @@ class TransitionTimingTest(unittest.TestCase):
         self.assertEqual([], Renderer.effective_transitions([]))
         self.assertEqual([], Renderer.effective_transitions([{"duration": 5, "transitionTime": 99}]))
 
+    def test_last_clip_is_fully_included_in_total(self) -> None:
+        # The composed length must keep the final clip's full duration (minus
+        # only its incoming transition) — the last frame is never dropped.
+        media = [
+            {"duration": 5, "transitionTime": 1},
+            {"duration": 5, "transitionTime": 1},
+            {"duration": 7, "transitionTime": 1},
+        ]
+        transitions = Renderer.effective_transitions(media)
+        self.assertEqual([1, 1], transitions)
+        durations = [5, 5, 7]
+        self.assertEqual(sum(durations) - sum(transitions), 15)  # 5+5+7-1-1
+        # The final clip contributes its whole 7s minus the 1s overlap of the
+        # transition that leads into it.
+        self.assertEqual(7 - 1, durations[-1] - transitions[-1])
+
 
 class OutputProtectionTest(unittest.TestCase):
     def setUp(self) -> None:
