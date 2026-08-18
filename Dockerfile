@@ -8,7 +8,9 @@ COPY src ./src
 COPY public ./public
 RUN npm run build
 
-FROM python:3.13-slim-bookworm AS runtime
+# Debian trixie ships FFmpeg 7.x (bookworm only carries FFmpeg 5.x), which
+# provides the full xfade catalogue (wind/cover/reveal) used by the renderer.
+FROM python:3.13-slim-trixie AS runtime
 LABEL org.opencontainers.image.source="https://github.com/birdy1974/slideshow" \
       org.opencontainers.image.description="Self-hosted FFmpeg photo and video slideshow maker"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
