@@ -8,7 +8,9 @@ COPY src ./src
 COPY public ./public
 RUN npm run build
 
-FROM python:3.13-slim-bookworm AS runtime
+# Debian trixie ships FFmpeg 7.1 (bookworm shipped 5.1). The build asserts the
+# major version so an accidental downgrade of the base image fails loudly.
+FROM python:3.13-slim-trixie AS runtime
 LABEL org.opencontainers.image.source="https://github.com/birdy1974/slideshow" \
       org.opencontainers.image.description="Self-hosted FFmpeg photo and video slideshow maker"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
@@ -16,7 +18,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     STATIC_DIR=/app/static
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg fonts-dejavu-core fontconfig tini ca-certificates \
-      intel-media-va-driver i965-va-driver vainfo \
+      intel-media-va-driver vainfo \
+    && (apt-get install -y --no-install-recommends i965-va-driver \
+        || echo "i965-va-driver not shipped by this Debian release; the iHD driver covers supported iGPUs") \
+    && ffmpeg -version \
+    && ffmpeg -version | head -1 | grep -qE 'ffmpeg version ([7-9]|[1-9][0-9])' \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY backend/requirements.txt ./requirements.txt

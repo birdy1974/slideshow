@@ -3,7 +3,7 @@ import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp,
   Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
   Info, LayoutGrid, ListVideo, Music2, Pause, Play, Plus, RefreshCw, Save,
-  Settings2, Shuffle, Sparkles, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
+  Settings2, Shuffle, Sparkles, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Minus, Palette,
 } from 'lucide-react'
 
 type MediaRoot = 'photos' | 'videos' | 'music'
@@ -146,6 +146,38 @@ function Select({ value, onChange, children, ariaLabel }: { value: string, onCha
   return <div className="select-wrap"><select aria-label={ariaLabel} value={value} onChange={e => onChange?.(e.target.value)}>{children}</select><ChevronDown size={14} /></div>
 }
 
+// Time input that tolerates real-world typing: free text while editing (a
+// cleared field, a trailing dot, "1,5"), dot or comma decimals (users in many
+// locales have a comma on the numpad, which type=number silently swallows),
+// commit + clamp on blur/Enter, and ± steppers for mouse users. While the
+// field is being edited the draft text is shown as-is; the model only ever
+// receives finite, clamped numbers — Escape reverts.
+function SecondsField({ value, onCommit, min, max, step = .1, suffix = 's', ariaLabel, compact = false }: { value: number, onCommit: (value: number) => void, min: number, max: number, step?: number, suffix?: string, ariaLabel?: string, compact?: boolean }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = draft ?? String(Math.round(value * 100) / 100)
+  const parse = (raw: string) => {
+    if (!raw.trim()) return null // an empty/being-edited field never commits
+    const parsed = Number(raw.trim().replace(/\s+/g, '').replace(',', '.'))
+    return Number.isFinite(parsed) ? clampNumber(parsed, min, max) : null
+  }
+  const commit = (raw: string) => { const parsed = parse(raw); setDraft(null); if (parsed !== null && parsed !== value) onCommit(parsed) }
+  const nudge = (direction: 1 | -1) => {
+    const baseline = draft !== null ? parse(draft) ?? value : value
+    setDraft(null)
+    onCommit(clampNumber(Math.round((baseline + direction * step) * 100) / 100, min, max))
+  }
+  return <span className={`seconds-field${compact ? ' compact' : ''}`}>
+    <button type="button" className="stepper" title={`Decrease by ${step}s`} aria-label="Decrease time" onClick={() => nudge(-1)}><Minus size={11}/></button>
+    <input type="text" inputMode="decimal" aria-label={ariaLabel} value={shown}
+      onFocus={e => setDraft(e.target.value)}
+      onChange={e => { setDraft(e.target.value); const parsed = parse(e.target.value); if (parsed !== null) onCommit(parsed) }}
+      onBlur={e => commit(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setDraft(null); else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); nudge(e.key === 'ArrowUp' ? 1 : -1) } }}/>
+    <small>{suffix}</small>
+    <button type="button" className="stepper" title={`Increase by ${step}s`} aria-label="Increase time" onClick={() => nudge(1)}><Plus size={11}/></button>
+  </span>
+}
+
 function App() {
   const [media, setMedia] = useState(initialMedia)
   const [projectName, setProjectName] = useState('Portugal summer')
@@ -159,7 +191,7 @@ function App() {
   const [showPreview, setShowPreview] = useState(false)
   const [isPlaying, setPlaying] = useState(false)
   const [toast, setToast] = useState('')
-  const [globalDuration, setGlobalDuration] = useState('1.2')
+  const [globalDuration, setGlobalDuration] = useState(1.2)
   const [audioPolicy, setAudioPolicy] = useState('Loop & trim')
   const [audioVolume, setAudioVolume] = useState(78)
   const [audioFade, setAudioFade] = useState(true)
@@ -201,6 +233,10 @@ function App() {
   // applies, so the on-screen total can never drift or go negative.
   const timeline = useMemo(() => timelineModel(media), [media])
   const total = timeline.total
+  // Breakdown for the estimate strip: every clip (including the last one) is
+  // part of mediaTotal; transitions then subtract their overlap from it.
+  const mediaTotal = timeline.durations.reduce((sum, x) => sum + x, 0)
+  const transitionTotal = mediaTotal - total
   const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => { const [m,s] = track.duration.split(':').map(Number); return sum + (Number.isFinite(m)&&Number.isFinite(s)?m*60+s:0) }, 0), [audioTracks])
   const estimatedRows = Math.max(1, Math.ceil(media.length / 6))
   const visibleRows = timelineRows === 'auto' ? estimatedRows : Number(timelineRows)
@@ -395,10 +431,13 @@ function App() {
     transition: transitions[(i * 3 + Math.floor(Math.random() * transitions.length)) % transitions.length],
     effect: item.type === 'video' ? 'Original motion' : effects[1 + Math.floor(Math.random() * (effects.length - 2))],
   })))
+  // "Apply to all" writes the default into every real transition. The last
+  // clip has no outgoing transition, so it is intentionally skipped — its
+  // stored transitionTime is never used by the renderer.
   const applyDuration = () => {
-    const value = Math.min(5, Math.max(.1, Number(globalDuration) || 1.2))
-    setMedia(items => items.map((item, index) => ({ ...item, transitionTime: clampTransitionFor(items, index, value) })))
-    notify(`Applied ${value.toFixed(1)}s to all transitions`)
+    const value = clampNumber(globalDuration, MIN_TRANSITION_SECONDS, 5)
+    setMedia(items => items.map((item, index) => index < items.length - 1 ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
+    notify(`Applied ${value.toFixed(1)}s to all ${Math.max(0, media.length - 1)} transitions`)
   }
   const waitForJob = async (jobId:string) => {
     for(;;){
@@ -483,26 +522,26 @@ function App() {
               return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={() => dropOn(item.id)} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src && <img src={item.src}/>}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom}/></div></div>
             })}</div>
 
-            {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><div className="duration-input"><input type="number" step=".1" min=".1" value={media.find(x => x.id === selectedTransitions[0])?.transitionTime || 1.2} onChange={e => updateSelectedTransitionTimes(Number(e.target.value))}/><b>sec</b></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
-            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><div className="duration-input"><input type="number" step=".1" min=".1" value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration||.5:item?.textExitDuration||.5})()} onChange={e=>updateSelectedTextTransitions(undefined,Number(e.target.value))}/><b>sec</b></div><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><SecondsField compact suffix="sec" value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? 1.2} onCommit={updateSelectedTransitionTimes} min={MIN_TRANSITION_SECONDS} max={60} ariaLabel="Selected transition time"/><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><SecondsField compact suffix="sec" value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration ?? .5:item?.textExitDuration ?? .5})()} onCommit={v=>updateSelectedTextTransitions(undefined,v)} min={MIN_TRANSITION_SECONDS} max={10} ariaLabel="Selected text transition time"/><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
 
             <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><button className="random-button" onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
 
-            <div className="bulk-bar"><span>TRANSITION DEFAULT</span><div className="duration-input"><input type="number" min="0.1" max="5" step="0.1" value={globalDuration} onChange={e => setGlobalDuration(e.target.value)}/><b>sec</b></div><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
+            <div className="bulk-bar"><span>TRANSITION DEFAULT</span><SecondsField compact suffix="sec" value={globalDuration} onCommit={setGlobalDuration} min={MIN_TRANSITION_SECONDS} max={5} ariaLabel="Default transition time"/><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
             <div className="timeline-head"><span>MEDIA</span><span>SLIDE / CLIP</span><span>EFFECT</span><span>TRANSITION TO NEXT</span><span></span></div>
             <div className="timeline-list">
               {media.map((item, index) => <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={() => dropOn(item.id)}>
                 <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                 <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src ? <img src={item.src}/> : <span className="title-symbol">T</span>}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
-                <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><div className="mini-duration"><Clock3 size={12}/><input type="number" step=".1" min=".1" value={detailTextEditor.edge==='enter'?item.textEnterDuration:item.textExitDuration} onChange={e=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:Number(e.target.value)}:{textExitDuration:Number(e.target.value)})}/><span>s</span></div><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
-                <div className="clip-duration"><input aria-label={`${item.name} duration`} type="number" value={item.duration} onChange={e => updateDuration(item.id, Number(e.target.value))}/><span>sec</span></div>
+                <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><SecondsField compact value={detailTextEditor.edge==='enter'?item.textEnterDuration:item.textExitDuration} onCommit={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} min={MIN_TRANSITION_SECONDS} max={10} ariaLabel="Text transition time"/><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
+                <SecondsField compact value={item.duration} onCommit={v => updateDuration(item.id, v)} min={MIN_CLIP_SECONDS} max={600} step={.5} suffix="sec" ariaLabel={`${item.name} duration`}/>
                 <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
-                {index < media.length - 1 ? <div className="transition-cell"><Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => patch(item.id, { transition: v })}><TransitionOptions/></Select><div className="mini-duration"><Clock3 size={12}/><input type="number" step=".1" value={item.transitionTime} onChange={e => updateTransition(item.id, Number(e.target.value))}/><span>s</span></div></div> : <div className="end-card"><Check size={13}/> End of story</div>}
+                {index < media.length - 1 ? <div className="transition-cell"><Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => patch(item.id, { transition: v })}><TransitionOptions/></Select><SecondsField compact value={item.transitionTime} onCommit={v => updateTransition(item.id, v)} min={MIN_TRANSITION_SECONDS} max={60} ariaLabel={`${item.name} transition time`}/></div> : <div className="end-card"><Check size={13}/> End of story</div>}
                 <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
               </div>)}
             </div>
             <button className="add-strip" onClick={() => setShowBrowser(true)}><Plus size={17}/> Add photos or videos from mounted folders</button>
-            <div className="story-total"><Clock3 size={15}/><div><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong></div><small>Includes media durations minus overlapping transitions</small></div>
+            <div className="story-total"><Clock3 size={15}/><div><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong></div><small>All {media.length} items fully counted · {formatClock(mediaTotal)} media − {formatClock(transitionTotal)} transition overlap</small></div>
           </section>
 
           <section className="panel audio-panel">
