@@ -34,3 +34,14 @@ main{max-width:1530px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .icon-button.audio-play.playing{color:#78a13e;background:#e9f2d9}
 .path-field button{cursor:pointer}
 @media(max-height:640px){.browser-body{min-height:0}.picker-body{min-height:0}}
+
+/* Load project dialog */
+.picker-body.project-list{gap:8px;overflow-y:auto}
+.project-row{width:100%;display:flex;align-items:center;gap:12px;border:1px solid #dfe0da;background:#fff;border-radius:8px;padding:12px 14px;text-align:left;flex-shrink:0}
+.project-row:hover{border-color:#84a950;box-shadow:0 0 0 2px #cae6a3}
+.project-row>div{display:flex;flex-direction:column;min-width:0}
+.project-row strong{font:700 12px Manrope;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.project-row span{font-size:9px;color:#8b8e86;margin-top:3px}
+.project-row small{margin-left:auto;font-size:9px;color:#999;white-space:nowrap;padding-left:10px}
+.project-row>svg{color:#748c51;flex-shrink:0}
+.heading-actions{flex-wrap:wrap;justify-content:flex-end}

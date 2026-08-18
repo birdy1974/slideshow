@@ -163,6 +163,7 @@ function App() {
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([])
   const [draggedAudioId, setDraggedAudioId] = useState<number | null>(null)
   const [showFolderPicker, setShowFolderPicker] = useState(false)
+  const [showProjectLoader, setShowProjectLoader] = useState(false)
 
   const total = useMemo(() => Math.max(0, media.reduce((sum, item) => sum + item.duration, 0) - media.slice(0, -1).reduce((sum, item) => sum + item.transitionTime, 0)), [media])
   const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => { const [m,s] = track.duration.split(':').map(Number); return sum + (Number.isFinite(m)&&Number.isFinite(s)?m*60+s:0) }, 0), [audioTracks])
@@ -212,6 +213,17 @@ function App() {
   }
   const saveProject = async () => {
     try{await persistProject()}catch(error){setBackendOnline(false);notify(`SQLite save failed: ${error instanceof Error?error.message:'Unknown error'}`)}
+  }
+  const loadProject = async (id:number) => {
+    try{
+      const response=await fetch(`/api/projects/${id}`)
+      if(!response.ok)throw new Error(await response.text()||`Load failed (${response.status})`)
+      const saved=await response.json()
+      applySavedProject(saved)
+      setShowProjectLoader(false)
+      setBackendOnline(true)
+      notify(`Project “${saved.project?.name||`#${id}`}” loaded · revision ${saved.revision}`)
+    }catch(error){notify(`Load failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
   const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
   const move = (index: number, direction: -1 | 1) => setMedia(items => {
@@ -352,7 +364,7 @@ function App() {
     {activeTab === 'renders' ? <RenderQueue projectId={projectId} onBack={() => setActiveTab('editor')} /> : <main>
       <section className="project-heading">
         <div><div className="eyebrow">PROJECT / UNTITLED</div><input value={projectName} onChange={e=>setProjectName(e.target.value)} aria-label="Project name"/><p>Assemble your media, shape the motion, and export a finished story.</p></div>
-        <div className="heading-actions"><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button></div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button></div>
       </section>
 
       <div className="workspace">
@@ -418,6 +430,7 @@ function App() {
     {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {setMedia(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path.replace(`/${file.name}`,''),src:'',type:file.kind as 'image'|'video',duration:file.kind==='video'?10:5,effect:file.kind==='video'?'Original motion':'Ken Burns · Zoom in',transition:'Fade',transitionTime:1,text:'',textMode:'overlay' as const,textStart:0,textEnd:file.kind==='video'?10:5,textEnter:'Fade',textExit:'Fade',textEnterDuration:.5,textExitDuration:.5,textX:50,textY:72,frameBackground:'#30382a'}))]);setShowBrowser(false);notify(`${files.length} mounted media files added`) }}/>} 
     {showPreview && <Preview media={media} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
+    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onClose={()=>setShowProjectLoader(false)}/>}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -453,6 +466,14 @@ function FolderPicker({ current, onSelect, onClose }: { current: string, onSelec
   useEffect(()=>{setLoading(true);setError('');fetch(`/api/media/browse?root=output&folders=true&path=${encodeURIComponent(path)}`).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(data=>setEntries(data.entries)).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[path])
   const chosen=path?`/output/${path}`:'/output'
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal folder-picker" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">OUTPUT DESTINATION</span><h2>Choose output folder</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="picker-body"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>{chosen}</span><button disabled={!path} onClick={()=>setPath('')}>Root</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading output volume…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(dir=><button className="file-card" key={dir.relativePath} onClick={()=>setPath(dir.relativePath)}><div className="server-file-icon"><FolderOpen size={34}/></div><strong>{dir.name}</strong><small>Folder</small></button>)}</div>{!loading&&!error&&entries.length===0&&<div className="browser-info"><Info size={15}/> No subfolders here. Keep this folder or navigate back with “← Parent”.</div>}<div className="browser-info"><Info size={15}/> Renders are written into the selected folder on the mounted /output volume. New subfolders typed manually are created at render time.</div></div><div className="modal-foot"><span>Selected: {chosen}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>{onSelect(chosen);onClose()}}><Check size={15}/> Use this folder</button></div></div></div>
+}
+
+// Lists projects persisted in SQLite and loads the chosen one's full config
+// (media, captions, soundtrack, output, timeline) into the editor.
+function ProjectLoader({ onPick, onClose }: { onPick: (id: number) => void, onClose: () => void }) {
+  const [projects,setProjects]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  useEffect(()=>{setLoading(true);setError('');fetch('/api/projects').then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(setProjects).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[])
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}{projects.map(p=><button className="project-row" key={p.id} onClick={()=>onPick(p.id)}><div><strong>{p.name||`Project #${p.id}`}</strong><span>Project #{p.id} · revision {p.revision}</span></div><small>Updated {new Date(p.updated_at).toLocaleString()}</small><FolderOpen size={17}/></button>)}</div><div className="modal-foot"><span>Loading replaces the current editor contents.</span><button className="btn ghost" onClick={onClose}>Cancel</button></div></div></div>
 }
 
 function Preview({ media, previewUrl, playing, setPlaying, onClose }: { media: MediaItem[], previewUrl:string|null, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
