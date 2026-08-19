@@ -62,6 +62,33 @@ class DatabaseRoundTripTest(unittest.TestCase):
             self.db.save_project(self.payload(), 999)
         self.assertEqual([], self.db.list_projects())
 
+    def test_clear_all_then_save_creates_fresh_project(self) -> None:
+        """Regression: "Clear all" wipes every row; the editor must then be able
+        to save again (as a fresh POST, not an UPDATE of the deleted id)."""
+        created = self.db.save_project(self.payload())
+        stale_id = created["id"]
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM projects")
+
+        with self.assertRaises(KeyError, msg="updating the deleted row must fail loudly"):
+            self.db.save_project(self.payload(), stale_id)
+
+        # Saving without an id (what the UI falls back to) creates a new row.
+        recreated = self.db.save_project(self.payload())
+        self.assertNotEqual(stale_id, recreated["id"])
+        self.assertEqual(1, recreated["revision"])
+        self.assertEqual(1, len(self.db.list_projects()))
+        # Child tables belong to the new row only, and cascade deleted rows are gone.
+        with self.db.connect() as conn:
+            orphans = conn.execute(
+                "SELECT COUNT(*) FROM media_items WHERE project_id=?", (stale_id,)
+            ).fetchone()[0]
+            fresh = conn.execute(
+                "SELECT COUNT(*) FROM media_items WHERE project_id=?", (recreated["id"],)
+            ).fetchone()[0]
+        self.assertEqual(0, orphans)
+        self.assertEqual(1, fresh)
+
 
 if __name__ == "__main__":
     unittest.main()

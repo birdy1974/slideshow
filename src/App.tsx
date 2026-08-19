@@ -289,8 +289,18 @@ function App() {
     // createNew forces a fresh project row (used by "New project", whose
     // state reset has not been applied to this closure yet).
     const id=createNew?null:projectId
-    const response=await fetch(id?`/api/projects/${id}`:'/api/projects',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(snapshot)})
-    if(!response.ok){const detail=await response.text();throw new Error(detail||`Save failed (${response.status})`)}
+    const send=(method:string,url:string)=>fetch(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(snapshot)})
+    let response=await (id?send('PUT',`/api/projects/${id}`):send('POST','/api/projects'))
+    if(response.status===404&&id){
+      // The saved row vanished (e.g. "Clear all" or a wipe from another
+      // client). Recreate it instead of failing every save/preview/render.
+      response=await send('POST','/api/projects')
+    }
+    if(!response.ok){
+      let detail=await response.text()
+      try{const parsed=JSON.parse(detail);if(parsed?.detail)detail=String(parsed.detail)}catch{/* not JSON; keep raw text */}
+      throw new Error(detail||`Save failed (${response.status})`)
+    }
     const saved=await response.json();setProjectId(saved.id);setBackendOnline(true)
     if(!silent)notify(`Project saved to SQLite · revision ${saved.revision}`)
     return saved.id
@@ -429,6 +439,17 @@ function App() {
     } catch (error) {
       notify(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
+    // The row this editor was bound to is gone; drop the stale id so the next
+    // save POSTs a fresh project instead of PUTting to a deleted one, and
+    // detach the UI from the previews/jobs the cleanup just wiped.
+    setProjectId(null)
+    // The localStorage fallback would resurrect the deleted project on a
+    // refresh, so clear it too.
+    localStorage.removeItem('slideshow.project.mock')
+    setPreviewUrl(null)
+    setRendering(false)
+    setPreviewing(false)
+    setProgress(0)
     setShowClearAllConfirm(false)
   }
   const toggleSelected = (id: number) => setSelectedIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
