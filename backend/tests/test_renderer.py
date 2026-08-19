@@ -257,22 +257,39 @@ class FilterGraphTest(unittest.TestCase):
             "[0:v]settb=AVTB,setpts=PTS-STARTPTS[s0];"
             "[1:v]settb=AVTB,setpts=PTS-STARTPTS[s1];"
             "[2:v]settb=AVTB,setpts=PTS-STARTPTS[s2];"
-            "[s0][s1]xfade=transition=fade:duration=1:offset=5[x1];"
-            "[x1][s2]xfade=transition=dissolve:duration=1:offset=11[vout]",
+            "[s0][s1]xfade=transition=fade:duration=1:offset=5,"
+            "settb=AVTB,setpts=PTS-STARTPTS[x1];"
+            "[x1][s2]xfade=transition=dissolve:duration=1:offset=11,"
+            "settb=AVTB,setpts=PTS-STARTPTS[vout]",
             graph,
         )
 
     def test_single_clip_resets_timestamps_to_vout(self) -> None:
         self.assertEqual("[0:v]settb=AVTB,setpts=PTS-STARTPTS[vout]", build_filter_graph([5], [], []))
 
-    def test_fps_is_enforced_for_every_xfade_input(self) -> None:
-        graph = build_filter_graph([5, 5], [3], ["fade"], fps=30)
-        self.assertIn("[0:v]fps=30,settb=AVTB,setpts=PTS-STARTPTS[s0]", graph)
-        self.assertIn("[1:v]fps=30,settb=AVTB,setpts=PTS-STARTPTS[s1]", graph)
+    def test_fps_is_enforced_for_every_xfade_input_and_result(self) -> None:
+        graph = build_filter_graph([5, 5, 5], [3, 3], ["fade", "dissolve"], fps=30)
+        normalization = "fps=30,settb=AVTB,setpts=PTS-STARTPTS"
+        for index in range(3):
+            self.assertIn(f"[{index}:v]{normalization}[s{index}]", graph)
+        self.assertIn(
+            "[s0][s1]xfade=transition=fade:duration=3:offset=5,"
+            f"{normalization}[x1]",
+            graph,
+        )
+        self.assertIn(
+            "[x1][s2]xfade=transition=dissolve:duration=3:offset=13,"
+            f"{normalization}[vout]",
+            graph,
+        )
 
     def test_two_clip_offset_starts_after_first_clip_hold(self) -> None:
         graph = build_filter_graph([5, 7], [1], ["wipeleft"])
-        self.assertIn("[s0][s1]xfade=transition=wipeleft:duration=1:offset=5[vout]", graph)
+        self.assertIn(
+            "[s0][s1]xfade=transition=wipeleft:duration=1:offset=5,"
+            "settb=AVTB,setpts=PTS-STARTPTS[vout]",
+            graph,
+        )
 
     def test_offset_formatting_avoids_float_noise(self) -> None:
         self.assertEqual("0.8", format_ffmpeg_number(0.8000000000000002))

@@ -1,8 +1,9 @@
 """FFmpeg slideshow renderer.
 
-The renderer deliberately normalizes every source to identical dimensions,
-frame rate, time base and pixel format before chaining xfade. This avoids the
-most common xfade failures with mixed phone photos and videos.
+The renderer deliberately normalizes every source and xfade result to an
+identical frame rate, time base and timestamp origin before chaining the next
+transition. This avoids xfade failures with mixed media and FFmpeg builds that
+lose frame-rate metadata on intermediate filter outputs.
 """
 from __future__ import annotations
 
@@ -207,19 +208,20 @@ def build_filter_graph(durations: list[float], transitions: list[float], xfade_n
     files with lead-in/lead-out handles for xfade; offsets are calculated from
     the user-facing (hold) durations and the preceding transitions.
 
-    ``fps`` is repeated in the graph as a final CFR guard.  Some FFmpeg builds
-    report a time base but no frame rate (1/0) for intermediate MP4 files,
-    which makes xfade reject otherwise valid still-image renders.
+    ``fps`` is repeated before every xfade and after every xfade result as a
+    CFR guard.  Some FFmpeg builds lose frame-rate metadata on an intermediate
+    xfade output and report 1/0 to the following xfade even when every source
+    segment was normalized.
     """
     if not durations:
         raise ValueError("build_filter_graph requires at least one clip")
-    cfr = f"fps={fps}," if fps else ""
+    normalize = f"fps={fps},settb=AVTB,setpts=PTS-STARTPTS" if fps else "settb=AVTB,setpts=PTS-STARTPTS"
     if len(durations) == 1:
-        return f"[0:v]{cfr}settb=AVTB,setpts=PTS-STARTPTS[vout]"
+        return f"[0:v]{normalize}[vout]"
     expected = len(durations) - 1
     if len(transitions) != expected or len(xfade_names) != expected:
         raise ValueError("transitions and xfade names must cover every clip pair")
-    prepared = [f"[{index}:v]{cfr}settb=AVTB,setpts=PTS-STARTPTS[s{index}]" for index in range(len(durations))]
+    prepared = [f"[{index}:v]{normalize}[s{index}]" for index in range(len(durations))]
     chains: list[str] = []
     # xfade's offset is measured on its first input.  At each boundary the
     # prior clip has held for its configured duration and all earlier
@@ -232,7 +234,7 @@ def build_filter_graph(durations: list[float], transitions: list[float], xfade_n
         chains.append(
             f"{previous}[s{index}]xfade=transition={xfade_names[index - 1]}"
             f":duration={format_ffmpeg_number(transition)}"
-            f":offset={format_ffmpeg_number(offset)}{out}"
+            f":offset={format_ffmpeg_number(offset)},{normalize}{out}"
         )
         previous = out
         offset += durations[index] + transition
