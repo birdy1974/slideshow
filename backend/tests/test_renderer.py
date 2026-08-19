@@ -36,6 +36,23 @@ xfade AVOptions:
    offset            <duration>   ..FV.....T. set cross fade offset relative to first input stream (default 0)
 """
 
+# The complete set of built-in xfade transitions in FFmpeg (libavfilter/vf_xfade.c),
+# excluding "custom" (which needs an expression, not a preset name). Every UI
+# label in renderer.XFADE must map to exactly one of these.
+FFMPEG_XFADE_TRANSITIONS = [
+    "fade", "wipeleft", "wiperight", "wipeup", "wipedown",
+    "slideleft", "slideright", "slideup", "slidedown",
+    "circlecrop", "rectcrop", "distance", "fadeblack", "fadewhite", "radial",
+    "smoothleft", "smoothright", "smoothup", "smoothdown",
+    "circleopen", "circleclose", "vertopen", "vertclose", "horzopen", "horzclose",
+    "dissolve", "pixelize", "diagtl", "diagtr", "diagbl", "diagbr",
+    "hlslice", "hrslice", "vuslice", "vdslice", "hblur", "fadegrays",
+    "wipetl", "wipetr", "wipebl", "wipebr", "squeezeh", "squeezev", "zoomin",
+    "fadefast", "fadeslow", "hlwind", "hrwind", "vuwind", "vdwind",
+    "coverleft", "coverright", "coverup", "coverdown",
+    "revealleft", "revealright", "revealup", "revealdown",
+]
+
 
 class RendererMappingTest(unittest.TestCase):
     def test_ui_transition_names_map_to_ffmpeg(self) -> None:
@@ -43,6 +60,15 @@ class RendererMappingTest(unittest.TestCase):
         self.assertEqual("smoothleft", xfade_name("Smooth left"))
         self.assertEqual("dissolve", xfade_name("GLSL · Dreamy"))
         self.assertEqual("fade", xfade_name("Unknown future transition"))
+
+    def test_catalogue_is_complete_and_exact(self) -> None:
+        # renderer.XFADE must cover the full FFmpeg xfade catalogue with no
+        # typos, no omissions and no invented names (which would crash FFmpeg
+        # at render time). See libavfilter/vf_xfade.c.
+        from app.renderer import XFADE
+        mapped = list(XFADE.values())
+        self.assertEqual(sorted(FFMPEG_XFADE_TRANSITIONS), sorted(set(mapped)))
+        self.assertEqual(len(mapped), len(set(mapped)), "duplicate FFmpeg transition names in XFADE")
 
     def test_preset_numbers_are_parsed(self) -> None:
         self.assertEqual(30, parse_number("30 fps", 25))
@@ -135,13 +161,20 @@ class OutputProtectionTest(unittest.TestCase):
         saved = self.db.save_project(self.project_payload())
         self.assertEqual(self.settings.output_dir / "movie.mp4", self.renderer.render_output_path(self.db.get_project(saved["id"])))
 
+    def test_render_output_ui_path_is_project_facing(self) -> None:
+        saved = self.db.save_project(self.project_payload())
+        # The UI talks in /output terms even when OUTPUT_DIR is a NAS mount.
+        self.assertEqual("/output/movie.mp4", self.renderer.render_output_ui_path(self.db.get_project(saved["id"])))
+
     def test_existing_output_requires_overwrite_acknowledgement(self) -> None:
         saved = self.db.save_project(self.project_payload())
         target = self.settings.output_dir / "movie.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"previous render")
-        with self.assertRaises(OutputExistsError):
+        with self.assertRaises(OutputExistsError) as ctx:
             self.renderer.submit(saved["id"], "render")
+        # The prompt must echo the user-facing path, not the host mount path.
+        self.assertEqual("/output/movie.mp4", str(ctx.exception))
         # Nothing was queued while the user has not acknowledged the overwrite.
         self.assertEqual([], self.db.list_jobs(saved["id"]))
 

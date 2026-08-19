@@ -371,6 +371,18 @@ class Renderer:
         stem = Path(str(output_settings.get("filename", "slideshow"))).stem or "slideshow"
         return target_dir / f"{stem}.mp4"
 
+    def render_output_ui_path(self, project: dict[str, Any]) -> str:
+        """Project-facing destination (`/output/movie.mp4`) for user messages.
+
+        The host mount path may be a NAS volume like `/volume1/output`; the UI
+        always talks in terms of the `/output` mount, so the overwrite prompt
+        should echo the path the user actually typed, not the host path.
+        """
+        output_settings = project.get("output", {})
+        folder = str(output_settings.get("path", "/output")).replace("\\", "/").rstrip("/") or "/output"
+        stem = Path(str(output_settings.get("filename", "slideshow"))).stem or "slideshow"
+        return f"{folder}/{stem}.mp4"
+
     def submit(self, project_id: int, kind: str, overwrite: bool = False) -> dict[str, Any]:
         project = self.db.get_project(project_id)
         if not project:
@@ -378,7 +390,7 @@ class Renderer:
         if kind == "render":
             output = self.render_output_path(project)
             if output.exists() and not overwrite:
-                raise OutputExistsError(str(output))
+                raise OutputExistsError(self.render_output_ui_path(project))
         job_id = uuid.uuid4().hex
         job = {"id": job_id, "project_id": project_id, "kind": kind, "settings": project.get("output", {})}
         self.db.create_job(job)
