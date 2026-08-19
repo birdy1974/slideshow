@@ -119,6 +119,59 @@ def delete_project(project_id: int) -> dict[str, bool]:
     return {"deleted": True}
 
 
+@app.delete("/api/projects")
+def delete_all_projects() -> dict[str, bool]:
+    """Delete all projects from the database."""
+    with db.connect() as conn:
+        conn.execute("DELETE FROM projects")
+    return {"deleted": True}
+
+
+@app.post("/api/cleanup")
+def cleanup_temporary_files() -> dict[str, Any]:
+    """Clear all temporary files (work dir, preview dir) and jobs."""
+    import shutil
+    deleted_files = 0
+    deleted_dirs = 0
+    
+    # Delete work directory contents
+    if settings.work_dir.exists():
+        for item in settings.work_dir.iterdir():
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                    deleted_dirs += 1
+                else:
+                    item.unlink()
+                    deleted_files += 1
+            except Exception as e:
+                log.warning(f"Could not delete {item}: {e}")
+    
+    # Delete preview directory contents
+    if settings.preview_dir.exists():
+        for item in settings.preview_dir.iterdir():
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                    deleted_dirs += 1
+                else:
+                    item.unlink()
+                    deleted_files += 1
+            except Exception as e:
+                log.warning(f"Could not delete {item}: {e}")
+    
+    # Delete all jobs from database
+    with db.connect() as conn:
+        conn.execute("DELETE FROM render_jobs")
+    
+    return {
+        "deleted_files": deleted_files,
+        "deleted_dirs": deleted_dirs,
+        "work_dir": str(settings.work_dir),
+        "preview_dir": str(settings.preview_dir),
+    }
+
+
 @app.get("/api/media/browse")
 def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), path: str = "", folders: bool = False) -> dict[str, Any]:
     try: return browse(settings, root, path, folders_only=folders)
