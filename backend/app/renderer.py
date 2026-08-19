@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from .config import Settings
 from .database import Database, utcnow
-from .media import mounted_path
+from .media import UnsafePath, mounted_path
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +90,145 @@ class RenderError(RuntimeError):
 
 class OutputExistsError(RuntimeError):
     """A render target already exists and the user has not acknowledged overwriting it."""
+
+
+_FFMPEG_ERROR_RE = re.compile(
+    r"(error|invalid|failed|no such file|permission denied|does not contain any|"
+    r"unrecognized|not found|could not|unable to|no such filter|unknown encoder|conversion failed)",
+    re.I,
+)
+
+
+def _short_label(name: str, limit: int = 42) -> str:
+    name = name.strip() or "unnamed"
+    return name if len(name) <= limit else name[: limit - 1] + "…"
+
+
+def _ui_path(item: dict[str, Any]) -> str:
+    """Project-facing path (`/photos/...`) rather than the host mount path."""
+    path = str(item.get("path", "")).replace("\\", "/")
+    name = str(item.get("name", ""))
+    if Path(path).suffix:
+        return path
+    if name and (path.endswith("/" + name) or path == name):
+        return path
+    if path and name:
+        return f"{path.rstrip('/')}/{name}"
+    return path or name
+
+
+def _probe_reason_from_ffprobe(output: str, path: Path) -> str:
+    """Pick a short, human-readable reason out of ffprobe's stderr/stdout."""
+    for raw in (output or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        for prefix in (f"{path}: ", f"{path.name}: "):
+            if line.startswith(prefix):
+                line = line[len(prefix):].strip()
+        match = re.search(r"Error opening input:\s*(.+)$", line)
+        if match:
+            return match.group(1).strip()
+        return line
+    return "unreadable media"
+
+
+def _probe_readable(path: Path, ffprobe_bin: str) -> str | None:
+    """Return a short reason if `path` cannot be read as media, else None.
+
+    Missing and empty (0-byte) files are rejected without spawning ffprobe.
+    If ffprobe is not installed the content probe is skipped so a render can
+    still start; FFmpeg remains the final judge.
+    """
+    if not path.exists():
+        return "file is missing"
+    if not path.is_file():
+        return "not a file"
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"cannot stat file ({exc})"
+    if size == 0:
+        return "file is empty (0 bytes)"
+    probe = shutil.which(ffprobe_bin)
+    if not probe:
+        return None
+    try:
+        result = subprocess.run(
+            [probe, "-hide_banner", "-v", "error",
+             "-show_entries", "format=format_name",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return "ffprobe timed out"
+    except OSError as exc:
+        return f"ffprobe could not start ({exc})"
+    if result.returncode == 0:
+        return None
+    return _probe_reason_from_ffprobe(f"{result.stderr or ''}\n{result.stdout or ''}", path)
+
+
+def _summarize_ffmpeg_log(text: str, *, max_lines: int = 8) -> str:
+    """Return the actionable FFmpeg error lines instead of a raw 5k-char tail."""
+    tail = text[-12_000:] if len(text) > 12_000 else text
+    picked: list[str] = []
+    seen: set[str] = set()
+    for raw in tail.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("$ "):
+            continue
+        if not _FFMPEG_ERROR_RE.search(line):
+            continue
+        key = line[:200]
+        if key in seen:
+            continue
+        seen.add(key)
+        picked.append(line if len(line) <= 240 else line[:237] + "...")
+        if len(picked) >= max_lines:
+            break
+    if picked:
+        return "\n".join(picked)
+    fallback = [ln.strip() for ln in tail.splitlines() if ln.strip() and not ln.startswith("$ ")]
+    return "\n".join(fallback[-6:]) if fallback else "No FFmpeg error details were captured."
+
+
+def format_ffmpeg_number(value: float) -> str:
+    """Stable FFmpeg numeric literal — strips binary float noise (4.999999 → 5)."""
+    return f"{round(float(value), 6):g}"
+
+
+def build_filter_graph(durations: list[float], transitions: list[float], xfade_names: list[str]) -> str:
+    """Compose xfade across inputs that have been reset to a common timebase.
+
+    Each `[n:v]` is normalized with `settb=AVTB,setpts=PTS-STARTPTS` so every
+    picture starts at PTS 0. xfade offsets then accumulate as
+    `sum(previous durations) - sum(previous transitions)`, which is what makes
+    clips play one after another instead of stacking on the same timestamp.
+    """
+    if not durations:
+        raise ValueError("build_filter_graph requires at least one clip")
+    if len(durations) == 1:
+        return "[0:v]settb=AVTB,setpts=PTS-STARTPTS[vout]"
+    expected = len(durations) - 1
+    if len(transitions) != expected or len(xfade_names) != expected:
+        raise ValueError("transitions and xfade names must cover every clip pair")
+    prepared = [f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS[s{index}]" for index in range(len(durations))]
+    chains: list[str] = []
+    cumulative = durations[0]
+    previous = "[s0]"
+    for index in range(1, len(durations)):
+        transition = transitions[index - 1]
+        offset = max(0.01, cumulative - transition)
+        out = f"[x{index}]" if index < len(durations) - 1 else "[vout]"
+        chains.append(
+            f"{previous}[s{index}]xfade=transition={xfade_names[index - 1]}"
+            f":duration={format_ffmpeg_number(transition)}"
+            f":offset={format_ffmpeg_number(offset)}{out}"
+        )
+        previous = out
+        cumulative += durations[index] - transition
+    return ";".join(prepared + chains)
 
 
 class Renderer:
@@ -179,6 +318,49 @@ class Renderer:
             cumulative += durations[index] - transition
         return transitions
 
+    def _probe_readable(self, path: Path) -> str | None:
+        """Check a single file with ffprobe; see module-level `_probe_readable`."""
+        return _probe_readable(path, self.settings.ffprobe_bin)
+
+    def _validate_media(self, project: dict[str, Any]) -> None:
+        """Fail fast with one actionable message naming every unreadable input.
+
+        Runs before any encoding so a 0-byte JPEG or a corrupt MP3 does not
+        surface as a mid-render crash dumping thousands of FFmpeg log characters.
+        Title frames have no file and are skipped.
+        """
+        problems: list[str] = []
+        for item in project.get("media", []):
+            if item.get("type") == "title":
+                continue
+            label = _short_label(str(item.get("name") or "media"))
+            try:
+                path = source_path(self.settings, item)
+            except UnsafePath as exc:
+                problems.append(f"{label}: invalid path ({exc}) ({_ui_path(item)})")
+                continue
+            reason = self._probe_readable(path)
+            if reason:
+                problems.append(f"{label}: {reason} ({_ui_path(item) or path})")
+        for track in project.get("soundtrack", {}).get("tracks", []):
+            label = _short_label(str(track.get("name") or "track"))
+            try:
+                path = source_path(self.settings, track)
+            except UnsafePath as exc:
+                problems.append(f"soundtrack '{label}': invalid path ({exc}) ({_ui_path(track)})")
+                continue
+            reason = self._probe_readable(path)
+            if reason:
+                problems.append(f"soundtrack '{label}': {reason} ({_ui_path(track) or path})")
+        if not problems:
+            return
+        listed = "\n\n".join(f"  {line}" for line in problems)
+        raise RenderError(
+            "Cannot render — these media files could not be read:\n\n"
+            f"{listed}\n\n"
+            "Remove or replace them, then try again."
+        )
+
     def render_output_path(self, project: dict[str, Any]) -> Path:
         """Destination MP4 for a final render, shared by submit and render."""
         output_settings = project.get("output", {})
@@ -235,8 +417,9 @@ class Renderer:
                     except subprocess.TimeoutExpired: process.kill()
                     raise RenderError("Render cancelled by user")
             if process.returncode:
-                tail = log_file.read_text(encoding="utf-8", errors="replace")[-5000:]
-                raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{tail}")
+                text = log_file.read_text(encoding="utf-8", errors="replace")
+                summary = _summarize_ffmpeg_log(text)
+                raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{summary}")
 
     def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int) -> str | None:
         text = str(item.get("text", "")).strip()
@@ -258,6 +441,7 @@ class Renderer:
             random.shuffle(media)
         if not media:
             raise RenderError("The project contains no media")
+        self._validate_media({**project, "media": media})
         output_settings = project.get("output", {})
         if kind == "preview":
             width, height, fps, bitrate = 854, 480, 24, "2M"
@@ -287,15 +471,19 @@ class Renderer:
             kind_name = item.get("type", "image")
             base_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-y"]
+            clip_t = format_ffmpeg_number(duration)
             if kind_name == "title":
                 background = str(item.get("frameBackground", "#202020"))
                 if not background.startswith("#"): background = "#30382a"
-                command += ["-f", "lavfi", "-i", f"color=c={background}:s={width}x{height}:r={fps}:d={duration}"]
+                command += ["-f", "lavfi", "-i", f"color=c={background}:s={width}x{height}:r={fps}:d={clip_t}"]
             else:
                 source = source_path(self.settings, item)
                 if not source.exists(): raise RenderError(f"Media file is missing: {source}")
-                if kind_name == "image": command += ["-loop", "1", "-t", str(duration), "-i", str(source)]
-                else: command += ["-stream_loop", "-1", "-t", str(duration), "-i", str(source)]
+                # Still images default to 25 fps. Without an explicit -framerate
+                # matching the output, `-t 5` yields 125 frames which fps=30
+                # then shortens to ~4.17s and every xfade offset is late.
+                if kind_name == "image": command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(source)]
+                else: command += ["-stream_loop", "-1", "-t", clip_t, "-i", str(source)]
             filters = [base_filter]
             effect = str(item.get("effect", ""))
             if kind_name == "image" and effect.startswith("Ken Burns"):
@@ -304,25 +492,16 @@ class Renderer:
                 filters.append(f"zoompan=z='max(1,min(1.12,{start_zoom}+on*{delta}))':d=1:s={width}x{height}:fps={fps}")
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
-            filters += ["format=yuv420p", "settb=AVTB"]
-            command += ["-vf", ",".join(filters), "-an", "-t", str(duration), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
+            filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
+            command += ["-vf", ",".join(filters), "-an", "-t", clip_t, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
             self._run_ffmpeg(command, cancelled, log_file)
             segments.append(segment)
             progress(5 + 45 * (index + 1) / len(media), f"Prepared item {index+1} of {len(media)}")
 
         inputs: list[str] = []
         for segment in segments: inputs += ["-i", str(segment)]
-        if len(segments) == 1:
-            filter_graph = "[0:v]setpts=PTS-STARTPTS[vout]"
-        else:
-            chains=[]; cumulative=durations[0]; previous="[0:v]"
-            for index in range(1,len(media)):
-                transition=transitions[index-1]
-                offset=max(.01,cumulative-transition)
-                out=f"[x{index}]" if index<len(media)-1 else "[vout]"
-                chains.append(f"{previous}[{index}:v]xfade=transition={self.resolve_xfade(str(media[index-1].get('transition','Fade')))}:duration={transition}:offset={offset}{out}")
-                previous=out; cumulative += durations[index]-transition
-            filter_graph=";".join(chains)
+        xfade_names = [self.resolve_xfade(str(media[index].get("transition", "Fade"))) for index in range(len(media) - 1)]
+        filter_graph = build_filter_graph(durations, transitions, xfade_names)
         total_duration = sum(durations) - sum(transitions)
 
         audio_args: list[str] = []; audio_map: list[str] = []
@@ -333,7 +512,7 @@ class Renderer:
             volume=max(0,min(1,float(project.get("soundtrack",{}).get("volume",100))/100))
             fade = project.get("soundtrack",{}).get("fadeOut",True)
             af=f"volume={volume}"
-            if fade: af += f",afade=t=out:st={max(0,total_duration-2)}:d=2"
+            if fade: af += f",afade=t=out:st={format_ffmpeg_number(max(0,total_duration-2))}:d=2"
             filter_graph += f";[{audio_index}:a]{af}[aout]"
             audio_map=["-map","[aout]","-c:a","aac","-b:a","192k"]
         progress(55, "Composing transitions and soundtrack")
