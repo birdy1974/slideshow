@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from .config import Settings
 from .database import Database, utcnow
-from .media import mounted_path
+from .media import UnsafePath, mounted_path
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +90,107 @@ class RenderError(RuntimeError):
 
 class OutputExistsError(RuntimeError):
     """A render target already exists and the user has not acknowledged overwriting it."""
+
+
+_FFMPEG_ERROR_RE = re.compile(
+    r"(error|invalid|failed|no such file|permission denied|does not contain any|"
+    r"unrecognized|not found|could not|unable to|no such filter|unknown encoder|conversion failed)",
+    re.I,
+)
+
+
+def _short_label(name: str, limit: int = 42) -> str:
+    name = name.strip() or "unnamed"
+    return name if len(name) <= limit else name[: limit - 1] + "…"
+
+
+def _ui_path(item: dict[str, Any]) -> str:
+    """Project-facing path (`/photos/...`) rather than the host mount path."""
+    path = str(item.get("path", "")).replace("\\", "/")
+    name = str(item.get("name", ""))
+    if Path(path).suffix:
+        return path
+    if name and (path.endswith("/" + name) or path == name):
+        return path
+    if path and name:
+        return f"{path.rstrip('/')}/{name}"
+    return path or name
+
+
+def _probe_reason_from_ffprobe(output: str, path: Path) -> str:
+    """Pick a short, human-readable reason out of ffprobe's stderr/stdout."""
+    for raw in (output or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        for prefix in (f"{path}: ", f"{path.name}: "):
+            if line.startswith(prefix):
+                line = line[len(prefix):].strip()
+        match = re.search(r"Error opening input:\s*(.+)$", line)
+        if match:
+            return match.group(1).strip()
+        return line
+    return "unreadable media"
+
+
+def _probe_readable(path: Path, ffprobe_bin: str) -> str | None:
+    """Return a short reason if `path` cannot be read as media, else None.
+
+    Missing and empty (0-byte) files are rejected without spawning ffprobe.
+    If ffprobe is not installed the content probe is skipped so a render can
+    still start; FFmpeg remains the final judge.
+    """
+    if not path.exists():
+        return "file is missing"
+    if not path.is_file():
+        return "not a file"
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"cannot stat file ({exc})"
+    if size == 0:
+        return "file is empty (0 bytes)"
+    probe = shutil.which(ffprobe_bin)
+    if not probe:
+        return None
+    try:
+        result = subprocess.run(
+            [probe, "-hide_banner", "-v", "error",
+             "-show_entries", "format=format_name",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return "ffprobe timed out"
+    except OSError as exc:
+        return f"ffprobe could not start ({exc})"
+    if result.returncode == 0:
+        return None
+    return _probe_reason_from_ffprobe(f"{result.stderr or ''}\n{result.stdout or ''}", path)
+
+
+def _summarize_ffmpeg_log(text: str, *, max_lines: int = 8) -> str:
+    """Return the actionable FFmpeg error lines instead of a raw 5k-char tail."""
+    tail = text[-12_000:] if len(text) > 12_000 else text
+    picked: list[str] = []
+    seen: set[str] = set()
+    for raw in tail.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("$ "):
+            continue
+        if not _FFMPEG_ERROR_RE.search(line):
+            continue
+        key = line[:200]
+        if key in seen:
+            continue
+        seen.add(key)
+        picked.append(line if len(line) <= 240 else line[:237] + "...")
+        if len(picked) >= max_lines:
+            break
+    if picked:
+        return "\n".join(picked)
+    fallback = [ln.strip() for ln in tail.splitlines() if ln.strip() and not ln.startswith("$ ")]
+    return "\n".join(fallback[-6:]) if fallback else "No FFmpeg error details were captured."
 
 
 class Renderer:
@@ -179,6 +280,49 @@ class Renderer:
             cumulative += durations[index] - transition
         return transitions
 
+    def _probe_readable(self, path: Path) -> str | None:
+        """Check a single file with ffprobe; see module-level `_probe_readable`."""
+        return _probe_readable(path, self.settings.ffprobe_bin)
+
+    def _validate_media(self, project: dict[str, Any]) -> None:
+        """Fail fast with one actionable message naming every unreadable input.
+
+        Runs before any encoding so a 0-byte JPEG or a corrupt MP3 does not
+        surface as a mid-render crash dumping thousands of FFmpeg log characters.
+        Title frames have no file and are skipped.
+        """
+        problems: list[str] = []
+        for item in project.get("media", []):
+            if item.get("type") == "title":
+                continue
+            label = _short_label(str(item.get("name") or "media"))
+            try:
+                path = source_path(self.settings, item)
+            except UnsafePath as exc:
+                problems.append(f"{label}: invalid path ({exc}) ({_ui_path(item)})")
+                continue
+            reason = self._probe_readable(path)
+            if reason:
+                problems.append(f"{label}: {reason} ({_ui_path(item) or path})")
+        for track in project.get("soundtrack", {}).get("tracks", []):
+            label = _short_label(str(track.get("name") or "track"))
+            try:
+                path = source_path(self.settings, track)
+            except UnsafePath as exc:
+                problems.append(f"soundtrack '{label}': invalid path ({exc}) ({_ui_path(track)})")
+                continue
+            reason = self._probe_readable(path)
+            if reason:
+                problems.append(f"soundtrack '{label}': {reason} ({_ui_path(track) or path})")
+        if not problems:
+            return
+        listed = "\n\n".join(f"  {line}" for line in problems)
+        raise RenderError(
+            "Cannot render — these media files could not be read:\n\n"
+            f"{listed}\n\n"
+            "Remove or replace them, then try again."
+        )
+
     def render_output_path(self, project: dict[str, Any]) -> Path:
         """Destination MP4 for a final render, shared by submit and render."""
         output_settings = project.get("output", {})
@@ -235,8 +379,9 @@ class Renderer:
                     except subprocess.TimeoutExpired: process.kill()
                     raise RenderError("Render cancelled by user")
             if process.returncode:
-                tail = log_file.read_text(encoding="utf-8", errors="replace")[-5000:]
-                raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{tail}")
+                text = log_file.read_text(encoding="utf-8", errors="replace")
+                summary = _summarize_ffmpeg_log(text)
+                raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{summary}")
 
     def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int) -> str | None:
         text = str(item.get("text", "")).strip()
@@ -258,6 +403,7 @@ class Renderer:
             random.shuffle(media)
         if not media:
             raise RenderError("The project contains no media")
+        self._validate_media({**project, "media": media})
         output_settings = project.get("output", {})
         if kind == "preview":
             width, height, fps, bitrate = 854, 480, 24, "2M"

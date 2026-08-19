@@ -4,10 +4,19 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from app.database import Database
 from app.config import Settings
-from app.renderer import OutputExistsError, Renderer, _parse_xfade_help, parse_number, xfade_name
+from app.renderer import (
+    OutputExistsError,
+    RenderError,
+    Renderer,
+    _parse_xfade_help,
+    _summarize_ffmpeg_log,
+    parse_number,
+    xfade_name,
+)
 
 # Shape of `ffmpeg -h filter=xfade` on an FFmpeg 5.x NAS build: the catalogue
 # stops at fadeslow; hlwind/hrwind/vuwind/vdwind and cover*/reveal* are absent.
@@ -172,6 +181,95 @@ class OutputProtectionTest(unittest.TestCase):
         saved = self.db.save_project(self.project_payload())
         job = self.renderer.submit(saved["id"], "render")
         self.assertEqual("queued", job["status"])
+
+
+class MediaValidationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        for name in ("config", "photos", "videos", "music", "output"):
+            (base / name).mkdir()
+        self.photos = base / "photos"
+        self.music = base / "music"
+        self.settings = Settings(base / "config", self.photos, base / "videos", self.music, base / "output")
+        self.renderer = Renderer(Database(base / "test.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.renderer.pool.shutdown(wait=False, cancel_futures=True)
+        self.temp.cleanup()
+
+    def test_empty_file_fails_fast_with_actionable_message(self) -> None:
+        folder = self.photos / "_schilderij" / "universe"
+        folder.mkdir(parents=True)
+        (folder / "photo1.jpg").write_bytes(b"")
+        project = {
+            "media": [{"name": "photo1.jpg", "path": "/photos/_schilderij/universe", "type": "image"}],
+            "soundtrack": {"tracks": []},
+        }
+        with self.assertRaises(RenderError) as ctx:
+            self.renderer._validate_media(project)
+        message = str(ctx.exception)
+        self.assertIn("Cannot render — these media files could not be read", message)
+        self.assertIn("photo1.jpg: file is empty (0 bytes)", message)
+        self.assertIn("/photos/_schilderij/universe/photo1.jpg", message)
+        self.assertIn("Remove or replace them, then try again.", message)
+
+    def test_reports_every_unreadable_input_in_one_message(self) -> None:
+        (self.music / "We Are The Champions.mp3").write_bytes(b"")
+        project = {
+            "media": [
+                {"name": "gone.jpg", "path": "/photos/_schilderij/universe", "type": "image"},
+                {"name": "Title card", "path": "Generated frame", "type": "title"},
+            ],
+            "soundtrack": {"tracks": [{"name": "We Are The Champions.mp3", "path": "/music"}]},
+        }
+        with self.assertRaises(RenderError) as ctx:
+            self.renderer._validate_media(project)
+        message = str(ctx.exception)
+        self.assertIn("gone.jpg: file is missing", message)
+        self.assertIn("soundtrack 'We Are The Champions.mp3': file is empty (0 bytes)", message)
+        self.assertNotIn("Title card", message)
+
+    def test_ffprobe_reason_included_and_absent_ffprobe_degrades(self) -> None:
+        junk = self.photos / "broken.jpg"
+        junk.write_bytes(b"not-a-real-image")
+        project = {
+            "media": [{"name": "broken.jpg", "path": "/photos", "type": "image"}],
+            "soundtrack": {"tracks": []},
+        }
+        probe = mock.Mock(returncode=1, stderr=f"{junk}: Invalid data found when processing input\n", stdout="")
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffprobe"), \
+             mock.patch("app.renderer.subprocess.run", return_value=probe):
+            with self.assertRaises(RenderError) as ctx:
+                self.renderer._validate_media(project)
+        self.assertIn("broken.jpg: Invalid data found when processing input", str(ctx.exception))
+
+        # No ffprobe: a non-empty file is allowed through (FFmpeg will be the judge).
+        blind = Settings(
+            self.settings.config_dir, self.settings.photos_dir, self.settings.videos_dir,
+            self.settings.music_dir, self.settings.output_dir, "ffmpeg", "ffprobe-not-installed",
+        )
+        renderer = Renderer(Database(self.settings.config_dir / "blind.db"), blind)
+        try:
+            renderer._validate_media(project)
+        finally:
+            renderer.pool.shutdown(wait=False, cancel_futures=True)
+
+    def test_ffmpeg_failure_surfaces_key_error_lines(self) -> None:
+        raw = (
+            "$ ffmpeg -hide_banner -i broken.jpg\n"
+            + ("configuration: --enable-gpl " * 80) + "\n"
+            "frame=   12 fps=0.0 q=0.0 size=       0kB\n"
+            "[in#0 @ 0x55aa] Error opening input: Invalid data found when processing input\n"
+            "Error opening input file broken.jpg.\n"
+            "Conversion failed!\n"
+        )
+        summary = _summarize_ffmpeg_log(raw)
+        self.assertIn("Invalid data found when processing input", summary)
+        self.assertIn("Conversion failed!", summary)
+        self.assertNotIn("$ ffmpeg", summary)
+        self.assertNotIn("configuration:", summary)
+        self.assertLess(len(summary), 500)
 
 
 if __name__ == "__main__":
