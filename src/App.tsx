@@ -104,8 +104,8 @@ function transitionSymbol(name: string) {
   return '◇'
 }
 
-function TimelineRuler({ start, duration, zoom }: { start:number, duration:number, zoom:number }) {
-  return <div className="line-time-ruler">{[0,.25,.5,.75,1].map(f=><span key={f} style={{left:`${f*100}%`}}><i/>{Math.round(start+duration*f)}s</span>)}<b>{Math.floor((start+duration)/60)}:{String(Math.round((start+duration)%60)).padStart(2,'0')}</b><em>{Math.round(zoom*100)}%</em></div>
+function TimelineRuler({ start, duration, zoom, audioLength }: { start:number, duration:number, zoom:number, audioLength?: string }) {
+  return <div className="line-time-ruler">{[0,.25,.5,.75,1].map(f=><span key={f} style={{left:`${f*100}%`}}><i/>{Math.round(start+duration*f)}s</span>)}<b>{Math.floor((start+duration)/60)}:{String(Math.round((start+duration)%60)).padStart(2,'0')}</b><em>{Math.round(zoom*100)}%</em>{audioLength && <span className="audio-length-indicator"><Music2 size={10}/> {audioLength}</span>}</div>
 }
 
 function TimelineTextBox({ item, update, selected, onSelect }: { item: MediaItem, update: (change: Partial<MediaItem>) => void, selected: string[], onSelect: (edge:'enter'|'exit')=>void }) {
@@ -225,12 +225,16 @@ function App() {
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineRows, setTimelineRows] = useState('auto')
   const [draggedId, setDraggedId] = useState<number | null>(null)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showClearAllConfirm, setShowClearAllConfirm] = useState(false)
   const [fontFamily, setFontFamily] = useState('Montserrat')
   const [fontSize, setFontSize] = useState('48')
   const [fontColor, setFontColor] = useState('#ffffff')
   const [textBold, setTextBold] = useState(true)
   const [textItalic, setTextItalic] = useState(false)
   const [textUnderline, setTextUnderline] = useState(false)
+  const [defaultTextX, setDefaultTextX] = useState(50)
+  const [defaultTextY, setDefaultTextY] = useState(72)
   const [showTextStyles, setShowTextStyles] = useState(false)
   const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([])
@@ -256,7 +260,7 @@ function App() {
     if(saved.id)setProjectId(saved.id)
     if(saved.project){setProjectName(saved.project.name);setRandomOrder(Boolean(saved.project.randomOrder))}
     if(Array.isArray(saved.media))setMedia(saved.media)
-    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline)}
+    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72)}
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut)}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path);setOutputFilename(saved.output.filename)}
     if(saved.timeline){setTimelineRows(saved.timeline.rows);setTimelineZoom(saved.timeline.zoom)}
@@ -275,7 +279,7 @@ function App() {
   const audioPreview = useAudioPreview(message => notify(message))
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
-    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline },
+    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY },
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:2 },
     output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename:outputFilename },
     timeline: { rows:timelineRows, zoom:timelineZoom },
@@ -294,7 +298,7 @@ function App() {
   const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
   const blankProjectSnapshot = () => ({
     schemaVersion: 1, project: { name: 'Untitled', randomOrder: false }, media: [],
-    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false },
+    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72 },
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: 'slideshow' },
     timeline: { rows: 'auto', zoom: 1 },
@@ -310,7 +314,7 @@ function App() {
     setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
     setOutputPath('/output'); setOutputFilename('slideshow')
-    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false)
+    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72)
     setTimelineRows('auto'); setTimelineZoom(1)
     setSelectedIds([]); setSelectedTransitions([]); setSelectedTextTransitions([])
     setDetailTextEditor(null); setEditingTextFrame(null)
@@ -381,6 +385,51 @@ function App() {
       return remaining
     })
     setDraggedId(null)
+  }
+  const deleteSelectedItems = () => {
+    if (selectedIds.length === 0) return
+    setMedia(items => {
+      // Remove selected items and their transitions (transitions are on the previous item)
+      const idsToRemove = new Set(selectedIds)
+      const newItems = []
+      for (let i = 0; i < items.length; i++) {
+        if (!idsToRemove.has(items[i].id)) {
+          // If the next item is being removed, clear its transition
+          const nextItem = items[i + 1]
+          if (nextItem && idsToRemove.has(nextItem.id)) {
+            newItems.push({ ...items[i], transition: 'Fade', transitionTime: 1.2 })
+          } else {
+            newItems.push(items[i])
+          }
+        }
+      }
+      return newItems
+    })
+    setSelectedIds([])
+    setSelectedTransitions([])
+    setShowDeleteConfirm(false)
+    notify(`Deleted ${selectedIds.length} item${selectedIds.length > 1 ? 's' : ''}`)
+  }
+  const clearAllProjects = async () => {
+    try {
+      // Delete all projects from database
+      const response = await fetch('/api/projects', { method: 'DELETE' })
+      if (response.ok) {
+        // Also clean up temporary files
+        const cleanupResponse = await fetch('/api/cleanup', { method: 'POST' })
+        if (cleanupResponse.ok) {
+          const result = await cleanupResponse.json()
+          notify(`All saved projects and temporary files deleted (${result.deleted_files} files, ${result.deleted_dirs} folders)`)
+        } else {
+          notify('Projects deleted but failed to clean temporary files')
+        }
+      } else {
+        notify('Failed to delete all projects')
+      }
+    } catch (error) {
+      notify(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+    setShowClearAllConfirm(false)
   }
   const toggleSelected = (id: number) => setSelectedIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
   const addTitleFrame = () => {
@@ -514,7 +563,7 @@ function App() {
       <div className="workspace">
         <div className="left-column">
           <section className="panel timeline-panel">
-            <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><label className="switch-label"><input type="checkbox" checked={randomOrder} onChange={e => setRandomOrder(e.target.checked)}/><span className="switch"/>Random order</label><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button></div></div>
+            <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><label className="switch-label"><input type="checkbox" checked={randomOrder} onChange={e => setRandomOrder(e.target.checked)}/><span className="switch"/>Random order</label><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={15}/> Clear all</button></div></div>
             {randomOrder && <div className="notice amber"><Shuffle size={16}/><span><strong>Random order enabled.</strong> A new order will be chosen at render time. The arrangement below remains unchanged.</span></div>}
 
             <div className="overview-head"><div><strong>OVERALL TIMELINE</strong><span>Drag selected clips as a group · edit text above each clip · click transitions</span></div><div className="story-layout"><label>Lines</label><Select value={timelineRows} onChange={setTimelineRows}><option value="auto">Auto ({estimatedRows})</option>{[1,2,3,4,5,6].map(x => <option value={x} key={x}>{x}</option>)}</Select></div><button className="text-random" onClick={randomizeTextTransitions}><Shuffle size={12}/> Text transitions</button><div className="zoom-controls"><button onClick={() => setTimelineZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out"><ZoomOut size={14}/></button><span>{Math.round(timelineZoom * 100)}%</span><button onClick={() => setTimelineZoom(z => Math.min(2.4, +(z + .2).toFixed(1)))} title="Zoom in"><ZoomIn size={14}/></button><button className="fit-button" onClick={() => setTimelineZoom(1)} title="Reset zoom to show complete timeline">Fit</button></div></div>
@@ -524,7 +573,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={() => dropOn(item.id)} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src && <img src={item.src}/>}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom}/></div></div>
+              return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src ? <img src={item.src} alt={item.name}/> : (item.type !== 'title' && item.path ? <img src={mediaFileUrl('photos', item.path)} alt={item.name}/> : null)}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><NumberStepper value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? 1.2} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} /><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
@@ -535,9 +584,9 @@ function App() {
             <div className="bulk-bar"><span>TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={5} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
             <div className="timeline-head"><span>MEDIA</span><span>SLIDE / CLIP</span><span>EFFECT</span><span>TRANSITION TO NEXT</span><span></span></div>
             <div className="timeline-list">
-              {media.map((item, index) => <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={() => dropOn(item.id)}>
+              {media.map((item, index) => <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                 <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
-                <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src ? <img src={item.src}/> : <span className="title-symbol">T</span>}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
+                <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{item.src ? <img src={item.src} alt={item.name}/> : (item.type !== 'title' && item.path ? <img src={mediaFileUrl(item.type === 'video' ? 'videos' : 'photos', item.path)} alt={item.name}/> : <span className="title-symbol">T</span>)}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
                 <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                 <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                 <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
@@ -570,7 +619,7 @@ function App() {
       </div>
     </main>}
 
-    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} onClose={()=>setShowTextStyles(false)}/>} 
+    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} update={change=>patch(editingTextFrame,change)} style={{fontFamily,fontSize:Number(fontSize),fontColor,bold:textBold,italic:textItalic,underline:textUnderline}} onClose={()=>setEditingTextFrame(null)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{setAudioTracks(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path.replace(`/${file.name}`,''),duration:'unknown',color:['#91a96b','#7898aa','#b78670'][index%3]}))]);setShowAudioBrowser(false);notify(`${files.length} soundtracks added`)}}/>}
     {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {setMedia(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path.replace(`/${file.name}`,''),src:'',type:file.kind as 'image'|'video',duration:file.kind==='video'?10:5,effect:file.kind==='video'?'Original motion':'Ken Burns · Zoom in',transition:'Fade',transitionTime:1,text:'',textMode:'overlay' as const,textStart:0,textEnd:file.kind==='video'?10:5,textEnter:'Fade',textExit:'Fade',textEnterDuration:.5,textExitDuration:.5,textX:50,textY:72,frameBackground:'#30382a'}))]);setShowBrowser(false);notify(`${files.length} mounted media files added`) }}/>} 
@@ -578,13 +627,15 @@ function App() {
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
     {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)}/>}
     {showNewProjectConfirm && <ConfirmDialog title="Start a new blank project?" message="This clears the current storyline, soundtracks and settings from the editor. Projects already saved in SQLite are not affected." confirmLabel="New project" onConfirm={startNewProject} onCancel={()=>setShowNewProjectConfirm(false)}/>}
+    {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
+    {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
 
-function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,onClose}: any) {
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="style-modal-body"><p>These defaults are used for new picture captions and standalone text frames.</p><div className="style-form"><div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}><option>Montserrat</option><option>Open Sans</option><option>Roboto</option><option>Playfair Display</option><option>Source Sans 3</option></Select></div><div><FieldLabel>Font size</FieldLabel><div className="filename"><input type="number" min="8" max="200" value={fontSize} onChange={e=>setFontSize(e.target.value)}/><span>px</span></div></div><div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor} onChange={e=>setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div><div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button className={bold?'active':''} onClick={()=>setBold(!bold)}><b>B</b></button><button className={italic?'active':''} onClick={()=>setItalic(!italic)}><i>I</i></button><button className={underline?'active':''} onClick={()=>setUnderline(!underline)}><u>U</u></button></div></div></div><div className="large-type-preview" style={{fontFamily,fontSize:`${Math.min(Number(fontSize),38)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>Summer, slowly.</div><div className="notice"><Info size={15}/><span>Individual text styling will be available from each caption's detail editor in the production renderer.</span></div></div><div className="modal-foot"><span>Changes apply to new text</span><button className="btn dark" onClick={onClose}><Check size={15}/> Save defaults</button></div></div></div>
+function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,onClose}: any) {
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="style-modal-body"><p>These defaults are used for new picture captions and standalone text frames.</p><div className="style-form"><div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}><option>Montserrat</option><option>Open Sans</option><option>Roboto</option><option>Playfair Display</option><option>Source Sans 3</option></Select></div><div><FieldLabel>Font size</FieldLabel><div className="filename"><input type="number" min="8" max="200" value={fontSize} onChange={e=>setFontSize(e.target.value)}/><span>px</span></div></div><div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor} onChange={e=>setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div><div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button className={bold?'active':''} onClick={()=>setBold(!bold)}><b>B</b></button><button className={italic?'active':''} onClick={()=>setItalic(!italic)}><i>I</i></button><button className={underline?'active':''} onClick={()=>setUnderline(!underline)}><u>U</u></button></div></div><div><FieldLabel>Default position</FieldLabel><div className="position-controls"><div><NumberStepper value={textX} min={0} max={100} step={1} suffix="%" ariaLabel="Default text X position" onChange={setTextX} /></div><div><NumberStepper value={textY} min={0} max={100} step={1} suffix="%" ariaLabel="Default text Y position" onChange={setTextY} /></div></div></div></div><div className="large-type-preview" style={{fontFamily,fontSize:`${Math.min(Number(fontSize),38)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>Summer, slowly.</div><div className="notice"><Info size={15}/><span>Individual text styling will be available from each caption's detail editor in the production renderer.</span></div></div><div className="modal-foot"><span>Changes apply to new text</span><button className="btn dark" onClick={onClose}><Check size={15}/> Save defaults</button></div></div></div>
 }
 
 function TextFrameEditor({item,update,style,onClose}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,style:{fontFamily:string,fontSize:number,fontColor:string,bold:boolean,italic:boolean,underline:boolean},onClose:()=>void}) {
