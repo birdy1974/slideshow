@@ -198,28 +198,36 @@ def format_ffmpeg_number(value: float) -> str:
     return f"{round(float(value), 6):g}"
 
 
-def build_filter_graph(durations: list[float], transitions: list[float], xfade_names: list[str]) -> str:
-    """Compose xfade across inputs that have been reset to a common timebase.
+def build_filter_graph(durations: list[float], transitions: list[float], xfade_names: list[str], fps: int | None = None) -> str:
+    """Compose transitions after each clip, rather than subtracting them.
 
-    Each `[n:v]` is normalized with `settb=AVTB,setpts=PTS-STARTPTS` so every
-    picture starts at PTS 0. xfade offsets then accumulate as
-    `sum(previous durations) - sum(previous transitions)`, which is what makes
-    clips play one after another instead of stacking on the same timestamp.
+    A clip's configured duration is its visible hold time.  Each transition is
+    additional timeline time, so four 5-second clips with three 3-second
+    transitions produces 29 seconds.  The caller supplies normalized segment
+    files with lead-in/lead-out handles for xfade; offsets are calculated from
+    the user-facing (hold) durations and the preceding transitions.
+
+    ``fps`` is repeated in the graph as a final CFR guard.  Some FFmpeg builds
+    report a time base but no frame rate (1/0) for intermediate MP4 files,
+    which makes xfade reject otherwise valid still-image renders.
     """
     if not durations:
         raise ValueError("build_filter_graph requires at least one clip")
+    cfr = f"fps={fps}," if fps else ""
     if len(durations) == 1:
-        return "[0:v]settb=AVTB,setpts=PTS-STARTPTS[vout]"
+        return f"[0:v]{cfr}settb=AVTB,setpts=PTS-STARTPTS[vout]"
     expected = len(durations) - 1
     if len(transitions) != expected or len(xfade_names) != expected:
         raise ValueError("transitions and xfade names must cover every clip pair")
-    prepared = [f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS[s{index}]" for index in range(len(durations))]
+    prepared = [f"[{index}:v]{cfr}settb=AVTB,setpts=PTS-STARTPTS[s{index}]" for index in range(len(durations))]
     chains: list[str] = []
-    cumulative = durations[0]
+    # xfade's offset is measured on its first input.  At each boundary the
+    # prior clip has held for its configured duration and all earlier
+    # transitions have completed.
+    offset = durations[0]
     previous = "[s0]"
     for index in range(1, len(durations)):
         transition = transitions[index - 1]
-        offset = max(0.01, cumulative - transition)
         out = f"[x{index}]" if index < len(durations) - 1 else "[vout]"
         chains.append(
             f"{previous}[s{index}]xfade=transition={xfade_names[index - 1]}"
@@ -227,7 +235,7 @@ def build_filter_graph(durations: list[float], transitions: list[float], xfade_n
             f":offset={format_ffmpeg_number(offset)}{out}"
         )
         previous = out
-        cumulative += durations[index] - transition
+        offset += durations[index] + transition
     return ";".join(prepared + chains)
 
 
@@ -302,21 +310,13 @@ class Renderer:
 
     @staticmethod
     def effective_transitions(media: list[dict[str, Any]]) -> list[float]:
-        """Clamped xfade durations in timeline order, mirroring the filter chain.
+        """Transition durations in timeline order.
 
-        Every transition is limited so it can never overlap more than the
-        remaining time of either clip it joins. This is the single source of
-        truth for the composed duration; the frontend estimate uses the same
-        rules.
+        Transitions are additional time between clips, not an overlap deducted
+        from either configured clip duration.  A small lower bound keeps xfade
+        valid while allowing a long transition for a short still image.
         """
-        durations = [max(.2, float(item.get("duration", 5))) for item in media]
-        transitions: list[float] = []
-        cumulative = durations[0] if durations else 0.0
-        for index in range(1, len(durations)):
-            transition = max(.05, min(float(media[index - 1].get("transitionTime", 1)), cumulative - .05, durations[index] - .05))
-            transitions.append(transition)
-            cumulative += durations[index] - transition
-        return transitions
+        return [max(.05, float(item.get("transitionTime", 1))) for item in media[:-1]]
 
     def _probe_readable(self, path: Path) -> str | None:
         """Check a single file with ffprobe; see module-level `_probe_readable`."""
@@ -458,15 +458,22 @@ class Renderer:
             transition_total = sum(self.effective_transitions(media))
             duration_total = sum(max(.2, float(x.get("duration",5))) for x in media)
             if audio_duration > transition_total and duration_total > 0:
-                factor = (audio_duration + transition_total) / duration_total
+                # Holds scale to fill the audio; transitions retain their set duration.
+                factor = (audio_duration - transition_total) / duration_total
                 media = [{**item,"duration":max(.2,float(item.get("duration",5))*factor),"textEnd":min(float(item.get("textEnd",item.get("duration",5)))*factor,max(.2,float(item.get("duration",5))*factor))} for item in media]
         segments: list[Path] = []
         durations = [max(.2, float(item.get("duration", 5))) for item in media]
         transitions = self.effective_transitions(media)
+        # Give xfade incoming/outgoing handles while preserving every configured
+        # clip hold in full.  These handles make transition time additive.
+        segment_durations = [
+            duration + (transitions[index - 1] if index else 0) + (transitions[index] if index < len(transitions) else 0)
+            for index, duration in enumerate(durations)
+        ]
         progress(2, "Normalizing media")
         for index, item in enumerate(media):
             if cancelled.is_set(): raise RenderError("Render cancelled by user")
-            duration = durations[index]
+            duration = segment_durations[index]
             segment = work / f"segment-{index:04d}.mp4"
             kind_name = item.get("type", "image")
             base_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
@@ -501,8 +508,8 @@ class Renderer:
         inputs: list[str] = []
         for segment in segments: inputs += ["-i", str(segment)]
         xfade_names = [self.resolve_xfade(str(media[index].get("transition", "Fade"))) for index in range(len(media) - 1)]
-        filter_graph = build_filter_graph(durations, transitions, xfade_names)
-        total_duration = sum(durations) - sum(transitions)
+        filter_graph = build_filter_graph(durations, transitions, xfade_names, fps)
+        total_duration = sum(durations) + sum(transitions)
 
         audio_args: list[str] = []; audio_map: list[str] = []
         if soundtrack:
@@ -536,7 +543,7 @@ class Renderer:
                 encode_args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "nv12"]
             else:
                 encode_args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-preset", "medium", "-pix_fmt", "yuv420p"]
-            return [self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs, *audio_args, "-filter_complex", filter_graph, "-map", "[vout]", *audio_map, *encode_args, "-movflags", "+faststart", "-t", str(total_duration), str(output)]
+            return [self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs, *audio_args, "-filter_complex", filter_graph, "-map", "[vout]", *audio_map, *encode_args, "-movflags", "+faststart", "-r", str(fps), "-t", str(total_duration), str(output)]
 
         command = compose_command(encoder)
         try:
