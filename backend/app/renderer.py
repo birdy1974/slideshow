@@ -209,13 +209,14 @@ def build_filter_graph(durations: list[float], transitions: list[float], xfade_n
     the user-facing (hold) durations and the preceding transitions.
 
     ``fps`` is repeated before every xfade and after every xfade result as a
-    CFR guard.  Some FFmpeg builds lose frame-rate metadata on an intermediate
-    xfade output and report 1/0 to the following xfade even when every source
-    segment was normalized.
+    CFR guard.  ``setpts=PTS-STARTPTS`` discards frame-rate metadata (FFmpeg
+    6+/7+ then reports the link as 1/0), so ``fps`` must come *after* it —
+    the last filter before each xfade — to reimpose a constant rate.  Placing
+    it first lets ``setpts`` clobber it and every following xfade fails.
     """
     if not durations:
         raise ValueError("build_filter_graph requires at least one clip")
-    normalize = f"fps={fps},settb=AVTB,setpts=PTS-STARTPTS" if fps else "settb=AVTB,setpts=PTS-STARTPTS"
+    normalize = f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}" if fps else "settb=AVTB,setpts=PTS-STARTPTS"
     if len(durations) == 1:
         return f"[0:v]{normalize}[vout]"
     expected = len(durations) - 1

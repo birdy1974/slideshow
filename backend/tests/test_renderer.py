@@ -269,7 +269,8 @@ class FilterGraphTest(unittest.TestCase):
 
     def test_fps_is_enforced_for_every_xfade_input_and_result(self) -> None:
         graph = build_filter_graph([5, 5, 5], [3, 3], ["fade", "dissolve"], fps=30)
-        normalization = "fps=30,settb=AVTB,setpts=PTS-STARTPTS"
+        # fps must follow setpts so it is not clobbered by PTS-STARTPTS.
+        normalization = "settb=AVTB,setpts=PTS-STARTPTS,fps=30"
         for index in range(3):
             self.assertIn(f"[{index}:v]{normalization}[s{index}]", graph)
         self.assertIn(
