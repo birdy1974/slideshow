@@ -14,6 +14,8 @@ from app.renderer import (
     Renderer,
     _parse_xfade_help,
     _summarize_ffmpeg_log,
+    build_filter_graph,
+    format_ffmpeg_number,
     parse_number,
     xfade_name,
 )
@@ -270,6 +272,33 @@ class MediaValidationTest(unittest.TestCase):
         self.assertNotIn("$ ffmpeg", summary)
         self.assertNotIn("configuration:", summary)
         self.assertLess(len(summary), 500)
+
+
+class FilterGraphTest(unittest.TestCase):
+    def test_three_equal_clips_use_cumulative_xfade_offsets(self) -> None:
+        # 5s + 5s + 5s with 1s transitions: first xfade at 4s, second at 8s.
+        graph = build_filter_graph([5, 5, 5], [1, 1], ["fade", "dissolve"])
+        self.assertEqual(
+            "[0:v]settb=AVTB,setpts=PTS-STARTPTS[s0];"
+            "[1:v]settb=AVTB,setpts=PTS-STARTPTS[s1];"
+            "[2:v]settb=AVTB,setpts=PTS-STARTPTS[s2];"
+            "[s0][s1]xfade=transition=fade:duration=1:offset=4[x1];"
+            "[x1][s2]xfade=transition=dissolve:duration=1:offset=8[vout]",
+            graph,
+        )
+
+    def test_single_clip_resets_timestamps_to_vout(self) -> None:
+        self.assertEqual("[0:v]settb=AVTB,setpts=PTS-STARTPTS[vout]", build_filter_graph([5], [], []))
+
+    def test_two_clip_offset_is_first_duration_minus_transition(self) -> None:
+        graph = build_filter_graph([5, 7], [1], ["wipeleft"])
+        self.assertIn("[s0][s1]xfade=transition=wipeleft:duration=1:offset=4[vout]", graph)
+
+    def test_offset_formatting_avoids_float_noise(self) -> None:
+        self.assertEqual("0.8", format_ffmpeg_number(0.8000000000000002))
+        graph = build_filter_graph([1.1, 1.1], [0.3], ["fade"])
+        self.assertIn("offset=0.8", graph)
+        self.assertNotRegex(graph, r"0\.7999|0\.800000")
 
 
 if __name__ == "__main__":

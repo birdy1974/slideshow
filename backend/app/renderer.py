@@ -193,6 +193,44 @@ def _summarize_ffmpeg_log(text: str, *, max_lines: int = 8) -> str:
     return "\n".join(fallback[-6:]) if fallback else "No FFmpeg error details were captured."
 
 
+def format_ffmpeg_number(value: float) -> str:
+    """Stable FFmpeg numeric literal — strips binary float noise (4.999999 → 5)."""
+    return f"{round(float(value), 6):g}"
+
+
+def build_filter_graph(durations: list[float], transitions: list[float], xfade_names: list[str]) -> str:
+    """Compose xfade across inputs that have been reset to a common timebase.
+
+    Each `[n:v]` is normalized with `settb=AVTB,setpts=PTS-STARTPTS` so every
+    picture starts at PTS 0. xfade offsets then accumulate as
+    `sum(previous durations) - sum(previous transitions)`, which is what makes
+    clips play one after another instead of stacking on the same timestamp.
+    """
+    if not durations:
+        raise ValueError("build_filter_graph requires at least one clip")
+    if len(durations) == 1:
+        return "[0:v]settb=AVTB,setpts=PTS-STARTPTS[vout]"
+    expected = len(durations) - 1
+    if len(transitions) != expected or len(xfade_names) != expected:
+        raise ValueError("transitions and xfade names must cover every clip pair")
+    prepared = [f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS[s{index}]" for index in range(len(durations))]
+    chains: list[str] = []
+    cumulative = durations[0]
+    previous = "[s0]"
+    for index in range(1, len(durations)):
+        transition = transitions[index - 1]
+        offset = max(0.01, cumulative - transition)
+        out = f"[x{index}]" if index < len(durations) - 1 else "[vout]"
+        chains.append(
+            f"{previous}[s{index}]xfade=transition={xfade_names[index - 1]}"
+            f":duration={format_ffmpeg_number(transition)}"
+            f":offset={format_ffmpeg_number(offset)}{out}"
+        )
+        previous = out
+        cumulative += durations[index] - transition
+    return ";".join(prepared + chains)
+
+
 class Renderer:
     def __init__(self, db: Database, settings: Settings):
         self.db, self.settings = db, settings
@@ -433,15 +471,19 @@ class Renderer:
             kind_name = item.get("type", "image")
             base_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-y"]
+            clip_t = format_ffmpeg_number(duration)
             if kind_name == "title":
                 background = str(item.get("frameBackground", "#202020"))
                 if not background.startswith("#"): background = "#30382a"
-                command += ["-f", "lavfi", "-i", f"color=c={background}:s={width}x{height}:r={fps}:d={duration}"]
+                command += ["-f", "lavfi", "-i", f"color=c={background}:s={width}x{height}:r={fps}:d={clip_t}"]
             else:
                 source = source_path(self.settings, item)
                 if not source.exists(): raise RenderError(f"Media file is missing: {source}")
-                if kind_name == "image": command += ["-loop", "1", "-t", str(duration), "-i", str(source)]
-                else: command += ["-stream_loop", "-1", "-t", str(duration), "-i", str(source)]
+                # Still images default to 25 fps. Without an explicit -framerate
+                # matching the output, `-t 5` yields 125 frames which fps=30
+                # then shortens to ~4.17s and every xfade offset is late.
+                if kind_name == "image": command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(source)]
+                else: command += ["-stream_loop", "-1", "-t", clip_t, "-i", str(source)]
             filters = [base_filter]
             effect = str(item.get("effect", ""))
             if kind_name == "image" and effect.startswith("Ken Burns"):
@@ -450,25 +492,16 @@ class Renderer:
                 filters.append(f"zoompan=z='max(1,min(1.12,{start_zoom}+on*{delta}))':d=1:s={width}x{height}:fps={fps}")
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
-            filters += ["format=yuv420p", "settb=AVTB"]
-            command += ["-vf", ",".join(filters), "-an", "-t", str(duration), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
+            filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
+            command += ["-vf", ",".join(filters), "-an", "-t", clip_t, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
             self._run_ffmpeg(command, cancelled, log_file)
             segments.append(segment)
             progress(5 + 45 * (index + 1) / len(media), f"Prepared item {index+1} of {len(media)}")
 
         inputs: list[str] = []
         for segment in segments: inputs += ["-i", str(segment)]
-        if len(segments) == 1:
-            filter_graph = "[0:v]setpts=PTS-STARTPTS[vout]"
-        else:
-            chains=[]; cumulative=durations[0]; previous="[0:v]"
-            for index in range(1,len(media)):
-                transition=transitions[index-1]
-                offset=max(.01,cumulative-transition)
-                out=f"[x{index}]" if index<len(media)-1 else "[vout]"
-                chains.append(f"{previous}[{index}:v]xfade=transition={self.resolve_xfade(str(media[index-1].get('transition','Fade')))}:duration={transition}:offset={offset}{out}")
-                previous=out; cumulative += durations[index]-transition
-            filter_graph=";".join(chains)
+        xfade_names = [self.resolve_xfade(str(media[index].get("transition", "Fade"))) for index in range(len(media) - 1)]
+        filter_graph = build_filter_graph(durations, transitions, xfade_names)
         total_duration = sum(durations) - sum(transitions)
 
         audio_args: list[str] = []; audio_map: list[str] = []
@@ -479,7 +512,7 @@ class Renderer:
             volume=max(0,min(1,float(project.get("soundtrack",{}).get("volume",100))/100))
             fade = project.get("soundtrack",{}).get("fadeOut",True)
             af=f"volume={volume}"
-            if fade: af += f",afade=t=out:st={max(0,total_duration-2)}:d=2"
+            if fade: af += f",afade=t=out:st={format_ffmpeg_number(max(0,total_duration-2))}:d=2"
             filter_graph += f";[{audio_index}:a]{af}[aout]"
             audio_map=["-map","[aout]","-c:a","aac","-b:a","192k"]
         progress(55, "Composing transitions and soundtrack")
