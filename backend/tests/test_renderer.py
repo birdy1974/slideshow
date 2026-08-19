@@ -80,53 +80,28 @@ class RendererFallbackTest(unittest.TestCase):
 
 
 class TransitionTimingTest(unittest.TestCase):
-    def test_effective_transitions_clamp_to_remaining_clip_time(self) -> None:
+    def test_transitions_are_additional_timeline_time(self) -> None:
         media = [
-            {"duration": 2, "transitionTime": 3},   # oversized: limited to min(1.95, next 0.95)
-            {"duration": 1, "transitionTime": .5},  # fits both sides
-            {"duration": 5, "transitionTime": 1},   # last item's transition is never used
+            {"duration": 5, "transitionTime": 3},
+            {"duration": 5, "transitionTime": 3},
+            {"duration": 5, "transitionTime": 3},
+            {"duration": 5, "transitionTime": 3},
         ]
         transitions = Renderer.effective_transitions(media)
-        self.assertEqual([0.95, 0.5], transitions)
-        durations = [2, 1, 5]
-        self.assertEqual(2 + 1 - 0.95 + 5 - 0.5, sum(durations) - sum(transitions))
+        self.assertEqual([3, 3, 3], transitions)
+        self.assertEqual(29, sum(item["duration"] for item in media) + sum(transitions))
 
-    def test_effective_transitions_cannot_exceed_cumulative_time(self) -> None:
-        # A chain of minimum-length clips with maximum transitions must still
-        # yield a positive total and never a negative remaining time.
-        media = [
-            {"duration": .2, "transitionTime": 5},
-            {"duration": .2, "transitionTime": 5},
-            {"duration": .2, "transitionTime": 5},
-        ]
-        transitions = Renderer.effective_transitions(media)
-        cumulative = .2
-        for transition, item in zip(transitions, media[:-1]):
-            self.assertGreaterEqual(transition, .05)
-            self.assertLessEqual(transition, cumulative - .05)
-            self.assertAlmostEqual(transition, .15)
-            cumulative += .2 - transition
-        self.assertGreater(cumulative, 0)
+    def test_transition_has_xfade_minimum_but_is_not_limited_by_clip_length(self) -> None:
+        self.assertEqual([3], Renderer.effective_transitions([
+            {"duration": .2, "transitionTime": 3}, {"duration": .2, "transitionTime": 3},
+        ]))
+        self.assertEqual([.05], Renderer.effective_transitions([
+            {"duration": 1, "transitionTime": 0}, {"duration": 1},
+        ]))
 
     def test_empty_and_single_item_media(self) -> None:
         self.assertEqual([], Renderer.effective_transitions([]))
         self.assertEqual([], Renderer.effective_transitions([{"duration": 5, "transitionTime": 99}]))
-
-    def test_last_clip_is_fully_included_in_total(self) -> None:
-        # The composed length must keep the final clip's full duration (minus
-        # only its incoming transition) — the last frame is never dropped.
-        media = [
-            {"duration": 5, "transitionTime": 1},
-            {"duration": 5, "transitionTime": 1},
-            {"duration": 7, "transitionTime": 1},
-        ]
-        transitions = Renderer.effective_transitions(media)
-        self.assertEqual([1, 1], transitions)
-        durations = [5, 5, 7]
-        self.assertEqual(sum(durations) - sum(transitions), 15)  # 5+5+7-1-1
-        # The final clip contributes its whole 7s minus the 1s overlap of the
-        # transition that leads into it.
-        self.assertEqual(7 - 1, durations[-1] - transitions[-1])
 
 
 class OutputProtectionTest(unittest.TestCase):
@@ -276,29 +251,34 @@ class MediaValidationTest(unittest.TestCase):
 
 class FilterGraphTest(unittest.TestCase):
     def test_three_equal_clips_use_cumulative_xfade_offsets(self) -> None:
-        # 5s + 5s + 5s with 1s transitions: first xfade at 4s, second at 8s.
+        # Holds are preserved and transitions are added: boundaries are at 5s and 11s.
         graph = build_filter_graph([5, 5, 5], [1, 1], ["fade", "dissolve"])
         self.assertEqual(
             "[0:v]settb=AVTB,setpts=PTS-STARTPTS[s0];"
             "[1:v]settb=AVTB,setpts=PTS-STARTPTS[s1];"
             "[2:v]settb=AVTB,setpts=PTS-STARTPTS[s2];"
-            "[s0][s1]xfade=transition=fade:duration=1:offset=4[x1];"
-            "[x1][s2]xfade=transition=dissolve:duration=1:offset=8[vout]",
+            "[s0][s1]xfade=transition=fade:duration=1:offset=5[x1];"
+            "[x1][s2]xfade=transition=dissolve:duration=1:offset=11[vout]",
             graph,
         )
 
     def test_single_clip_resets_timestamps_to_vout(self) -> None:
         self.assertEqual("[0:v]settb=AVTB,setpts=PTS-STARTPTS[vout]", build_filter_graph([5], [], []))
 
-    def test_two_clip_offset_is_first_duration_minus_transition(self) -> None:
+    def test_fps_is_enforced_for_every_xfade_input(self) -> None:
+        graph = build_filter_graph([5, 5], [3], ["fade"], fps=30)
+        self.assertIn("[0:v]fps=30,settb=AVTB,setpts=PTS-STARTPTS[s0]", graph)
+        self.assertIn("[1:v]fps=30,settb=AVTB,setpts=PTS-STARTPTS[s1]", graph)
+
+    def test_two_clip_offset_starts_after_first_clip_hold(self) -> None:
         graph = build_filter_graph([5, 7], [1], ["wipeleft"])
-        self.assertIn("[s0][s1]xfade=transition=wipeleft:duration=1:offset=4[vout]", graph)
+        self.assertIn("[s0][s1]xfade=transition=wipeleft:duration=1:offset=5[vout]", graph)
 
     def test_offset_formatting_avoids_float_noise(self) -> None:
         self.assertEqual("0.8", format_ffmpeg_number(0.8000000000000002))
         graph = build_filter_graph([1.1, 1.1], [0.3], ["fade"])
-        self.assertIn("offset=0.8", graph)
-        self.assertNotRegex(graph, r"0\.7999|0\.800000")
+        self.assertIn("offset=1.1", graph)
+        self.assertNotRegex(graph, r"1\.0999|1\.100000")
 
 
 if __name__ == "__main__":

@@ -47,10 +47,10 @@ type AudioTrack = { id: number; name: string; path: string; duration: string; co
 const initialMedia: MediaItem[] = []
 
 // --- Shared timing rules ---------------------------------------------------
-// These mirror the backend renderer exactly: every clip runs at least 0.2 s,
-// and each transition is clamped so it can never overlap more than the
-// remaining time of either clip it joins. Keeping the two sides in sync means
-// the estimated total shown in the UI always equals the rendered MP4 length,
+// These mirror the backend renderer exactly: every clip runs at least 0.2 s
+// and every transition is additional timeline time, rather than time borrowed
+// from its neighbouring clips. Keeping the two sides in sync means the
+// estimated total shown in the UI always equals the rendered MP4 length,
 // even after extreme transition/duration edits.
 const MIN_CLIP_SECONDS = 0.2
 const MIN_TRANSITION_SECONDS = 0.05
@@ -62,9 +62,9 @@ function timelineModel(items: MediaItem[]) {
   const starts: number[] = [0]
   const transitions: number[] = []
   for (let i = 1; i < items.length; i++) {
-    const transition = clampNumber(items[i - 1].transitionTime ?? 1, MIN_TRANSITION_SECONDS, Math.min(starts[i - 1] + durations[i - 1] - MIN_TRANSITION_SECONDS, durations[i] - MIN_TRANSITION_SECONDS))
+    const transition = Math.max(MIN_TRANSITION_SECONDS, Number.isFinite(items[i - 1].transitionTime) ? items[i - 1].transitionTime : 1)
     transitions.push(transition)
-    starts.push(starts[i - 1] + durations[i - 1] - transition)
+    starts.push(starts[i - 1] + durations[i - 1] + transition)
   }
   const total = items.length ? starts[items.length - 1] + durations[items.length - 1] : 0
   return { durations, starts, transitions, total }
@@ -337,16 +337,9 @@ function App() {
     }catch(error){notify(`Load failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
   const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
-  // Clamp a transition so it respects the time rules of both clips it joins
-  // (and the cumulative timeline, matching the renderer's xfade offsets).
-  // The upper bound always accounts for the NEXT clip's full duration, so the
-  // final clip still limits the transition that leads into it.
-  const transitionMaxFor = (items: MediaItem[], index: number) => {
-    if (index < 0 || index >= items.length - 1) return MIN_TRANSITION_SECONDS
-    const model = timelineModel(items)
-    const max = Math.min(model.starts[index] + model.durations[index] - MIN_TRANSITION_SECONDS, model.durations[index + 1] - MIN_TRANSITION_SECONDS)
-    return Math.max(MIN_TRANSITION_SECONDS, max)
-  }
+  // Transition time is extra timeline time, so it is not limited by either
+  // neighbouring clip.  Keep only a practical upper bound and xfade's minimum.
+  const transitionMaxFor = (items: MediaItem[], index: number) => index < 0 || index >= items.length - 1 ? MIN_TRANSITION_SECONDS : 3600
   const clampTransitionFor = (items: MediaItem[], index: number, value: number) => {
     if (index < 0 || index >= items.length - 1) return value
     return clampNumber(value, MIN_TRANSITION_SECONDS, transitionMaxFor(items, index))
