@@ -122,7 +122,7 @@ def delete_project(project_id: int) -> dict[str, bool]:
 @app.delete("/api/projects")
 def delete_all_projects() -> dict[str, bool]:
     """Delete all projects from the database."""
-    with db.connect() as conn:
+    with db.connect(write=True) as conn:
         conn.execute("DELETE FROM projects")
     return {"deleted": True}
 
@@ -161,7 +161,7 @@ def cleanup_temporary_files() -> dict[str, Any]:
                 log.warning(f"Could not delete {item}: {e}")
     
     # Delete all jobs from database
-    with db.connect() as conn:
+    with db.connect(write=True) as conn:
         conn.execute("DELETE FROM render_jobs")
     
     return {
