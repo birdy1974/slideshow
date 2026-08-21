@@ -82,6 +82,37 @@ class SourcePathTest(unittest.TestCase):
         resolved = source_path(self.settings, {"path": "/photos/holiday.2024", "name": "shot.jpg"})
         self.assertEqual(folder / "shot.jpg", resolved)
 
+    def test_special_characters_in_photo_and_music_names(self) -> None:
+        """Spaces, underscores, dashes, parentheses and unicode must round-trip."""
+        folder = self.photos / "holiday 2024" / "_schilderij"
+        folder.mkdir(parents=True)
+        photo = "My Photo - 1_final (hdr).jpg"
+        (folder / photo).write_bytes(b"jpg-bytes")
+        music_dir = self.settings.music_dir / "4 Strings - Main Line (2006)"
+        music_dir.mkdir()
+        track = "01 - Take Me Away (Into The Night).mp3"
+        (music_dir / track).write_bytes(b"mp3-bytes")
+
+        listed = browse(self.settings, "photos", "holiday 2024/_schilderij")
+        self.assertEqual([photo], [x["name"] for x in listed["entries"] if x["kind"] != "directory"])
+        self.assertEqual(f"/photos/holiday 2024/_schilderij/{photo}", listed["entries"][0]["path"])
+
+        resolved_photo = source_path(self.settings, {
+            "name": photo, "path": f"/photos/holiday 2024/_schilderij/{photo}",
+        })
+        self.assertEqual(folder / photo, resolved_photo)
+        self.assertTrue(resolved_photo.is_file())
+
+        resolved_track = source_path(self.settings, {
+            "name": track, "path": f"/music/4 Strings - Main Line (2006)/{track}",
+        })
+        self.assertEqual(music_dir / track, resolved_track)
+        # Folder + name form (legacy snapshots) must still find the file.
+        self.assertEqual(
+            music_dir / track,
+            source_path(self.settings, {"name": track, "path": "/music/4 Strings - Main Line (2006)"}),
+        )
+
     def test_directory_item_is_reported_as_a_folder(self) -> None:
         from app.renderer import Renderer
         from app.database import Database

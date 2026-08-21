@@ -8,17 +8,27 @@ import {
 
 type MediaRoot = 'photos' | 'videos' | 'music'
 
-// Streams a file from a mounted root through the backend (used for MP3 preview playback).
-function mediaFileUrl(root: MediaRoot, serverPath: string) {
-  const relative = serverPath.replace(new RegExp(`^/${root}/?`), '')
-  return `/api/media/file?root=${root}&path=${encodeURIComponent(relative)}`
+// Encode each path segment so spaces, dashes, parentheses and unicode survive
+// the query string, while leaving `/` as a real separator (some proxies reject %2F).
+function encodeMediaRelative(relative: string) {
+  return relative.split('/').map(part => encodeURIComponent(part)).join('/')
 }
+
+// Streams a file from a mounted root through the backend (thumbnails, lightbox, MP3).
+function mediaFileUrl(root: MediaRoot, serverPath: string) {
+  let relative = (serverPath || '').split('\\').join('/')
+  const prefix = '/' + root
+  if (relative === prefix || relative.startsWith(prefix + '/')) relative = relative.slice(prefix.length)
+  if (relative.startsWith('/')) relative = relative.slice(1)
+  return `/api/media/file?root=${root}&path=${encodeMediaRelative(relative)}`
+}
+
 
 // Projects historically stored `path` as the parent folder and `name` as the
 // filename. Newer items store the full file path in `path`. Rebuild a file
 // path that `/api/media/file` and the renderer can both open.
 function mediaItemPath(item: { path: string; name: string }) {
-  const path = (item.path || '').replace(/\\/g, '/')
+  const path = (item.path || '').split('\\').join('/')
   const name = item.name || ''
   const last = path.split('/').filter(Boolean).pop() || ''
   if (name && last === name) return path
@@ -36,12 +46,22 @@ function mediaRootFromPath(fullPath: string, fallback: MediaRoot = 'photos'): Me
 }
 
 function itemThumbUrl(item: MediaItem) {
-  if (item.src) return item.src
   if (item.type === 'title') return ''
   const full = mediaItemPath(item)
-  if (!full) return ''
+  if (!full) return item.src || ''
   const root = item.type === 'video' ? 'videos' : mediaRootFromPath(full, 'photos')
   return mediaFileUrl(root, full)
+}
+
+type LightboxTarget = { title: string; src: string; kind: 'image' | 'video' | 'audio' }
+
+function MediaLightbox({ title, src, kind, onClose }: LightboxTarget & { onClose: () => void }) {
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}>
+    <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
+      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div>
+      {kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay /> : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay /> : <img className="lightbox-media" src={src} alt={title} />}
+    </div>
+  </div>
 }
 
 // One shared <audio> element at a time; returns the key currently playing and a toggle.
@@ -273,6 +293,13 @@ function App() {
   const [showProjectLoader, setShowProjectLoader] = useState(false)
   const [showNewProjectConfirm, setShowNewProjectConfirm] = useState(false)
   const [overwritePath, setOverwritePath] = useState<string | null>(null)
+  const [lightbox, setLightbox] = useState<LightboxTarget | null>(null)
+  const openMediaLightbox = (item: MediaItem) => {
+    if (item.type === 'title') return
+    const src = itemThumbUrl(item)
+    if (!src) return
+    setLightbox({ title: item.name, src, kind: item.type === 'video' ? 'video' : 'image' })
+  }
 
   // Estimated timeline using the same clamped transition rules the renderer
   // applies, so the on-screen total can never drift or go negative.
@@ -634,7 +661,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{itemThumbUrl(item) ? <img src={itemThumbUrl(item)} alt={item.name}/> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
+              return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{itemThumbUrl(item) ? <img src={itemThumbUrl(item)} alt={item.name} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} /> : null}{item.type !== 'title' && itemThumbUrl(item) ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><NumberStepper value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? 1.2} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} /><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
@@ -647,7 +674,7 @@ function App() {
             <div className="timeline-list">
               {media.map((item, index) => <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                 <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
-                <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}>{itemThumbUrl(item) ? <img src={itemThumbUrl(item)} alt={item.name}/> : <span className="title-symbol">T</span>}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
+                <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && itemThumbUrl(item) ? 'thumb-open' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{itemThumbUrl(item) ? <img src={itemThumbUrl(item)} alt={item.name}/> : <span className="title-symbol">T</span>}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
                 <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                 <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                 <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
@@ -691,6 +718,7 @@ function App() {
     {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
+    {lightbox && <MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={() => setLightbox(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -712,11 +740,16 @@ function TextFrameEditor({item,update,style,onClose}:{item:MediaItem,update:(c:P
 
 function MediaBrowser({ onClose, onAdd, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, audioOnly?:boolean }) {
   const [root,setRoot]=useState<MediaRoot>(audioOnly?'music':'photos');const [path,setPath]=useState('');const [entries,setEntries]=useState<any[]>([]);const [selected,setSelected]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  const [lightbox,setLightbox]=useState<LightboxTarget|null>(null)
   const preview=useAudioPreview(message=>setError(message))
-  useEffect(()=>{setLoading(true);setError('');fetch(`/api/media/browse?root=${root}&path=${encodeURIComponent(path)}`).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(data=>setEntries(data.entries)).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[root,path])
+  useEffect(()=>{setLoading(true);setError('');fetch(`/api/media/browse?root=${root}&path=${encodeMediaRelative(path)}`).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(data=>setEntries(data.entries)).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[root,path])
   const chooseRoot=(value:'photos'|'videos'|'music')=>{setRoot(value);setPath('');setSelected([])}
   const open=(entry:any)=>{if(entry.kind==='directory')setPath(entry.relativePath);else setSelected(items=>items.some(x=>x.path===entry.path)?items.filter(x=>x.path!==entry.path):[...items,entry])}
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={root==='photos'?'active':''} onClick={()=>chooseRoot('photos')}><ImageIcon size={16}/> photos</button><button className={root==='videos'?'active':''} onClick={()=>chooseRoot('videos')}><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map((file,i)=><button className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''}`} key={file.path} onClick={()=>open(file)}><div className="server-file-icon">{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(root,file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='directory'?<FolderOpen size={34}/>:file.kind==='video'?<Video size={34}/>:file.kind==='audio'?<Music2 size={34}/>:<ImageIcon size={34}/>} {selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</div><strong>{file.name}</strong><small>{file.kind==='directory'?'Folder':`${(file.size/1024/1024).toFixed(1)} MB`}</small></button>)}</div><div className="browser-info"><Info size={15}/> Server paths are validated against /photos and /videos. Files are never uploaded through the browser.</div></div></div><div className="modal-foot"><span>{selected.length} files selected</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!selected.length} onClick={()=>onAdd(selected)}><Plus size={15}/> Add to storyline</button></div></div></div>
+  const viewFile=(entry:any)=>{
+    const kind: LightboxTarget['kind'] = entry.kind==='video'?'video':entry.kind==='audio'?'audio':'image'
+    setLightbox({ title: entry.name, src: mediaFileUrl(root, entry.path), kind })
+  }
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={root==='photos'?'active':''} onClick={()=>chooseRoot('photos')}><ImageIcon size={16}/> photos</button><button className={root==='videos'?'active':''} onClick={()=>chooseRoot('videos')}><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible. Spaces and punctuation in file names are allowed.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?'Open folder':file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(root,file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='image'?<img src={mediaFileUrl(root,file.path)} alt={file.name}/>:file.kind==='directory'?<FolderOpen size={34}/>:file.kind==='video'?<><video src={mediaFileUrl(root,file.path)} muted preload="metadata"/><span className="video-tag"><Video size={10}/> video</span></>:file.kind==='audio'?<Music2 size={34}/>:<ImageIcon size={34}/>}{(file.kind==='image'||file.kind==='video')&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?'Folder':`${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo to preview it. Click the name to select it for the storyline. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!selected.length} onClick={()=>onAdd(selected)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
 }
 
 // Pick a destination folder inside the mounted /output volume. Folders are
