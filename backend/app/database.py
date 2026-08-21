@@ -7,12 +7,16 @@ setting can never silently discard it before a matching migration is shipped.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
@@ -120,32 +124,90 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+BUSY_TIMEOUT_MS = 30_000
+_JOURNAL_MODE_ATTEMPTS = 10
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
         self._write_lock = threading.RLock()
+        self._journal_mode_ready = False
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as conn:
+        self._ensure_journal_mode()
+        with self.connect(write=True) as conn:
             conn.executescript(MIGRATION_1)
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, utcnow()),
             )
 
-    @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
+    def _ensure_journal_mode(self) -> None:
+        """Switch the database file to WAL exactly once, never per connection.
+
+        `PRAGMA journal_mode=WAL` needs a brief exclusive lock on the file, so
+        running it on every connection turns any concurrent writer (a render job
+        updating progress, for instance) into a spurious "database is locked"
+        error on plain readers. The journal mode is a property of the file and
+        survives across connections, so setting it once at startup is enough.
+        """
+        if self._journal_mode_ready:
+            return
+        with self._write_lock:
+            if self._journal_mode_ready:
+                return
+            last_error: sqlite3.OperationalError | None = None
+            for attempt in range(_JOURNAL_MODE_ATTEMPTS):
+                conn = self._new_connection()
+                try:
+                    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+                    if str(mode).lower() != "wal":
+                        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                    if str(mode).lower() == "wal":
+                        self._journal_mode_ready = True
+                        return
+                    last_error = sqlite3.OperationalError(f"journal_mode stayed {mode!r}")
+                except sqlite3.OperationalError as exc:  # pragma: no cover - timing dependent
+                    last_error = exc
+                finally:
+                    conn.close()
+                time.sleep(min(0.05 * (attempt + 1), 0.5))
+            # WAL is an optimisation, not a correctness requirement: a database on
+            # a filesystem that cannot support it (some network mounts) still works
+            # in the default rollback journal mode with a busy timeout.
+            self._journal_mode_ready = True
+            if last_error is not None:
+                log.warning("Could not enable WAL journal mode for %s: %s", self.path, last_error)
+
+    def _new_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # busy_timeout must come first so every later statement waits for a
+        # competing writer instead of failing instantly with SQLITE_BUSY.
+        conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        try:
-            yield conn
-        finally:
-            conn.close()
+        return conn
+
+    @contextmanager
+    def connect(self, write: bool = False) -> Iterator[sqlite3.Connection]:
+        """Open a connection; `write=True` serialises writers in this process."""
+        self._ensure_journal_mode()
+        if not write:
+            conn = self._new_connection()
+            try:
+                yield conn
+            finally:
+                conn.close()
+            return
+        with self._write_lock:
+            conn = self._new_connection()
+            try:
+                yield conn
+            finally:
+                conn.close()
 
     def list_projects(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -176,7 +238,7 @@ class Database:
         canonical = json.loads(json.dumps(payload, ensure_ascii=False))
         canonical.pop("id", None); canonical.pop("revision", None); canonical.pop("createdAt", None); canonical.pop("updatedAt", None)
 
-        with self._write_lock, self.connect() as conn:
+        with self.connect(write=True) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 if project_id is None:
@@ -227,12 +289,12 @@ class Database:
         return saved
 
     def delete_project(self, project_id: int) -> bool:
-        with self._write_lock, self.connect() as conn:
+        with self.connect(write=True) as conn:
             result = conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
         return bool(result.rowcount)
 
     def create_job(self, job: dict[str, Any]) -> None:
-        with self.connect() as conn:
+        with self.connect(write=True) as conn:
             conn.execute(
                 "INSERT INTO render_jobs(id,project_id,kind,status,progress,stage,settings_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
                 (job["id"], job["project_id"], job["kind"], "queued", 0, "Queued", json.dumps(job.get("settings", {})), utcnow()),
@@ -244,7 +306,7 @@ class Database:
         if not values:
             return
         sql = "UPDATE render_jobs SET " + ",".join(f"{key}=?" for key in values) + " WHERE id=?"
-        with self.connect() as conn:
+        with self.connect(write=True) as conn:
             conn.execute(sql, (*values.values(), job_id))
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:

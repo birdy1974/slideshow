@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -88,6 +89,87 @@ class DatabaseRoundTripTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(0, orphans)
         self.assertEqual(1, fresh)
+
+
+class ConcurrentAccessTest(unittest.TestCase):
+    """Regression: polling GET /api/jobs/{id} while a render job writes progress
+    used to blow up with `sqlite3.OperationalError: database is locked`, because
+    every connection re-ran `PRAGMA journal_mode=WAL` (which needs an exclusive
+    lock) before the busy timeout had been configured."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.temp.name) / "slideshow.db")
+        self.db.initialize()
+        self.project_id = self.db.save_project({"project": {"name": "p"}})["id"]
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_reads_succeed_while_a_writer_holds_a_transaction(self) -> None:
+        self.db.create_job({"id": "job-1", "project_id": self.project_id, "kind": "render"})
+        with self.db.connect(write=True) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE render_jobs SET progress=42 WHERE id=?", ("job-1",))
+            # A separate reader connection must not fail while the write is open.
+            job = self.db.get_job("job-1")
+            self.assertIsNotNone(job)
+            self.assertEqual("queued", job["status"])
+            self.assertEqual([], self.db.list_jobs(project_id=self.project_id + 999))
+            writer.execute("COMMIT")
+        self.assertEqual(42, self.db.get_job("job-1")["progress"])
+
+    def test_parallel_readers_and_writers_do_not_deadlock(self) -> None:
+        self.db.create_job({"id": "job-2", "project_id": self.project_id, "kind": "preview"})
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def writer() -> None:
+            try:
+                for step in range(60):
+                    self.db.update_job("job-2", progress=float(step), stage=f"step {step}")
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+            finally:
+                stop.set()
+
+        def reader() -> None:
+            try:
+                while not stop.is_set():
+                    self.assertIsNotNone(self.db.get_job("job-2"))
+                    self.db.list_jobs()
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        self.assertEqual([], errors)
+        self.assertEqual(59, self.db.get_job("job-2")["progress"])
+
+    def test_reads_work_when_the_file_is_not_in_wal_mode(self) -> None:
+        """The exact production failure: a database still in rollback-journal
+        mode plus an in-flight writer made the per-connection WAL switch abort."""
+        with self.db.connect(write=True) as conn:
+            conn.execute("PRAGMA journal_mode=DELETE")
+        self.db._journal_mode_ready = False
+        self.db.create_job({"id": "job-3", "project_id": self.project_id, "kind": "render"})
+
+        writer = self.db._new_connection()
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE render_jobs SET stage='Encoding' WHERE id=?", ("job-3",))
+            self.assertIsNotNone(self.db.get_job("job-3"))
+            writer.execute("COMMIT")
+        finally:
+            writer.close()
+
+    def test_journal_mode_is_wal_and_not_reapplied_per_connection(self) -> None:
+        with self.db.connect() as conn:
+            self.assertEqual("wal", conn.execute("PRAGMA journal_mode").fetchone()[0].lower())
+            self.assertEqual(30000, conn.execute("PRAGMA busy_timeout").fetchone()[0])
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ from .media import UnsafePath, mounted_path, source_path
 
 log = logging.getLogger(__name__)
 
+KEN_BURNS_MAX_ZOOM = 1.12
 RESOLUTIONS = {
     "4K UHD · 2160p": (3840, 2160), "Full HD · 1080p": (1920, 1080),
     "HD · 720p": (1280, 720), "SD · 480p": (854, 480),
@@ -230,6 +231,37 @@ def _summarize_ffmpeg_log(text: str, *, max_lines: int = 8) -> str:
 def format_ffmpeg_number(value: float) -> str:
     """Stable FFmpeg numeric literal — strips binary float noise (4.999999 → 5)."""
     return f"{round(float(value), 6):g}"
+
+
+def _even(value: float) -> int:
+    """Nearest even pixel count — libx264/yuv420p rejects odd dimensions."""
+    return max(2, int(value) // 2 * 2)
+
+
+def fill_frame_filter(width: int, height: int, fps: int) -> str:
+    """Cover the frame, cropping the overflowing edges (videos, title cards)."""
+    return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
+
+
+def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1.0) -> str:
+    """Show the *whole* picture, letterboxed over a blurred copy of itself.
+
+    `scale=...:force_original_aspect_ratio=decrease` never crops, and the bars
+    it leaves are filled by the same image scaled to cover, blurred and dimmed.
+    `zoom_headroom` shrinks the visible picture by that factor so a later
+    zoompan (Ken Burns) can zoom in that far without cutting anything off.
+    """
+    inner_w, inner_h = _even(width / zoom_headroom), _even(height / zoom_headroom)
+    # Blur on a downscaled copy: visually identical after upscaling, far cheaper.
+    blur_w, blur_h = _even(max(32, width / 8)), _even(max(32, height / 8))
+    sigma = format_ffmpeg_number(max(3.0, blur_w / 32))
+    return (
+        "split=2[bgsrc][fgsrc];"
+        f"[bgsrc]scale={blur_w}:{blur_h}:force_original_aspect_ratio=increase,crop={blur_w}:{blur_h},"
+        f"gblur=sigma={sigma},scale={width}:{height},eq=brightness=-0.12:saturation=1.2,setsar=1[bgblur];"
+        f"[fgsrc]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,setsar=1[fgfit];"
+        f"[bgblur][fgfit]overlay=(W-w)/2:(H-h)/2,setsar=1,fps={fps}"
+    )
 
 
 def build_filter_graph(durations: list[float], transitions: list[float], xfade_names: list[str], fps: int | None = None) -> str:
@@ -530,7 +562,15 @@ class Renderer:
             duration = segment_durations[index]
             segment = work / f"segment-{index:04d}.mp4"
             kind_name = item.get("type", "image")
-            base_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
+            effect = str(item.get("effect", ""))
+            ken_burns = kind_name == "image" and effect.startswith("Ken Burns")
+            if kind_name == "image":
+                # Photos are never cropped: fit the whole picture in the frame and
+                # fill the letterbox bars with a blurred copy. Ken Burns clips are
+                # fitted smaller so the zoom still cannot reach the picture edges.
+                base_filter = fit_frame_filter(width, height, fps, KEN_BURNS_MAX_ZOOM if ken_burns else 1.0)
+            else:
+                base_filter = fill_frame_filter(width, height, fps)
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-y"]
             clip_t = format_ffmpeg_number(duration)
             if kind_name == "title":
@@ -546,11 +586,15 @@ class Renderer:
                 if kind_name == "image": command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(source)]
                 else: command += ["-stream_loop", "-1", "-t", clip_t, "-i", str(source)]
             filters = [base_filter]
-            effect = str(item.get("effect", ""))
-            if kind_name == "image" and effect.startswith("Ken Burns"):
+            if ken_burns:
                 delta = "0.0008" if "Zoom in" in effect else "-0.0008" if "Zoom out" in effect else "0.0003"
-                start_zoom = "1" if delta.startswith("0") else "1.12"
-                filters.append(f"zoompan=z='max(1,min(1.12,{start_zoom}+on*{delta}))':d=1:s={width}x{height}:fps={fps}")
+                start_zoom = "1" if delta.startswith("0") else format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)
+                zoom = f"max(1,min({format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)},{start_zoom}+on*{delta}))"
+                # Anchor the zoom in the centre; zoompan otherwise defaults to the
+                # top-left corner, which would push the picture out of frame.
+                filters.append(
+                    f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={width}x{height}:fps={fps}"
+                )
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
