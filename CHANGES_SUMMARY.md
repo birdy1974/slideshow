@@ -198,3 +198,29 @@ network volumes where WAL mode cannot be enabled.
 - `backend/app/main.py`
 - `backend/tests/test_database.py`
 - `src/App.tsx`
+
+---
+
+## Date: 2026-08-21 (fourth round)
+
+### 11. **Internal Server Error when opening some photo folders**
+**Problem**: Browsing certain directories (e.g. `Willem, 13-jul 2025`) crashed
+`GET /api/media/browse` with HTTP 500. The container user could see the folder
+name in the parent listing but `iterdir()` raised `PermissionError` (DSM ACL /
+POSIX mode / wrong PUID). One unreadable child or dangling symlink could also
+take down an otherwise readable folder.
+**Fix**:
+- Unreadable folders now return HTTP 403 with a clear “no permission” message
+  instead of a 500 traceback.
+- Parent listings still succeed; denied folders are marked `accessible: false`
+  and shown with a **NO ACCESS** badge so they are not opened.
+- Children that cannot be stat’d (dangling links, ACL holes) are skipped.
+- The media picker parses FastAPI’s JSON error body so the notice is readable.
+
+**Files modified**:
+- `backend/app/media.py`
+- `backend/app/main.py`
+- `backend/tests/test_media.py`
+- `src/App.tsx`
+- `src/styles.css`
+- `docs/synology-ds918.md`

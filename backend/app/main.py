@@ -230,6 +230,7 @@ def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), pa
     try: return browse(settings, root, path, folders_only=folders)
     except UnsafePath as exc: raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc: raise HTTPException(404, f"Folder not found: {exc}") from exc
+    except PermissionError as exc: raise HTTPException(403, str(exc)) from exc
 
 
 STREAMABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
@@ -246,9 +247,14 @@ def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str =
     """
     try: target = safe_path(settings.media_roots[root], path)
     except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
-    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    try:
+        is_file = target.is_file()
+        size = target.stat().st_size if is_file else 0
+    except PermissionError as exc:
+        raise HTTPException(403, f"No permission to read this file: {target.name}") from exc
+    if not is_file: raise HTTPException(404, "Media file not found")
     if target.suffix.lower() not in STREAMABLE_EXTENSIONS: raise HTTPException(403, "File type is not streamable")
-    if target.stat().st_size == 0:
+    if size == 0:
         # A 0-byte file streams an empty body, which shows up in the UI as a
         # silently broken thumbnail/lightbox. Fail loudly so the frontend can
         # render a clear "unavailable" placeholder instead.

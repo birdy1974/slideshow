@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +55,47 @@ class MediaSecurityTest(unittest.TestCase):
         result = browse(self.settings, "photos", "", folders_only=True)
         self.assertEqual(["trip"], [x["name"] for x in result["entries"]])
         with self.assertRaises(UnsafePath): browse(self.settings, "photos", "../output", folders_only=True)
+
+    def test_browse_unreadable_folder_raises_permission_error(self) -> None:
+        locked = self.settings.photos_dir / "Willem, 13-jul 2025"
+        locked.mkdir()
+        (locked / "secret.jpg").write_bytes(b"jpg")
+        original = locked.stat().st_mode
+        locked.chmod(0o000)
+        try:
+            if os.access(locked, os.R_OK):
+                self.skipTest("process can still read a 000 directory (e.g. running as root)")
+            with self.assertRaises(PermissionError) as ctx:
+                browse(self.settings, "photos", "Willem, 13-jul 2025")
+            self.assertIn("No permission to open", str(ctx.exception))
+            self.assertIn("Willem, 13-jul 2025", str(ctx.exception))
+        finally:
+            locked.chmod(original)
+
+    def test_browse_parent_survives_unreadable_child(self) -> None:
+        locked = self.settings.photos_dir / "Willem, 13-jul 2025"
+        locked.mkdir()
+        original = locked.stat().st_mode
+        locked.chmod(0o000)
+        try:
+            result = browse(self.settings, "photos", "")
+            by_name = {x["name"]: x for x in result["entries"]}
+            self.assertIn("trip", by_name)
+            self.assertTrue(by_name["trip"]["accessible"])
+            self.assertIn("Willem, 13-jul 2025", by_name)
+            self.assertEqual("directory", by_name["Willem, 13-jul 2025"]["kind"])
+            if not os.access(locked, os.R_OK):
+                self.assertFalse(by_name["Willem, 13-jul 2025"]["accessible"])
+        finally:
+            locked.chmod(original)
+
+    def test_browse_skips_children_that_cannot_be_statd(self) -> None:
+        dangling = self.settings.photos_dir / "broken-link.jpg"
+        dangling.symlink_to(self.settings.photos_dir / "does-not-exist.jpg")
+        result = browse(self.settings, "photos", "")
+        names = [x["name"] for x in result["entries"]]
+        self.assertIn("trip", names)
+        self.assertNotIn("broken-link.jpg", names)
 
 
 class SourcePathTest(unittest.TestCase):

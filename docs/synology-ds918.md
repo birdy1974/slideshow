@@ -71,6 +71,16 @@ Back up the entire host `CONFIG_PATH`. Stop the container or use SQLite's online
 - 4K CPU rendering can be very slow and memory-intensive.
 - Large source photos are normalized by FFmpeg; pre-resizing unusually large scans reduces render time.
 
+## Folder permissions
+
+The container only sees what `PUID`/`PGID` can read. A shared folder can appear
+in the media browser while a subfolder (often one owned by another DSM user, or
+protected by an ACL) returns **No permission**. That is not a crash: use **←
+Parent** and pick another directory, or grant the deployment user read access
+in DSM **Control Panel → Shared Folder → Permissions** (and matching POSIX
+permissions if you use SSH). After changing IDs, recreate the container so it
+picks up the new `PUID`/`PGID`.
+
 ## Network safety
 
 The initial release assumes a trusted LAN and has no built-in login. Do not expose port 8080 directly to the internet. If remote access is needed, place it behind Synology's reverse proxy with HTTPS and authentication or access it through a VPN.
