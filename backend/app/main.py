@@ -54,12 +54,12 @@ def validate_mount_references(payload: dict[str, Any]) -> None:
         if item.get("type") == "title":
             continue
         try:
-            mounted_path(settings, str(item.get("path", "")), "" if Path(str(item.get("path", ""))).suffix else str(item.get("name", "")))
+            source_path(settings, item)
         except UnsafePath as exc:
             raise HTTPException(422, f"Invalid media path for {item.get('name','item')}: {exc}") from exc
     for track in payload.get("soundtrack", {}).get("tracks", []):
         try:
-            mounted_path(settings, str(track.get("path", "")), "" if Path(str(track.get("path", ""))).suffix else str(track.get("name", "")))
+            source_path(settings, track)
         except UnsafePath as exc:
             raise HTTPException(422, f"Invalid soundtrack path for {track.get('name','track')}: {exc}") from exc
 
@@ -184,12 +184,23 @@ STREAMABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 @app.get("/api/media/file")
 def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str = "") -> FileResponse:
-    """Stream a media file from a read-only mount, e.g. to preview an MP3 in the browser."""
+    """Stream a media file from a read-only mount for thumbnails, lightbox, and MP3 preview.
+
+    Filenames may contain spaces, underscores, dashes, parentheses and other
+    ordinary characters — they are not sanitized. The response is inline so
+    ``<img>``/``<video>``/``<audio>`` tags can display it (attachment would
+    hide thumbnails in several browsers).
+    """
     try: target = safe_path(settings.media_roots[root], path)
     except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
-    if target.suffix.lower() not in STREAMABLE_EXTENSIONS: raise HTTPException(403, "File type is not streamable")
     if not target.is_file(): raise HTTPException(404, "Media file not found")
-    return FileResponse(target, media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream", filename=target.name)
+    if target.suffix.lower() not in STREAMABLE_EXTENSIONS: raise HTTPException(403, "File type is not streamable")
+    return FileResponse(
+        target,
+        media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+        filename=target.name,
+        content_disposition_type="inline",
+    )
 
 
 @app.post("/api/projects/{project_id}/jobs", status_code=202)

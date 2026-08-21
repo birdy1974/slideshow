@@ -220,7 +220,7 @@ class MediaValidationTest(unittest.TestCase):
             self.renderer._validate_media(project)
         message = str(ctx.exception)
         self.assertIn("Cannot render — these media files could not be read", message)
-        self.assertIn("photo1.jpg: file is empty (0 bytes)", message)
+        self.assertIn("photo1.jpg — file is empty (0 bytes)", message)
         self.assertIn("/photos/_schilderij/universe/photo1.jpg", message)
         self.assertIn("Remove or replace them, then try again.", message)
 
@@ -236,8 +236,8 @@ class MediaValidationTest(unittest.TestCase):
         with self.assertRaises(RenderError) as ctx:
             self.renderer._validate_media(project)
         message = str(ctx.exception)
-        self.assertIn("gone.jpg: file is missing", message)
-        self.assertIn("soundtrack 'We Are The Champions.mp3': file is empty (0 bytes)", message)
+        self.assertIn("gone.jpg — file is missing", message)
+        self.assertIn("soundtrack 'We Are The Champions.mp3' — file is empty (0 bytes)", message)
         self.assertNotIn("Title card", message)
 
     def test_ffprobe_reason_included_and_absent_ffprobe_degrades(self) -> None:
@@ -252,7 +252,7 @@ class MediaValidationTest(unittest.TestCase):
              mock.patch("app.renderer.subprocess.run", return_value=probe):
             with self.assertRaises(RenderError) as ctx:
                 self.renderer._validate_media(project)
-        self.assertIn("broken.jpg: Invalid data found when processing input", str(ctx.exception))
+        self.assertIn("broken.jpg — Invalid data found when processing input", str(ctx.exception))
 
         # No ffprobe: a non-empty file is allowed through (FFmpeg will be the judge).
         blind = Settings(
