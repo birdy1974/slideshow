@@ -54,12 +54,12 @@ def validate_mount_references(payload: dict[str, Any]) -> None:
         if item.get("type") == "title":
             continue
         try:
-            mounted_path(settings, str(item.get("path", "")), "" if Path(str(item.get("path", ""))).suffix else str(item.get("name", "")))
+            source_path(settings, item)
         except UnsafePath as exc:
             raise HTTPException(422, f"Invalid media path for {item.get('name','item')}: {exc}") from exc
     for track in payload.get("soundtrack", {}).get("tracks", []):
         try:
-            mounted_path(settings, str(track.get("path", "")), "" if Path(str(track.get("path", ""))).suffix else str(track.get("name", "")))
+            source_path(settings, track)
         except UnsafePath as exc:
             raise HTTPException(422, f"Invalid soundtrack path for {track.get('name','track')}: {exc}") from exc
 
@@ -187,8 +187,8 @@ def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str =
     """Stream a media file from a read-only mount, e.g. to preview an MP3 in the browser."""
     try: target = safe_path(settings.media_roots[root], path)
     except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
-    if target.suffix.lower() not in STREAMABLE_EXTENSIONS: raise HTTPException(403, "File type is not streamable")
     if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in STREAMABLE_EXTENSIONS: raise HTTPException(403, "File type is not streamable")
     return FileResponse(target, media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream", filename=target.name)
 
 

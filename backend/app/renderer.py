@@ -51,11 +51,23 @@ def ff_escape(value: str) -> str:
 
 
 def source_path(settings: Settings, item: dict[str, Any]) -> Path:
-    path = str(item.get("path", ""))
-    name = str(item.get("name", ""))
-    if Path(path).suffix:
+    """Resolve a media/soundtrack item to a file on a mounted root.
+
+    The UI used to store `path` as the parent folder and `name` as the
+    filename. Newer snapshots store the full file path in `path`. Both work.
+    Folder names that contain a dot (e.g. ``holiday.2024``) must not be treated
+    as files just because ``Path.suffix`` is non-empty — if `path` is a
+    directory, `name` is always joined.
+    """
+    path = str(item.get("path", "") or "").replace("\\", "/")
+    name = str(item.get("name", "") or "")
+    filename = Path(name).name
+    if filename and Path(path.rstrip("/")).name == filename:
         return mounted_path(settings, path)
-    return mounted_path(settings, path, name)
+    base = mounted_path(settings, path)
+    if not filename or base.is_file():
+        return base
+    return mounted_path(settings, path, filename)
 
 
 def xfade_name(label: str) -> str:
@@ -109,9 +121,7 @@ def _ui_path(item: dict[str, Any]) -> str:
     """Project-facing path (`/photos/...`) rather than the host mount path."""
     path = str(item.get("path", "")).replace("\\", "/")
     name = str(item.get("name", ""))
-    if Path(path).suffix:
-        return path
-    if name and (path.endswith("/" + name) or path == name):
+    if name and Path(path.rstrip("/")).name == name:
         return path
     if path and name:
         return f"{path.rstrip('/')}/{name}"
@@ -143,6 +153,8 @@ def _probe_readable(path: Path, ffprobe_bin: str) -> str | None:
     """
     if not path.exists():
         return "file is missing"
+    if path.is_dir():
+        return "is a folder, not a media file"
     if not path.is_file():
         return "not a file"
     try:
@@ -340,21 +352,21 @@ class Renderer:
             try:
                 path = source_path(self.settings, item)
             except UnsafePath as exc:
-                problems.append(f"{label}: invalid path ({exc}) ({_ui_path(item)})")
+                problems.append(f"{label} — invalid path ({exc})\n    {_ui_path(item)}")
                 continue
             reason = self._probe_readable(path)
             if reason:
-                problems.append(f"{label}: {reason} ({_ui_path(item) or path})")
+                problems.append(f"{label} — {reason}\n    {_ui_path(item) or path}")
         for track in project.get("soundtrack", {}).get("tracks", []):
             label = _short_label(str(track.get("name") or "track"))
             try:
                 path = source_path(self.settings, track)
             except UnsafePath as exc:
-                problems.append(f"soundtrack '{label}': invalid path ({exc}) ({_ui_path(track)})")
+                problems.append(f"soundtrack '{label}' — invalid path ({exc})\n    {_ui_path(track)}")
                 continue
             reason = self._probe_readable(path)
             if reason:
-                problems.append(f"soundtrack '{label}': {reason} ({_ui_path(track) or path})")
+                problems.append(f"soundtrack '{label}' — {reason}\n    {_ui_path(track) or path}")
         if not problems:
             return
         listed = "\n\n".join(f"  {line}" for line in problems)
@@ -585,8 +597,7 @@ class Renderer:
         if not tracks: return None
         sources=[]
         for track in tracks:
-            path=str(track.get("path","")); name=str(track.get("name",""))
-            source=mounted_path(self.settings,path) if Path(path).suffix else mounted_path(self.settings,path,name)
+            source=source_path(self.settings, track)
             if not source.exists(): raise RenderError(f"Soundtrack is missing: {source}")
             sources.append(source)
         output=work/"soundtrack.m4a"
