@@ -108,3 +108,8 @@ main{max-width:1530px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .empty-badge{position:absolute;right:5px;top:5px;display:flex;align-items:center;gap:3px;background:#fff3e3;color:#b9791f;font:700 7px Manrope;letter-spacing:.4px;padding:2px 5px;border-radius:3px;box-shadow:0 1px 3px #0002;pointer-events:none;z-index:3}
 .file-card.empty .file-thumb{outline:1px dashed #e0a75a}
 .file-card.empty .file-thumb img,.file-card.empty .file-thumb video{opacity:.35;filter:grayscale(.7)}
+.file-card.inaccessible{opacity:.78}
+.file-card.inaccessible .file-thumb,.file-card.inaccessible .server-file-icon{outline:1px dashed #c9a06a;cursor:not-allowed}
+.file-card.inaccessible .file-card-meta{cursor:not-allowed}
+.file-area .notice,.picker-body .notice{margin:0 0 12px;align-items:flex-start}
+.file-area .notice span,.picker-body .notice span{line-height:1.45}

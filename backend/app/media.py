@@ -1,7 +1,9 @@
 """Safe browsing and path resolution inside configured Docker mounts."""
 from __future__ import annotations
 
+import errno
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +58,43 @@ def source_path(settings: Settings, item: dict[str, Any]) -> Path:
     return mounted_path(settings, path, filename)
 
 
+def _is_denied(exc: BaseException) -> bool:
+    return isinstance(exc, PermissionError) or getattr(exc, "errno", None) in {errno.EACCES, errno.EPERM}
+
+
+def _folder_denied(folder: Path, root_name: str) -> PermissionError:
+    label = folder.name or root_name
+    return PermissionError(
+        f"No permission to open “{label}”. "
+        "The container user cannot read this folder — check DSM share/ACL permissions "
+        "and the PUID/PGID in your compose file."
+    )
+
+
+def _sort_key(path: Path) -> tuple[bool, str]:
+    try:
+        is_directory = path.is_dir()
+    except OSError:
+        is_directory = False
+    return (not is_directory, path.name.casefold())
+
+
+def _entry_meta(path: Path) -> tuple[bool, bool, os.stat_result] | None:
+    """Stat a child. None means it cannot be inspected and should be skipped."""
+    try:
+        stat = path.stat()
+        return path.is_dir(), path.is_file(), stat
+    except OSError:
+        return None
+
+
+def _dir_accessible(path: Path) -> bool:
+    try:
+        return os.access(path, os.R_OK)
+    except OSError:
+        return False
+
+
 def browse(settings: Settings, root_name: str, relative: str = "", folders_only: bool = False) -> dict[str, Any]:
     if root_name not in settings.media_roots:
         raise UnsafePath("Unknown or non-browsable media root")
@@ -63,29 +102,41 @@ def browse(settings: Settings, root_name: str, relative: str = "", folders_only:
         raise UnsafePath("The output root is only browsable when picking a destination folder")
     root = settings.media_roots[root_name]
     folder = safe_path(root, relative)
-    if not folder.exists() or not folder.is_dir():
-        raise FileNotFoundError(str(folder))
+    try:
+        if not folder.exists() or not folder.is_dir():
+            raise FileNotFoundError(str(folder))
+        children = list(folder.iterdir())
+    except OSError as exc:
+        if _is_denied(exc):
+            raise _folder_denied(folder, root_name) from exc
+        raise
     accepted = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
     entries = []
-    for child in sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold())):
+    for child in sorted(children, key=_sort_key):
         if child.name.startswith("."):
             continue
-        if folders_only:
-            if not child.is_dir():
-                continue
-        elif not child.is_dir() and child.suffix.lower() not in accepted:
+        meta = _entry_meta(child)
+        if meta is None:
+            # Dangling symlink, ACL hole, flaky NAS entry — skip rather than 500.
             continue
-        stat = child.stat()
+        is_directory, is_file, stat = meta
+        if folders_only:
+            if not is_directory:
+                continue
+        elif not is_directory and child.suffix.lower() not in accepted:
+            continue
         kind = "directory"
-        if child.is_file():
+        if is_file:
             ext = child.suffix.lower()
             kind = "image" if ext in IMAGE_EXTENSIONS else "video" if ext in VIDEO_EXTENSIONS else "audio"
         rel = child.relative_to(root).as_posix()
+        accessible = _dir_accessible(child) if is_directory else True
         entries.append({
             "name": child.name, "path": f"/{root_name}/{rel}", "relativePath": rel,
             "kind": kind, "size": stat.st_size, "empty": stat.st_size == 0,
             "modified": stat.st_mtime,
             "mime": mimetypes.guess_type(child.name)[0],
+            "accessible": accessible,
         })
     parent = Path(relative).parent.as_posix() if relative and Path(relative).parent != Path(".") else ""
     return {"root": root_name, "path": relative, "parent": parent, "entries": entries}
