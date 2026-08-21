@@ -18,7 +18,7 @@ import mimetypes
 
 from .config import settings
 from .database import Database
-from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, mounted_path, safe_path
+from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, mounted_path, safe_path, source_path
 from .renderer import OutputExistsError, Renderer
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -169,6 +169,55 @@ def cleanup_temporary_files() -> dict[str, Any]:
         "deleted_dirs": deleted_dirs,
         "work_dir": str(settings.work_dir),
         "preview_dir": str(settings.preview_dir),
+    }
+
+
+@app.post("/api/output/clear")
+@app.delete("/api/output")
+def clear_output_directory(path: str = Query(default="/output")) -> dict[str, Any]:
+    """Delete all contents inside the output directory (or a subfolder inside /output)."""
+    import shutil
+    try:
+        target = mounted_path(settings, path)
+    except UnsafePath as exc:
+        raise HTTPException(400, f"Invalid output path: {exc}") from exc
+
+    try:
+        resolved_target = target.resolve()
+        resolved_output = settings.output_dir.resolve()
+        if resolved_target != resolved_output and resolved_output not in resolved_target.parents:
+            raise HTTPException(403, "Target path is outside the output directory")
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if not target.exists():
+        return {"deleted_files": 0, "deleted_dirs": 0, "path": str(target)}
+
+    deleted_files = 0
+    deleted_dirs = 0
+
+    if target.is_dir():
+        for item in list(target.iterdir()):
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                    deleted_dirs += 1
+                else:
+                    item.unlink()
+                    deleted_files += 1
+            except Exception as e:
+                log.warning(f"Could not delete {item}: {e}")
+    elif target.is_file():
+        try:
+            target.unlink()
+            deleted_files += 1
+        except Exception as e:
+            log.warning(f"Could not delete {target}: {e}")
+
+    return {
+        "deleted_files": deleted_files,
+        "deleted_dirs": deleted_dirs,
+        "path": str(target),
     }
 
 

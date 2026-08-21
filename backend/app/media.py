@@ -36,6 +36,26 @@ def mounted_path(settings: Settings, value: str, name: str = "") -> Path:
     raise UnsafePath(f"Path must start with one of: {', '.join('/'+x for x in settings.media_roots)}")
 
 
+def source_path(settings: Settings, item: dict[str, Any]) -> Path:
+    """Resolve a media/soundtrack item to a file on a mounted root.
+
+    The UI used to store `path` as the parent folder and `name` as the
+    filename. Newer snapshots store the full file path in `path`. Both work.
+    Folder names that contain a dot (e.g. ``holiday.2024``) must not be treated
+    as files just because ``Path.suffix`` is non-empty — if `path` is a
+    directory, `name` is always joined.
+    """
+    path = str(item.get("path", "") or "").replace("\\", "/")
+    name = str(item.get("name", "") or "")
+    filename = Path(name).name
+    if filename and Path(path.rstrip("/")).name == filename:
+        return mounted_path(settings, path)
+    base = mounted_path(settings, path)
+    if not filename or base.is_file():
+        return base
+    return mounted_path(settings, path, filename)
+
+
 def browse(settings: Settings, root_name: str, relative: str = "", folders_only: bool = False) -> dict[str, Any]:
     if root_name not in settings.media_roots:
         raise UnsafePath("Unknown or non-browsable media root")

@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from .config import Settings
 from .database import Database, utcnow
-from .media import UnsafePath, mounted_path
+from .media import UnsafePath, mounted_path, source_path
 
 log = logging.getLogger(__name__)
 
