@@ -127,5 +127,52 @@ class SourcePathTest(unittest.TestCase):
             renderer.pool.shutdown(wait=False, cancel_futures=True)
 
 
+class MainEndpointsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        for name in ("config", "photos", "videos", "music", "output"):
+            (base / name).mkdir()
+        self.settings = Settings(base / "config", base / "photos", base / "videos", base / "music", base / "output")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_validate_mount_references_uses_source_path(self) -> None:
+        from app.main import validate_mount_references
+        from unittest.mock import patch
+        payload = {
+            "output": {"path": "/output"},
+            "media": [
+                {"name": "photo.jpg", "path": "/photos/photo.jpg", "type": "image"},
+                {"name": "Title", "type": "title"},
+            ],
+            "soundtrack": {
+                "tracks": [{"name": "song.mp3", "path": "/music/song.mp3"}],
+            },
+        }
+        with patch("app.main.settings", self.settings):
+            # Should not raise any NameError or exception for valid mounts
+            validate_mount_references(payload)
+
+    def test_clear_output_directory(self) -> None:
+        from app.main import clear_output_directory
+        from unittest.mock import patch
+        
+        # Create some files and subdirectories in output
+        out = self.settings.output_dir
+        (out / "movie1.mp4").write_bytes(b"render1")
+        (out / "movie2.mp4").write_bytes(b"render2")
+        sub = out / "subfolder"
+        sub.mkdir()
+        (sub / "nested.mp4").write_bytes(b"nested")
+
+        with patch("app.main.settings", self.settings):
+            res = clear_output_directory("/output")
+            self.assertEqual(2, res["deleted_files"])
+            self.assertEqual(1, res["deleted_dirs"])
+            self.assertEqual(0, len(list(out.iterdir())))
+
+
 if __name__ == "__main__":
     unittest.main()
