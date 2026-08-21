@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +18,10 @@ from app.renderer import (
     _parse_xfade_help,
     _probe_readable,
     _summarize_ffmpeg_log,
+    KEN_BURNS_MAX_ZOOM,
     build_filter_graph,
+    fill_frame_filter,
+    fit_frame_filter,
     format_ffmpeg_number,
     parse_number,
     xfade_name,
@@ -409,6 +414,95 @@ class FilterGraphTest(unittest.TestCase):
         graph = build_filter_graph([1.1, 1.1], [0.3], ["fade"])
         self.assertIn("offset=1.1", graph)
         self.assertNotRegex(graph, r"1\.0999|1\.100000")
+
+
+class FrameFittingTest(unittest.TestCase):
+    """Pictures must be shown whole: scaled down to fit, never cropped."""
+
+    def test_images_are_fitted_not_cropped(self) -> None:
+        graph = fit_frame_filter(1920, 1080, 30)
+        self.assertIn("scale=1920:1080:force_original_aspect_ratio=decrease", graph)
+        self.assertNotIn("force_original_aspect_ratio=increase,crop=1920:1080", graph)
+        self.assertIn("overlay=(W-w)/2:(H-h)/2", graph)
+        self.assertIn("gblur", graph, "letterbox bars are filled with a blurred copy")
+        self.assertTrue(graph.rstrip().endswith("fps=30"))
+
+    def test_ken_burns_headroom_keeps_the_zoom_inside_the_picture(self) -> None:
+        graph = fit_frame_filter(1920, 1080, 30, KEN_BURNS_MAX_ZOOM)
+        inner_w = int(1920 / KEN_BURNS_MAX_ZOOM) // 2 * 2
+        inner_h = int(1080 / KEN_BURNS_MAX_ZOOM) // 2 * 2
+        self.assertIn(f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease", graph)
+        # Even fully zoomed the visible area stays within the fitted picture.
+        self.assertLessEqual(inner_w * KEN_BURNS_MAX_ZOOM, 1920 + 2)
+        self.assertLessEqual(inner_h * KEN_BURNS_MAX_ZOOM, 1080 + 2)
+
+    def test_dimensions_stay_even_for_yuv420p(self) -> None:
+        for width, height in ((1920, 1080), (3840, 2160), (1280, 720), (854, 480)):
+            graph = fit_frame_filter(width, height, 25, KEN_BURNS_MAX_ZOOM)
+            sizes = re.findall(r"scale=(\d+):(\d+)", graph)
+            self.assertTrue(sizes)
+            for w, h in sizes:
+                self.assertEqual(0, int(w) % 2, graph)
+                self.assertEqual(0, int(h) % 2, graph)
+
+    def test_videos_and_title_frames_still_fill_the_frame(self) -> None:
+        graph = fill_frame_filter(1920, 1080, 30)
+        self.assertIn("force_original_aspect_ratio=increase", graph)
+        self.assertIn("crop=1920:1080", graph)
+        self.assertNotIn("overlay", graph)
+
+
+class SegmentFilterSelectionTest(unittest.TestCase):
+    """The render loop must pick fit-vs-fill per media type."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos", output_dir=base / "out", music_dir=base / "music")
+        for directory in (self.settings.photos_dir, self.settings.videos_dir, self.settings.work_dir, self.settings.preview_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
+        (self.settings.videos_dir / "a.mp4").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "fit.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _segment_filters(self, media: list[dict]) -> list[str]:
+        project = {"id": 1, "media": media, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"segment")
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        return [command[command.index("-vf") + 1] for command in commands if "-vf" in command]
+
+    def test_image_is_fitted_video_is_filled(self) -> None:
+        filters = self._segment_filters([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5},
+            {"id": 2, "type": "video", "path": "/videos/a.mp4", "duration": 2, "effect": "Original motion", "transition": "Fade", "transitionTime": 0.5},
+        ])
+        self.assertEqual(2, len(filters))
+        self.assertIn("force_original_aspect_ratio=decrease", filters[0])
+        self.assertNotIn("crop=1920:1080", filters[0])
+        self.assertIn("crop=1920:1080", filters[1])
+        self.assertNotIn("force_original_aspect_ratio=decrease", filters[1])
+
+    def test_ken_burns_zoom_is_centred_and_bounded(self) -> None:
+        filters = self._segment_filters([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 3, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5},
+        ])
+        self.assertIn("zoompan=", filters[0])
+        self.assertIn("x='iw/2-(iw/zoom/2)'", filters[0], "zoompan defaults to the top-left corner")
+        self.assertIn("y='ih/2-(ih/zoom/2)'", filters[0])
+        self.assertIn(f"scale={int(1920 / KEN_BURNS_MAX_ZOOM) // 2 * 2}:", filters[0])
 
 
 if __name__ == "__main__":
