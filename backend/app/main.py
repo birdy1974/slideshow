@@ -244,6 +244,11 @@ def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str =
     except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
     if not target.is_file(): raise HTTPException(404, "Media file not found")
     if target.suffix.lower() not in STREAMABLE_EXTENSIONS: raise HTTPException(403, "File type is not streamable")
+    if target.stat().st_size == 0:
+        # A 0-byte file streams an empty body, which shows up in the UI as a
+        # silently broken thumbnail/lightbox. Fail loudly so the frontend can
+        # render a clear "unavailable" placeholder instead.
+        raise HTTPException(422, "File is empty (0 bytes) — remove or replace it")
     return FileResponse(
         target,
         media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",

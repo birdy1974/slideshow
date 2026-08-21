@@ -95,3 +95,16 @@ main{max-width:1530px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .media-lightbox{width:min(960px,96vw);max-height:calc(100vh - 40px);background:#1e211d;color:#fff;border:1px solid #41443c;border-radius:13px;overflow:hidden;box-shadow:0 30px 80px #0009;display:flex;flex-direction:column}
 .lightbox-media{display:block;width:100%;max-height:calc(100vh - 120px);object-fit:contain;background:#000}
 .lightbox-audio{display:block;width:calc(100% - 32px);margin:24px 16px 28px}
+
+/* Empty/unreadable media file fallbacks (0-byte or missing files) */
+.thumb-fallback{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:#8f968a;background:linear-gradient(135deg,#e6eadf,#ccd6be);font-size:8px;font-weight:700}
+.thumb-fallback small{letter-spacing:.5px;text-transform:uppercase}
+.file-thumb-fallback{width:100%;height:100%;display:grid;place-items:center;color:#a2a896}
+.stage-fallback{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#cfd5c6;background:#2b3028;font-size:11px;text-align:center;padding:20px}
+.stage-fallback span{max-width:320px;line-height:1.5}
+.lightbox-error{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:48px 24px;text-align:center;color:#c9cec2;background:#23271f}
+.lightbox-error strong{font:700 15px Manrope;color:#fff}
+.lightbox-error span{font-size:11px;line-height:1.6;max-width:420px;color:#9fa69a}
+.empty-badge{position:absolute;right:5px;top:5px;display:flex;align-items:center;gap:3px;background:#fff3e3;color:#b9791f;font:700 7px Manrope;letter-spacing:.4px;padding:2px 5px;border-radius:3px;box-shadow:0 1px 3px #0002;pointer-events:none;z-index:3}
+.file-card.empty .file-thumb{outline:1px dashed #e0a75a}
+.file-card.empty .file-thumb img,.file-card.empty .file-thumb video{opacity:.35;filter:grayscale(.7)}

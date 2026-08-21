@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -144,12 +145,15 @@ def _probe_reason_from_ffprobe(output: str, path: Path) -> str:
     return "unreadable media"
 
 
-def _probe_readable(path: Path, ffprobe_bin: str) -> str | None:
+def _probe_readable(path: Path, ffprobe_bin: str, timeout: float = 30.0, retries: int = 2, retry_delay: float = 0.75) -> str | None:
     """Return a short reason if `path` cannot be read as media, else None.
 
     Missing and empty (0-byte) files are rejected without spawning ffprobe.
-    If ffprobe is not installed the content probe is skipped so a render can
-    still start; FFmpeg remains the final judge.
+    Cloud-synced mounts (Synology on-demand sync, etc.) can briefly report a
+    0-byte placeholder while the real content hydrates, so an empty file is
+    re-stat'ed a few times before being declared unreadable.  If ffprobe is
+    not installed the content probe is skipped so a render can still start;
+    FFmpeg remains the final judge.
     """
     if not path.exists():
         return "file is missing"
@@ -157,11 +161,16 @@ def _probe_readable(path: Path, ffprobe_bin: str) -> str | None:
         return "is a folder, not a media file"
     if not path.is_file():
         return "not a file"
-    try:
-        size = path.stat().st_size
-    except OSError as exc:
-        return f"cannot stat file ({exc})"
-    if size == 0:
+    for attempt in range(retries + 1):
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            return f"cannot stat file ({exc})"
+        if size != 0:
+            break
+        if attempt < retries:
+            time.sleep(retry_delay)
+    else:
         return "file is empty (0 bytes)"
     probe = shutil.which(ffprobe_bin)
     if not probe:
@@ -171,10 +180,22 @@ def _probe_readable(path: Path, ffprobe_bin: str) -> str | None:
             [probe, "-hide_banner", "-v", "error",
              "-show_entries", "format=format_name",
              "-of", "default=nw=1:nk=1", str(path)],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return "ffprobe timed out"
+        # A slow/networked volume can exceed even a generous timeout while
+        # the disk spins up. Give the probe one more chance before failing.
+        try:
+            result = subprocess.run(
+                [probe, "-hide_banner", "-v", "error",
+                 "-show_entries", "format=format_name",
+                 "-of", "default=nw=1:nk=1", str(path)],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return "ffprobe timed out"
+        except OSError as exc:
+            return f"ffprobe could not start ({exc})"
     except OSError as exc:
         return f"ffprobe could not start ({exc})"
     if result.returncode == 0:
@@ -331,11 +352,17 @@ class Renderer:
         from either configured clip duration.  A small lower bound keeps xfade
         valid while allowing a long transition for a short still image.
         """
-        return [max(.05, float(item.get("transitionTime", 1))) for item in media[:-1]]
+        return [max(.05, float(item.get("transitionTime", 5))) for item in media[:-1]]
 
     def _probe_readable(self, path: Path) -> str | None:
         """Check a single file with ffprobe; see module-level `_probe_readable`."""
-        return _probe_readable(path, self.settings.ffprobe_bin)
+        return _probe_readable(
+            path,
+            self.settings.ffprobe_bin,
+            timeout=self.settings.ffprobe_timeout,
+            retries=self.settings.media_probe_retries,
+            retry_delay=self.settings.media_probe_retry_delay,
+        )
 
     def _validate_media(self, project: dict[str, Any]) -> None:
         """Fail fast with one actionable message naming every unreadable input.

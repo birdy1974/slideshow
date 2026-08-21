@@ -83,7 +83,8 @@ def browse(settings: Settings, root_name: str, relative: str = "", folders_only:
         rel = child.relative_to(root).as_posix()
         entries.append({
             "name": child.name, "path": f"/{root_name}/{rel}", "relativePath": rel,
-            "kind": kind, "size": stat.st_size, "modified": stat.st_mtime,
+            "kind": kind, "size": stat.st_size, "empty": stat.st_size == 0,
+            "modified": stat.st_mtime,
             "mime": mimetypes.guess_type(child.name)[0],
         })
     parent = Path(relative).parent.as_posix() if relative and Path(relative).parent != Path(".") else ""

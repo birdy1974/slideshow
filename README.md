@@ -11,6 +11,7 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - Ken Burns controls with selected-item and random bulk assignment
 - Timed captions, appear/disappear transitions, draggable title placement, typography, and frame backgrounds
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming
+- Resilient media validation: 0-byte cloud-synced files are retried before failing a render, and slow NAS volumes get a generous (retryable) ffprobe timeout
 - Real 480p proxy previews streamed from the backend
 - 480p, 720p, 1080p, and 4K output presets with CPU/x264 and Intel Quick Sync selection
 - Output overwrite protection: rendering asks for acknowledgement before replacing an existing MP4

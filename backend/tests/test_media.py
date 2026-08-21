@@ -29,6 +29,14 @@ class MediaSecurityTest(unittest.TestCase):
         self.assertEqual(["image.jpg"], [x["name"] for x in result["entries"]])
         self.assertEqual(self.settings.photos_dir / "trip" / "image.jpg", mounted_path(self.settings, "/photos/trip", "image.jpg"))
 
+    def test_browse_marks_empty_files(self) -> None:
+        (self.settings.photos_dir / "trip" / "empty.jpg").write_bytes(b"")
+        result = browse(self.settings, "photos", "trip")
+        by_name = {x["name"]: x for x in result["entries"]}
+        self.assertFalse(by_name["image.jpg"]["empty"])
+        self.assertTrue(by_name["empty.jpg"]["empty"])
+        self.assertEqual(0, by_name["empty.jpg"]["size"])
+
     def test_traversal_is_rejected(self) -> None:
         with self.assertRaises(UnsafePath): safe_path(self.settings.photos_dir, "../../etc/passwd")
         with self.assertRaises(UnsafePath): mounted_path(self.settings, "/etc/passwd")
