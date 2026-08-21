@@ -640,7 +640,16 @@ function App() {
   const waitForJob = async (jobId:string) => {
     for(;;){
       await new Promise(resolve=>setTimeout(resolve,1000))
-      const response=await fetch(`/api/jobs/${jobId}`);if(!response.ok)throw new Error('Could not read render status')
+      let response: Response
+      try {
+        response = await fetch(`/api/jobs/${jobId}`)
+      } catch {
+        // Network blip while the render is still running — keep polling.
+        continue
+      }
+      // 503 = transient SQLite lock; the render is fine, just retry.
+      if (response.status === 503 || response.status === 429) continue
+      if (!response.ok) throw new Error('Could not read render status')
       const job=await response.json();setProgress(Math.round(job.progress||0))
       if(job.status==='complete')return job
       if(job.status==='failed'||job.status==='cancelled')throw new Error(job.error_message||`Job ${job.status}`)
@@ -738,7 +747,7 @@ function App() {
                 const thumb = itemThumbUrl(item)
                 return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
-                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> 0:12</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
+                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
                   <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                   <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
@@ -775,7 +784,47 @@ function App() {
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} update={change=>patch(editingTextFrame,change)} style={{fontFamily,fontSize:Number(fontSize),fontColor,bold:textBold,italic:textItalic,underline:textUnderline}} onClose={()=>setEditingTextFrame(null)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{setAudioTracks(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path,duration:'unknown',color:['#91a96b','#7898aa','#b78670'][index%3]}))]);setShowAudioBrowser(false);notify(`${files.length} soundtracks added`)}}/>}
-    {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {setMedia(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path,src:mediaFileUrl((file.kind==='video'?'videos':'photos') as MediaRoot, file.path),type:file.kind as 'image'|'video',duration:file.kind==='video'?10:5,effect:file.kind==='video'?'Original motion':'Ken Burns · Zoom in',transition:'Fade',transitionTime:DEFAULT_TRANSITION_SECONDS,text:'',textMode:'overlay' as const,textStart:0,textEnd:file.kind==='video'?10:5,textEnter:'Fade',textExit:'Fade',textEnterDuration:.5,textExitDuration:.5,textX:50,textY:72,frameBackground:'#30382a'}))]);setShowBrowser(false);notify(`${files.length} mounted media files added`) }}/>} 
+    {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {
+      // Probe each video's native length so the timeline hold covers the
+      // complete movie before the transition to the next picture. Images keep
+      // the 5 s default; a failed probe falls back to 10 s.
+      void (async () => {
+        const additions: MediaItem[] = []
+        for (let index = 0; index < files.length; index++) {
+          const file = files[index]
+          const isVideo = file.kind === 'video'
+          const root = (isVideo ? 'videos' : 'photos') as MediaRoot
+          const src = mediaFileUrl(root, file.path)
+          let duration = isVideo ? 10 : 5
+          if (isVideo) {
+            try {
+              duration = await new Promise<number>((resolve) => {
+                const el = document.createElement('video')
+                el.preload = 'metadata'
+                const done = (value: number) => { el.removeAttribute('src'); el.load(); resolve(value) }
+                el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? Math.max(MIN_CLIP_SECONDS, el.duration) : 10)
+                el.onerror = () => done(10)
+                // Some mounts never fire metadata; don't block the add forever.
+                window.setTimeout(() => done(10), 8000)
+                el.src = src
+              })
+            } catch { duration = 10 }
+          }
+          additions.push({
+            id: Date.now() + index, name: file.name, path: file.path, src,
+            type: file.kind as 'image' | 'video', duration,
+            effect: isVideo ? 'Original motion' : 'Ken Burns · Zoom in',
+            transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS,
+            text: '', textMode: 'overlay', textStart: 0, textEnd: duration,
+            textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5,
+            textX: 50, textY: 72, frameBackground: '#30382a',
+          })
+        }
+        setMedia(items => [...items, ...additions])
+        setShowBrowser(false)
+        notify(`${files.length} mounted media file${files.length === 1 ? '' : 's'} added`)
+      })()
+    }}/>} 
     {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
     {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)}/>}
@@ -852,9 +901,17 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
   const [current, setCurrent] = useState(0)
   const [stageFailed, setStageFailed] = useState(false)
 
+  // Advance only after the full clip duration (and for videos, after the
+  // <video> element reports it has ended) so a movie is never cut short.
   useEffect(() => {
-    if (!playing || media.length <= 1) return
-    const currentDuration = Math.max(1, (media[current]?.duration || 5)) * 1000
+    if (!playing || media.length === 0) return
+    const item = media[current]
+    if (!item) return
+    if (item.type === 'video') {
+      // Videos advance from the onEnded handler so the complete file plays.
+      return
+    }
+    const currentDuration = Math.max(MIN_CLIP_SECONDS, item.duration || 5) * 1000
     const timer = setTimeout(() => {
       setCurrent(c => (c + 1) % media.length)
     }, currentDuration)
@@ -866,8 +923,9 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
 
   const currentItem = media[current]
   const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
+  const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video className={playing ? 'slow-zoom' : ''} src={currentUrl} autoPlay loop muted playsInline onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} src={currentUrl} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem?.text || ''}</strong></div><button type="button" className="stage-play" onClick={() => {setPlaying(!playing); if (!playing && media.length) setCurrent((current + 1) % media.length)}} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>00:{String(current * 5).padStart(2,'0')}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>00:24</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Preview uses proxy quality and approximates effects. The final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video key={currentItem.id} className={playing ? 'slow-zoom' : ''} src={currentUrl} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} src={currentUrl} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem?.text || ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () => void }) {

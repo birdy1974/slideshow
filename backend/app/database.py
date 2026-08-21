@@ -126,13 +126,30 @@ def utcnow() -> str:
 
 BUSY_TIMEOUT_MS = 30_000
 _JOURNAL_MODE_ATTEMPTS = 10
+# Application-level retries for SQLITE_BUSY / "database is locked". The
+# connection busy_timeout already waits inside SQLite; these outer retries
+# cover the rarer cases where the busy handler still returns BUSY (e.g. a
+# long-held IMMEDIATE lock on a network volume, or a stale -wal lock).
+_BUSY_RETRIES = 8
+_BUSY_BACKOFF_S = 0.05
+
+
+def _is_busy_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
 
 
 class Database:
     def __init__(self, path: Path):
         self.path = path
+        # Serialises every in-process writer. When WAL cannot be enabled the
+        # same lock also guards readers so a progress poll never races a write
+        # under rollback-journal locking rules.
         self._write_lock = threading.RLock()
         self._journal_mode_ready = False
+        self._wal_enabled = False
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,12 +177,22 @@ class Database:
                 return
             last_error: sqlite3.OperationalError | None = None
             for attempt in range(_JOURNAL_MODE_ATTEMPTS):
-                conn = self._new_connection()
+                # Bare connection — never call connect() here (re-entrancy /
+                # journal_mode loop). Busy timeout is still applied so a
+                # competing process cannot make the switch fail instantly.
+                conn = sqlite3.connect(
+                    self.path,
+                    timeout=BUSY_TIMEOUT_MS / 1000,
+                    isolation_level=None,
+                    check_same_thread=False,
+                )
                 try:
+                    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
                     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
                     if str(mode).lower() != "wal":
                         mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
                     if str(mode).lower() == "wal":
+                        self._wal_enabled = True
                         self._journal_mode_ready = True
                         return
                     last_error = sqlite3.OperationalError(f"journal_mode stayed {mode!r}")
@@ -176,13 +203,20 @@ class Database:
                 time.sleep(min(0.05 * (attempt + 1), 0.5))
             # WAL is an optimisation, not a correctness requirement: a database on
             # a filesystem that cannot support it (some network mounts) still works
-            # in the default rollback journal mode with a busy timeout.
+            # in the default rollback journal mode. Without WAL every connection
+            # is serialised through `_write_lock` so readers never race writers.
+            self._wal_enabled = False
             self._journal_mode_ready = True
             if last_error is not None:
                 log.warning("Could not enable WAL journal mode for %s: %s", self.path, last_error)
 
     def _new_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=False)
+        conn = sqlite3.connect(
+            self.path,
+            timeout=BUSY_TIMEOUT_MS / 1000,
+            isolation_level=None,
+            check_same_thread=False,
+        )
         conn.row_factory = sqlite3.Row
         # busy_timeout must come first so every later statement waits for a
         # competing writer instead of failing instantly with SQLITE_BUSY.
@@ -193,38 +227,71 @@ class Database:
 
     @contextmanager
     def connect(self, write: bool = False) -> Iterator[sqlite3.Connection]:
-        """Open a connection; `write=True` serialises writers in this process."""
+        """Open a connection; writers are always serialised in-process.
+
+        When WAL mode is active, plain readers open freely (SQLite allows
+        concurrent readers alongside a single writer). When WAL could not be
+        enabled, every access — read or write — takes `_write_lock` so a
+        progress-polling GET can never collide with an in-flight UPDATE.
+        """
         self._ensure_journal_mode()
-        if not write:
-            conn = self._new_connection()
-            try:
-                yield conn
-            finally:
-                conn.close()
+        # Serialise writers always. Serialise readers too when stuck without WAL.
+        needs_lock = write or not self._wal_enabled
+        if needs_lock:
+            with self._write_lock:
+                conn = self._new_connection()
+                try:
+                    yield conn
+                finally:
+                    conn.close()
             return
-        with self._write_lock:
-            conn = self._new_connection()
+        conn = self._new_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _run_with_busy_retry(self, operation: Any) -> Any:
+        """Retry a short DB callable that raised SQLITE_BUSY / locked."""
+        last_error: BaseException | None = None
+        for attempt in range(_BUSY_RETRIES):
             try:
-                yield conn
-            finally:
-                conn.close()
+                return operation()
+            except sqlite3.OperationalError as exc:
+                if not _is_busy_error(exc):
+                    raise
+                last_error = exc
+                # Exponential backoff capped at 1 s; the connection-level
+                # busy_timeout has already waited up to BUSY_TIMEOUT_MS.
+                time.sleep(min(_BUSY_BACKOFF_S * (2 ** attempt), 1.0))
+        assert last_error is not None
+        raise last_error
 
     def list_projects(self) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("SELECT id,name,revision,created_at,updated_at FROM projects ORDER BY updated_at DESC").fetchall()
-        return [dict(row) for row in rows]
+        def _read() -> list[dict[str, Any]]:
+            with self.connect() as conn:
+                rows = conn.execute(
+                    "SELECT id,name,revision,created_at,updated_at FROM projects ORDER BY updated_at DESC"
+                ).fetchall()
+            return [dict(row) for row in rows]
+        return self._run_with_busy_retry(_read)
 
     def get_project(self, project_id: int) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT payload_json,revision,created_at,updated_at FROM projects WHERE id=?", (project_id,)).fetchone()
-        if not row:
-            return None
-        payload = json.loads(row["payload_json"])
-        payload["id"] = project_id
-        payload["revision"] = row["revision"]
-        payload["createdAt"] = row["created_at"]
-        payload["updatedAt"] = row["updated_at"]
-        return payload
+        def _read() -> dict[str, Any] | None:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT payload_json,revision,created_at,updated_at FROM projects WHERE id=?",
+                    (project_id,),
+                ).fetchone()
+            if not row:
+                return None
+            payload = json.loads(row["payload_json"])
+            payload["id"] = project_id
+            payload["revision"] = row["revision"]
+            payload["createdAt"] = row["created_at"]
+            payload["updatedAt"] = row["updated_at"]
+            return payload
+        return self._run_with_busy_retry(_read)
 
     def save_project(self, payload: dict[str, Any], project_id: int | None = None) -> dict[str, Any]:
         """Save every setting atomically and return the exact persisted snapshot."""
@@ -238,67 +305,79 @@ class Database:
         canonical = json.loads(json.dumps(payload, ensure_ascii=False))
         canonical.pop("id", None); canonical.pop("revision", None); canonical.pop("createdAt", None); canonical.pop("updatedAt", None)
 
-        with self.connect(write=True) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                if project_id is None:
-                    cur = conn.execute(
-                        "INSERT INTO projects(schema_version,name,random_order,timeline_rows,timeline_zoom,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                        (SCHEMA_VERSION, project.get("name", "Untitled"), bool(project.get("randomOrder")), str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, now),
-                    )
-                    project_id = int(cur.lastrowid)
-                else:
-                    result = conn.execute(
-                        "UPDATE projects SET schema_version=?,name=?,random_order=?,timeline_rows=?,timeline_zoom=?,payload_json=?,revision=revision+1,updated_at=? WHERE id=?",
-                        (SCHEMA_VERSION, project.get("name", "Untitled"), bool(project.get("randomOrder")), str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, project_id),
-                    )
-                    if result.rowcount == 0:
-                        raise KeyError(f"Project {project_id} does not exist")
+        requested_id = project_id  # freeze caller's id so busy-retries never flip INSERT→UPDATE
 
-                for table in ("media_items", "text_defaults", "audio_settings", "audio_tracks", "output_settings"):
-                    conn.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
+        def _write() -> int:
+            saved_id = requested_id
+            with self.connect(write=True) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if saved_id is None:
+                        cur = conn.execute(
+                            "INSERT INTO projects(schema_version,name,random_order,timeline_rows,timeline_zoom,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                            (SCHEMA_VERSION, project.get("name", "Untitled"), bool(project.get("randomOrder")), str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, now),
+                        )
+                        saved_id = int(cur.lastrowid)
+                    else:
+                        result = conn.execute(
+                            "UPDATE projects SET schema_version=?,name=?,random_order=?,timeline_rows=?,timeline_zoom=?,payload_json=?,revision=revision+1,updated_at=? WHERE id=?",
+                            (SCHEMA_VERSION, project.get("name", "Untitled"), bool(project.get("randomOrder")), str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, saved_id),
+                        )
+                        if result.rowcount == 0:
+                            raise KeyError(f"Project {saved_id} does not exist")
 
-                for position, item in enumerate(media):
+                    for table in ("media_items", "text_defaults", "audio_settings", "audio_tracks", "output_settings"):
+                        conn.execute(f"DELETE FROM {table} WHERE project_id=?", (saved_id,))
+
+                    for position, item in enumerate(media):
+                        conn.execute(
+                            """INSERT INTO media_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (saved_id, str(item.get("id", position)), position, item.get("name", ""), item.get("path", ""), item.get("type", "image"), float(item.get("duration", 0)), item.get("effect", "None"), item.get("transition", "Fade"), float(item.get("transitionTime", 0)), item.get("text", ""), item.get("textMode", "overlay"), float(item.get("textStart", 0)), float(item.get("textEnd", item.get("duration", 0))), item.get("textEnter", "Fade"), item.get("textExit", "Fade"), float(item.get("textEnterDuration", .5)), float(item.get("textExitDuration", .5)), float(item.get("textX", 50)), float(item.get("textY", 50)), item.get("frameBackground", "#000000"), json.dumps(item, ensure_ascii=False)),
+                        )
                     conn.execute(
-                        """INSERT INTO media_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (project_id, str(item.get("id", position)), position, item.get("name", ""), item.get("path", ""), item.get("type", "image"), float(item.get("duration", 0)), item.get("effect", "None"), item.get("transition", "Fade"), float(item.get("transitionTime", 0)), item.get("text", ""), item.get("textMode", "overlay"), float(item.get("textStart", 0)), float(item.get("textEnd", item.get("duration", 0))), item.get("textEnter", "Fade"), item.get("textExit", "Fade"), float(item.get("textEnterDuration", .5)), float(item.get("textExitDuration", .5)), float(item.get("textX", 50)), float(item.get("textY", 50)), item.get("frameBackground", "#000000"), json.dumps(item, ensure_ascii=False)),
+                        "INSERT INTO text_defaults VALUES(?,?,?,?,?,?,?,?)",
+                        (saved_id, text.get("fontFamily", "Montserrat"), float(text.get("fontSize", 48)), text.get("fontColor", "#ffffff"), bool(text.get("bold")), bool(text.get("italic")), bool(text.get("underline")), json.dumps(text, ensure_ascii=False)),
                     )
-                conn.execute(
-                    "INSERT INTO text_defaults VALUES(?,?,?,?,?,?,?,?)",
-                    (project_id, text.get("fontFamily", "Montserrat"), float(text.get("fontSize", 48)), text.get("fontColor", "#ffffff"), bool(text.get("bold")), bool(text.get("italic")), bool(text.get("underline")), json.dumps(text, ensure_ascii=False)),
-                )
-                conn.execute(
-                    "INSERT INTO audio_settings VALUES(?,?,?,?,?)",
-                    (project_id, soundtrack.get("policy", "Loop & trim"), float(soundtrack.get("volume", 100)), bool(soundtrack.get("fadeOut")), json.dumps(soundtrack, ensure_ascii=False)),
-                )
-                for position, track in enumerate(soundtrack.get("tracks", [])):
                     conn.execute(
-                        "INSERT INTO audio_tracks VALUES(?,?,?,?,?,?,?)",
-                        (project_id, str(track.get("id", position)), position, track.get("name", ""), track.get("path", ""), str(track.get("duration", "")), json.dumps(track, ensure_ascii=False)),
+                        "INSERT INTO audio_settings VALUES(?,?,?,?,?)",
+                        (saved_id, soundtrack.get("policy", "Loop & trim"), float(soundtrack.get("volume", 100)), bool(soundtrack.get("fadeOut")), json.dumps(soundtrack, ensure_ascii=False)),
                     )
-                conn.execute(
-                    "INSERT INTO output_settings VALUES(?,?,?,?,?,?,?,?)",
-                    (project_id, output.get("resolution", "Full HD · 1080p"), output.get("frameRate", "30 fps"), output.get("bitrate", "8 Mbps · High"), output.get("encoder", "Auto · Quick Sync"), output.get("path", "/output"), output.get("filename", "slideshow"), json.dumps(output, ensure_ascii=False)),
-                )
-                conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
-        saved = self.get_project(project_id)
+                    for position, track in enumerate(soundtrack.get("tracks", [])):
+                        conn.execute(
+                            "INSERT INTO audio_tracks VALUES(?,?,?,?,?,?,?)",
+                            (saved_id, str(track.get("id", position)), position, track.get("name", ""), track.get("path", ""), str(track.get("duration", "")), json.dumps(track, ensure_ascii=False)),
+                        )
+                    conn.execute(
+                        "INSERT INTO output_settings VALUES(?,?,?,?,?,?,?,?)",
+                        (saved_id, output.get("resolution", "Full HD · 1080p"), output.get("frameRate", "30 fps"), output.get("bitrate", "8 Mbps · High"), output.get("encoder", "Auto · Quick Sync"), output.get("path", "/output"), output.get("filename", "slideshow"), json.dumps(output, ensure_ascii=False)),
+                    )
+                    conn.execute("COMMIT")
+                except Exception:
+                    conn.execute("ROLLBACK")
+                    raise
+            assert saved_id is not None
+            return saved_id
+
+        saved_id = self._run_with_busy_retry(_write)
+        saved = self.get_project(saved_id)
         assert saved is not None
         return saved
 
     def delete_project(self, project_id: int) -> bool:
-        with self.connect(write=True) as conn:
-            result = conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
-        return bool(result.rowcount)
+        def _write() -> bool:
+            with self.connect(write=True) as conn:
+                result = conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            return bool(result.rowcount)
+        return self._run_with_busy_retry(_write)
 
     def create_job(self, job: dict[str, Any]) -> None:
-        with self.connect(write=True) as conn:
-            conn.execute(
-                "INSERT INTO render_jobs(id,project_id,kind,status,progress,stage,settings_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (job["id"], job["project_id"], job["kind"], "queued", 0, "Queued", json.dumps(job.get("settings", {})), utcnow()),
-            )
+        def _write() -> None:
+            with self.connect(write=True) as conn:
+                conn.execute(
+                    "INSERT INTO render_jobs(id,project_id,kind,status,progress,stage,settings_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (job["id"], job["project_id"], job["kind"], "queued", 0, "Queued", json.dumps(job.get("settings", {})), utcnow()),
+                )
+        self._run_with_busy_retry(_write)
 
     def update_job(self, job_id: str, **changes: Any) -> None:
         allowed = {"status", "progress", "stage", "output_path", "error_message", "log_text", "started_at", "finished_at"}
@@ -306,19 +385,29 @@ class Database:
         if not values:
             return
         sql = "UPDATE render_jobs SET " + ",".join(f"{key}=?" for key in values) + " WHERE id=?"
-        with self.connect(write=True) as conn:
-            conn.execute(sql, (*values.values(), job_id))
+
+        def _write() -> None:
+            with self.connect(write=True) as conn:
+                conn.execute(sql, (*values.values(), job_id))
+        self._run_with_busy_retry(_write)
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT * FROM render_jobs WHERE id=?", (job_id,)).fetchone()
-        return dict(row) if row else None
+        def _read() -> dict[str, Any] | None:
+            with self.connect() as conn:
+                row = conn.execute("SELECT * FROM render_jobs WHERE id=?", (job_id,)).fetchone()
+            return dict(row) if row else None
+        return self._run_with_busy_retry(_read)
 
     def list_jobs(self, project_id: int | None = None) -> list[dict[str, Any]]:
-        query = "SELECT * FROM render_jobs"; params: tuple[Any, ...] = ()
+        query = "SELECT * FROM render_jobs"
+        params: tuple[Any, ...] = ()
         if project_id is not None:
-            query += " WHERE project_id=?"; params = (project_id,)
+            query += " WHERE project_id=?"
+            params = (project_id,)
         query += " ORDER BY created_at DESC"
-        with self.connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+
+        def _read() -> list[dict[str, Any]]:
+            with self.connect() as conn:
+                rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+        return self._run_with_busy_retry(_read)
