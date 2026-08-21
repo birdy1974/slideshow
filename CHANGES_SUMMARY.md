@@ -154,3 +154,47 @@ an empty body, which browsers render as a silently broken image.
 - End-to-end preview and MP4 renders (10 photos, 5 s transitions, MP3
   soundtrack) complete successfully; the 480p preview is exactly 95 s
   (10 × 5 s holds + 9 × 5 s transitions).
+
+---
+
+## Date: 2026-08-21 (third round)
+
+### 9. **Complete movie plays before the transition to the next picture**
+**Problem**: Video clips were opened with `-stream_loop -1 -t <clip>`, so a
+long movie was either cut short at the UI duration (default 10 s) or restarted
+mid-hold. Transitions could fire before the story finished.
+**Fix**:
+- The renderer probes each video's native duration and expands the timeline
+  hold to at least that length.
+- Videos are played once (no `-stream_loop`); first/last frames are frozen with
+  `tpad` only for the incoming/outgoing xfade handles.
+- Adding a video in the UI probes its length via a metadata `<video>` element
+  so the storyline estimate matches the rendered MP4.
+- The lightweight client preview advances videos on `ended` instead of a fixed
+  timer, so movies are not cut short there either.
+
+**Files modified**:
+- `backend/app/renderer.py`
+- `backend/tests/test_renderer.py`
+- `src/App.tsx`
+
+---
+
+### 10. **Internal Server Error on job status for some directories ("database is locked")**
+**Problem**: Polling `GET /api/jobs/{id}` while a render wrote progress raised
+`sqlite3.OperationalError: database is locked` → HTTP 500, especially on
+network volumes where WAL mode cannot be enabled.
+**Fix**:
+- WAL is still enabled once at startup; when it cannot be enabled every
+  connection is serialised through the in-process write lock so readers never
+  race writers under rollback-journal rules.
+- All public DB methods retry transient `database is locked` / `busy` errors
+  with exponential backoff.
+- `GET /api/jobs/{id}` returns 503 (not 500) on residual lock failures; the UI
+  progress poller treats 503 as "try again" instead of aborting the render.
+
+**Files modified**:
+- `backend/app/database.py`
+- `backend/app/main.py`
+- `backend/tests/test_database.py`
+- `src/App.tsx`

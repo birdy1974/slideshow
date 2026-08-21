@@ -122,8 +122,10 @@ def delete_project(project_id: int) -> dict[str, bool]:
 @app.delete("/api/projects")
 def delete_all_projects() -> dict[str, bool]:
     """Delete all projects from the database."""
-    with db.connect(write=True) as conn:
-        conn.execute("DELETE FROM projects")
+    def _wipe() -> None:
+        with db.connect(write=True) as conn:
+            conn.execute("DELETE FROM projects")
+    db._run_with_busy_retry(_wipe)
     return {"deleted": True}
 
 
@@ -161,9 +163,11 @@ def cleanup_temporary_files() -> dict[str, Any]:
                 log.warning(f"Could not delete {item}: {e}")
     
     # Delete all jobs from database
-    with db.connect(write=True) as conn:
-        conn.execute("DELETE FROM render_jobs")
-    
+    def _wipe_jobs() -> None:
+        with db.connect(write=True) as conn:
+            conn.execute("DELETE FROM render_jobs")
+    db._run_with_busy_retry(_wipe_jobs)
+
     return {
         "deleted_files": deleted_files,
         "deleted_dirs": deleted_dirs,
@@ -272,7 +276,14 @@ def list_jobs(project_id: int | None = None) -> list[dict[str, Any]]:
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
-    job = db.get_job(job_id)
+    try:
+        job = db.get_job(job_id)
+    except Exception as exc:
+        # Never surface a raw sqlite lock as a 500 to the progress poller —
+        # the client retries every second and a transient lock should just
+        # wait, not abort the whole render UX.
+        log.warning("get_job(%s) failed: %s", job_id, exc)
+        raise HTTPException(503, "Database temporarily unavailable; retry shortly") from exc
     if not job: raise HTTPException(404, "Render job not found")
     if job.get("output_path"): job["fileUrl"] = f"/api/jobs/{job_id}/file"
     return job

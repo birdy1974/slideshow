@@ -545,11 +545,37 @@ class Renderer:
             duration_total = sum(max(.2, float(x.get("duration",5))) for x in media)
             if audio_duration > transition_total and duration_total > 0:
                 # Holds scale to fill the audio; transitions retain their set duration.
+                # Videos are excluded from scaling so a full movie is never shortened.
                 factor = (audio_duration - transition_total) / duration_total
-                media = [{**item,"duration":max(.2,float(item.get("duration",5))*factor),"textEnd":min(float(item.get("textEnd",item.get("duration",5)))*factor,max(.2,float(item.get("duration",5))*factor))} for item in media]
+                scaled: list[dict[str, Any]] = []
+                for item in media:
+                    if item.get("type") == "video":
+                        scaled.append(item)
+                        continue
+                    hold = max(.2, float(item.get("duration", 5)) * factor)
+                    text_end = min(float(item.get("textEnd", item.get("duration", 5))) * factor, hold)
+                    scaled.append({**item, "duration": hold, "textEnd": text_end})
+                media = scaled
         segments: list[Path] = []
-        durations = [max(.2, float(item.get("duration", 5))) for item in media]
         transitions = self.effective_transitions(media)
+        # Resolve hold durations. Videos always play through to the end of the
+        # source file — the configured duration is only a floor, never a ceiling
+        # that would cut the movie short before the next transition.
+        durations: list[float] = []
+        native_video_durations: list[float | None] = []
+        for item in media:
+            hold = max(.2, float(item.get("duration", 5)))
+            native: float | None = None
+            if item.get("type") == "video":
+                try:
+                    native = self._probe_duration(source_path(self.settings, item))
+                except Exception as exc:
+                    log.warning("Could not probe video duration for %s: %s", item.get("name"), exc)
+                    native = None
+                if native is not None and native > 0:
+                    hold = max(hold, native)
+            durations.append(hold)
+            native_video_durations.append(native)
         # Give xfade incoming/outgoing handles while preserving every configured
         # clip hold in full.  These handles make transition time additive.
         segment_durations = [
@@ -573,6 +599,8 @@ class Renderer:
                 base_filter = fill_frame_filter(width, height, fps)
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-y"]
             clip_t = format_ffmpeg_number(duration)
+            lead_in = transitions[index - 1] if index else 0.0
+            lead_out = transitions[index] if index < len(transitions) else 0.0
             if kind_name == "title":
                 background = str(item.get("frameBackground", "#202020"))
                 if not background.startswith("#"): background = "#30382a"
@@ -583,8 +611,15 @@ class Renderer:
                 # Still images default to 25 fps. Without an explicit -framerate
                 # matching the output, `-t 5` yields 125 frames which fps=30
                 # then shortens to ~4.17s and every xfade offset is late.
-                if kind_name == "image": command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(source)]
-                else: command += ["-stream_loop", "-1", "-t", clip_t, "-i", str(source)]
+                if kind_name == "image":
+                    command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(source)]
+                else:
+                    # Play the movie once end-to-end. Never stream_loop a video:
+                    # looping would restart the clip mid-hold or during the
+                    # transition handle, cutting the story short visually.
+                    # Transition handles and any hold beyond the native length
+                    # are filled by freezing the first/last frame via tpad.
+                    command += ["-i", str(source)]
             filters = [base_filter]
             if ken_burns:
                 delta = "0.0008" if "Zoom in" in effect else "-0.0008" if "Zoom out" in effect else "0.0003"
@@ -595,6 +630,31 @@ class Renderer:
                 filters.append(
                     f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={width}x{height}:fps={fps}"
                 )
+            if kind_name == "video":
+                # Freeze the opening frame for the incoming xfade handle and the
+                # closing frame for the outgoing handle (plus any extra hold the
+                # user configured beyond the native runtime). The full movie
+                # plays uninterrupted between those pads.
+                native = native_video_durations[index]
+                if native is not None and native > 0:
+                    pad_start = lead_in
+                    # After the native movie finishes we still need: remaining
+                    # hold past native (if user extended duration) + outgoing
+                    # transition.
+                    pad_end = max(0.0, durations[index] - native) + lead_out
+                    if pad_start > 0.0005 or pad_end > 0.0005:
+                        filters.append(
+                            f"tpad=start_mode=clone:start_duration={format_ffmpeg_number(pad_start)}"
+                            f":stop_mode=clone:stop_duration={format_ffmpeg_number(pad_end)}"
+                        )
+                elif lead_in > 0.0005 or lead_out > 0.0005:
+                    # Probe failed: still pad the transition handles by cloning
+                    # edge frames, but do not invent a "native" length of 0
+                    # which would turn the whole segment into frozen frames.
+                    filters.append(
+                        f"tpad=start_mode=clone:start_duration={format_ffmpeg_number(lead_in)}"
+                        f":stop_mode=clone:stop_duration={format_ffmpeg_number(lead_out)}"
+                    )
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]

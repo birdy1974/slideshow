@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from app.database import Database
@@ -150,26 +151,78 @@ class ConcurrentAccessTest(unittest.TestCase):
         self.assertEqual(59, self.db.get_job("job-2")["progress"])
 
     def test_reads_work_when_the_file_is_not_in_wal_mode(self) -> None:
-        """The exact production failure: a database still in rollback-journal
-        mode plus an in-flight writer made the per-connection WAL switch abort."""
+        """Without WAL, every access is serialised through the write lock so a
+        progress-polling GET waits for the in-flight writer instead of racing
+        the exclusive lock (which used to raise "database is locked").
+        """
+        import time
+
         with self.db.connect(write=True) as conn:
             conn.execute("PRAGMA journal_mode=DELETE")
-        self.db._journal_mode_ready = False
+        self.db._journal_mode_ready = True  # skip the re-probe; stay in DELETE
+        self.db._wal_enabled = False
         self.db.create_job({"id": "job-3", "project_id": self.project_id, "kind": "render"})
 
-        writer = self.db._new_connection()
-        try:
-            writer.execute("BEGIN IMMEDIATE")
-            writer.execute("UPDATE render_jobs SET stage='Encoding' WHERE id=?", ("job-3",))
-            self.assertIsNotNone(self.db.get_job("job-3"))
-            writer.execute("COMMIT")
-        finally:
-            writer.close()
+        started = threading.Event()
+        release = threading.Event()
+        errors: list[BaseException] = []
+        seen: list[dict | None] = []
+
+        def writer() -> None:
+            try:
+                with self.db.connect(write=True) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute("UPDATE render_jobs SET stage='Encoding' WHERE id=?", ("job-3",))
+                    started.set()
+                    release.wait(timeout=5)
+                    conn.execute("COMMIT")
+            except BaseException as exc:  # pragma: no cover
+                errors.append(exc)
+
+        def reader() -> None:
+            try:
+                # Blocks on the in-process lock until the writer releases it.
+                seen.append(self.db.get_job("job-3"))
+            except BaseException as exc:  # pragma: no cover
+                errors.append(exc)
+
+        w = threading.Thread(target=writer)
+        r = threading.Thread(target=reader)
+        w.start()
+        self.assertTrue(started.wait(timeout=5))
+        r.start()
+        time.sleep(0.15)  # give the reader time to block on the lock
+        release.set()
+        w.join(timeout=10)
+        r.join(timeout=10)
+        self.assertEqual([], errors)
+        self.assertEqual(1, len(seen))
+        self.assertIsNotNone(seen[0])
+        self.assertEqual("Encoding", seen[0]["stage"])  # type: ignore[index]
 
     def test_journal_mode_is_wal_and_not_reapplied_per_connection(self) -> None:
         with self.db.connect() as conn:
             self.assertEqual("wal", conn.execute("PRAGMA journal_mode").fetchone()[0].lower())
             self.assertEqual(30000, conn.execute("PRAGMA busy_timeout").fetchone()[0])
+        self.assertTrue(self.db._wal_enabled)
+        self.assertTrue(self.db._journal_mode_ready)
+
+    def test_busy_retry_recovers_from_transient_lock(self) -> None:
+        """get_job retries when SQLite reports a transient lock error."""
+        self.db.create_job({"id": "job-busy", "project_id": self.project_id, "kind": "render"})
+        calls = {"n": 0}
+        real_connect = self.db._new_connection
+
+        def flaky() -> object:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise __import__("sqlite3").OperationalError("database is locked")
+            return real_connect()
+
+        with unittest.mock.patch.object(self.db, "_new_connection", side_effect=flaky):
+            job = self.db.get_job("job-busy")
+        self.assertIsNotNone(job)
+        self.assertGreaterEqual(calls["n"], 3)
 
 
 if __name__ == "__main__":

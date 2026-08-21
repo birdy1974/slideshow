@@ -478,7 +478,8 @@ class SegmentFilterSelectionTest(unittest.TestCase):
 
         with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
              mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
-             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None):
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
             work = self.settings.work_dir / "job"
             work.mkdir(parents=True, exist_ok=True)
             self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
@@ -503,6 +504,115 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertIn("x='iw/2-(iw/zoom/2)'", filters[0], "zoompan defaults to the top-left corner")
         self.assertIn("y='ih/2-(ih/zoom/2)'", filters[0])
         self.assertIn(f"scale={int(1920 / KEN_BURNS_MAX_ZOOM) // 2 * 2}:", filters[0])
+
+
+class VideoPlaysToEndTest(unittest.TestCase):
+    """A video clip must finish its complete movie before the next transition.
+
+    Previously every video was opened with `-stream_loop -1 -t <clip>`, which
+    either cut a long movie short or restarted it mid-hold. The renderer now
+    probes the native duration, expands the hold to cover it, plays the file
+    once, and freezes first/last frames only for the xfade handles.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(
+            config_dir=base / "config",
+            photos_dir=base / "photos",
+            videos_dir=base / "videos",
+            output_dir=base / "out",
+            music_dir=base / "music",
+        )
+        for directory in (
+            self.settings.photos_dir, self.settings.videos_dir,
+            self.settings.work_dir, self.settings.preview_dir, self.settings.output_dir,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.photos_dir / "still.jpg").write_bytes(b"x" * 64)
+        (self.settings.videos_dir / "movie.mp4").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "video.db"), self.settings)
+        self.commands: list[list[str]] = []
+
+    def tearDown(self) -> None:
+        self.renderer.pool.shutdown(wait=False, cancel_futures=True)
+        self.temp.cleanup()
+
+    def _render(self, media: list[dict], native_video: float = 12.5) -> list[list[str]]:
+        project = {
+            "id": 1,
+            "media": media,
+            "output": {
+                "resolution": "Full HD · 1080p", "frameRate": "30 fps",
+                "bitrate": "8 Mbps", "encoder": "libx264",
+                "path": "/output", "filename": "movie",
+            },
+        }
+
+        def fake_run(command, cancelled, log_file):
+            self.commands.append(list(command))
+            Path(command[-1]).write_bytes(b"segment")
+
+        def fake_probe(path):
+            name = Path(path).name
+            if name.endswith(".mp4") and "segment" not in name and "movie.mp4" in str(path):
+                return native_video
+            if name == "movie.mp4":
+                return native_video
+            return 1.0
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", side_effect=fake_probe):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        return self.commands
+
+    def test_video_hold_expands_to_native_duration(self) -> None:
+        # UI default for a video used to be 10 s; a 42 s movie must still play fully.
+        commands = self._render([
+            {"id": 1, "type": "video", "path": "/videos/movie.mp4", "name": "movie.mp4",
+             "duration": 10, "effect": "Original motion", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/still.jpg", "name": "still.jpg",
+             "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ], native_video=42.0)
+        video_cmd = next(c for c in commands if any(str(a).endswith("movie.mp4") for a in c))
+        # Must NOT loop the source — that would restart the movie mid-hold.
+        self.assertNotIn("-stream_loop", video_cmd)
+        # Segment length = native 42 + lead-in 0 + lead-out 1 (outgoing transition).
+        t_flag = video_cmd[video_cmd.index("-t") + 1]
+        self.assertEqual("43", t_flag)
+        vf = video_cmd[video_cmd.index("-vf") + 1]
+        self.assertIn("tpad=", vf)
+        self.assertIn("stop_duration=1", vf)
+
+    def test_video_between_photos_gets_both_transition_pads(self) -> None:
+        commands = self._render([
+            {"id": 1, "type": "image", "path": "/photos/still.jpg", "name": "still.jpg",
+             "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 2},
+            {"id": 2, "type": "video", "path": "/videos/movie.mp4", "name": "movie.mp4",
+             "duration": 3, "effect": "Original motion", "transition": "Dissolve", "transitionTime": 1.5},
+            {"id": 3, "type": "image", "path": "/photos/still.jpg", "name": "still.jpg",
+             "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ], native_video=8.0)
+        video_cmd = next(c for c in commands if any(str(a).endswith("movie.mp4") for a in c))
+        self.assertNotIn("-stream_loop", video_cmd)
+        # hold = max(3, 8) = 8; segment = 2 (in) + 8 + 1.5 (out) = 11.5
+        self.assertEqual("11.5", video_cmd[video_cmd.index("-t") + 1])
+        vf = video_cmd[video_cmd.index("-vf") + 1]
+        self.assertIn("start_duration=2", vf)
+        self.assertIn("stop_duration=1.5", vf)
+
+    def test_image_still_loops_as_before(self) -> None:
+        commands = self._render([
+            {"id": 1, "type": "image", "path": "/photos/still.jpg", "name": "still.jpg",
+             "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ])
+        image_cmd = next(c for c in commands if any(str(a).endswith("still.jpg") for a in c))
+        self.assertIn("-loop", image_cmd)
 
 
 if __name__ == "__main__":
