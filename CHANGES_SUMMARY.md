@@ -82,3 +82,75 @@ This document summarizes all the fixes and enhancements made to the slideshow ap
 All changes have been verified to:
 - Pass all 37 Python unit tests (`PYTHONPATH=backend pytest backend/tests`).
 - Build frontend production assets cleanly with TypeScript check (`npm run build`).
+
+---
+
+## Date: 2026-08-21 (second round)
+
+### 6. **Render no longer fails on temporarily empty files / slow ffprobe**
+**Problem**: Rendering MP4 failed with `file is empty (0 bytes)` for photos and
+`ffprobe timed out` for the MP3 soundtrack. On Synology these are usually
+cloud-synced placeholders (on-demand sync reports 0 bytes while the real
+content hydrates) and slow/networked volumes that exceed a short probe timeout.
+**Fix**:
+- `_probe_readable` now re-stats a 0-byte file up to `MEDIA_PROBE_RETRIES`
+  times (default 2, 0.75 s apart) before declaring it empty, giving hydrating
+  files time to fill in.
+- The ffprobe timeout was raised from 15 s to 30 s (configurable via
+  `FFPROBE_TIMEOUT`) and a timed-out probe is retried once before failing.
+- Empty files are still reported clearly if they never fill, so the user knows
+  to remove or replace them.
+
+**Files modified**:
+- `backend/app/renderer.py`
+- `backend/app/config.py`
+- `backend/tests/test_renderer.py`
+
+---
+
+### 7. **Photo thumbnails and picture popup now visible (and empty files visible as such)**
+**Problem**: Thumbnails and the picture popup were blank — a 0-byte file streams
+an empty body, which browsers render as a silently broken image.
+**Fix**:
+- `/api/media/file` now answers `422` for empty files instead of streaming an
+  empty body, so the UI can react.
+- The media browser marks empty files with an `EMPTY · 0 B` badge, excludes
+  them from "Select visible files", and skips them (with a notice) when adding
+  to the storyline.
+- Thumbnails in the overview timeline, list, and preview filmstrip show a
+  clear "unavailable" placeholder instead of a broken image.
+- The picture popup (lightbox) and preview stage show a readable error message
+  for empty/unreadable files.
+
+**Files modified**:
+- `backend/app/main.py`
+- `backend/app/media.py`
+- `src/App.tsx`
+- `src/styles.css`
+- `backend/tests/test_media.py`
+
+---
+
+### 8. **Default transition time is now 5 seconds**
+**Problem**: New transitions defaulted to 1–1.2 s.
+**Fix**:
+- The "Transition default" control, newly added media, text frames, and legacy
+  items without an explicit `transitionTime` all use **5 seconds** now.
+- The renderer's fallback for missing `transitionTime` was aligned to the same
+  5 s value so the on-screen estimate always matches the rendered MP4.
+- The bulk "Apply to all" upper bound was raised from 5 s to 30 s.
+
+**Files modified**:
+- `src/App.tsx`
+- `backend/app/renderer.py`
+- `backend/tests/test_renderer.py`
+
+---
+
+## 🧪 Testing
+
+- All 44 Python unit tests pass (`cd backend && python3 -m unittest discover -s tests`).
+- `npm run build` (TypeScript check + Vite production build) passes.
+- End-to-end preview and MP4 renders (10 photos, 5 s transitions, MP3
+  soundtrack) complete successfully; the 480p preview is exactly 95 s
+  (10 × 5 s holds + 9 × 5 s transitions).

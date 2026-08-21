@@ -19,6 +19,12 @@ class Settings:
     output_dir: Path = Path(os.getenv("OUTPUT_DIR", "/output"))
     ffmpeg_bin: str = os.getenv("FFMPEG_BIN", "ffmpeg")
     ffprobe_bin: str = os.getenv("FFPROBE_BIN", "ffprobe")
+    # Media probing happens on potentially slow NAS volumes / network mounts.
+    # A generous timeout plus retries keeps on-demand-synced files (which can
+    # briefly report 0 bytes while they hydrate) from failing a render.
+    ffprobe_timeout: float = float(os.getenv("FFPROBE_TIMEOUT", "30"))
+    media_probe_retries: int = max(0, int(os.getenv("MEDIA_PROBE_RETRIES", "2")))
+    media_probe_retry_delay: float = max(0.0, float(os.getenv("MEDIA_PROBE_RETRY_DELAY", "0.75")))
     render_workers: int = max(1, int(os.getenv("RENDER_WORKERS", "1")))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 

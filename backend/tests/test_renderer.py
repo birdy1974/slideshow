@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from app.renderer import (
     RenderError,
     Renderer,
     _parse_xfade_help,
+    _probe_readable,
     _summarize_ffmpeg_log,
     build_filter_graph,
     format_ffmpeg_number,
@@ -128,6 +130,83 @@ class TransitionTimingTest(unittest.TestCase):
     def test_empty_and_single_item_media(self) -> None:
         self.assertEqual([], Renderer.effective_transitions([]))
         self.assertEqual([], Renderer.effective_transitions([{"duration": 5, "transitionTime": 99}]))
+
+    def test_missing_transition_time_defaults_to_five_seconds(self) -> None:
+        # The UI default transition is 5 s; legacy items without an explicit
+        # transitionTime must render with the same default the UI shows.
+        self.assertEqual([5.0], Renderer.effective_transitions([{"duration": 5}, {"duration": 5}]))
+        self.assertEqual([5.0, 5.0], Renderer.effective_transitions([
+            {"duration": 5}, {"duration": 5}, {"duration": 5},
+        ]))
+
+
+class ProbeReadableTest(unittest.TestCase):
+    """Retry behaviour for 0-byte (cloud-hydrating) files and slow mounts."""
+
+    class FakePath:
+        def __init__(self, sizes, is_file=True):
+            self._sizes = list(sizes)
+            self.is_file_ = is_file
+            self.stat_calls = 0
+
+        def exists(self): return True
+
+        def is_dir(self): return False
+
+        def is_file(self): return self.is_file_
+
+        def stat(self):
+            size = self._sizes[min(self.stat_calls, len(self._sizes) - 1)]
+            self.stat_calls += 1
+            return type("Stat", (), {"st_size": size})()
+
+    def _probe(self, path, run_side_effect=None, run_side_effect_once=False, retries=2, delay=0.005):
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffprobe"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=run_side_effect) as run, \
+             mock.patch("app.renderer.time.sleep") as sleep:
+            result = _probe_readable(path, "ffprobe", timeout=5, retries=retries, retry_delay=delay)
+        return result, run, sleep
+
+    def test_empty_file_is_rechecked_before_failing(self) -> None:
+        # First stat reports 0 bytes (e.g. still hydrating), second one finds data.
+        path = self.FakePath([0, 1024])
+        ok = type("Result", (), {"returncode": 0, "stderr": "", "stdout": "jpeg"})()
+        result, run, sleep = self._probe(path, run_side_effect=[ok])
+        self.assertIsNone(result)
+        self.assertEqual(2, path.stat_calls)
+        self.assertEqual(1, sleep.call_count, "empty file should be retried after a delay")
+
+    def test_persistently_empty_file_is_rejected(self) -> None:
+        path = self.FakePath([0, 0, 0])
+        result, run, sleep = self._probe(path)
+        self.assertEqual("file is empty (0 bytes)", result)
+        self.assertEqual(3, path.stat_calls)
+        self.assertEqual(2, sleep.call_count)
+        run.assert_not_called()  # no point probing a file with no content
+
+    def test_ffprobe_timeout_is_retried_once(self) -> None:
+        ok = type("Result", (), {"returncode": 0, "stderr": "", "stdout": "mp3"})()
+        path = self.FakePath([2048])
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffprobe"), \
+             mock.patch("app.renderer.time.sleep"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=[subprocess.TimeoutExpired("ffprobe", 5), ok]) as run:
+            result = _probe_readable(path, "ffprobe", timeout=5, retries=0, retry_delay=0)
+        self.assertIsNone(result)
+        self.assertEqual(2, run.call_count)
+
+    def test_ffprobe_timeout_after_retry_is_reported(self) -> None:
+        path = self.FakePath([2048])
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffprobe"), \
+             mock.patch("app.renderer.time.sleep"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=subprocess.TimeoutExpired("ffprobe", 5)) as run:
+            result = _probe_readable(path, "ffprobe", timeout=5, retries=0, retry_delay=0)
+        self.assertEqual("ffprobe timed out", result)
+        self.assertEqual(2, run.call_count)
+
+    def test_missing_and_folder_paths_fail_fast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("app.renderer.time.sleep"):
+            self.assertEqual("file is missing", _probe_readable(Path("/definitely/not/here.jpg"), "ffprobe", retries=2, retry_delay=0))
+            self.assertEqual("is a folder, not a media file", _probe_readable(Path(tmp), "ffprobe", retries=2, retry_delay=0))
 
 
 class OutputProtectionTest(unittest.TestCase):
