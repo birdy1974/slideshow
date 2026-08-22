@@ -1,9 +1,9 @@
 """FFmpeg slideshow renderer.
 
-The renderer deliberately normalizes every source and xfade result to an
-identical frame rate, time base and timestamp origin before chaining the next
-transition. This avoids xfade failures with mixed media and FFmpeg builds that
-lose frame-rate metadata on intermediate filter outputs.
+Sources are normalized to a common frame rate, time base and timestamp origin.
+Each visual transition is then rendered as an isolated two-input xfade unit;
+the compatible units are joined by FFmpeg's concat demuxer. This avoids the
+performance and reliability problems of a long, serial xfade filter chain.
 """
 from __future__ import annotations
 
@@ -27,15 +27,6 @@ from .media import UnsafePath, mounted_path, source_path
 log = logging.getLogger(__name__)
 
 KEN_BURNS_MAX_ZOOM = 1.12
-# Chained xfades are not a cheap concat: every downstream xfade processes the
-# full output of every preceding one.  A 32-clip graph can therefore look hung
-# (often falling below 1 fps) on a CPU/NAS, even though FFmpeg has not failed.
-# Reduce the story as a small tree instead. Eight inputs keeps memory bounded
-# and, more importantly, limits the number of full-resolution xfade passes per
-# encode; the final pass then only joins a few intermediate files. This adds an
-# intermediate re-encode for longer stories, but is dramatically faster and
-# substantially more reliable than one long serial xfade chain.
-COMPOSE_BATCH_SIZE = 8
 RESOLUTIONS = {
     "4K UHD · 2160p": (3840, 2160), "Full HD · 1080p": (1920, 1080),
     "HD · 720p": (1280, 720), "SD · 480p": (854, 480),
@@ -314,26 +305,6 @@ def build_filter_graph(durations: list[float], transitions: list[float], xfade_n
         previous = out
         offset += durations[index] + transition
     return ";".join(prepared + chains)
-
-
-def chunk_indices(count: int, batch: int) -> list[tuple[int, int]]:
-    """Inclusive-exclusive [start, end) windows covering 0..count."""
-    if count <= 0:
-        return []
-    batch = max(2, batch)
-    if count <= batch:
-        return [(0, count)]
-    windows: list[tuple[int, int]] = []
-    start = 0
-    while start < count:
-        remaining = count - start
-        # Avoid a leftover singleton: fold the last two groups if needed.
-        take = remaining if remaining <= batch else batch
-        if remaining > batch and remaining - batch == 1:
-            take = remaining - 2
-        windows.append((start, start + take))
-        start += take
-    return windows
 
 
 class Renderer:
@@ -832,65 +803,90 @@ class Renderer:
                     raise
                 self._run_ffmpeg(patched, cancelled, log_file)
 
-        # Reduce long stories in batches so FFmpeg never opens 80+ 1080p
-        # streams in one filter graph (that stalls after "Press [q]").
-        level = 0
-        cur_segs = list(segments)
-        cur_durs = list(durations)
-        cur_trans = list(transitions)
-        cur_xfade = list(xfade_names)
-        while len(cur_segs) > COMPOSE_BATCH_SIZE:
-            windows = chunk_indices(len(cur_segs), COMPOSE_BATCH_SIZE)
-            nxt_segs: list[Path] = []
-            nxt_durs: list[float] = []
-            nxt_trans: list[float] = []
-            nxt_xfade: list[str] = []
-            for w_i, (start, end) in enumerate(windows):
-                if cancelled.is_set():
-                    raise RenderError("Render cancelled by user")
-                group = cur_segs[start:end]
-                g_durs = cur_durs[start:end]
-                g_trans = cur_trans[start:end - 1]
-                g_xfade = cur_xfade[start:end - 1]
-                trail = cur_trans[end - 1] if end < len(cur_segs) else 0.0
-                if len(group) == 1:
-                    nxt_segs.append(group[0])
-                    nxt_durs.append(g_durs[0])
-                else:
-                    mid = work / f"compose-L{level}-{w_i:03d}.mp4"
-                    graph = build_filter_graph(g_durs, g_trans, g_xfade, fps)
-                    cut = sum(g_durs) + sum(g_trans) + trail
-                    inputs: list[str] = []
-                    for path in group:
-                        inputs += ["-i", str(path)]
-                    command = [
-                        self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs,
-                        "-filter_complex", graph, "-map", "[vout]", "-an",
-                        *encode_args_for(encoder, intermediate=True),
-                        "-r", str(fps), "-t", format_ffmpeg_number(cut), str(mid),
-                    ]
-                    progress(55 + 20 * (w_i + 1) / max(1, len(windows)), f"Composing group {w_i + 1} of {len(windows)}")
-                    run_compose(command, allow_qsv_fallback=True)
-                    nxt_segs.append(mid)
-                    nxt_durs.append(sum(g_durs) + sum(g_trans))
-                if end < len(cur_segs):
-                    nxt_trans.append(cur_trans[end - 1])
-                    nxt_xfade.append(cur_xfade[end - 1])
-            cur_segs, cur_durs, cur_trans, cur_xfade = nxt_segs, nxt_durs, nxt_trans, nxt_xfade
-            level += 1
+        # Build the timeline as individual hold and transition units.  Do not
+        # chain xfade filters: a chain has quadratic full-resolution work and
+        # can stall (or fail) on CPU-only NAS hardware.  Each transition below
+        # opens exactly two already-normalized clips, then FFmpeg's concat
+        # demuxer joins compatible MP4s without decoding them again.
+        timeline_parts: list[Path] = []
+        for index, segment in enumerate(segments):
+            if cancelled.is_set():
+                raise RenderError("Render cancelled by user")
+            lead_in = transitions[index - 1] if index else 0.0
+            hold = durations[index]
+            hold_part = work / f"hold-{index:04d}.mp4"
+            hold_graph = (
+                f"[0:v]trim=start={format_ffmpeg_number(lead_in)}:"
+                f"end={format_ffmpeg_number(lead_in + hold)},"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[vout]"
+            )
+            hold_command = [
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(segment),
+                "-filter_complex", hold_graph, "-map", "[vout]", "-an",
+                *encode_args_for(encoder, intermediate=True), "-r", str(fps),
+                "-t", format_ffmpeg_number(hold), str(hold_part),
+            ]
+            progress(55 + 25 * (index + 1) / len(media), f"Preparing timeline item {index + 1} of {len(media)}")
+            run_compose(hold_command, allow_qsv_fallback=True)
+            timeline_parts.append(hold_part)
 
-        filter_graph = build_filter_graph(cur_durs, cur_trans, cur_xfade, fps)
-        # Audio is composed only at the final pass.  Selected movie audio is
-        # delayed to the movie's real hold start, while the soundtrack is
-        # crossfaded down before the movie and back up after it.  Video
-        # segments themselves are deliberately silent, so this also avoids
-        # leaking embedded audio from movies that are set to Soundtrack.
+            if index >= len(transitions):
+                continue
+            transition = transitions[index]
+            transition_part = work / f"transition-{index:04d}.mp4"
+            # Segment N has an outgoing cloned-frame handle immediately after
+            # its hold. Segment N+1 starts with its incoming cloned-frame
+            # handle. Fading those handles gives an additive transition without
+            # stealing time from either clip's configured hold.
+            transition_graph = (
+                f"[0:v]trim=start={format_ffmpeg_number(lead_in + hold)}:"
+                f"end={format_ffmpeg_number(lead_in + hold + transition)},"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
+                f"[1:v]trim=start=0:end={format_ffmpeg_number(transition)},"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
+                f"[outgoing][incoming]xfade=transition={xfade_names[index]}:"
+                f"duration={format_ffmpeg_number(transition)}:offset=0,"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[vout]"
+            )
+            transition_command = [
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(segment),
+                "-i", str(segments[index + 1]), "-filter_complex", transition_graph,
+                "-map", "[vout]", "-an", *encode_args_for(encoder, intermediate=True),
+                "-r", str(fps), "-t", format_ffmpeg_number(transition), str(transition_part),
+            ]
+            run_compose(transition_command, allow_qsv_fallback=True)
+            timeline_parts.append(transition_part)
+
+        concat_list = work / "timeline.ffconcat"
+        # The work directory is renderer-owned. Escape a single quote anyway
+        # so a custom CONFIG_DIR cannot make a valid manifest invalid.
+        concat_list.write_text(
+            "ffconcat version 1.0\n" + "".join(
+                f"file '{str(part).replace(chr(39), chr(92) + chr(39))}'\n"
+                for part in timeline_parts
+            ),
+            encoding="utf-8",
+        )
+        timeline = work / "timeline.mp4"
+        concat_command = [
+            self.settings.ffmpeg_bin, "-hide_banner", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(concat_list), "-map", "0:v:0", "-an", "-c:v", "copy",
+            "-movflags", "+faststart", "-t", format_ffmpeg_number(total_duration), str(timeline),
+        ]
+        progress(82, "Joining timeline")
+        self._run_ffmpeg(concat_command, cancelled, log_file)
+
+        # Audio is composed after the video timeline is complete. Selected
+        # movie audio is delayed to the movie's visible hold start, while the
+        # soundtrack fades down before and back up after the movie.
         audio_args: list[str] = []
         audio_map: list[str] = []
+        audio_filter = ""
         original_movies = [(index, item) for index, item in enumerate(media)
                            if item.get("type") == "video" and item.get("audioSource") == "original"]
         if soundtrack or original_movies:
-            audio_index = len(cur_segs)
+            # Input 0 is the already-concatenated silent video timeline.
+            audio_index = 1
             if soundtrack:
                 policy = project.get("soundtrack", {}).get("policy", "Loop & trim")
                 if policy == "Loop & trim":
@@ -899,16 +895,11 @@ class Renderer:
                 base_index = audio_index
                 audio_index += 1
             else:
-                # A silent bed lets original movie audio render even when no
-                # soundtrack has been added.
                 audio_args += ["-f", "lavfi", "-t", format_ffmpeg_number(total_duration), "-i", "anullsrc=r=48000:cl=stereo"]
                 base_index = audio_index
                 audio_index += 1
 
             volume = max(0, min(1, float(project.get("soundtrack", {}).get("volume", 100)) / 100)) if soundtrack else 1
-            # A product of envelopes supports multiple original-audio movies.
-            # Each envelope fades the bed across the adjacent visual transition
-            # and remains silent for the movie hold.
             envelopes: list[str] = []
             starts: list[float] = []
             cursor = 0.0
@@ -916,59 +907,52 @@ class Renderer:
                 starts.append(cursor)
                 cursor += duration + (transitions[index] if index < len(transitions) else 0.0)
             for index, _item in original_movies:
-                start = starts[index]
-                end = start + durations[index]
+                start_time = starts[index]
+                end_time = start_time + durations[index]
                 fade_in = transitions[index - 1] if index else 0.0
                 fade_out = transitions[index] if index < len(transitions) else 0.0
-                down_start = max(0.0, start - fade_in)
-                up_end = end + fade_out
+                down_start = max(0.0, start_time - fade_in)
+                up_end = end_time + fade_out
                 if fade_in > 0.0005 and fade_out > 0.0005:
-                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start)}),({format_ffmpeg_number(start)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end)})/{format_ffmpeg_number(fade_out)},1))))")
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end_time)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end_time)})/{format_ffmpeg_number(fade_out)},1))))")
                 elif fade_in > 0.0005:
-                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start)}),({format_ffmpeg_number(start)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end)}),0,1)))")
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end_time)}),0,1)))")
                 elif fade_out > 0.0005:
-                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(start)}),1,if(lt(t,{format_ffmpeg_number(end)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end)})/{format_ffmpeg_number(fade_out)},1)))")
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(start_time)}),1,if(lt(t,{format_ffmpeg_number(end_time)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end_time)})/{format_ffmpeg_number(fade_out)},1)))")
                 else:
-                    envelopes.append(f"if(between(t,{format_ffmpeg_number(start)},{format_ffmpeg_number(end)}),0,1)")
+                    envelopes.append(f"if(between(t,{format_ffmpeg_number(start_time)},{format_ffmpeg_number(end_time)}),0,1)")
             bed_gain = "*".join(envelopes) if envelopes else "1"
-            bed_filter = f"volume='{format_ffmpeg_number(volume)}*({bed_gain})':eval=frame"
+            audio_filter = f"[{base_index}:a]volume='{format_ffmpeg_number(volume)}*({bed_gain})':eval=frame[bed]"
             fade = project.get("soundtrack", {}).get("fadeOut", True)
             if soundtrack and fade:
-                bed_filter += f",afade=t=out:st={format_ffmpeg_number(max(0, total_duration - 2))}:d=2"
-            filter_graph += f";[{base_index}:a]{bed_filter}[bed]"
+                audio_filter = audio_filter.replace("[bed]", f",afade=t=out:st={format_ffmpeg_number(max(0, total_duration - 2))}:d=2[bed]")
             mix_labels = ["[bed]"]
             for movie_index, item in original_movies:
                 source = source_path(self.settings, item)
                 audio_args += ["-i", str(source)]
                 movie_audio_index = audio_index
                 audio_index += 1
-                start = starts[movie_index]
+                start_time = starts[movie_index]
                 duration = durations[movie_index]
                 fade_in = transitions[movie_index - 1] if movie_index else 0.0
                 fade_out = transitions[movie_index] if movie_index < len(transitions) else 0.0
-                # The source begins with the movie itself; its fades match the
-                # soundtrack hand-off at each side of the movie.
                 original_filter = f"atrim=duration={format_ffmpeg_number(duration)},asetpts=PTS-STARTPTS"
                 if fade_in > 0.0005:
                     original_filter += f",afade=t=in:st=0:d={format_ffmpeg_number(fade_in)}"
                 if fade_out > 0.0005:
                     original_filter += f",afade=t=out:st={format_ffmpeg_number(max(0, duration - fade_out))}:d={format_ffmpeg_number(min(fade_out, duration))}"
-                original_filter += f",adelay={int(round(start * 1000))}:all=1"
+                original_filter += f",adelay={int(round(start_time * 1000))}:all=1"
                 label = f"moviea{movie_index}"
-                filter_graph += f";[{movie_audio_index}:a]{original_filter}[{label}]"
+                audio_filter += f";[{movie_audio_index}:a]{original_filter}[{label}]"
                 mix_labels.append(f"[{label}]")
-            filter_graph += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0[aout]"
+            audio_filter += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0[aout]"
             audio_map = ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
-        inputs = []
-        for path in cur_segs:
-            inputs += ["-i", str(path)]
-        command = [
-            self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs, *audio_args,
-            "-filter_complex", filter_graph, "-map", "[vout]", *audio_map,
-            *encode_args_for(encoder, intermediate=False),
-            "-r", str(fps), "-t", str(total_duration), str(output),
-        ]
-        run_compose(command, allow_qsv_fallback=True)
+
+        command = [self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(timeline), *audio_args]
+        if audio_filter:
+            command += ["-filter_complex", audio_filter]
+        command += ["-map", "0:v:0", *audio_map, "-c:v", "copy", "-t", format_ffmpeg_number(total_duration), "-movflags", "+faststart", str(output)]
+        run_compose(command, allow_qsv_fallback=False)
         progress(98, "Finalizing MP4")
         return output
 
