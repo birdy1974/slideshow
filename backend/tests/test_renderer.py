@@ -92,6 +92,71 @@ class RendererMappingTest(unittest.TestCase):
         self.assertEqual(set(), _parse_xfade_help("no options here"))
 
 
+class CapabilitiesHealthTest(unittest.TestCase):
+    """Regression tests for container "unhealthy" false positives.
+
+    /api/health (polled by the UI) must answer instantly even while the
+    one-time Quick Sync probe is still running or a render saturates the
+    CPUs — the old implementation spawned `ffmpeg -version` per call and
+    blocked on the QSV lock, which made Docker/Portainer flag busy but
+    healthy containers as unhealthy."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.renderer = Renderer(Database(base / "test.db"), Settings())
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_ffmpeg_version_probed_at_most_once(self) -> None:
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(stdout="ffmpeg version 7.1 test\n")) as run:
+            self.assertEqual("ffmpeg version 7.1 test", self.renderer.ffmpeg_version())
+            self.assertEqual("ffmpeg version 7.1 test", self.renderer.ffmpeg_version())
+            self.assertEqual(1, run.call_count)
+
+    def test_capabilities_spawns_no_subprocess_once_warm(self) -> None:
+        self.renderer._ffmpeg_version = "ffmpeg version 7.1 test"
+        self.renderer._version_probed = True
+        self.renderer._qsv_encodable = True
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=AssertionError("capabilities must not spawn processes")):
+            caps = self.renderer.capabilities()
+        self.assertEqual("ffmpeg version 7.1 test", caps["ffmpegVersion"])
+        self.assertTrue(caps["ffmpeg"])
+        self.assertTrue(caps["cpuEncoding"])
+        self.assertTrue(caps["quickSync"])
+
+    def test_capabilities_does_not_wait_for_qsv_probe(self) -> None:
+        self.renderer._ffmpeg_version = "ffmpeg version 7.1 test"
+        self.renderer._version_probed = True
+        # Simulate the (up to 30 s) Quick Sync test encode holding its lock;
+        # capabilities() must answer anyway instead of blocking a health check.
+        held = threading.Event()
+        release = threading.Event()
+        def hold_lock() -> None:
+            with self.renderer._qsv_lock:
+                held.set()
+                release.wait(10)
+        keeper = threading.Thread(target=hold_lock, daemon=True)
+        keeper.start()
+        self.assertTrue(held.wait(5), "test could not acquire the QSV lock scenario")
+        try:
+            caps = self.renderer.capabilities()
+        finally:
+            release.set()
+            keeper.join(5)
+        self.assertFalse(caps["quickSync"], "unprobed Quick Sync must report False, never block")
+
+    def test_warm_capabilities_never_raises(self) -> None:
+        with mock.patch("app.renderer.shutil.which", return_value=None), \
+             mock.patch("app.renderer.subprocess.run", side_effect=OSError("probe exploded")):
+            self.renderer.warm_capabilities()  # daemon thread swallows and logs
+        # Blocking paths still degrade safely for render-time decisions.
+        self.assertFalse(self.renderer.qsv_encodable_cached())
+
+
 class RendererFallbackTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()

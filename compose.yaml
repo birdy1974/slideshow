@@ -28,8 +28,12 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      # Liveness probes hit /api/ping (dependency-free, answers in
+      # milliseconds even mid-render). /api/health probes ffmpeg/Quick Sync
+      # and is meant for the UI — using it here made Portainer report a
+      # healthy, busy container as "unhealthy".
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/ping', timeout=5)"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s

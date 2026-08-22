@@ -71,6 +71,29 @@ Back up the entire host `CONFIG_PATH`. Stop the container or use SQLite's online
 - 4K CPU rendering can be very slow and memory-intensive.
 - Large source photos are normalized by FFmpeg; pre-resizing unusually large scans reduces render time.
 
+## Container shows "unhealthy" in Docker/Portainer
+
+The health check polls `GET /api/ping`, which does nothing but prove the
+server is alive. Older images polled `/api/health`, which runs an
+`ffmpeg -version` call and can wait behind the one-time Quick Sync test
+encode — during renders or the first seconds after boot that exceeded the
+probe budget three times in a row, and Docker marked a fully working
+container **unhealthy**. If you run an older image, either update it or
+override the health check when recreating the container (Portainer cannot
+edit a running container's health check) to:
+
+```yaml
+healthcheck:
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/ping', timeout=5)"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 30s
+```
+
+`unhealthy` now genuinely means the API stopped answering — check
+`docker logs slideshow` for a crash or a blocked event loop in that case.
+
 ## Folder permissions
 
 The container only sees what `PUID`/`PGID` can read. A shared folder can appear
