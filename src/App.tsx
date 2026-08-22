@@ -3,7 +3,7 @@ import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp,
   Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, Save,
-  Settings2, Shuffle, Sparkles, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
+  Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
 
 type MediaRoot = 'photos' | 'videos' | 'music'
@@ -389,6 +389,7 @@ function App() {
   const [rendering, setRendering] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [randomOrder, setRandomOrder] = useState(false)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [selectedTransitions, setSelectedTransitions] = useState<number[]>([])
@@ -764,16 +765,19 @@ function App() {
       if (!response.ok) throw new Error('Could not read render status')
       const job=await response.json();setProgress(Math.round(job.progress||0))
       if(job.status==='complete')return job
-      if(job.status==='failed'||job.status==='cancelled')throw new Error(job.error_message||`Job ${job.status}`)
+      if(job.status==='cancelled')return { ...job, cancelled: true }
+      if(job.status==='failed')throw new Error(job.error_message||'Job failed')
     }
   }
   const trackJob = async (jobId:string, kind:'preview'|'render') => {
+    setActiveJobId(jobId)
     try{
       const completed=await waitForJob(jobId)
+      if(completed.cancelled){notify(`${kind==='preview'?'Preview':'Render'} stopped`);return}
       if(kind==='preview'){setPreviewUrl(`${completed.fileUrl}?v=${Date.now()}`);setShowPreview(true);notify('Real FFmpeg preview is ready')}
       else notify(`MP4 render complete · ${outputFilename}.mp4`)
     }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`)}
-    finally{kind==='preview'?setPreviewing(false):setRendering(false)}
+    finally{kind==='preview'?setPreviewing(false):setRendering(false);setActiveJobId(id => id === jobId ? null : id)}
   }
   const startJob = async (kind:'preview'|'render', overwrite=false) => {
     kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1)
@@ -791,6 +795,16 @@ function App() {
       const created=await response.json()
       await trackJob(created.id,kind)
     }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`);kind==='preview'?setPreviewing(false):setRendering(false)}
+  }
+  const stopActiveJob = async () => {
+    if (!activeJobId) return
+    try {
+      const response = await fetch(`/api/jobs/${activeJobId}/cancel`, { method: 'POST' })
+      if (!response.ok && response.status !== 409) throw new Error(await readApiError(response, 'Could not stop'))
+      notify('Stopping FFmpeg…')
+    } catch (error) {
+      notify(`Could not stop: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
   }
   // The backend keeps rendering after a page refresh; re-attach to a still-active
   // job so the Preview/Render buttons show its live progress again.
@@ -828,7 +842,7 @@ function App() {
           <input value={projectName} onChange={e=>setProjectName(e.target.value)} aria-label="Project name"/>
           <p>Assemble your media, shape the motion, and export a finished story.</p>
         </div>
-        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button></div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
       </section>
 
       <div className="workspace">
@@ -889,7 +903,7 @@ function App() {
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, audioTracks.length > 0))}</strong><small>H.264{audioTracks.length ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
-          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>Ready to render</h3><p>All checks passed</p></div><span><Check size={14}/></span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li></ul><button className="btn preview-btn" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button>{rendering && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite.</p></section>
+          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li></ul><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button>{(rendering||previewing) && <button type="button" className="btn ghost stop-job wide" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':'preview'}</button>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process.</p></section>
         </aside>
       </div>
     </main>}
@@ -987,7 +1001,7 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal wide-style-modal" onMouseDown={e=>e.stopPropagation()}>
     <div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>
     <div className="style-modal-body">
-      <p>These defaults are used for new picture captions and standalone text frames. Drag the sample on the stage to set the default position.</p>
+      <p>These defaults apply to captions drawn on photos and videos. Standalone text frames keep their own font, size and position.</p>
       <TypeControls fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={Number(fontSize) || 48} setFontSize={v => setFontSize(String(v))} fontColor={fontColor} setFontColor={setFontColor} bold={bold} setBold={setBold} italic={italic} setItalic={setItalic} underline={underline} setUnderline={setUnderline} />
       <div className="frame-canvas default-position-stage" style={{background:'#30362d'}}>
         <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
