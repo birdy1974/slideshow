@@ -142,3 +142,9 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .line-number svg{opacity:.6}
 .line-number.video{color:#4c5546}
 .timeline-line.video-line .line-content{background:#dfe3d0;border-radius:6px}
+/* Embedded movie-audio control in the detailed list. */
+.movie-audio{min-width:125px;display:flex;flex-direction:column;gap:3px;justify-content:center}
+.movie-audio small{font-size:8px;color:#71805d;line-height:1.15}
+.movie-audio.muted{align-items:center;color:#b3b5ae;font-size:12px}
+.timeline-item{grid-template-columns:34px 78px minmax(160px,1.7fr) 90px minmax(150px,1.35fr) minmax(125px,1.1fr) 80px}
+@media(max-width:1100px){.timeline-item{grid-template-columns:34px 70px minmax(150px,1fr) 80px}.movie-audio{grid-column:3/-1}.timeline-head{display:none}}

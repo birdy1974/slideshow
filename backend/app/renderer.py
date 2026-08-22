@@ -29,7 +29,11 @@ log = logging.getLogger(__name__)
 KEN_BURNS_MAX_ZOOM = 1.12
 # A single filter_complex of ~90 xfades at 1080p OOMs or appears hung on NAS
 # boxes (every xfade keeps both inputs decoded). Compose in small groups.
-COMPOSE_BATCH_SIZE = 8
+# A full transition graph for a few dozen normalized MP4s is reliable on
+# current FFmpeg builds.  Keeping this comfortably above typical albums avoids
+# a lossy intermediate compose pass (which can end video early while the final
+# audio input continues). Very large stories still use the batching safeguard.
+COMPOSE_BATCH_SIZE = 32
 RESOLUTIONS = {
     "4K UHD · 2160p": (3840, 2160), "Full HD · 1080p": (1920, 1080),
     "HD · 720p": (1280, 720), "SD · 480p": (854, 480),
@@ -634,9 +638,23 @@ class Renderer:
         log_file = work / "ffmpeg.log"
         progress(1, "Preparing soundtrack")
         soundtrack = self._make_soundtrack(project, work, cancelled, log_file)
-        if soundtrack and project.get("soundtrack",{}).get("policy") == "Fit slideshow to audio":
-            audio_duration = self._probe_duration(soundtrack)
-            transition_total = sum(self.effective_transitions(media))
+        if project.get("soundtrack",{}).get("policy") == "Fit slideshow to audio":
+            # Original movie audio is part of the sound program too.  When it
+            # outlasts the music bed, fitting only to the soundtrack would end
+            # the calculated audio time early and incorrectly shrink photos.
+            audio_duration = self._probe_duration(soundtrack) if soundtrack else 0.0
+            source_transitions = self.effective_transitions(media)
+            cursor = 0.0
+            for index, item in enumerate(media):
+                hold = max(.2, float(item.get("duration", 5)))
+                if item.get("type") == "video" and item.get("audioSource") == "original":
+                    try:
+                        hold = max(hold, self._probe_duration(source_path(self.settings, item)))
+                    except Exception as exc:
+                        log.warning("Could not probe original-audio video duration for %s: %s", item.get("name"), exc)
+                    audio_duration = max(audio_duration, cursor + hold)
+                cursor += hold + (source_transitions[index] if index < len(source_transitions) else 0.0)
+            transition_total = sum(source_transitions)
             duration_total = sum(max(.2, float(x.get("duration",5))) for x in media)
             if audio_duration > transition_total and duration_total > 0:
                 # Holds scale to fill the audio; transitions retain their set duration.
@@ -697,9 +715,16 @@ class Renderer:
             lead_in = transitions[index - 1] if index else 0.0
             lead_out = transitions[index] if index < len(transitions) else 0.0
             if kind_name == "title":
-                background = str(item.get("frameBackground", "#202020"))
-                if not background.startswith("#"): background = "#30382a"
-                command += ["-f", "lavfi", "-i", f"color=c={background}:s={width}x{height}:r={fps}:d={clip_t}"]
+                # CSS gradients are useful in the editor preview but cannot be
+                # rendered by FFmpeg's color source. Accept only an exact CSS
+                # hex colour and convert it to FFmpeg's unambiguous 0xRRGGBB
+                # syntax; this prevents a selected colour being parsed as the
+                # black/default background on some FFmpeg builds.
+                background = str(item.get("frameBackground", "#30382a"))
+                if not re.fullmatch(r"#[0-9a-fA-F]{6}", background):
+                    background = "#30382a"
+                ffmpeg_background = "0x" + background[1:]
+                command += ["-f", "lavfi", "-i", f"color=c={ffmpeg_background}:s={width}x{height}:r={fps}:d={clip_t}"]
             else:
                 source = source_path(self.settings, item)
                 if not source.exists(): raise RenderError(f"Media file is missing: {source}")
@@ -853,20 +878,84 @@ class Renderer:
             level += 1
 
         filter_graph = build_filter_graph(cur_durs, cur_trans, cur_xfade, fps)
+        # Audio is composed only at the final pass.  Selected movie audio is
+        # delayed to the movie's real hold start, while the soundtrack is
+        # crossfaded down before the movie and back up after it.  Video
+        # segments themselves are deliberately silent, so this also avoids
+        # leaking embedded audio from movies that are set to Soundtrack.
         audio_args: list[str] = []
         audio_map: list[str] = []
-        if soundtrack:
+        original_movies = [(index, item) for index, item in enumerate(media)
+                           if item.get("type") == "video" and item.get("audioSource") == "original"]
+        if soundtrack or original_movies:
             audio_index = len(cur_segs)
-            policy = project.get("soundtrack", {}).get("policy", "Loop & trim")
-            if policy == "Loop & trim":
-                audio_args += ["-stream_loop", "-1"]
-            audio_args += ["-i", str(soundtrack)]
-            volume = max(0, min(1, float(project.get("soundtrack", {}).get("volume", 100)) / 100))
+            if soundtrack:
+                policy = project.get("soundtrack", {}).get("policy", "Loop & trim")
+                if policy == "Loop & trim":
+                    audio_args += ["-stream_loop", "-1"]
+                audio_args += ["-i", str(soundtrack)]
+                base_index = audio_index
+                audio_index += 1
+            else:
+                # A silent bed lets original movie audio render even when no
+                # soundtrack has been added.
+                audio_args += ["-f", "lavfi", "-t", format_ffmpeg_number(total_duration), "-i", "anullsrc=r=48000:cl=stereo"]
+                base_index = audio_index
+                audio_index += 1
+
+            volume = max(0, min(1, float(project.get("soundtrack", {}).get("volume", 100)) / 100)) if soundtrack else 1
+            # A product of envelopes supports multiple original-audio movies.
+            # Each envelope fades the bed across the adjacent visual transition
+            # and remains silent for the movie hold.
+            envelopes: list[str] = []
+            starts: list[float] = []
+            cursor = 0.0
+            for index, duration in enumerate(durations):
+                starts.append(cursor)
+                cursor += duration + (transitions[index] if index < len(transitions) else 0.0)
+            for index, _item in original_movies:
+                start = starts[index]
+                end = start + durations[index]
+                fade_in = transitions[index - 1] if index else 0.0
+                fade_out = transitions[index] if index < len(transitions) else 0.0
+                down_start = max(0.0, start - fade_in)
+                up_end = end + fade_out
+                if fade_in > 0.0005 and fade_out > 0.0005:
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start)}),({format_ffmpeg_number(start)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end)})/{format_ffmpeg_number(fade_out)},1))))")
+                elif fade_in > 0.0005:
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start)}),({format_ffmpeg_number(start)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end)}),0,1)))")
+                elif fade_out > 0.0005:
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(start)}),1,if(lt(t,{format_ffmpeg_number(end)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end)})/{format_ffmpeg_number(fade_out)},1)))")
+                else:
+                    envelopes.append(f"if(between(t,{format_ffmpeg_number(start)},{format_ffmpeg_number(end)}),0,1)")
+            bed_gain = "*".join(envelopes) if envelopes else "1"
+            bed_filter = f"volume='{format_ffmpeg_number(volume)}*({bed_gain})':eval=frame"
             fade = project.get("soundtrack", {}).get("fadeOut", True)
-            af = f"volume={volume}"
-            if fade:
-                af += f",afade=t=out:st={format_ffmpeg_number(max(0, total_duration - 2))}:d=2"
-            filter_graph += f";[{audio_index}:a]{af}[aout]"
+            if soundtrack and fade:
+                bed_filter += f",afade=t=out:st={format_ffmpeg_number(max(0, total_duration - 2))}:d=2"
+            filter_graph += f";[{base_index}:a]{bed_filter}[bed]"
+            mix_labels = ["[bed]"]
+            for movie_index, item in original_movies:
+                source = source_path(self.settings, item)
+                audio_args += ["-i", str(source)]
+                movie_audio_index = audio_index
+                audio_index += 1
+                start = starts[movie_index]
+                duration = durations[movie_index]
+                fade_in = transitions[movie_index - 1] if movie_index else 0.0
+                fade_out = transitions[movie_index] if movie_index < len(transitions) else 0.0
+                # The source begins with the movie itself; its fades match the
+                # soundtrack hand-off at each side of the movie.
+                original_filter = f"atrim=duration={format_ffmpeg_number(duration)},asetpts=PTS-STARTPTS"
+                if fade_in > 0.0005:
+                    original_filter += f",afade=t=in:st=0:d={format_ffmpeg_number(fade_in)}"
+                if fade_out > 0.0005:
+                    original_filter += f",afade=t=out:st={format_ffmpeg_number(max(0, duration - fade_out))}:d={format_ffmpeg_number(min(fade_out, duration))}"
+                original_filter += f",adelay={int(round(start * 1000))}:all=1"
+                label = f"moviea{movie_index}"
+                filter_graph += f";[{movie_audio_index}:a]{original_filter}[{label}]"
+                mix_labels.append(f"[{label}]")
+            filter_graph += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0[aout]"
             audio_map = ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
         inputs = []
         for path in cur_segs:
