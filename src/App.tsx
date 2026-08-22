@@ -1138,7 +1138,9 @@ function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial
   const bold = item.textBold ?? true
   const italic = item.textItalic ?? false
   const underline = item.textUnderline ?? false
-  const backgrounds=['#30382a','#14213d','#6f4238','linear-gradient(135deg,#263238,#607d8b)','linear-gradient(135deg,#442063,#d36b86)','linear-gradient(135deg,#163c44,#76b29a)']
+  // Keep swatches to real colours: FFmpeg can render these exactly in the MP4.
+  const backgrounds=['#30382a','#14213d','#6f4238','#37474f','#5b285f','#163c44']
+  const original = useRef(item)
   return <div className="modal-backdrop dark-backdrop"><div className="frame-editor">
     <div className="preview-top"><div><strong>Text frame editor</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={onClose}><X size={20}/></button></div>
     <div className="frame-editor-body">
@@ -1155,7 +1157,7 @@ function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial
         <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the sidebar.</p>
       </aside>
     </div>
-    <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div>
+    <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn ghost" onClick={()=>{ update(original.current); onClose() }}>Cancel</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div>
   </div></div>
 }
 

@@ -715,9 +715,16 @@ class Renderer:
             lead_in = transitions[index - 1] if index else 0.0
             lead_out = transitions[index] if index < len(transitions) else 0.0
             if kind_name == "title":
-                background = str(item.get("frameBackground", "#202020"))
-                if not background.startswith("#"): background = "#30382a"
-                command += ["-f", "lavfi", "-i", f"color=c={background}:s={width}x{height}:r={fps}:d={clip_t}"]
+                # CSS gradients are useful in the editor preview but cannot be
+                # rendered by FFmpeg's color source. Accept only an exact CSS
+                # hex colour and convert it to FFmpeg's unambiguous 0xRRGGBB
+                # syntax; this prevents a selected colour being parsed as the
+                # black/default background on some FFmpeg builds.
+                background = str(item.get("frameBackground", "#30382a"))
+                if not re.fullmatch(r"#[0-9a-fA-F]{6}", background):
+                    background = "#30382a"
+                ffmpeg_background = "0x" + background[1:]
+                command += ["-f", "lavfi", "-i", f"color=c={ffmpeg_background}:s={width}x{height}:r={fps}:d={clip_t}"]
             else:
                 source = source_path(self.settings, item)
                 if not source.exists(): raise RenderError(f"Media file is missing: {source}")
