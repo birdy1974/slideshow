@@ -116,7 +116,6 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 
 .compact-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 21px 0;padding:4px 0 2px}.compact-actions .btn{height:30px;padding:0 10px;font-size:11px}.compact-card.selected{border-color:#779a43;box-shadow:0 0 0 2px #b9d887}.compact-select{position:absolute;z-index:4;left:6px;bottom:6px;border:0;background:transparent;padding:0;cursor:pointer}.compact-select span{width:18px;height:18px;border:1.5px solid #fff;background:#1d211bb8;border-radius:4px;display:grid;place-items:center;color:#1d2813;box-shadow:0 1px 3px #0004}.compact-card.selected .compact-select span{background:var(--lime);border-color:#fff}
 
-.type-controls-stack{display:grid;grid-template-columns:1fr 90px;gap:8px;margin:10px 0}.type-controls-stack .color-control,.type-controls-stack .style-buttons,.type-controls-stack .select-wrap,.type-controls-stack .number-stepper{width:100
 .type-controls-stack{display:grid;grid-template-columns:1fr 90px;gap:8px;margin:10px 0}
 .type-controls-stack .color-control,.type-controls-stack .style-buttons,.type-controls-stack .select-wrap,.type-controls-stack .number-stepper{width:100%}
 .wide-style-modal{width:min(780px,96vw)}
