@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp,
+  Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp,
   Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, Save,
   Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
@@ -103,12 +103,31 @@ function itemThumbUrl(item?: MediaItem | null) {
 
 type LightboxTarget = { title: string; src: string; kind: 'image' | 'video' | 'audio' }
 
-function MediaLightbox({ title, src, kind, onClose }: LightboxTarget & { onClose: () => void }) {
+function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, position }: LightboxTarget & {
+  onClose: () => void;
+  // Storyline bindings: when present, the lightbox can walk the storyline
+  // (prev/next), show the current position, and delete the shown item.
+  onPrev?: () => void; onNext?: () => void; onDelete?: () => void; position?: string;
+}) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
+  // Keyboard: ← / → walk the storyline, Escape closes. Only wired when the
+  // lightbox is bound to storyline items (browser previews pass no handlers).
+  useEffect(() => {
+    if (!onPrev && !onNext && !onDelete) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowLeft') onPrev?.()
+      else if (event.key === 'ArrowRight') onNext?.()
+      else if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onPrev, onNext, onDelete, onClose])
   return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}>
+    {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←)" aria-label="Previous media" onMouseDown={e => e.stopPropagation()} onClick={onPrev}><ChevronLeft size={26}/></button>}
+    {onNext && <button type="button" className="lightbox-nav next" title="Next media (→)" aria-label="Next media" onMouseDown={e => e.stopPropagation()} onClick={onNext}><ChevronRight size={26}/></button>}
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
-      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div>
+      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be displayed</strong><span>It is empty, missing, or unreadable on the mounted volume. Remove or replace it in the storyline.</span></div>
         : kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
@@ -211,6 +230,35 @@ function timelineModel(items: MediaItem[]) {
 const formatClock = (seconds: number) => {
   const total = Math.max(0, Math.floor(Number(seconds) || 0))
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+// Split the storyline into overall-timeline rows. Videos always land on rows
+// of their own so a long movie can never squeeze the caption boxes of the
+// photos around it. Rows stay consecutive slices of the storyline (runs of
+// the same kind, wrapped when a run outgrows the target row size), so reading
+// the rows top to bottom is still the exact storyline order, and every row's
+// ruler keeps true timestamps from the shared timeline model.
+function buildTimelineLines(items: MediaItem[], targetRows: number) {
+  const perLine = Math.max(1, Math.ceil(items.length / Math.max(1, targetRows)))
+  const lines: { items: MediaItem[]; video: boolean }[] = []
+  let current: MediaItem[] = []
+  let currentVideo = false
+  const flush = () => {
+    if (!current.length) return
+    lines.push({ items: current, video: currentVideo })
+    current = []
+  }
+  for (const item of items) {
+    const video = item.type === 'video'
+    // Switching between photos/text frames and videos starts a new row.
+    if (current.length && video !== currentVideo) flush()
+    currentVideo = video
+    current.push(item)
+    // Long runs of one kind still wrap like the previous fixed-size rows.
+    if (current.length >= perLine) flush()
+  }
+  flush()
+  return lines
 }
 
 function parseClock(value: string | number | undefined): number {
@@ -450,12 +498,14 @@ function App() {
   const [showProjectLoader, setShowProjectLoader] = useState(false)
   const [showNewProjectConfirm, setShowNewProjectConfirm] = useState(false)
   const [overwritePath, setOverwritePath] = useState<string | null>(null)
-  const [lightbox, setLightbox] = useState<LightboxTarget | null>(null)
+  // Storyline preview lightbox: it tracks the previewed item id (not a frozen
+  // URL) so the popup can walk the storyline with prev/next and delete the
+  // shown item directly, always reflecting the live media list.
+  const [storyPreviewId, setStoryPreviewId] = useState<number | null>(null)
   const openMediaLightbox = (item: MediaItem) => {
     if (item.type === 'title') return
-    const src = itemThumbUrl(item)
-    if (!src) return
-    setLightbox({ title: item.name, src, kind: item.type === 'video' ? 'video' : 'image' })
+    if (!itemThumbUrl(item)) return
+    setStoryPreviewId(item.id)
   }
 
   // Estimated timeline using the same clamped transition rules the renderer
@@ -481,10 +531,26 @@ function App() {
   }, [audioTracks])
   const estimatedRows = Math.max(1, Math.ceil(media.length / 6))
   const visibleRows = timelineRows === 'auto' ? estimatedRows : Number(timelineRows)
-  const timelineLines = useMemo(() => {
-    const perLine = Math.max(1, Math.ceil(media.length / visibleRows))
-    return Array.from({ length: Math.ceil(media.length / perLine) }, (_, line) => media.slice(line * perLine, (line + 1) * perLine))
-  }, [media, visibleRows])
+  // Videos get rows of their own (buildTimelineLines); rows are consecutive
+  // slices of the storyline, so order and ruler timestamps stay exact.
+  const timelineLines = useMemo(() => buildTimelineLines(media, visibleRows), [media, visibleRows])
+  const autoLineCount = useMemo(() => buildTimelineLines(media, estimatedRows).length, [media, estimatedRows])
+  // Storyline lightbox navigation walks the media in storyline order,
+  // skipping text frames (they have nothing to preview).
+  const previewItems = useMemo(() => media.filter(x => x.type !== 'title'), [media])
+  const previewIndex = storyPreviewId == null ? -1 : previewItems.findIndex(x => x.id === storyPreviewId)
+  const previewedItem = previewIndex >= 0 ? previewItems[previewIndex] : null
+  const deletePreviewedItem = () => {
+    if (!previewedItem) return
+    // After deleting, continue with the item that follows (or the one before
+    // when the last item was removed); close the popup when nothing is left.
+    const next = previewItems[previewIndex + 1] ?? previewItems[previewIndex - 1]
+    setMedia(items => items.filter(x => x.id !== previewedItem.id))
+    setSelectedIds(ids => ids.filter(id => id !== previewedItem.id))
+    setSelectedTransitions(ids => ids.filter(id => id !== previewedItem.id))
+    setStoryPreviewId(next ? next.id : null)
+    notify(`Removed ${previewedItem.name} from the storyline`)
+  }
 
   const applySavedProject=(saved:any)=>{
     if(saved.id)setProjectId(saved.id)
@@ -889,14 +955,14 @@ function App() {
             <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><label className="switch-label"><input type="checkbox" checked={randomOrder} onChange={e => setRandomOrder(e.target.checked)}/><span className="switch"/>Random order</label><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={15}/> New project</button></div></div>
             {randomOrder && <div className="notice amber"><Shuffle size={16}/><span><strong>Random order enabled.</strong> A new order will be chosen at render time. The arrangement below remains unchanged.</span></div>}
 
-            <div className="overview-head"><div><strong>OVERALL TIMELINE</strong><span>Drag selected clips as a group · edit text above each clip · click transitions</span></div><div className="story-layout"><label>Lines</label><Select value={timelineRows} onChange={setTimelineRows}><option value="auto">Auto ({estimatedRows})</option>{[1,2,3,4,5,6].map(x => <option value={x} key={x}>{x}</option>)}</Select></div><button className="text-random" onClick={randomizeTextTransitions}><Shuffle size={12}/> Text transitions</button><div className="zoom-controls"><button onClick={() => setTimelineZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={2.4} step={0.1} value={timelineZoom} aria-label="Timeline zoom" onChange={e => setTimelineZoom(Number(e.target.value))}/><span>{Math.round(timelineZoom * 100)}%</span><button onClick={() => setTimelineZoom(z => Math.min(2.4, +(z + .2).toFixed(1)))} title="Zoom in"><ZoomIn size={14}/></button><button className="fit-button" onClick={() => setTimelineZoom(1)} title="Reset zoom to show complete timeline">Fit</button></div></div>
+            <div className="overview-head"><div><strong>OVERALL TIMELINE</strong><span>Drag selected clips as a group · edit text above each clip · click transitions · videos keep their own rows in story order</span></div><div className="story-layout"><label>Lines</label><Select value={timelineRows} onChange={setTimelineRows}><option value="auto">Auto ({autoLineCount})</option>{[1,2,3,4,5,6].map(x => <option value={x} key={x}>{x}</option>)}</Select></div><button className="text-random" onClick={randomizeTextTransitions}><Shuffle size={12}/> Text transitions</button><div className="zoom-controls"><button onClick={() => setTimelineZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={2.4} step={0.1} value={timelineZoom} aria-label="Timeline zoom" onChange={e => setTimelineZoom(Number(e.target.value))}/><span>{Math.round(timelineZoom * 100)}%</span><button onClick={() => setTimelineZoom(z => Math.min(2.4, +(z + .2).toFixed(1)))} title="Zoom in"><ZoomIn size={14}/></button><button className="fit-button" onClick={() => setTimelineZoom(1)} title="Reset zoom to show complete timeline">Fit</button></div></div>
             <div className="timeline-overview">{media.length===0&&<button className="empty-story" onClick={()=>setShowBrowser(true)}><FolderOpen size={22}/><strong>Your storyline is empty</strong><span>Browse the mounted /photos and /videos folders to begin.</span></button>}{timelineLines.map((line, lineIndex) => {
-              const firstIndex = media.findIndex(x => x.id === line[0]?.id)
-              const lastIndex = media.findIndex(x => x.id === line[line.length - 1]?.id)
+              const firstIndex = media.findIndex(x => x.id === line.items[0]?.id)
+              const lastIndex = media.findIndex(x => x.id === line.items[line.items.length - 1]?.id)
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className="timeline-line" key={lineIndex}><div className="line-number">{lineIndex + 1}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><NumberStepper value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} /><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
@@ -1017,7 +1083,7 @@ function App() {
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {lightbox && <MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={() => setLightbox(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onClose={() => setStoryPreviewId(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }

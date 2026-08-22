@@ -127,3 +127,18 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .stop-job{color:#8a3b32;border-color:#e0c4bf}.stop-job.wide{width:calc(100% - 42px);margin:8px 21px 0;height:38px}.review-panel .stop-job.wide{width:100%;margin:8px 0 0}
 
 #section-storyline,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}.zoom-slider{width:88px;height:4px;margin:0 2px;accent-color:#728f42;cursor:pointer}.zoom-controls.compact-zoom .zoom-slider{width:72px}.topbar nav button.jump{font-size:12px;padding:0 12px}
+
+/* --- Storyline lightbox: prev/next walk, position badge, direct delete --- */
+.lightbox-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:46px;height:46px;border-radius:50%;border:1px solid #ffffff38;background:#1d211bd6;color:#e8ebe3;display:grid;place-items:center;cursor:pointer;transition:.15s}
+.lightbox-nav:hover{background:#2c3524;border-color:var(--lime);color:#fff}
+.lightbox-nav.prev{left:3vw}.lightbox-nav.next{right:3vw}
+.preview-top .lightbox-actions{flex-direction:row;align-items:center;gap:14px}
+.lightbox-position{font:700 10px Manrope;font-style:normal;color:#93988d;letter-spacing:.4px}
+.lightbox-delete{transition:.15s}
+.lightbox-delete:hover{color:#e06a55}
+
+/* --- Overall timeline: videos keep their own rows --- */
+.line-number{display:flex;flex-direction:column;align-items:center;gap:4px}
+.line-number svg{opacity:.6}
+.line-number.video{color:#4c5546}
+.timeline-line.video-line .line-content{background:#dfe3d0;border-radius:6px}
