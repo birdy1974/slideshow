@@ -62,6 +62,7 @@ npm run build
 
 ## API overview
 
+- `GET /api/ping` — dependency-free liveness probe used by the container health check (safe to poll during renders)
 - `GET /api/health` — FFmpeg and Quick Sync capabilities
 - `GET|POST /api/projects` — list/create projects
 - `GET|PUT|DELETE /api/projects/{id}` — lossless project persistence

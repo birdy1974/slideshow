@@ -72,12 +72,27 @@ async def lifespan(_: FastAPI):
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     db.initialize()
     log.info("Database ready at %s", settings.database_path)
+    # Fill the ffmpeg/Quick Sync capability caches in the background so
+    # /api/health answers instantly and never spawns a probe itself.
+    renderer.warm_capabilities()
     yield
     renderer.pool.shutdown(wait=False, cancel_futures=True)
 
 
 app = FastAPI(title="Slideshow", version="0.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.get("/api/ping")
+async def ping() -> dict[str, str]:
+    """Liveness probe for Docker/Portainer health checks.
+
+    Deliberately dependency-free — no subprocess, no database, no locks — and
+    async so it runs directly on the event loop: even while a render
+    saturates the CPUs this answers in milliseconds. The richer /api/health
+    report is meant for the UI, not for probes.
+    """
+    return {"status": "ok", "version": app.version}
 
 
 @app.get("/api/health")

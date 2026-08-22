@@ -339,6 +339,51 @@ class Renderer:
         self._xfade_lock = threading.Lock()
         self._qsv_encodable: bool | None = None
         self._qsv_lock = threading.Lock()
+        self._ffmpeg_version: str | None = None
+        self._version_probed = False
+        self._version_lock = threading.Lock()
+
+    def warm_capabilities(self) -> None:
+        """Probe ffmpeg version, the xfade catalogue and Quick Sync once, in a
+        background thread, right after startup.
+
+        Container health checks poll this app every 30 s. They used to hit
+        /api/health, which ran ``ffmpeg -version`` on every call and could
+        queue behind the one-time Quick Sync test encode (up to 30 s under a
+        lock) — so a busy NAS blew the probe's time budget three times in a
+        row and Docker/Portainer flagged a perfectly working container as
+        unhealthy. Warming the caches up front keeps every later capabilities
+        read subprocess-free and instant.
+        """
+        def _warm() -> None:
+            try:
+                self.ffmpeg_version()
+                self.xfade_supported()
+                self.qsv_encodable()
+            except Exception:
+                log.exception("Capability warm-up failed; capabilities will re-probe lazily")
+        threading.Thread(target=_warm, name="capability-warmup", daemon=True).start()
+
+    def _probe_ffmpeg_version(self) -> None:
+        with self._version_lock:
+            if self._version_probed:
+                return
+            self._version_probed = True
+            path = shutil.which(self.settings.ffmpeg_bin)
+            if not path:
+                return
+            try:
+                self._ffmpeg_version = subprocess.run(
+                    [path, "-version"], capture_output=True, text=True, timeout=3
+                ).stdout.splitlines()[0]
+            except Exception:
+                self._ffmpeg_version = None
+
+    def ffmpeg_version(self) -> str | None:
+        """First line of ``ffmpeg -version``, probed at most once per process."""
+        if not self._version_probed:
+            self._probe_ffmpeg_version()
+        return self._ffmpeg_version
 
     def xfade_supported(self) -> set[str]:
         """Lazily probe (once) which xfade transitions this FFmpeg build has."""
@@ -363,14 +408,20 @@ class Renderer:
         return fallback
 
     def capabilities(self) -> dict[str, Any]:
+        # Feeds /api/health, so it must answer instantly even mid-render: the
+        # version comes from the once-per-process cache and Quick Sync from a
+        # non-blocking read of the background probe's result.
         ffmpeg = shutil.which(self.settings.ffmpeg_bin)
-        version = None
-        if ffmpeg:
-            try:
-                version = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True, timeout=3).stdout.splitlines()[0]
-            except Exception:
-                pass
-        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": version, "quickSync": self.qsv_encodable(), "cpuEncoding": bool(ffmpeg)}
+        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "cpuEncoding": bool(ffmpeg)}
+
+    def qsv_encodable_cached(self) -> bool:
+        """Non-blocking view of the Quick Sync probe (False until it finishes).
+
+        Meant for status reporting. Render-time encoder selection keeps using
+        the blocking qsv_encodable() so "Auto" always decides on the verified
+        answer instead of a probe that is still running.
+        """
+        return bool(self._qsv_encodable)
 
     def qsv_encodable(self) -> bool:
         """Whether h264_qsv actually encodes on this host, verified by a probe.
