@@ -180,7 +180,34 @@ function timelineModel(items: MediaItem[]) {
   const total = items.length ? starts[items.length - 1] + durations[items.length - 1] : 0
   return { durations, starts, transitions, total }
 }
-const formatClock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+const formatClock = (seconds: number) => {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+function parseClock(value: string | number | undefined): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, value)
+  const raw = String(value || '').trim()
+  if (!raw || raw === 'unknown') return 0
+  if (/^\d+(\.\d+)?$/.test(raw)) return Number(raw)
+  const parts = raw.split(':').map(Number)
+  if (parts.some(n => !Number.isFinite(n))) return 0
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  return 0
+}
+
+function probeMediaDuration(src: string, kind: 'audio' | 'video' = 'audio'): Promise<number> {
+  return new Promise(resolve => {
+    const el = document.createElement(kind)
+    el.preload = 'metadata'
+    const done = (value: number) => { el.removeAttribute('src'); el.load(); resolve(value) }
+    el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0)
+    el.onerror = () => done(0)
+    window.setTimeout(() => done(0), 8000)
+    el.src = src
+  })
+}
 
 const FONT_FAMILIES = ['Montserrat', 'Open Sans', 'Roboto', 'Playfair Display', 'Source Sans 3', 'DejaVu Sans']
 
@@ -406,7 +433,23 @@ function App() {
   // applies, so the on-screen total can never drift or go negative.
   const timeline = useMemo(() => timelineModel(media), [media])
   const total = timeline.total
-  const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => { const [m,s] = track.duration.split(':').map(Number); return sum + (Number.isFinite(m)&&Number.isFinite(s)?m*60+s:0) }, 0), [audioTracks])
+  const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => sum + parseClock(track.duration), 0), [audioTracks])
+  useEffect(() => {
+    // Older projects stored duration as "unknown"; fill in real lengths once.
+    const missing = audioTracks.filter(track => parseClock(track.duration) <= 0 && track.path)
+    if (!missing.length) return
+    let cancelled = false
+    void (async () => {
+      const updates = new Map<number, string>()
+      for (const track of missing) {
+        const seconds = await probeMediaDuration(mediaFileUrl('music', mediaItemPath(track)), 'audio')
+        if (seconds > 0) updates.set(track.id, formatClock(seconds))
+      }
+      if (cancelled || !updates.size) return
+      setAudioTracks(items => items.map(track => updates.has(track.id) ? { ...track, duration: updates.get(track.id)! } : track))
+    })()
+    return () => { cancelled = true }
+  }, [audioTracks])
   const estimatedRows = Math.max(1, Math.ceil(media.length / 6))
   const visibleRows = timelineRows === 'auto' ? estimatedRows : Number(timelineRows)
   const timelineLines = useMemo(() => {
@@ -831,7 +874,7 @@ function App() {
           </section>
 
           <section className="panel audio-panel">
-            <div className="panel-title compact"><div><span className="step">03</span><div><h2>Soundtracks</h2><p>Add multiple MP3 files and drag to set their play order.</p></div></div><div className="audio-total"><Clock3 size={14}/><span>Total soundtrack time</span><strong>{Math.floor(audioTotalSeconds/60)}:{String(audioTotalSeconds%60).padStart(2,'0')}</strong></div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><Plus size={14}/> Add MP3</button></div>
+            <div className="panel-title compact"><div><span className="step">03</span><div><h2>Soundtracks</h2><p>Add multiple MP3 files and drag to set their play order.</p></div></div><div className="audio-total"><Clock3 size={14}/><span>Total soundtrack time</span><strong>{formatClock(audioTotalSeconds)}</strong></div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><Plus size={14}/> Add MP3</button></div>
             <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span></div><div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div><button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
             <div className="audio-settings"><div><FieldLabel>When audio is shorter than the video</FieldLabel><Select value={audioPolicy} onChange={setAudioPolicy}><option>Loop & trim</option><option>Play once, then silence</option><option>Fit slideshow to audio</option></Select></div><div><FieldLabel>Music volume <span>{audioVolume}%</span></FieldLabel><input className="range" type="range" value={audioVolume} onChange={e=>setAudioVolume(Number(e.target.value))}/></div><label className="check-label"><input type="checkbox" checked={audioFade} onChange={e=>setAudioFade(e.target.checked)}/><span><Check size={11}/></span>Fade out soundtrack <small>2.0s</small></label><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><FolderOpen size={15}/> Add soundtrack</button></div>
           </section>
@@ -852,8 +895,24 @@ function App() {
     </main>}
 
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} update={change=>patch(editingTextFrame,change)} style={{fontFamily,fontSize:Number(fontSize),fontColor,bold:textBold,italic:textItalic,underline:textUnderline}} onClose={()=>setEditingTextFrame(null)}/>} 
-    {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{setAudioTracks(items=>[...items,...files.map((file,index)=>({id:Date.now()+index,name:file.name,path:file.path,duration:'unknown',color:['#91a96b','#7898aa','#b78670'][index%3]}))]);setShowAudioBrowser(false);notify(`${files.length} soundtracks added`)}}/>}
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} update={change=>patch(editingTextFrame,change)} onClose={()=>setEditingTextFrame(null)}/>} 
+    {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
+      void (async () => {
+        const additions: AudioTrack[] = []
+        for (let index = 0; index < files.length; index++) {
+          const file = files[index]
+          const seconds = await probeMediaDuration(mediaFileUrl('music', file.path), 'audio')
+          additions.push({
+            id: Date.now() + index, name: file.name, path: file.path,
+            duration: seconds > 0 ? formatClock(seconds) : '0:00',
+            color: ['#91a96b', '#7898aa', '#b78670'][index % 3],
+          })
+        }
+        setAudioTracks(items => [...items, ...additions])
+        setShowAudioBrowser(false)
+        notify(`${files.length} soundtrack${files.length === 1 ? '' : 's'} added`)
+      })()
+    }}/>}
     {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {
       // Probe each video's native length so the timeline hold covers the
       // complete movie before the transition to the next picture. Images keep
@@ -941,13 +1000,15 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
   </div></div>
 }
 
-function TextFrameEditor({item,update,style,onClose}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,style:{fontFamily:string,fontSize:number,fontColor:string,bold:boolean,italic:boolean,underline:boolean},onClose:()=>void}) {
-  const family = item.fontFamily || style.fontFamily
-  const size = item.fontSize ?? style.fontSize
-  const color = item.fontColor || style.fontColor
-  const bold = item.textBold ?? style.bold
-  const italic = item.textItalic ?? style.italic
-  const underline = item.textUnderline ?? style.underline
+function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,onClose:()=>void}) {
+  // Title cards keep their own type settings. Do not inherit live project
+  // defaults — those apply only to captions drawn on pictures.
+  const family = item.fontFamily || 'Montserrat'
+  const size = item.fontSize ?? 48
+  const color = item.fontColor || '#ffffff'
+  const bold = item.textBold ?? true
+  const italic = item.textItalic ?? false
+  const underline = item.textUnderline ?? false
   const backgrounds=['#30382a','#14213d','#6f4238','linear-gradient(135deg,#263238,#607d8b)','linear-gradient(135deg,#442063,#d36b86)','linear-gradient(135deg,#163c44,#76b29a)']
   return <div className="modal-backdrop dark-backdrop"><div className="frame-editor">
     <div className="preview-top"><div><strong>Text frame editor</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={onClose}><X size={20}/></button></div>

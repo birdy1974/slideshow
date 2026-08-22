@@ -537,10 +537,21 @@ class Renderer:
         start, end = float(item.get("textStart", 0)), float(item.get("textEnd", item.get("duration", 5)))
         fade_in = max(.01, float(item.get("textEnterDuration", .5))); fade_out = max(.01, float(item.get("textExitDuration", .5)))
         x, y = float(item.get("textX", 50)), float(item.get("textY", 72))
-        size = max(8, int(float(item.get("fontSize", defaults.get("fontSize", 48))) * width / 1920))
-        colour = str(item.get("fontColor") or defaults.get("fontColor", "#ffffff")).replace("#", "0x")
-        bold = item["textBold"] if "textBold" in item else defaults.get("bold", True)
-        italic = item["textItalic"] if "textItalic" in item else defaults.get("italic", False)
+        # Title frames carry their own type settings. Picture captions use the
+        # project-wide defaults so changing “Default text style” never restyles
+        # a standalone text card.
+        if item.get("type") == "title":
+            size_pt = item.get("fontSize", 48)
+            colour_raw = item.get("fontColor") or "#ffffff"
+            bold = item.get("textBold", True)
+            italic = item.get("textItalic", False)
+        else:
+            size_pt = defaults.get("fontSize", 48)
+            colour_raw = defaults.get("fontColor", "#ffffff")
+            bold = defaults.get("bold", True)
+            italic = defaults.get("italic", False)
+        size = max(8, int(float(size_pt) * width / 1920))
+        colour = str(colour_raw).replace("#", "0x")
         font_dir = "/usr/share/fonts/truetype/dejavu"
         if bold and italic:
             font = f"{font_dir}/DejaVuSans-BoldOblique.ttf"
