@@ -126,3 +126,5 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .frame-editor aside .type-controls-stack .select-wrap{height:32px}
 
 .stop-job{color:#8a3b32;border-color:#e0c4bf}.stop-job.wide{width:calc(100% - 42px);margin:8px 21px 0;height:38px}.review-panel .stop-job.wide{width:100%;margin:8px 0 0}
+
+#section-storyline,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}.zoom-slider{width:88px;height:4px;margin:0 2px;accent-color:#728f42;cursor:pointer}.zoom-controls.compact-zoom .zoom-slider{width:72px}.topbar nav button.jump{font-size:12px;padding:0 12px}
