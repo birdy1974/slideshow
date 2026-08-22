@@ -27,13 +27,15 @@ from .media import UnsafePath, mounted_path, source_path
 log = logging.getLogger(__name__)
 
 KEN_BURNS_MAX_ZOOM = 1.12
-# A single filter_complex of ~90 xfades at 1080p OOMs or appears hung on NAS
-# boxes (every xfade keeps both inputs decoded). Compose in small groups.
-# A full transition graph for a few dozen normalized MP4s is reliable on
-# current FFmpeg builds.  Keeping this comfortably above typical albums avoids
-# a lossy intermediate compose pass (which can end video early while the final
-# audio input continues). Very large stories still use the batching safeguard.
-COMPOSE_BATCH_SIZE = 32
+# Chained xfades are not a cheap concat: every downstream xfade processes the
+# full output of every preceding one.  A 32-clip graph can therefore look hung
+# (often falling below 1 fps) on a CPU/NAS, even though FFmpeg has not failed.
+# Reduce the story as a small tree instead. Eight inputs keeps memory bounded
+# and, more importantly, limits the number of full-resolution xfade passes per
+# encode; the final pass then only joins a few intermediate files. This adds an
+# intermediate re-encode for longer stories, but is dramatically faster and
+# substantially more reliable than one long serial xfade chain.
+COMPOSE_BATCH_SIZE = 8
 RESOLUTIONS = {
     "4K UHD · 2160p": (3840, 2160), "Full HD · 1080p": (1920, 1080),
     "HD · 720p": (1280, 720), "SD · 480p": (854, 480),
