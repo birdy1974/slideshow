@@ -146,6 +146,8 @@ type MediaItem = {
   textStart: number; textEnd: number; textEnter: string; textExit: string;
   textEnterDuration: number; textExitDuration: number;
   textX: number; textY: number; frameBackground: string;
+  fontFamily?: string; fontSize?: number; fontColor?: string;
+  textBold?: boolean; textItalic?: boolean; textUnderline?: boolean;
 }
 
 type AudioTrack = { id: number; name: string; path: string; duration: string; color: string }
@@ -180,7 +182,8 @@ function timelineModel(items: MediaItem[]) {
 }
 const formatClock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 
-// First number in labels like "8 Mbps · High" — same parse the renderer uses.
+const FONT_FAMILIES = ['Montserrat', 'Open Sans', 'Roboto', 'Playfair Display', 'Source Sans 3', 'DejaVu Sans']
+
 function parsePresetNumber(label: string, fallback: number) {
   const match = String(label || '').match(/([\d.]+)/)
   return match ? Number(match[1]) : fallback
@@ -195,12 +198,24 @@ function formatFileSize(bytes: number) {
   return `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB`
 }
 
-/** Upper-bound MP4 size from the chosen video bitrate plus AAC if music is present. */
 function estimateOutputBytes(durationSeconds: number, bitrateLabel: string, hasAudio: boolean) {
   const videoMbps = parsePresetNumber(bitrateLabel, 8)
   const audioMbps = hasAudio ? 0.192 : 0
-  const seconds = Math.max(0, durationSeconds)
-  return ((videoMbps + audioMbps) * 1_000_000 / 8) * seconds * 1.02
+  return ((videoMbps + audioMbps) * 1_000_000 / 8) * Math.max(0, durationSeconds) * 1.02
+}
+
+function dragOnStage(event: React.PointerEvent<HTMLElement>, onMove: (x: number, y: number) => void) {
+  event.preventDefault()
+  const stage = event.currentTarget.parentElement
+  if (!stage) return
+  const rect = stage.getBoundingClientRect()
+  const move = (e: PointerEvent) => onMove(
+    Math.max(5, Math.min(95, (e.clientX - rect.left) / rect.width * 100)),
+    Math.max(8, Math.min(92, (e.clientY - rect.top) / rect.height * 100)),
+  )
+  const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop) }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', stop)
 }
 
 // FFmpeg's complete built-in xfade catalogue, plus two clearly-labelled
@@ -517,7 +532,24 @@ function App() {
     if (index < next.length - 1) next[index] = { ...next[index], transitionTime: clampTransitionFor(next, index, next[index].transitionTime ?? DEFAULT_TRANSITION_SECONDS) }
     return next
   })
-  const updateSelectedTransitionTimes = (value: number) => setMedia(items => items.map((item, index) => selectedTransitions.includes(item.id) && Number.isF, ...moving)
+  const updateSelectedTransitionTimes = (value: number) => setMedia(items => items.map((item, index) => selectedTransitions.includes(item.id) && Number.isFinite(value) ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
+  const move = (index: number, direction: -1 | 1) => setMedia(items => {
+    const next = [...items]; const target = index + direction
+    if (target < 0 || target >= next.length) return next
+    ;[next[index], next[target]] = [next[target], next[index]]
+    return next
+  })
+  const dropOn = (targetId: number) => {
+    if (draggedId === null) return
+    setMedia(items => {
+      // If the dragged clip is selected, move the complete selection as one
+      // stable group. Otherwise only move the clip under the pointer.
+      const movingIds = selectedIds.includes(draggedId) ? selectedIds : [draggedId]
+      if (movingIds.includes(targetId)) return items
+      const moving = items.filter(x => movingIds.includes(x.id))
+      const remaining = items.filter(x => !movingIds.includes(x.id))
+      const target = remaining.findIndex(x => x.id === targetId)
+      remaining.splice(target < 0 ? remaining.length : target, 0, ...moving)
       return remaining
     })
     setDraggedId(null)
@@ -599,9 +631,23 @@ function App() {
     setShowClearAllConfirm(false)
   }
   const toggleSelected = (id: number) => setSelectedIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
+  const selectCompactRange = (index: number, additive: boolean) => {
+    const id = media[index]?.id
+    if (id == null) return
+    const anchor = lastCompactSelect.current
+    lastCompactSelect.current = index
+    if (additive && anchor != null) {
+      const from = Math.min(anchor, index)
+      const to = Math.max(anchor, index)
+      const range = media.slice(from, to + 1).map(item => item.id)
+      setSelectedIds(ids => Array.from(new Set([...ids, ...range])))
+      return
+    }
+    toggleSelected(id)
+  }
   const addTitleFrame = () => {
     const id = Date.now()
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration: 4, effect: 'None', transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: 4, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textX: 50, textY: 50, frameBackground: '#30382a' }])
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration: 4, effect: 'None', transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: 4, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
     setEditingTextFrame(id)
   }
   const dropAudioOn = (targetId: number) => {
@@ -765,8 +811,8 @@ function App() {
 
             <div className="bulk-bar"><span>TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={30} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
             <div className="media-view-bar"><span className="view-label">VIEW</span><div className="mode-toggle"><button className={!compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(false)} title="Show the full detail list"><List size={14}/> List</button><button className={compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(true)} title="Show only pictures and a delete button"><LayoutGrid size={14}/> Compact</button></div>{compactMediaView && <div className="zoom-controls compact-zoom"><button onClick={() => setCompactZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out — smaller thumbnails"><ZoomOut size={14}/></button><span>{Math.round(compactZoom * 100)}%</span><button onClick={() => setCompactZoom(z => Math.min(1.6, +(z + .2).toFixed(1)))} title="Zoom in — bigger thumbnails"><ZoomIn size={14}/></button></div>}<span className="view-hint">Compact shows only each picture and a delete button · drag to reorder · click a picture to view it</span></div>
-            {!compactMediaView && <div className="timeline-head"><span>MEDIA</span><span>SLIDE / CLIP</span><span>EFFECT</span><span>TRANSITION TO NEXT</span><span></span></div>}
-            {compactMediaView ? <><div className="compact-actions"><button type="button" className="btn soft" disabled={media.length === 0} onClick={() => { setSelectedIds(media.map(item => item.id)); lastCompactSelect.current = media.length ? media.length - 1 : null }}>Select all</button><button type="button" className="btn soft" disabled={selectedIds.length === 0} onClick={() => { setSelectedIds([]); lastCompactSelect.current = null }}>Clear selection</button><button type="button" className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={14}/> Delete selected{selectedIds.length ? ` (${selectedIds.length})` : ''}</button><span className="view-hint">{selectedIds.length ? `${selectedIds.length} selected · Shift-click to extend` : 'Click the box to select · Shift-click a range · click the picture to view'}</span></div><div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => { const selected = selectedIds.includes(item.id); return <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selected ? 'selected' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><button type="button" className="compact-select" title={selected ? 'Deselect' : 'Select'} onClick={e => { e.preventDefault(); e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selected && <Check size={11}/>}</span></button><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? { background: item.frameBackground } : undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}<b>{String(index + 1).padStart(2, '0')}</b></div><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div> })}</div></> : <div className="timeline-list">
+            <div className="timeline-head"><span>MEDIA</span><span>SLIDE / CLIP</span><span>EFFECT</span><span>TRANSITION TO NEXT</span><span></span></div>
+            {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? { background: item.frameBackground } : undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}<b>{String(index + 1).padStart(2, '0')}</b></div><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
               {media.map((item, index) => {
                 const thumb = itemThumbUrl(item)
                 return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
@@ -862,19 +908,65 @@ function App() {
   </div>
 }
 
+function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontColor, setFontColor, bold, setBold, italic, setItalic, underline, setUnderline }: {
+  fontFamily: string; setFontFamily: (v: string) => void;
+  fontSize: number; setFontSize: (v: number) => void;
+  fontColor: string; setFontColor: (v: string) => void;
+  bold: boolean; setBold: (v: boolean) => void;
+  italic: boolean; setItalic: (v: boolean) => void;
+  underline: boolean; setUnderline: (v: boolean) => void;
+}) {
+  return <div className="type-controls-stack">
+    <div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}>{FONT_FAMILIES.map(f => <option key={f}>{f}</option>)}</Select></div>
+    <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={200} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
+    <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
+    <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic ? 'active' : ''} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
+  </div>
+}
+
 function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,onClose}: any) {
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="style-modal-body"><p>These defaults are used for new picture captions and standalone text frames.</p><div className="style-form"><div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}><option>Montserrat</option><option>Open Sans</option><option>Roboto</option><option>Playfair Display</option><option>Source Sans 3</option></Select></div><div><FieldLabel>Font size</FieldLabel><div className="filename"><input type="number" min="8" max="200" value={fontSize} onChange={e=>setFontSize(e.target.value)}/><span>px</span></div></div><div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor} onChange={e=>setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div><div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button className={bold?'active':''} onClick={()=>setBold(!bold)}><b>B</b></button><button className={italic?'active':''} onClick={()=>setItalic(!italic)}><i>I</i></button><button className={underline?'active':''} onClick={()=>setUnderline(!underline)}><u>U</u></button></div></div><div><FieldLabel>Default position</FieldLabel><div className="position-controls"><div><NumberStepper value={textX} min={0} max={100} step={1} suffix="%" ariaLabel="Default text X position" onChange={setTextX} /></div><div><NumberStepper value={textY} min={0} max={100} step={1} suffix="%" ariaLabel="Default text Y position" onChange={setTextY} /></div></div></div></div><div className="large-type-preview" style={{fontFamily,fontSize:`${Math.min(Number(fontSize),38)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>Summer, slowly.</div><div className="notice"><Info size={15}/><span>Individual text styling will be available from each caption's detail editor in the production renderer.</span></div></div><div className="modal-foot"><span>Changes apply to new text</span><button className="btn dark" onClick={onClose}><Check size={15}/> Save defaults</button></div></div></div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal wide-style-modal" onMouseDown={e=>e.stopPropagation()}>
+    <div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>
+    <div className="style-modal-body">
+      <p>These defaults are used for new picture captions and standalone text frames. Drag the sample on the stage to set the default position.</p>
+      <TypeControls fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={Number(fontSize) || 48} setFontSize={v => setFontSize(String(v))} fontColor={fontColor} setFontColor={setFontColor} bold={bold} setBold={setBold} italic={italic} setItalic={setItalic} underline={underline} setUnderline={setUnderline} />
+      <div className="frame-canvas default-position-stage" style={{background:'#30362d'}}>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
+          <Move size={14}/><span>Summer, slowly.</span>
+        </div>
+      </div>
+      <div className="position-readout light-readout"><Move size={14}/><span>Default position</span><strong>X {Math.round(textX)}% · Y {Math.round(textY)}%</strong></div>
+    </div>
+    <div className="modal-foot"><span>Changes apply to new text</span><button className="btn ghost" onClick={() => { setTextX(50); setTextY(72) }}>Reset position</button><button className="btn dark" onClick={onClose}><Check size={15}/> Save defaults</button></div>
+  </div></div>
 }
 
 function TextFrameEditor({item,update,style,onClose}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,style:{fontFamily:string,fontSize:number,fontColor:string,bold:boolean,italic:boolean,underline:boolean},onClose:()=>void}) {
-  const moveText = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault(); const box=event.currentTarget; const stage=box.parentElement; if(!stage)return; const rect=stage.getBoundingClientRect()
-    const move=(e:PointerEvent)=>update({textX:Math.max(5,Math.min(95,(e.clientX-rect.left)/rect.width*100)),textY:Math.max(8,Math.min(92,(e.clientY-rect.top)/rect.height*100))})
-    const stop=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',stop)}
-    window.addEventListener('pointermove',move);window.addEventListener('pointerup',stop)
-  }
+  const family = item.fontFamily || style.fontFamily
+  const size = item.fontSize ?? style.fontSize
+  const color = item.fontColor || style.fontColor
+  const bold = item.textBold ?? style.bold
+  const italic = item.textItalic ?? style.italic
+  const underline = item.textUnderline ?? style.underline
   const backgrounds=['#30382a','#14213d','#6f4238','linear-gradient(135deg,#263238,#607d8b)','linear-gradient(135deg,#442063,#d36b86)','linear-gradient(135deg,#163c44,#76b29a)']
-  return <div className="modal-backdrop dark-backdrop"><div className="frame-editor"><div className="preview-top"><div><strong>Text frame editor</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={onClose}><X size={20}/></button></div><div className="frame-editor-body"><div className="frame-canvas" style={{background:item.frameBackground}}><div className="draggable-title" onPointerDown={moveText} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:style.fontFamily,fontSize:`${Math.min(style.fontSize,54)}px`,color:style.fontColor,fontWeight:style.bold?700:400,fontStyle:style.italic?'italic':'normal',textDecoration:style.underline?'underline':'none'}}><Move size={14}/><span>{item.text}</span></div></div><aside><div><FieldLabel>Frame text</FieldLabel><textarea value={item.text} onChange={e=>update({text:e.target.value})}/></div><div><FieldLabel>Background</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom colour</span><input type="color" value={item.frameBackground.startsWith('#')?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div><div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(item.textX)}% · Y {Math.round(item.textY)}%</strong></div><p><Info size={13}/> Drag the title directly on the preview. Safe margins are shown by the dashed rectangle.</p></aside></div><div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop"><div className="frame-editor">
+    <div className="preview-top"><div><strong>Text frame editor</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={onClose}><X size={20}/></button></div>
+    <div className="frame-editor-body">
+      <div className="frame-canvas" style={{background:item.frameBackground}}>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:family,fontSize:`${Math.min(size,54)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
+          <Move size={14}/><span>{item.text}</span>
+        </div>
+      </div>
+      <aside>
+        <div><FieldLabel>Frame text</FieldLabel><textarea value={item.text} onChange={e=>update({text:e.target.value})}/></div>
+        <TypeControls fontFamily={family} setFontFamily={v => update({fontFamily:v})} fontSize={size} setFontSize={v => update({fontSize:v})} fontColor={color} setFontColor={v => update({fontColor:v})} bold={bold} setBold={v => update({textBold:v})} italic={italic} setItalic={v => update({textItalic:v})} underline={underline} setUnderline={v => update({textUnderline:v})} />
+        <div><FieldLabel>Background</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom colour</span><input type="color" value={item.frameBackground.startsWith('#')?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div>
+        <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(item.textX)}% · Y {Math.round(item.textY)}%</strong></div>
+        <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the sidebar.</p>
+      </aside>
+    </div>
+    <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div>
+  </div></div>
 }
 
 function MediaBrowser({ onClose, onAdd, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, audioOnly?:boolean }) {
@@ -956,10 +1048,6 @@ function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () =>
   const [jobs,setJobs]=useState<any[]>([])
   useEffect(()=>{let active=true;const load=()=>fetch(`/api/jobs${projectId?`?project_id=${projectId}`:''}`).then(r=>r.ok?r.json():[]).then(x=>active&&setJobs(x)).catch(()=>{});load();const timer=setInterval(load,2000);return()=>{active=false;clearInterval(timer)}},[projectId])
   return <main className="queue-page"><div className="project-heading"><div><div className="eyebrow">ACTIVITY</div><h1>Render queue</h1><p>FFmpeg jobs and diagnostic history persisted in SQLite.</p></div><button className="btn dark" onClick={onBack}><Plus size={16}/> Back to editor</button></div>{jobs.length===0&&<div className="notice"><Info size={16}/><span>No render jobs yet. Save the project, then generate a preview or MP4.</span></div>}{jobs.map(job=><section className="panel queue-card" key={job.id}><div className="queue-thumb"><img src="/media/coast.jpg"/><span>{job.status==='running'?<RefreshCw className="spin" size={15}/>:<Download size={15}/>}</span></div><div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.error_message?` · ${job.error_message}`:''}</small></div><span className={`status-done ${job.status}`}><Check size={13}/> {job.status}</span>{job.output_path?<a className="btn soft" href={`/api/jobs/${job.id}/file`} download><Download size={15}/> Download</a>:<a className="btn soft" href={`/api/jobs/${job.id}/log`} target="_blank">View log</a>}</section>)}</main>
-}
-
-export default App
-he project, then generate a preview or MP4.</span></div>}{jobs.map(job=><section className="panel queue-card" key={job.id}><div className="queue-thumb"><img src="/media/coast.jpg"/><span>{job.status==='running'?<RefreshCw className="spin" size={15}/>:<Download size={15}/>}</span></div><div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.error_message?` · ${job.error_message}`:''}</small></div><span className={`status-done ${job.status}`}><Check size={13}/> {job.status}</span>{job.output_path?<a className="btn soft" href={`/api/jobs/${job.id}/file`} download><Download size={15}/> Download</a>:<a className="btn soft" href={`/api/jobs/${job.id}/log`} target="_blank">View log</a>}</section>)}</main>
 }
 
 export default App

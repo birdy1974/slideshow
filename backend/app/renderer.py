@@ -537,9 +537,19 @@ class Renderer:
         start, end = float(item.get("textStart", 0)), float(item.get("textEnd", item.get("duration", 5)))
         fade_in = max(.01, float(item.get("textEnterDuration", .5))); fade_out = max(.01, float(item.get("textExitDuration", .5)))
         x, y = float(item.get("textX", 50)), float(item.get("textY", 72))
-        size = max(8, int(float(defaults.get("fontSize", 48)) * width / 1920))
-        colour = str(defaults.get("fontColor", "#ffffff")).replace("#", "0x")
-        font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if defaults.get("bold") else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        size = max(8, int(float(item.get("fontSize", defaults.get("fontSize", 48))) * width / 1920))
+        colour = str(item.get("fontColor") or defaults.get("fontColor", "#ffffff")).replace("#", "0x")
+        bold = item["textBold"] if "textBold" in item else defaults.get("bold", True)
+        italic = item["textItalic"] if "textItalic" in item else defaults.get("italic", False)
+        font_dir = "/usr/share/fonts/truetype/dejavu"
+        if bold and italic:
+            font = f"{font_dir}/DejaVuSans-BoldOblique.ttf"
+        elif italic:
+            font = f"{font_dir}/DejaVuSans-Oblique.ttf"
+        elif bold:
+            font = f"{font_dir}/DejaVuSans-Bold.ttf"
+        else:
+            font = f"{font_dir}/DejaVuSans.ttf"
         alpha = f"if(lt(t,{start}),0,if(lt(t,{start+fade_in}),(t-{start})/{fade_in},if(lt(t,{end-fade_out}),1,if(lt(t,{end}),({end}-t)/{fade_out},0))))"
         return f"drawtext=fontfile='{font}':text='{ff_escape(text)}':fontsize={size}:fontcolor={colour}:alpha='{alpha}':x=(w-text_w)*{x/100}:y=(h-text_h)*{y/100}:shadowcolor=black@0.55:shadowx=2:shadowy=2:enable='between(t,{start},{end})'"
 

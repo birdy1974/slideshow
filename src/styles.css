@@ -115,3 +115,12 @@ main{max-width:1530px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .file-area .notice span,.picker-body .notice span{line-height:1.45}
 
 .compact-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 21px 0;padding:4px 0 2px}.compact-actions .btn{height:30px;padding:0 10px;font-size:11px}.compact-card.selected{border-color:#779a43;box-shadow:0 0 0 2px #b9d887}.compact-select{position:absolute;z-index:4;left:6px;bottom:6px;border:0;background:transparent;padding:0;cursor:pointer}.compact-select span{width:18px;height:18px;border:1.5px solid #fff;background:#1d211bb8;border-radius:4px;display:grid;place-items:center;color:#1d2813;box-shadow:0 1px 3px #0004}.compact-card.selected .compact-select span{background:var(--lime);border-color:#fff}
+
+.type-controls-stack{display:grid;grid-template-columns:1fr 90px;gap:8px;margin:10px 0}.type-controls-stack .color-control,.type-controls-stack .style-buttons,.type-controls-stack .select-wrap,.type-controls-stack .number-stepper{width:100
+.type-controls-stack{display:grid;grid-template-columns:1fr 90px;gap:8px;margin:10px 0}
+.type-controls-stack .color-control,.type-controls-stack .style-buttons,.type-controls-stack .select-wrap,.type-controls-stack .number-stepper{width:100%}
+.wide-style-modal{width:min(780px,96vw)}
+.default-position-stage{aspect-ratio:16/9;margin:14px 0 8px;border-radius:9px;position:relative;overflow:hidden;box-shadow:0 8px 24px #0003}
+.light-readout{color:#555;border-top:1px solid #e4e4df;margin-top:4px;padding-top:10px}
+.frame-editor aside .type-controls-stack{grid-template-columns:1fr}
+.frame-editor aside .type-controls-stack .select-wrap{height:32px}
