@@ -19,7 +19,9 @@ from app.renderer import (
     _probe_readable,
     _summarize_ffmpeg_log,
     KEN_BURNS_MAX_ZOOM,
+    COMPOSE_BATCH_SIZE,
     build_filter_graph,
+    chunk_indices,
     fill_frame_filter,
     fit_frame_filter,
     format_ffmpeg_number,
@@ -416,6 +418,22 @@ class FilterGraphTest(unittest.TestCase):
         self.assertNotRegex(graph, r"1\.0999|1\.100000")
 
 
+class ComposeBatchingTest(unittest.TestCase):
+    def test_small_stories_are_a_single_window(self) -> None:
+        self.assertEqual([(0, 3)], chunk_indices(3, 8))
+        self.assertEqual([(0, 8)], chunk_indices(8, 8))
+
+    def test_avoids_a_leftover_singleton(self) -> None:
+        self.assertEqual([(0, 7), (7, 9)], chunk_indices(9, 8))
+
+    def test_89_clips_never_open_more_than_the_batch(self) -> None:
+        windows = chunk_indices(89, COMPOSE_BATCH_SIZE)
+        self.assertGreater(len(windows), 1)
+        for start, end in windows:
+            self.assertLessEqual(end - start, COMPOSE_BATCH_SIZE)
+            self.assertGreaterEqual(end - start, 2)
+
+
 class FrameFittingTest(unittest.TestCase):
     """Pictures must be shown whole: scaled down to fit, never cropped."""
 
@@ -613,6 +631,22 @@ class VideoPlaysToEndTest(unittest.TestCase):
         ])
         image_cmd = next(c for c in commands if any(str(a).endswith("still.jpg") for a in c))
         self.assertIn("-loop", image_cmd)
+
+    def test_long_story_composes_in_batches(self) -> None:
+        photos = []
+        for i in range(20):
+            name = f"p{i:02d}.jpg"
+            (self.settings.photos_dir / name).write_bytes(b"x" * 64)
+            photos.append({
+                "id": i, "type": "image", "path": f"/photos/{name}", "name": name,
+                "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5,
+            })
+        self._render(photos)
+        compose = [c for c in self.commands if "-filter_complex" in c]
+        self.assertGreaterEqual(len(compose), 2, compose)
+        for command in compose:
+            inputs = sum(1 for a, b in zip(command, command[1:]) if a == "-i")
+            self.assertLessEqual(inputs, COMPOSE_BATCH_SIZE + 1)
 
 
 if __name__ == "__main__":

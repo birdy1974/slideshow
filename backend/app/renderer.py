@@ -27,6 +27,9 @@ from .media import UnsafePath, mounted_path, source_path
 log = logging.getLogger(__name__)
 
 KEN_BURNS_MAX_ZOOM = 1.12
+# A single filter_complex of ~90 xfades at 1080p OOMs or appears hung on NAS
+# boxes (every xfade keeps both inputs decoded). Compose in small groups.
+COMPOSE_BATCH_SIZE = 8
 RESOLUTIONS = {
     "4K UHD · 2160p": (3840, 2160), "Full HD · 1080p": (1920, 1080),
     "HD · 720p": (1280, 720), "SD · 480p": (854, 480),
@@ -305,6 +308,26 @@ def build_filter_graph(durations: list[float], transitions: list[float], xfade_n
         previous = out
         offset += durations[index] + transition
     return ";".join(prepared + chains)
+
+
+def chunk_indices(count: int, batch: int) -> list[tuple[int, int]]:
+    """Inclusive-exclusive [start, end) windows covering 0..count."""
+    if count <= 0:
+        return []
+    batch = max(2, batch)
+    if count <= batch:
+        return [(0, count)]
+    windows: list[tuple[int, int]] = []
+    start = 0
+    while start < count:
+        remaining = count - start
+        # Avoid a leftover singleton: fold the last two groups if needed.
+        take = remaining if remaining <= batch else batch
+        if remaining > batch and remaining - batch == 1:
+            take = remaining - 2
+        windows.append((start, start + take))
+        start += take
+    return windows
 
 
 class Renderer:
@@ -663,23 +686,8 @@ class Renderer:
             segments.append(segment)
             progress(5 + 45 * (index + 1) / len(media), f"Prepared item {index+1} of {len(media)}")
 
-        inputs: list[str] = []
-        for segment in segments: inputs += ["-i", str(segment)]
         xfade_names = [self.resolve_xfade(str(media[index].get("transition", "Fade"))) for index in range(len(media) - 1)]
-        filter_graph = build_filter_graph(durations, transitions, xfade_names, fps)
         total_duration = sum(durations) + sum(transitions)
-
-        audio_args: list[str] = []; audio_map: list[str] = []
-        if soundtrack:
-            audio_index=len(segments); policy=project.get("soundtrack",{}).get("policy","Loop & trim")
-            if policy == "Loop & trim": audio_args += ["-stream_loop", "-1"]
-            audio_args += ["-i", str(soundtrack)]
-            volume=max(0,min(1,float(project.get("soundtrack",{}).get("volume",100))/100))
-            fade = project.get("soundtrack",{}).get("fadeOut",True)
-            af=f"volume={volume}"
-            if fade: af += f",afade=t=out:st={format_ffmpeg_number(max(0,total_duration-2))}:d=2"
-            filter_graph += f";[{audio_index}:a]{af}[aout]"
-            audio_map=["-map","[aout]","-c:a","aac","-b:a","192k"]
         progress(55, "Composing transitions and soundtrack")
         if kind == "preview":
             target_dir = self.settings.preview_dir
@@ -694,27 +702,110 @@ class Renderer:
         bitrate_value = parse_number(bitrate, 2)
         encoder = "h264_qsv" if "Quick Sync" in encoder_label and self.qsv_encodable() else "libx264"
 
-        def compose_command(codec: str) -> list[str]:
-            # QSV needs nv12 and its own rate control tolerance; libx264 uses
-            # yuv420p plus a medium preset. Everything else is shared.
+        def encode_args_for(codec: str, *, intermediate: bool) -> list[str]:
             if codec == "h264_qsv":
-                encode_args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "nv12"]
+                args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "nv12"]
             else:
-                encode_args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-preset", "medium", "-pix_fmt", "yuv420p"]
-            return [self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs, *audio_args, "-filter_complex", filter_graph, "-map", "[vout]", *audio_map, *encode_args, "-movflags", "+faststart", "-r", str(fps), "-t", str(total_duration), str(output)]
+                preset = "veryfast" if intermediate else "medium"
+                args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-preset", preset, "-pix_fmt", "yuv420p"]
+            if not intermediate:
+                args += ["-movflags", "+faststart"]
+            return args
 
-        command = compose_command(encoder)
-        try:
-            self._run_ffmpeg(command, cancelled, log_file)
-        except RenderError:
-            if encoder != "h264_qsv":
-                raise
-            # Quick Sync runtimes differ: rate control modes, pixel formats and
-            # resolutions accepted by one device fail on another. Never let that
-            # break a render — retry the identical composition on CPU.
-            progress(70, "Quick Sync unavailable; retrying on CPU")
-            log.warning("h264_qsv failed for %s; falling back to libx264", output)
-            self._run_ffmpeg(compose_command("libx264"), cancelled, log_file)
+        def run_compose(command: list[str], *, allow_qsv_fallback: bool) -> None:
+            try:
+                self._run_ffmpeg(command, cancelled, log_file)
+            except RenderError:
+                if not allow_qsv_fallback or encoder != "h264_qsv":
+                    raise
+                progress(70, "Quick Sync unavailable; retrying on CPU")
+                log.warning("h264_qsv failed; falling back to libx264")
+                patched = list(command)
+                try:
+                    idx = patched.index("h264_qsv")
+                    patched[idx] = "libx264"
+                    if "-pix_fmt" in patched:
+                        pix = patched.index("-pix_fmt")
+                        patched[pix + 1] = "yuv420p"
+                    if "-preset" not in patched:
+                        patched[idx + 1:idx + 1] = ["-preset", "medium"]
+                except ValueError:
+                    raise
+                self._run_ffmpeg(patched, cancelled, log_file)
+
+        # Reduce long stories in batches so FFmpeg never opens 80+ 1080p
+        # streams in one filter graph (that stalls after "Press [q]").
+        level = 0
+        cur_segs = list(segments)
+        cur_durs = list(durations)
+        cur_trans = list(transitions)
+        cur_xfade = list(xfade_names)
+        while len(cur_segs) > COMPOSE_BATCH_SIZE:
+            windows = chunk_indices(len(cur_segs), COMPOSE_BATCH_SIZE)
+            nxt_segs: list[Path] = []
+            nxt_durs: list[float] = []
+            nxt_trans: list[float] = []
+            nxt_xfade: list[str] = []
+            for w_i, (start, end) in enumerate(windows):
+                if cancelled.is_set():
+                    raise RenderError("Render cancelled by user")
+                group = cur_segs[start:end]
+                g_durs = cur_durs[start:end]
+                g_trans = cur_trans[start:end - 1]
+                g_xfade = cur_xfade[start:end - 1]
+                trail = cur_trans[end - 1] if end < len(cur_segs) else 0.0
+                if len(group) == 1:
+                    nxt_segs.append(group[0])
+                    nxt_durs.append(g_durs[0])
+                else:
+                    mid = work / f"compose-L{level}-{w_i:03d}.mp4"
+                    graph = build_filter_graph(g_durs, g_trans, g_xfade, fps)
+                    cut = sum(g_durs) + sum(g_trans) + trail
+                    inputs: list[str] = []
+                    for path in group:
+                        inputs += ["-i", str(path)]
+                    command = [
+                        self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs,
+                        "-filter_complex", graph, "-map", "[vout]", "-an",
+                        *encode_args_for(encoder, intermediate=True),
+                        "-r", str(fps), "-t", format_ffmpeg_number(cut), str(mid),
+                    ]
+                    progress(55 + 20 * (w_i + 1) / max(1, len(windows)), f"Composing group {w_i + 1} of {len(windows)}")
+                    run_compose(command, allow_qsv_fallback=True)
+                    nxt_segs.append(mid)
+                    nxt_durs.append(sum(g_durs) + sum(g_trans))
+                if end < len(cur_segs):
+                    nxt_trans.append(cur_trans[end - 1])
+                    nxt_xfade.append(cur_xfade[end - 1])
+            cur_segs, cur_durs, cur_trans, cur_xfade = nxt_segs, nxt_durs, nxt_trans, nxt_xfade
+            level += 1
+
+        filter_graph = build_filter_graph(cur_durs, cur_trans, cur_xfade, fps)
+        audio_args: list[str] = []
+        audio_map: list[str] = []
+        if soundtrack:
+            audio_index = len(cur_segs)
+            policy = project.get("soundtrack", {}).get("policy", "Loop & trim")
+            if policy == "Loop & trim":
+                audio_args += ["-stream_loop", "-1"]
+            audio_args += ["-i", str(soundtrack)]
+            volume = max(0, min(1, float(project.get("soundtrack", {}).get("volume", 100)) / 100))
+            fade = project.get("soundtrack", {}).get("fadeOut", True)
+            af = f"volume={volume}"
+            if fade:
+                af += f",afade=t=out:st={format_ffmpeg_number(max(0, total_duration - 2))}:d=2"
+            filter_graph += f";[{audio_index}:a]{af}[aout]"
+            audio_map = ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
+        inputs = []
+        for path in cur_segs:
+            inputs += ["-i", str(path)]
+        command = [
+            self.settings.ffmpeg_bin, "-hide_banner", "-y", *inputs, *audio_args,
+            "-filter_complex", filter_graph, "-map", "[vout]", *audio_map,
+            *encode_args_for(encoder, intermediate=False),
+            "-r", str(fps), "-t", str(total_duration), str(output),
+        ]
+        run_compose(command, allow_qsv_fallback=True)
         progress(98, "Finalizing MP4")
         return output
 
