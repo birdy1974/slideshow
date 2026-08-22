@@ -180,6 +180,29 @@ function timelineModel(items: MediaItem[]) {
 }
 const formatClock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 
+// First number in labels like "8 Mbps · High" — same parse the renderer uses.
+function parsePresetNumber(label: string, fallback: number) {
+  const match = String(label || '').match(/([\d.]+)/)
+  return match ? Number(match[1]) : fallback
+}
+
+function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB'
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  const mb = bytes / (1024 * 1024)
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`
+  const gb = mb / 1024
+  return `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB`
+}
+
+/** Upper-bound MP4 size from the chosen video bitrate plus AAC if music is present. */
+function estimateOutputBytes(durationSeconds: number, bitrateLabel: string, hasAudio: boolean) {
+  const videoMbps = parsePresetNumber(bitrateLabel, 8)
+  const audioMbps = hasAudio ? 0.192 : 0
+  const seconds = Math.max(0, durationSeconds)
+  return ((videoMbps + audioMbps) * 1_000_000 / 8) * seconds * 1.02
+}
+
 // FFmpeg's complete built-in xfade catalogue, plus two clearly-labelled
 // experimental GLSL choices. Friendly labels are mapped to filter names later.
 const transitionGroups = {
@@ -493,24 +516,7 @@ function App() {
     if (index < next.length - 1) next[index] = { ...next[index], transitionTime: clampTransitionFor(next, index, next[index].transitionTime ?? DEFAULT_TRANSITION_SECONDS) }
     return next
   })
-  const updateSelectedTransitionTimes = (value: number) => setMedia(items => items.map((item, index) => selectedTransitions.includes(item.id) && Number.isFinite(value) ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
-  const move = (index: number, direction: -1 | 1) => setMedia(items => {
-    const next = [...items]; const target = index + direction
-    if (target < 0 || target >= next.length) return next
-    ;[next[index], next[target]] = [next[target], next[index]]
-    return next
-  })
-  const dropOn = (targetId: number) => {
-    if (draggedId === null) return
-    setMedia(items => {
-      // If the dragged clip is selected, move the complete selection as one
-      // stable group. Otherwise only move the clip under the pointer.
-      const movingIds = selectedIds.includes(draggedId) ? selectedIds : [draggedId]
-      if (movingIds.includes(targetId)) return items
-      const moving = items.filter(x => movingIds.includes(x.id))
-      const remaining = items.filter(x => !movingIds.includes(x.id))
-      const target = remaining.findIndex(x => x.id === targetId)
-      remaining.splice(target < 0 ? remaining.length : target, 0, ...moving)
+  const updateSelectedTransitionTimes = (value: number) => setMedia(items => items.map((item, index) => selectedTransitions.includes(item.id) && Number.isF, ...moving)
       return remaining
     })
     setDraggedId(null)
@@ -790,7 +796,7 @@ function App() {
             <div className="form-grid two"><div><FieldLabel>Video bitrate</FieldLabel><Select value={bitrate} onChange={setBitrate}><option>4 Mbps · Standard</option><option>8 Mbps · High</option><option>12 Mbps · Very high</option><option>20 Mbps · Maximum</option></Select></div><div><FieldLabel>Encoder</FieldLabel><Select value={encoder} onChange={setEncoder}><option>Auto · Quick Sync</option><option>Intel Quick Sync</option><option>CPU · x264</option></Select></div></div>
             <div><FieldLabel>Output folder</FieldLabel><div className="path-field"><FolderOpen size={15}/><input value={outputPath} onChange={e=>setOutputPath(e.target.value)}/><button onClick={()=>setShowFolderPicker(true)} title="Browse the mounted /output volume">Browse</button></div></div>
             <div><FieldLabel>Filename</FieldLabel><div className="filename"><input value={outputFilename} onChange={e=>setOutputFilename(e.target.value)}/><span>.mp4</span></div></div>
-            <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~29 MB</strong><small>H.264 · AAC stereo · {formatClock(total)}</small></div>
+            <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, audioTracks.length > 0))}</strong><small>H.264{audioTracks.length ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
           <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>Ready to render</h3><p>All checks passed</p></div><span><Check size={14}/></span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li></ul><button className="btn preview-btn" disabled={previewing||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button>{rendering && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite.</p></section>
@@ -949,6 +955,10 @@ function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () =>
   const [jobs,setJobs]=useState<any[]>([])
   useEffect(()=>{let active=true;const load=()=>fetch(`/api/jobs${projectId?`?project_id=${projectId}`:''}`).then(r=>r.ok?r.json():[]).then(x=>active&&setJobs(x)).catch(()=>{});load();const timer=setInterval(load,2000);return()=>{active=false;clearInterval(timer)}},[projectId])
   return <main className="queue-page"><div className="project-heading"><div><div className="eyebrow">ACTIVITY</div><h1>Render queue</h1><p>FFmpeg jobs and diagnostic history persisted in SQLite.</p></div><button className="btn dark" onClick={onBack}><Plus size={16}/> Back to editor</button></div>{jobs.length===0&&<div className="notice"><Info size={16}/><span>No render jobs yet. Save the project, then generate a preview or MP4.</span></div>}{jobs.map(job=><section className="panel queue-card" key={job.id}><div className="queue-thumb"><img src="/media/coast.jpg"/><span>{job.status==='running'?<RefreshCw className="spin" size={15}/>:<Download size={15}/>}</span></div><div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.error_message?` · ${job.error_message}`:''}</small></div><span className={`status-done ${job.status}`}><Check size={13}/> {job.status}</span>{job.output_path?<a className="btn soft" href={`/api/jobs/${job.id}/file`} download><Download size={15}/> Download</a>:<a className="btn soft" href={`/api/jobs/${job.id}/log`} target="_blank">View log</a>}</section>)}</main>
+}
+
+export default App
+he project, then generate a preview or MP4.</span></div>}{jobs.map(job=><section className="panel queue-card" key={job.id}><div className="queue-thumb"><img src="/media/coast.jpg"/><span>{job.status==='running'?<RefreshCw className="spin" size={15}/>:<Download size={15}/>}</span></div><div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.error_message?` · ${job.error_message}`:''}</small></div><span className={`status-done ${job.status}`}><Check size={13}/> {job.status}</span>{job.output_path?<a className="btn soft" href={`/api/jobs/${job.id}/file`} download><Download size={15}/> Download</a>:<a className="btn soft" href={`/api/jobs/${job.id}/log`} target="_blank">View log</a>}</section>)}</main>
 }
 
 export default App
