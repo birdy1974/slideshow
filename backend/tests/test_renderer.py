@@ -699,7 +699,7 @@ class VideoPlaysToEndTest(unittest.TestCase):
 
     def test_long_story_composes_in_batches(self) -> None:
         photos = []
-        for i in range(20):
+        for i in range(COMPOSE_BATCH_SIZE + 1):
             name = f"p{i:02d}.jpg"
             (self.settings.photos_dir / name).write_bytes(b"x" * 64)
             photos.append({
