@@ -1,0 +1,78 @@
+Slideshow maker:
+Make an application running in a docker compose on a Synology Nas ds918+ that generates a slideshow from pictures and video files. The result should be saved as MP4 video files. 
+In case something is not clear or there are more ways to implement something please ask for more explanation before implementing. Also please read below background information as a basis for the application:
+https://github.com/snuq/SnuSlideshowGenerator
+https://github.com/Xhat4/Automatic-Video-Montage
+https://github.com/tanersener/ffmpeg-video-slideshow-scripts
+https://github.com/abduznik/FFMPEG-Image-To-Video/tree/main
+https://github.com/gre/diaporama
+
+As a basis for the transitions you can use:
+https://www.bannerbear.com/blog/how-to-create-a-slideshow-from-images-with-ffmpeg/
+https://trac.ffmpeg.org/wiki/Xfade
+https://ffmpeg.org/ffmpeg-filters.html#xfade
+https://ffmpeg.org/ffmpeg-filters.html#xfade_005fopencl
+https://github.com/gre/kenburns
+https://github.com/gre/glsl-transition
+https://github.com/colossus73/imagination
+
+Create a webinterface with the following functionality:
+- select Fotos and videos (individual or complete directory) directory to be mounted in docker compose yaml file
+- determine the order of the Fotos and videos (random order should be possible as well)
+- between each file there should be a transition (to go from 1 to the other)
+- user should be able to choose from as many transitions or effects as possible
+- there should be an option so the the application assigns random effects to all transitions
+- user can enter the time of the transitions (individual or for all transitions in 1 go)
+- user should be able to add audio (mp3) that is merged with the output- add option to combine trompet transitions with Kenburns and glsl
+- there should be an option to pre-view the end result
+- user should be able to specify the resolution of the output (1080p, 720p, etc. and bitrate and fps) with predefined selection fields.
+- user should be able to specify output path and filename
+- Use also drag and drop to change the order of the files
+- Show overall time line / story line, where you can zoom in and zoom out and also there you can change the order of the files
+- On the time line / story line you can also assign the transitions and duration of the transition
+- Add more transitions (as much as possible see website https://trac.ffmpeg.org/wiki/Xfade
+- Option to change Ken burns effect for all or to change in bulk for selected files
+- Option to change selected transition in bulk to a specific effect of random for the selected transitions
+- In the story line make the pictures smaller and the transitions bigger. 
+Try to give a symbol of small description to the transition so you can see what kind of transition it is in the story line (if you are Sommer in enough)
+- For longer story lines consider multiple lines instead of 1 line. Application can estimate how many line are required, but user can override that value
+- In the zoom function add option to reset the zoon to show complete timeline
+- It should be possible also to select multiple pictures in the story line (add selection boxes on pictures)
+- In case multiple files are selected, all selected files should move with the drag and drop- Rename application from "frameflow" to "slideshow"
+- Add an additional line above the pictures in the story line to add text to the pictures. The text box is linked to the pictures, so if the picture moves (by drag and drop) the text moves as well.
+- Text box should also be added on the Individual details of the pictures 
+
+- Text can be added on top of the pictures or as a new frame (instead of a picture)
+- Default text properties should be possible, like change font, size, colour, italic, hold, underlined, etc.
+- It should be possible to made Multiple mp3 files as soundtracks.
+- The order of the mp3 can be determined by drag and drop
+
+- For the default text style add a button next to the "+ Text frame" that opens a pop-up window to give all the default text style parameters instead of the 02 Default text style section
+- If "text frame" is added, make a possibility that the user can determine the position of the text (preferable by drag and drop of the text box on the frame)
+- Add option to change the background of the frame
+- On the 03 soundtrack section show total time of all soundtracks
+- Add option to make the text boxes above the frames in the story line dynamic to determine the timing when the text will be shown. 
+So in case the user drags the left side of the text box to the right the text will appear x second later than the picture itself. 
+Same for the right side of the text box if that is moved to the right, the text will disappear earlier than the picture disappears.
+- Add possibility to also add transitions for the text (appear and disappear transition) by adding transition boxes to the left and the right of the text box
+- Add option to assign random transitions to the text transitions- Add estimated total time below the story line
+
+- Zoom functionality of the story line is not working anymore, please fix
+- If you click on the "text" transition box you should get the same functionality to change the transition as you get when you click on the transition between the frames
+- Text transitions should also be visible on the individual details of the frames (left and right of the text box in the details of the individual frames)
+- Total estimated time should also be shown as a line directly below the story line. This estimated time should also be changing with the zoom in / out function.
+- Ken burns should also be applied to multiple selected frames in 1 go
+- There should also be an option to random assign Ken burns options to selected frames.
+- In case of multiple line in the story line, the time ruler needs to be below each line
+- If you click on the text transitions in the individual detailed frame the selection of the text transition should pop-up in the frame details and not below the story line.
+- Make sure that all settings are stored in the SQLite and are all saved if the project is saved
+
+
+Other things to consider:
+- all the required dependencies should be included in the image
+- image will be hosted on GitHub
+- image will be build on GitHub
+- provide detailed info, warning, error messages
+- provide as much as possible info messages for fault finding and to understand what is happening 
+- provide a lot of comments inside the code
+- give a working mock-up of the web interface so I can test before compiling everything
