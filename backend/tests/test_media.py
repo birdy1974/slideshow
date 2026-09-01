@@ -30,6 +30,15 @@ class MediaSecurityTest(unittest.TestCase):
         self.assertEqual(["image.jpg"], [x["name"] for x in result["entries"]])
         self.assertEqual(self.settings.photos_dir / "trip" / "image.jpg", mounted_path(self.settings, "/photos/trip", "image.jpg"))
 
+    def test_browse_accepts_casio_camera_avi_case_insensitively(self) -> None:
+        # Casio EX-Z11 recordings use a Motion JPEG/PCM AVI container and often
+        # arrive from the camera with an upper-case extension.
+        movie = self.settings.photos_dir / "trip" / "CIMG0123.AVI"
+        movie.write_bytes(b"RIFF-casio-avi")
+        result = browse(self.settings, "photos", "trip")
+        entry = next(x for x in result["entries"] if x["name"] == movie.name)
+        self.assertEqual("video", entry["kind"])
+
     def test_browse_marks_empty_files(self) -> None:
         (self.settings.photos_dir / "trip" / "empty.jpg").write_bytes(b"")
         result = browse(self.settings, "photos", "trip")

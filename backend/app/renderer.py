@@ -602,7 +602,7 @@ class Renderer:
         self._validate_media({**project, "media": media})
         output_settings = project.get("output", {})
         if kind == "preview":
-            width, height, fps, bitrate = 854, 480, 24, "2M"
+            width, height, fps, bitrate = 640, 360, 24, "2M"
         else:
             width, height = RESOLUTIONS.get(output_settings.get("resolution"), (1920, 1080))
             fps = int(parse_number(output_settings.get("frameRate", "30"), 30))
@@ -652,7 +652,7 @@ class Renderer:
         for item in media:
             hold = max(.2, float(item.get("duration", 5)))
             native: float | None = None
-            if item.get("type") == "video":
+            if item.get("type") == "video" and not item.get("previewTrim"):
                 try:
                     native = self._probe_duration(source_path(self.settings, item))
                 except Exception as exc:

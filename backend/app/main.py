@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -43,6 +44,14 @@ class ProjectPayload(BaseModel):
 class JobRequest(BaseModel):
     kind: Literal["preview", "render"] = "render"
     overwrite: bool = False
+
+
+class TransitionPreviewRequest(BaseModel):
+    outgoing: dict[str, Any]
+    incoming: dict[str, Any]
+    transition: str = "Fade"
+    duration: float = Field(default=1.0, ge=0.1, le=10)
+    textDefaults: dict[str, Any] = Field(default_factory=dict)
 
 
 def validate_mount_references(payload: dict[str, Any]) -> None:
@@ -251,6 +260,34 @@ def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), pa
 STREAMABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 
+@app.get("/api/media/probe")
+def probe_media(root: str = Query(pattern="^(photos|videos)$"), path: str = "") -> dict[str, Any]:
+    """Read video metadata server-side, including formats browsers cannot decode.
+
+    Casio EX-Z11 movies are Motion JPEG/PCM in an AVI container. FFmpeg can
+    render those files, but most current browsers cannot even read their
+    duration, so the media picker uses this endpoint as its metadata fallback.
+    """
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in VIDEO_EXTENSIONS: raise HTTPException(415, "File is not a supported video")
+    if target.stat().st_size == 0: raise HTTPException(422, "File is empty (0 bytes)")
+    try:
+        result = subprocess.run(
+            [settings.ffprobe_bin, "-v", "error", "-show_entries", "format=duration", "-of", "json", str(target)],
+            capture_output=True, text=True, timeout=settings.ffprobe_timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(503, f"Could not inspect video metadata: {exc}") from exc
+    if result.returncode:
+        raise HTTPException(422, "FFmpeg could not read this video")
+    try: duration = float(json.loads(result.stdout).get("format", {}).get("duration", 0))
+    except (TypeError, ValueError, json.JSONDecodeError): duration = 0
+    if duration <= 0: raise HTTPException(422, "Video duration is unavailable")
+    return {"duration": duration}
+
+
 @app.get("/api/media/file")
 def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str = "") -> FileResponse:
     """Stream a media file from a read-only mount for thumbnails, lightbox, and MP3 preview.
@@ -280,6 +317,40 @@ def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str =
         filename=target.name,
         content_disposition_type="inline",
     )
+
+
+@app.post("/api/transitions/preview")
+def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
+    """Render an authoritative two-clip transition sample at 360p.
+
+    The clips are deliberately trimmed to short handles, which keeps this
+    interactive even when either source is a long movie or camera AVI.
+    """
+    import threading
+    import uuid
+
+    handle = max(1.0, request.duration)
+    media = [dict(request.outgoing), dict(request.incoming)]
+    media[0].update(duration=handle, transition=request.transition, transitionTime=request.duration, previewTrim=True)
+    media[1].update(duration=handle, previewTrim=True)
+    payload = {
+        "id": "transition",
+        "project": {"name": "Transition preview", "randomOrder": False},
+        "media": media,
+        "textDefaults": request.textDefaults,
+        "soundtrack": {"tracks": [], "policy": "Play once, then silence"},
+        "output": {"encoder": "CPU · x264"},
+    }
+    validate_mount_references({**payload, "output": {"path": "/output"}})
+    token = uuid.uuid4().hex
+    work = settings.work_dir / f"transition-{token}"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        output = renderer.render(payload, "preview", work, threading.Event(), lambda _p, _s: None)
+    except Exception as exc:
+        log.exception("Transition preview failed")
+        raise HTTPException(422, f"Could not render transition preview: {exc}") from exc
+    return FileResponse(output, media_type="video/mp4", filename="transition-preview.mp4", content_disposition_type="inline")
 
 
 @app.post("/api/projects/{project_id}/jobs", status_code=202)
