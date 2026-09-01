@@ -29,12 +29,23 @@ async function readApiError(response: Response, fallback = 'Request failed') {
 }
 
 // Streams a file from a mounted root through the backend (thumbnails, lightbox, MP3).
-function mediaFileUrl(root: MediaRoot, serverPath: string) {
+function mediaRelativePath(root: MediaRoot, serverPath: string) {
   let relative = (serverPath || '').split('\\').join('/')
   const prefix = '/' + root
   if (relative === prefix || relative.startsWith(prefix + '/')) relative = relative.slice(prefix.length)
-  if (relative.startsWith('/')) relative = relative.slice(1)
-  return `/api/media/file?root=${root}&path=${encodeMediaRelative(relative)}`
+  return relative.startsWith('/') ? relative.slice(1) : relative
+}
+
+function mediaFileUrl(root: MediaRoot, serverPath: string) {
+  return `/api/media/file?root=${root}&path=${encodeMediaRelative(mediaRelativePath(root, serverPath))}`
+}
+
+async function serverVideoDuration(root: 'photos' | 'videos', serverPath: string) {
+  const url = `/api/media/probe?root=${root}&path=${encodeMediaRelative(mediaRelativePath(root, serverPath))}`
+  const response = await fetch(url)
+  if (!response.ok) return 0
+  const data = await response.json()
+  return Number.isFinite(data.duration) ? Number(data.duration) : 0
 }
 
 
@@ -128,7 +139,7 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, po
     {onNext && <button type="button" className="lightbox-nav next" title="Next media (→)" aria-label="Next media" onMouseDown={e => e.stopPropagation()} onClick={onNext}><ChevronRight size={26}/></button>}
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
-      {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be displayed</strong><span>It is empty, missing, or unreadable on the mounted volume. Remove or replace it in the storyline.</span></div>
+      {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
         : kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
         : <img className="lightbox-media" src={src} alt={title} onError={() => setFailed(true)} />}
@@ -161,6 +172,9 @@ function BrowserThumb({ root, file }: { root: MediaRoot, file: any }) {
   useEffect(() => setFailed(false), [src])
   if (file.kind === 'directory') return <FolderOpen size={34}/>
   if (file.kind === 'audio') return <Music2 size={34}/>
+  // AVI (notably Motion JPEG from a Casio EX-Z11) is renderable by FFmpeg but
+  // generally not decodable by browser video elements. Avoid a broken preview.
+  if (file.kind === 'video' && /\.avi$/i.test(file.name)) return <><Film size={34}/><span className="video-tag"><Video size={10}/> AVI</span></>
   if (failed) return <span className="file-thumb-fallback"><ImageOff size={20}/></span>
   if (file.kind === 'video') return <><video src={src} muted preload="metadata" onError={() => setFailed(true)}/><span className="video-tag"><Video size={10}/> video</span></>
   if (file.kind === 'image') return <img src={src} alt={file.name} onError={() => setFailed(true)}/>
@@ -471,6 +485,7 @@ function App() {
   const [randomOrder, setRandomOrder] = useState(false)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [selectedTransitions, setSelectedTransitions] = useState<number[]>([])
+  const [transitionPreviewId, setTransitionPreviewId] = useState<number | null>(null)
   const [selectedTextTransitions, setSelectedTextTransitions] = useState<string[]>([])
   const [detailTextEditor, setDetailTextEditor] = useState<{id:number,edge:'enter'|'exit'}|null>(null)
   const [bulkEffect, setBulkEffect] = useState('Ken Burns · Zoom in')
@@ -968,7 +983,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => toggleTransition(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><NumberStepper value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} /><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
@@ -1060,11 +1075,15 @@ function App() {
                 el.preload = 'metadata'
                 const done = (value: number) => { el.removeAttribute('src'); el.load(); resolve(value) }
                 el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? Math.max(MIN_CLIP_SECONDS, el.duration) : 10)
-                el.onerror = () => done(10)
+                el.onerror = () => done(0)
                 // Some mounts never fire metadata; don't block the add forever.
-                window.setTimeout(() => done(10), 8000)
+                window.setTimeout(() => done(0), 8000)
                 el.src = src
               })
+              // AVI from cameras such as the Casio EX-Z11 commonly contains
+              // Motion JPEG and PCM. Browsers cannot probe it, while FFmpeg can.
+              if (duration <= 0) duration = await serverVideoDuration(root as 'photos' | 'videos', file.path)
+              duration = duration > 0 ? Math.max(MIN_CLIP_SECONDS, duration) : 10
             } catch { duration = 10 }
           }
           additions.push({
@@ -1083,6 +1102,7 @@ function App() {
         notify(`${files.length} mounted media file${files.length === 1 ? '' : 's'} added`)
       })()
     }}/>} 
+    {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onApply={(transition, duration) => { patch(media[index].id, { transition, transitionTime: duration }); setTransitionPreviewId(null); notify(`Applied ${transition} transition`) }} /> : null })()}
     {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
     {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)}/>}
@@ -1237,6 +1257,41 @@ function ConfirmDialog({ title, message, confirmLabel, onConfirm, onCancel }: { 
     <h2>{title}</h2>
     <p>{message}</p>
     <div className="confirm-actions"><button className="btn ghost" onClick={onCancel}>Cancel</button><button className="btn dark" onClick={onConfirm}>{confirmLabel}</button></div>
+  </div></div>
+}
+
+function TransitionPreview({ outgoing, incoming, onClose, onApply }: { outgoing: MediaItem; incoming: MediaItem; onClose: () => void; onApply: (transition: string, duration: number) => void }) {
+  const [choice, setChoice] = useState(outgoing.transition)
+  const [duration, setDuration] = useState(outgoing.transitionTime ?? DEFAULT_TRANSITION_SECONDS)
+  const [accurateUrl, setAccurateUrl] = useState<string | null>(null)
+  const [rendering, setRendering] = useState(false)
+  const [error, setError] = useState('')
+  const [loopKey, setLoopKey] = useState(0)
+  useEffect(() => {
+    const controller = new AbortController()
+    let objectUrl = ''
+    const timer = window.setTimeout(async () => {
+      setRendering(true); setError(''); setAccurateUrl(null)
+      try {
+        const response = await fetch('/api/transitions/preview', { method: 'POST', headers: {'Content-Type':'application/json'}, signal: controller.signal, body: JSON.stringify({ outgoing, incoming, transition: choice, duration }) })
+        if (!response.ok) throw new Error(await readApiError(response, 'Preview failed'))
+        objectUrl = URL.createObjectURL(await response.blob())
+        setAccurateUrl(objectUrl)
+      } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'Preview failed') }
+      finally { if (!controller.signal.aborted) setRendering(false) }
+    }, 450)
+    return () => { window.clearTimeout(timer); controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [choice, duration, outgoing, incoming])
+  const quickClass = /left/i.test(choice) ? 'from-left' : /right/i.test(choice) ? 'from-right' : /up/i.test(choice) ? 'from-up' : /down/i.test(choice) ? 'from-down' : 'fade'
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="transition-preview-modal" onMouseDown={e=>e.stopPropagation()}>
+    <div className="preview-top"><div><strong>Transition preview</strong><span>{outgoing.name} → {incoming.name}</span></div><button onClick={onClose}><X size={20}/></button></div>
+    <div className="transition-preview-body"><div className="transition-preview-stage">
+      {accurateUrl ? <video key={`${accurateUrl}-${loopKey}`} src={accurateUrl} controls autoPlay loop /> : <div key={`${choice}-${duration}-${loopKey}`} className={`quick-transition ${quickClass}`} style={{'--transition-speed':`${duration}s`} as React.CSSProperties}><div><MediaThumb item={outgoing}/></div><div><MediaThumb item={incoming}/></div></div>}
+      <span className="preview-quality">{accurateUrl ? 'ACCURATE FFMPEG · 360P' : rendering ? 'QUICK PREVIEW · RENDERING 360P…' : 'QUICK PREVIEW'}</span>
+      {error && <div className="transition-preview-error"><AlertTriangle size={15}/>{error}</div>}
+      <button className="btn ghost replay-transition" onClick={()=>setLoopKey(x=>x+1)}><Play size={13}/> Replay</button>
+    </div><aside><label>Transition</label><Select value={choice} onChange={setChoice}><TransitionOptions/></Select><label>Duration</label><NumberStepper value={duration} min={MIN_TRANSITION_SECONDS} max={10} step={.1} suffix="s" ariaLabel="Preview transition duration" onChange={setDuration}/><div className="transition-choice-list">{Object.entries(transitionGroups).map(([group, names])=><section key={group}><strong>{group}</strong>{names.map(name=><button className={choice===name?'active':''} onClick={()=>setChoice(name)} key={name}><i>{transitionSymbol(name)}</i>{name}</button>)}</section>)}</div></aside></div>
+    <div className="modal-foot"><span>Changes are applied only when you confirm.</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>onApply(choice,duration)}>Apply transition</button></div>
   </div></div>
 }
 
