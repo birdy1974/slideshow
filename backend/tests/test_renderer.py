@@ -24,6 +24,7 @@ from app.renderer import (
     fit_frame_filter,
     normalize_rotation,
     rotation_filter,
+    soundtrack_fade_window,
     format_ffmpeg_number,
     parse_number,
     xfade_name,
@@ -588,6 +589,22 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertTrue(filters[2].startswith("hflip,vflip,"), filters[2])
         self.assertNotIn("transpose", filters[3])
         self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
+
+
+class SoundtrackFadeWindowTest(unittest.TestCase):
+    def test_defaults_and_user_values(self) -> None:
+        self.assertEqual((2.0, 0.0), soundtrack_fade_window({}, 60))
+        self.assertEqual((4.5, 1.0), soundtrack_fade_window({"fadeDuration": 4.5, "fadeTail": 1}, 60))
+
+    def test_clamps_to_slideshow_length(self) -> None:
+        # Silence is sacrificed first, then the fade itself.
+        self.assertEqual((5.0, 1.0), soundtrack_fade_window({"fadeDuration": 5, "fadeTail": 3}, 6))
+        self.assertEqual((6.0, 0.0), soundtrack_fade_window({"fadeDuration": 9, "fadeTail": 3}, 6))
+        self.assertEqual((0.0, 0.0), soundtrack_fade_window({"fadeDuration": 2}, 0))
+
+    def test_garbage_falls_back(self) -> None:
+        self.assertEqual((2.0, 0.0), soundtrack_fade_window({"fadeDuration": "x", "fadeTail": None}, 30))
+        self.assertEqual((0.0, 0.0), soundtrack_fade_window({"fadeDuration": -4}, 30))
 
 
 class PhotoRotationHelpersTest(unittest.TestCase):

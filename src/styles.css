@@ -174,3 +174,10 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .card-player .audio-seek.compact i{max-width:4px}
 .card-player .audio-time{align-self:center;font-size:8px}
 .card-player .audio-playhead{background:#3f5228}
+
+/* Soundtrack fade-out controls */
+.fade-settings{display:flex;flex-direction:column;gap:5px;min-width:0}
+.fade-settings .check-label{height:auto;padding:2px 0}
+.fade-settings .check-label small{margin-left:auto;font:700 10px Manrope;color:#587439}
+.fade-settings .range{width:100%}
+.fade-hint{display:flex;align-items:center;gap:4px;font:600 9px Manrope;font-style:normal;color:#b0782e}

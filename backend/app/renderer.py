@@ -243,6 +243,29 @@ def fill_frame_filter(width: int, height: int, fps: int) -> str:
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
 
 
+def soundtrack_fade_window(soundtrack: dict[str, Any], total_duration: float) -> tuple[float, float]:
+    """User-chosen end-of-slideshow fade: (fade seconds, silence seconds).
+
+    `fadeDuration` is how long the music takes to reach silence and `fadeTail`
+    how much silence is kept before the final frame. Both are clamped so the
+    fade never starts before the slideshow does; the silence is shortened
+    first, then the fade itself.
+    """
+    def _num(key: str, default: float) -> float:
+        try:
+            value = float(soundtrack.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, value) if value == value else default
+    fade = _num("fadeDuration", 2.0)
+    tail = _num("fadeTail", 0.0)
+    total = max(0.0, float(total_duration))
+    if fade + tail > total:
+        tail = max(0.0, min(tail, total - fade))
+        fade = min(fade, total - tail)
+    return round(fade, 3), round(tail, 3)
+
+
 def normalize_rotation(value: Any) -> int:
     """Clamp a stored photo rotation to one of 0/90/180/270 degrees clockwise."""
     try:
@@ -951,7 +974,17 @@ class Renderer:
             audio_filter = f"[{base_index}:a]volume='{format_ffmpeg_number(volume)}*({bed_gain})':eval=frame[bed]"
             fade = project.get("soundtrack", {}).get("fadeOut", True)
             if soundtrack and fade:
-                audio_filter = audio_filter.replace("[bed]", f",afade=t=out:st={format_ffmpeg_number(max(0, total_duration - 2))}:d=2[bed]")
+                fade_duration, fade_tail = soundtrack_fade_window(project.get("soundtrack", {}), total_duration)
+                if fade_duration > 0:
+                    fade_start = max(0.0, total_duration - fade_tail - fade_duration)
+                    audio_filter = audio_filter.replace(
+                        "[bed]",
+                        f",afade=t=out:st={format_ffmpeg_number(fade_start)}:d={format_ffmpeg_number(fade_duration)}"
+                        # Hard-mute the tail so looped music cannot creep back in
+                        # after the fade has reached silence.
+                        + (f",volume=enable='gte(t,{format_ffmpeg_number(fade_start + fade_duration)})':volume=0" if fade_tail > 0 else "")
+                        + "[bed]",
+                    )
             mix_labels = ["[bed]"]
             for movie_index, item in original_movies:
                 source = source_path(self.settings, item)
