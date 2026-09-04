@@ -243,6 +243,29 @@ def fill_frame_filter(width: int, height: int, fps: int) -> str:
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
 
 
+def frame_colour_change(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Two-colour text frame settings, mirroring the editor's clamping.
+
+    Returns None for single-colour frames. Otherwise: `to` (hex), `transition`
+    (friendly label), `time` (seconds, 0.2..hold) and `start` (seconds into
+    the visible hold, kept so the change finishes before the frame ends).
+    """
+    first = str(item.get("frameBackground", "#30382a"))
+    second = item.get("frameBackground2")
+    if not isinstance(second, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", second) or second.lower() == first.lower():
+        return None
+    def _num(key: str, default: float) -> float:
+        try:
+            value = float(item.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value == value else default
+    hold = max(0.2, _num("duration", 5.0))
+    time = min(hold, max(0.2, _num("frameTransitionTime", 1.0)))
+    start = min(max(0.0, hold - time), max(0.0, _num("frameTransitionStart", 0.0)))
+    return {"to": second, "transition": str(item.get("frameTransition") or "Fade"), "time": round(time, 3), "start": round(start, 3)}
+
+
 def track_edit_filter(track: dict[str, Any]) -> str:
     """Per-track cut/crop and fade filters, as a comma-terminated prefix.
 
@@ -779,6 +802,12 @@ class Renderer:
                     background = "#30382a"
                 ffmpeg_background = "0x" + background[1:]
                 command += ["-f", "lavfi", "-i", f"color=c={ffmpeg_background}:s={width}x{height}:r={fps}:d={clip_t}"]
+                colour_change = frame_colour_change(item)
+                if colour_change is not None:
+                    # Second colour as another lavfi source; both are xfaded
+                    # below with the user's transition. The caption is drawn
+                    # afterwards so it stays fixed on top of the changing bed.
+                    command += ["-f", "lavfi", "-i", f"color=c=0x{colour_change['to'][1:]}:s={width}x{height}:r={fps}:d={clip_t}"]
             else:
                 source = source_path(self.settings, item)
                 if not source.exists(): raise RenderError(f"Media file is missing: {source}")
@@ -839,7 +868,20 @@ class Renderer:
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
-            command += ["-vf", ",".join(filters), "-an", "-t", clip_t, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
+            colour_change = frame_colour_change(item) if kind_name == "title" else None
+            if colour_change is not None:
+                # The visible hold starts after the incoming xfade handle, so the
+                # user's "start at" is shifted by lead_in inside this segment.
+                offset = lead_in + colour_change["start"]
+                graph = (
+                    f"[0:v][1:v]xfade=transition={self.resolve_xfade(colour_change['transition'])}"
+                    f":duration={format_ffmpeg_number(colour_change['time'])}:offset={format_ffmpeg_number(offset)}[bg];"
+                    f"[bg]{','.join(filters)}[v]"
+                )
+                command += ["-filter_complex", graph, "-map", "[v]"]
+            else:
+                command += ["-vf", ",".join(filters)]
+            command += ["-an", "-t", clip_t, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
             self._run_ffmpeg(command, cancelled, log_file)
             segments.append(segment)
             progress(5 + 45 * (index + 1) / len(media), f"Prepared item {index+1} of {len(media)}")

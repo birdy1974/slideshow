@@ -22,6 +22,7 @@ from app.renderer import (
     build_filter_graph,
     fill_frame_filter,
     fit_frame_filter,
+    frame_colour_change,
     normalize_rotation,
     rotation_filter,
     soundtrack_fade_window,
@@ -555,6 +556,46 @@ class SegmentFilterSelectionTest(unittest.TestCase):
             self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
         return [command[command.index("-vf") + 1] for command in commands if "-vf" in command]
 
+    def _segment_commands(self, media: list[dict]) -> list[list[str]]:
+        project = {"id": 1, "media": media, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"segment")
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        return [c for c in commands if "segment-" in c[-1]]
+
+    def test_two_colour_text_frame_xfades_backgrounds_under_text(self) -> None:
+        commands = self._segment_commands([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "title", "path": "Generated frame", "duration": 6, "text": "Hello", "effect": "None", "transition": "Fade", "transitionTime": 0.5,
+             "frameBackground": "#112233", "frameBackground2": "#aabbcc", "frameTransition": "Wipe left", "frameTransitionTime": 1.5, "frameTransitionStart": 2},
+        ])
+        title = commands[1]
+        inputs = [title[i + 1] for i, arg in enumerate(title) if arg == "-i"]
+        self.assertEqual(2, len(inputs))
+        self.assertIn("color=c=0x112233", inputs[0]); self.assertIn("color=c=0xaabbcc", inputs[1])
+        self.assertNotIn("-vf", title)
+        graph = title[title.index("-filter_complex") + 1]
+        # Offset = incoming xfade handle (1s from the previous clip) + user start (2s).
+        self.assertIn("[0:v][1:v]xfade=transition=wipeleft:duration=1.5:offset=3[bg]", graph)
+        self.assertLess(graph.index("xfade="), graph.index("drawtext"), "caption must be drawn on top of the colour change")
+        self.assertEqual("[v]", title[title.index("-map") + 1])
+
+    def test_single_colour_text_frame_keeps_plain_vf(self) -> None:
+        commands = self._segment_commands([
+            {"id": 2, "type": "title", "path": "Generated frame", "duration": 4, "text": "Hi", "effect": "None", "transition": "Fade", "transitionTime": 0.5, "frameBackground": "#112233", "frameBackground2": "#112233"},
+        ])
+        self.assertIn("-vf", commands[0]); self.assertNotIn("-filter_complex", commands[0])
+
     def test_image_is_fitted_video_is_filled(self) -> None:
         filters = self._segment_filters([
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5},
@@ -590,6 +631,19 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertTrue(filters[2].startswith("hflip,vflip,"), filters[2])
         self.assertNotIn("transpose", filters[3])
         self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
+
+
+class FrameColourChangeTest(unittest.TestCase):
+    def test_none_for_single_or_invalid(self) -> None:
+        self.assertIsNone(frame_colour_change({"frameBackground": "#111111"}))
+        self.assertIsNone(frame_colour_change({"frameBackground": "#111111", "frameBackground2": "#111111"}))
+        self.assertIsNone(frame_colour_change({"frameBackground": "#111111", "frameBackground2": "linear-gradient(red,blue)"}))
+
+    def test_clamps_timing_inside_hold(self) -> None:
+        change = frame_colour_change({"duration": 4, "frameBackground": "#111111", "frameBackground2": "#222222", "frameTransition": "Circle open", "frameTransitionTime": 10, "frameTransitionStart": 9})
+        self.assertEqual({"to": "#222222", "transition": "Circle open", "time": 4.0, "start": 0.0}, change)
+        change = frame_colour_change({"duration": 5, "frameBackground": "#111111", "frameBackground2": "#222222", "frameTransitionTime": 2, "frameTransitionStart": 4.5})
+        self.assertEqual((2.0, 3.0, "Fade"), (change["time"], change["start"], change["transition"]))
 
 
 class TrackEditFilterTest(unittest.TestCase):

@@ -221,3 +221,22 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .editor-note{display:flex;align-items:center;gap:7px;color:#92978d;font-size:9px;margin:0}
 .soundtrack-editor .btn.soft{background:#2c3524;color:#dfe6cf;border-color:#41443c}.soundtrack-editor .btn.ghost{color:#c9ccc3;border-color:#41443c}
 @media(max-width:760px){.editor-fields{grid-template-columns:1fr 1fr}}
+
+/* Text frame: two background colours with transition */
+.bg-change-layer{position:absolute;inset:0;pointer-events:none}
+.bg-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.bg-columns .dimmed .background-swatches,.bg-columns .dimmed .custom-bg{opacity:.35}
+.background-swatches button[disabled]{cursor:not-allowed}
+.check-label.dark{color:#c9ccc3;height:auto;margin-top:8px}
+.bg-transition{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid #3a3e36}
+.ab-chip{display:flex;align-items:center;gap:6px;font:600 9px Manrope;color:#c9ccc3}
+.ab-chip i{width:18px;height:18px;border-radius:4px;border:1px solid #0006;display:inline-block}
+.ab-chip span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ab-chip .icon-button{width:26px;height:26px;color:#c9ccc3;border-color:#484c45;background:#20231f}
+.ab-chip .icon-button.playing{color:#9cc85a}
+.bg-transition .field-label{color:#c9ccc3}.bg-transition .field-label span{color:#9cc85a}
+.bg-transition .select-wrap{background:#20231f;border-color:#494e45}.bg-transition select{color:#eee}
+.bg-timeline{display:flex;height:10px;border-radius:5px;overflow:hidden;border:1px solid #0008}
+.bg-timeline i{display:block;min-width:0}
+.quick-transition.from-circle>div:last-child{animation-name:transitionCircle}
+@keyframes transitionCircle{0%,20%{clip-path:circle(0% at 50% 50%)}80%,100%{clip-path:circle(75% at 50% 50%)}}
