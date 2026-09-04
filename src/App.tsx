@@ -5,6 +5,7 @@ import {
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
+import glRegistryData from '../registry/transitions.json'
 
 type MediaRoot = 'photos' | 'videos' | 'music'
 
@@ -515,86 +516,24 @@ const nativeTransitionGroups: Record<string, string[]> = {
 }
 // 2) GL Transitions — ported GLSL from https://github.com/scriptituk/xfade-easing#ported-glsl-transitions and https://gl-transitions.com/ (64)
 // Custom FFmpeg (xfade-easing) exposes them as gl_* C implementations with easing/reverse support.
-// Grouped alphabetically for the picker (maximises browseability). Backend maps friendly -> ffmpeg id.
-const glTransitionGroups: Record<string, string[]> = {
-  'GL · A — F': ['GL · Angular','GL · Bars','GL · Blend','GL · Book Flip','GL · Bounce','GL · Bow Tie','GL · Butterfly Wave Scrawler','GL · Cannabis Leaf','GL · Chessboard','GL · Corner Vanish','GL · Crazy Parametric Fun','GL · Cross Out','GL · Cross Warp','GL · Cross Zoom','GL · Crosshatch','GL · Cube'],
-  'GL · D — H': ['GL · Diamond','GL · Directional Scaled','GL · Directional Warp','GL · Doorway','GL · Double Diamond','GL · Dreamy','GL · Edge Transition','GL · Exponential Swish','GL · Fade Color','GL · Fan In','GL · Fan Out','GL · Fan Up','GL · Flower','GL · Grid Flip','GL · Heart','GL · Hexagonalize'],
-  'GL · I — R': ['GL · Inverted Page Curl','GL · Kaleidoscope','GL · Linear Blur','GL · Lissajous Tiles','GL · Morph','GL · Mosaic','GL · Perlin','GL · Pinwheel','GL · Polar Function','GL · Polka Dots Curtain','GL · Power Kaleido','GL · Random Noise X','GL · Random Squares','GL · Ripple','GL · Rolls','GL · Rotate Scale Fade'],
-  'GL · S — W': ['GL · Rotate Scale Vanish','GL · Rotate Transition','GL · Simple Book Curl','GL · Simple Page Curl','GL · Slides','GL · Squares Wire','GL · Stage Curtains','GL · Star Wipe','GL · Static Wipe','GL · Stereo Viewer','GL · Stripe Wipe','GL · Swap','GL · Swirl','GL · Water Drop','GL · Window Blinds','GL · Window Slice'],
+// GL transitions (gl-transitions.com catalogue) and their parameters come from the
+// shared registry — the exact same JSON the backend reads — so the pickers and
+// ffmpeg can never drift. Entry order defines the visual group order; labels are
+// what saved projects store.
+interface GLParamDef { name: string; default: string; min?: string; max?: string; step?: string; hint?: string }
+interface GLEntry { id: string; label: string; group: string; author?: string; params: GLParamDef[] }
+const glEntries = (glRegistryData as { gl: GLEntry[] }).gl
+const glTransitionGroups: Record<string, string[]> = {}
+const glParams: Record<string, GLParamDef[]> = {}
+for (const e of glEntries) {
+  (glTransitionGroups[e.group] = glTransitionGroups[e.group] || []).push(e.label)
+  glParams[e.label] = e.params || []
 }
 // Keep legacy key for code that still imports transitionGroups (combines both for global search / random)
 const transitionGroups: Record<string, string[]> = { ...nativeTransitionGroups, ...glTransitionGroups }
 const transitions = Object.values(transitionGroups).flat()
 const nativeTransitions = Object.values(nativeTransitionGroups).flat()
-const glTransitions = Object.values(glTransitionGroups).flat()
-
-// GL params catalogue (defaults from scriptituk README). Used for the sliders in the GL picker.
-const glParams: Record<string, Array<{name:string, default:string}>> = {
-  'GL · Angular': [{name:'startingAngle',default:'90'}, {name:'clockwise',default:'0'}],
-  'GL · Bars': [{name:'vertical',default:'0'}],
-  'GL · Blend': [{name:'mode',default:'0'}],
-  'GL · Book Flip': [],
-  'GL · Bounce': [{name:'bounces',default:'3'}, {name:'direction',default:'0'}, {name:'shadowAlpha',default:'0.6'}, {name:'shadowHeight',default:'0.075'}, {name:'shadowColor',default:'0'}],
-  'GL · Bow Tie': [{name:'vertical',default:'0'}],
-  'GL · Butterfly Wave Scrawler': [{name:'amplitude',default:'1'}, {name:'waves',default:'30'}, {name:'colorSeparation',default:'0.3'}],
-  'GL · Cannabis Leaf': [],
-  'GL · Chessboard': [{name:'grid',default:'8'}],
-  'GL · Corner Vanish': [],
-  'GL · Crazy Parametric Fun': [{name:'a',default:'4'}, {name:'b',default:'1'}, {name:'amplitude',default:'120'}, {name:'smoothness',default:'0.1'}],
-  'GL · Cross Out': [{name:'smoothness',default:'0.05'}],
-  'GL · Cross Warp': [],
-  'GL · Cross Zoom': [{name:'strength',default:'0.4'}, {name:'centerFrom.x',default:'0.25'}, {name:'centerFrom.y',default:'0.5'}, {name:'centerTo.x',default:'0.75'}, {name:'centerTo.y',default:'0.5'}],
-  'GL · Crosshatch': [{name:'center.x',default:'0.5'}, {name:'center.y',default:'0.5'}, {name:'threshold',default:'3'}, {name:'fadeEdge',default:'0.1'}],
-  'GL · Cube': [{name:'persp',default:'0.7'}, {name:'unzoom',default:'0.3'}, {name:'reflection',default:'0.4'}, {name:'floating',default:'3'}, {name:'background',default:'0'}],
-  'GL · Diamond': [{name:'smoothness',default:'0.05'}],
-  'GL · Directional Scaled': [{name:'direction.x',default:'0'}, {name:'direction.y',default:'1'}, {name:'scale',default:'0.7'}, {name:'background',default:'0'}],
-  'GL · Directional Warp': [{name:'smoothness',default:'0.1'}, {name:'direction.x',default:'-1'}, {name:'direction.y',default:'1'}],
-  'GL · Doorway': [{name:'reflection',default:'0.4'}, {name:'perspective',default:'0.4'}, {name:'depth',default:'3'}, {name:'background',default:'0'}],
-  'GL · Double Diamond': [{name:'smoothness',default:'0.05'}],
-  'GL · Dreamy': [],
-  'GL · Edge Transition': [{name:'edgeThickness',default:'0.001'}, {name:'edgeBrightness',default:'8'}],
-  'GL · Exponential Swish': [{name:'zoom',default:'0.8'}, {name:'angle',default:'0'}, {name:'offset.x',default:'0'}, {name:'offset.y',default:'0'}, {name:'exponent',default:'4'}, {name:'wrap.x',default:'2'}, {name:'wrap.y',default:'2'}, {name:'blur',default:'0'}, {name:'background',default:'0'}],
-  'GL · Fade Color': [{name:'color',default:'0'}, {name:'colorPhase',default:'0.4'}],
-  'GL · Fan In': [{name:'smoothness',default:'0.05'}],
-  'GL · Fan Out': [{name:'smoothness',default:'0.05'}],
-  'GL · Fan Up': [{name:'smoothness',default:'0.05'}],
-  'GL · Flower': [{name:'smoothness',default:'0.05'}, {name:'rotation',default:'360'}],
-  'GL · Grid Flip': [{name:'size.x',default:'4'}, {name:'size.y',default:'4'}, {name:'pause',default:'0.1'}, {name:'dividerWidth',default:'0.05'}, {name:'randomness',default:'0.1'}, {name:'background',default:'0'}],
-  'GL · Heart': [],
-  'GL · Hexagonalize': [{name:'steps',default:'50'}, {name:'horizontalHexagons',default:'20'}],
-  'GL · Inverted Page Curl': [{name:'angle',default:'100'}, {name:'radius',default:'0.159'}, {name:'reverseEffect',default:'0'}],
-  'GL · Kaleidoscope': [{name:'speed',default:'1'}, {name:'angle',default:'1'}, {name:'power',default:'1.5'}],
-  'GL · Linear Blur': [{name:'intensity',default:'0.1'}],
-  'GL · Lissajous Tiles': [{name:'grid.x',default:'10'}, {name:'grid.y',default:'10'}, {name:'speed',default:'0.5'}, {name:'freq.x',default:'2'}, {name:'freq.y',default:'3'}, {name:'offset',default:'2'}, {name:'zoom',default:'0.8'}, {name:'fade',default:'3'}, {name:'power',default:'3'}, {name:'background',default:'0'}],
-  'GL · Morph': [{name:'strength',default:'0.1'}],
-  'GL · Mosaic': [{name:'endx',default:'2'}, {name:'endy',default:'-1'}],
-  'GL · Perlin': [{name:'scale',default:'4'}, {name:'smoothness',default:'0.01'}],
-  'GL · Pinwheel': [{name:'speed',default:'2'}],
-  'GL · Polar Function': [{name:'segments',default:'5'}],
-  'GL · Polka Dots Curtain': [{name:'dots',default:'20'}, {name:'centre.x',default:'0'}, {name:'centre.y',default:'0'}],
-  'GL · Power Kaleido': [{name:'scale',default:'2'}, {name:'z',default:'1.5'}, {name:'speed',default:'5'}],
-  'GL · Random Noise X': [],
-  'GL · Random Squares': [{name:'size.x',default:'10'}, {name:'size.y',default:'10'}, {name:'smoothness',default:'0.5'}],
-  'GL · Ripple': [{name:'amplitude',default:'100'}, {name:'speed',default:'50'}],
-  'GL · Rolls': [{name:'type',default:'0'}, {name:'rotDown',default:'0'}],
-  'GL · Rotate Scale Fade': [{name:'centre.x',default:'0.5'}, {name:'centre.y',default:'0.5'}, {name:'rotations',default:'1'}, {name:'scale',default:'8'}, {name:'background',default:'0.15'}],
-  'GL · Rotate Scale Vanish': [{name:'fadeInSecond',default:'1'}, {name:'reverseEffect',default:'0'}, {name:'reverseRotation',default:'0'}, {name:'background',default:'0'}, {name:'trkMat',default:'0'}],
-  'GL · Rotate Transition': [],
-  'GL · Simple Book Curl': [{name:'angle',default:'150'}, {name:'radius',default:'0.1'}, {name:'shadow',default:'0.2'}],
-  'GL · Simple Page Curl': [{name:'angle',default:'80'}, {name:'radius',default:'0.15'}, {name:'roll',default:'0'}, {name:'reverseEffect',default:'0'}, {name:'greyBack',default:'0'}, {name:'opacity',default:'0.8'}, {name:'shadow',default:'0.2'}],
-  'GL · Slides': [{name:'type',default:'0'}, {name:'slideIn',default:'0'}],
-  'GL · Squares Wire': [{name:'squares.x',default:'10'}, {name:'squares.y',default:'10'}, {name:'direction.x',default:'1.0'}, {name:'direction.y',default:'-0.5'}, {name:'smoothness',default:'1.6'}],
-  'GL · Stage Curtains': [{name:'color',default:'0xCC1A33FF'}, {name:'bumps',default:'15'}, {name:'drop',default:'0.1'}],
-  'GL · Star Wipe': [{name:'borderThickness',default:'0.01'}, {name:'starRotation',default:'0.75'}, {name:'borderColor',default:'1'}],
-  'GL · Static Wipe': [{name:'upToDown',default:'1'}, {name:'maxSpan',default:'0.5'}],
-  'GL · Stereo Viewer': [{name:'zoom',default:'0.9'}, {name:'radius',default:'0.25'}, {name:'flip',default:'0'}, {name:'background',default:'0'}, {name:'trkMat',default:'0'}],
-  'GL · Stripe Wipe': [{name:'nlayers',default:'3'}, {name:'layerSpread',default:'0.5'}, {name:'color1',default:'0x3319CCFF'}, {name:'color2',default:'0x66CCFFFF'}, {name:'shadowIntensity',default:'0.7'}, {name:'shadowSpread',default:'0'}, {name:'angle',default:'0'}],
-  'GL · Swap': [{name:'reflection',default:'0.4'}, {name:'perspective',default:'0.2'}, {name:'depth',default:'3'}, {name:'background',default:'0'}],
-  'GL · Swirl': [{name:'radius',default:'1'}, {name:'clockwise',default:'1'}],
-  'GL · Water Drop': [{name:'amplitude',default:'30'}, {name:'speed',default:'30'}],
-  'GL · Window Blinds': [],
-  'GL · Window Slice': [{name:'count',default:'10'}, {name:'smoothness',default:'0.5'}],
-};
+const glTransitions = Object.values(glTransitionGroups).flat();
 
 // Easing catalogue for the custom xfade-easing build (native-like + CSS + extra)
 const easingGroups: Record<string,string[]> = {
@@ -639,8 +578,8 @@ function transitionSymbol(name: string) {
 function isGLTransition(name: string) {
   return name.startsWith('GL ·') || name.startsWith('gl_')
 }
-function getGLParams(name: string) {
-  return (glParams as Record<string, {name:string,default:string}[]>)[name] || []
+function getGLParams(name: string): GLParamDef[] {
+  return glParams[name] || []
 }
 
 function GLParamControls({ transition, params, onChange }: { transition: string; params: Record<string,string|number>; onChange: (next: Record<string,string|number>)=>void }) {
@@ -654,11 +593,13 @@ function GLParamControls({ transition, params, onChange }: { transition: string;
       // numeric slider range heuristic: 0..max based on default
       const numDefault = Number(def.default)
       const isNumeric = Number.isFinite(numDefault) && !isColor
-      const min = 0
-      const max = isNumeric ? (numDefault <= 1 ? 1 : numDefault < 5 ? 5 : numDefault < 20 ? 20 : numDefault <= 100 ? 120 : 360) : 10
-      const step = isNumeric ? (max <= 1 ? 0.01 : max <= 20 ? 0.1 : 1) : 0.1
+      // registry entries may carry explicit slider limits; otherwise derive from the default
+      const min = isNumeric ? (def.min !== undefined ? Number(def.min) : Math.min(0, numDefault)) : 0
+      const max = isNumeric ? (def.max !== undefined ? Number(def.max)
+        : (numDefault <= 1 ? 1 : numDefault < 5 ? 5 : numDefault < 20 ? 20 : numDefault <= 100 ? 120 : 360)) : 10
+      const step = isNumeric ? (def.step !== undefined ? Number(def.step) : (max - min <= 1 ? 0.01 : max - min <= 20 ? 0.1 : 1)) : 0.1
       return <label key={def.name} className="gl-param">
-        <span title={def.name}>{def.name}<em>{value}</em></span>
+        <span title={def.hint || def.name}>{def.name}<em>{value}</em></span>
         {isColor ? <div className="color-control compact"><input type="color" value={String(value).startsWith('#')?String(value):'#30382a'} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}}/><input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/></div>
         : isNumeric ? <div className="gl-slider"><input type="range" min={min} max={max} step={step} value={Number(value) || 0} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}}/><input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/></div>
         : <input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/>}

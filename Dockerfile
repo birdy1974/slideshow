@@ -6,6 +6,7 @@ RUN npm ci
 COPY index.html tsconfig.json vite.config.ts ./
 COPY src ./src
 COPY public ./public
+COPY registry ./registry
 RUN npm run build
 
 # --- Custom FFmpeg with xfade-easing (GL transitions + easing/reverse) ---
@@ -126,6 +127,7 @@ WORKDIR /app
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
+COPY registry /app/registry
 COPY --from=frontend /src/dist ./static
 # Same TTFs the browser preview uses, so FFmpeg renders identical typography.
 COPY public/fonts ./fonts
