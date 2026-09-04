@@ -2456,7 +2456,7 @@ static vec4 gl_Rectangle(const XTransition *e) // by martiniti
     ARG4(Colour, bgcolor, 0x000000FF)
     INIT_END
     float s = powf(2 * absf(e->progress - P5f), 3);
-    float a12 = absf(1 - 2 * e->progress);
+    float a12 = 1 - absf(1 - 2 * e->progress); // upstream: 1.0 - 2.0*abs(progress - 0.5)
     vec2 sq = e->p;
     vec2 bl = { step(a12, sq.x + 0.25f), step(a12, sq.y + 0.25f) };
     float dist = bl.x * bl.y;
@@ -4180,6 +4180,222 @@ static int parse_easing(AVFilterContext *ctx)
 }
 
 // extended transition name and customisation arguments
+// Batch D — final CPU-portable originals from gl-transitions.com (huynx, KMojek, martiniti, gre, mernking)
+// After this batch every shader in the gl-transitions catalogue that can run on the
+// xfade-easing CPU model is ported.
+
+static bool bth_in_triangle(vec2 p, vec2 a, vec2 b, vec2 c)
+{
+    bool b1 = dot2(VEC2(p.x - a.x, p.y - a.y), VEC2(c.y - a.y, a.x - c.x)) < 0,
+         b2 = dot2(VEC2(p.x - b.x, p.y - b.y), VEC2(a.y - b.y, b.x - a.x)) < 0,
+         b3 = dot2(VEC2(p.x - c.x, p.y - c.y), VEC2(b.y - c.y, c.x - b.x)) < 0;
+    return b1 == b2 && b2 == b3;
+}
+static float bth_blur_edge(vec2 bot1, vec2 bot2, vec2 top, vec2 testPt)
+{
+    vec2 lineDir = sub2(bot1, top);
+    vec2 perpDir = VEC2(lineDir.y, -lineDir.x);
+    vec2 dirToPt = sub2(bot1, testPt);
+    float dist1 = absf(dot2(normalize2(perpDir), dirToPt));
+    lineDir = sub2(bot2, top);
+    perpDir = VEC2(lineDir.y, -lineDir.x);
+    dirToPt = sub2(bot2, testPt);
+    float min_dist = minf(absf(dot2(normalize2(perpDir), dirToPt)), dist1);
+    return (min_dist < 0.005f) ? min_dist / 0.005f : 1;
+}
+
+static vec4 gl_BowTieHorizontal(const XTransition *e) // by huynx
+{ // License: MIT
+    INIT_END
+    vec2 uv = e->p;
+    float progress = e->progress;
+    vec2 lv1 = VEC2(progress, P5f), lv2 = VEC2(0, P5f - progress), lv3 = VEC2(0, P5f + progress);
+    if (bth_in_triangle(uv, lv1, lv2, lv3)) { // in_left_triangle
+        if (progress < 0.1f)
+            return e->a;
+        if (uv.x < P5f)
+            return mix4(e->a, e->b, bth_blur_edge(lv2, lv3, lv1, uv));
+        return progress > 0 ? e->b : e->a;
+    }
+    vec2 rv1 = VEC2(1 - progress, P5f), rv2 = VEC2(1, P5f - progress), rv3 = VEC2(1, P5f + progress);
+    if (bth_in_triangle(uv, rv1, rv2, rv3)) { // in_right_triangle
+        if (uv.x >= P5f)
+            return mix4(e->a, e->b, bth_blur_edge(rv2, rv3, rv1, uv));
+        return e->a;
+    }
+    return e->a;
+}
+
+static vec4 gl_BowTieVertical(const XTransition *e) // by huynx
+{ // License: MIT
+    INIT_END
+    vec2 uv = e->p;
+    float progress = e->progress;
+    vec2 tv1 = VEC2(P5f, progress), tv2 = VEC2(P5f - progress, 0), tv3 = VEC2(P5f + progress, 0);
+    if (bth_in_triangle(uv, tv1, tv2, tv3)) { // in_top_triangle
+        if (progress < 0.1f)
+            return e->a;
+        if (uv.y < P5f)
+            return mix4(e->a, e->b, bth_blur_edge(tv2, tv3, tv1, uv));
+        return progress > 0 ? e->b : e->a;
+    }
+    vec2 bv1 = VEC2(P5f, 1 - progress), bv2 = VEC2(P5f - progress, 1), bv3 = VEC2(P5f + progress, 1);
+    if (bth_in_triangle(uv, bv1, bv2, bv3)) { // in_bottom_triangle
+        if (uv.y >= P5f)
+            return mix4(e->a, e->b, bth_blur_edge(bv2, bv3, bv1, uv));
+        return e->a;
+    }
+    return e->a;
+}
+
+static bool btw_in_triangle(vec2 p, vec2 a, vec2 b, vec2 c)
+{
+    return bth_in_triangle(p, a, b, c);
+}
+static vec4 btw_first_half(const XTransition *e, vec2 uv, float prog, float adjust)
+{
+    const float height = 0.5f;
+    if (uv.y < P5f) {
+        if (btw_in_triangle(uv, VEC2(0, prog - height), VEC2(1, prog - height), VEC2(adjust, prog)))
+            return e->b;
+    } else if (btw_in_triangle(uv, VEC2(0, 1 - prog + height), VEC2(1, 1 - prog + height), VEC2(adjust, 1 - prog))) {
+        return e->b;
+    }
+    return e->a;
+}
+static vec4 btw_second_half(const XTransition *e, vec2 uv, float prog, float adjust)
+{
+    const float height = 0.5f;
+    if (uv.x > adjust) {
+        if (btw_in_triangle(uv, VEC2(prog + height, 1), VEC2(prog + height, 0), VEC2(mixf(adjust, 1, 2 * (prog - P5f)), P5f)))
+            return e->a;
+    } else if (btw_in_triangle(uv, VEC2(1 - prog - height, 1), VEC2(1 - prog - height, 0), VEC2(mixf(adjust, 0, 2 * (prog - P5f)), P5f))) {
+        return e->a;
+    }
+    return e->b;
+}
+
+static vec4 gl_BowTieWithParameter(const XTransition *e) // by KMojek
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, adjust, 0.5)
+    ARG1(bool, reverse, 0)
+    INIT_END
+    float progress = e->progress;
+    if (reverse)
+        return progress < P5f
+            ? btw_second_half(e, e->p, 1 - progress, adjust)
+            : btw_first_half(e, e->p, 1 - progress, adjust);
+    return progress < P5f
+        ? btw_first_half(e, e->p, progress, adjust)
+        : btw_second_half(e, e->p, progress, adjust);
+}
+
+static vec4 gl_HorizontalClose(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float s = 2 - absf((e->p.y - P5f) / (e->progress - 1)) - 2 * e->progress;
+    return mix4(e->a, e->b, smoothstep(P5f, 0, s));
+}
+
+static vec4 gl_HorizontalOpen(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float regress = 1 - e->progress;
+    float s = 2 - absf((e->p.y - P5f) / (regress - 1)) - 2 * regress;
+    return mix4(e->a, e->b, smoothstep(0, P5f, s));
+}
+
+static vec4 gl_VerticalClose(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float s = 2 - absf((e->p.x - P5f) / (e->progress - 1)) - 2 * e->progress;
+    return mix4(e->a, e->b, smoothstep(P5f, 0, s));
+}
+
+static vec4 gl_VerticalOpen(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float regress = 1 - e->progress;
+    float s = 2 - absf((e->p.x - P5f) / (regress - 1)) - 2 * regress;
+    return mix4(e->a, e->b, smoothstep(0, P5f, s));
+}
+
+static vec4 gl_RectangleCrop(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_BEGIN
+    ARG4(Colour, bgcolor, 0x000000FF)
+    INIT_END
+    float s = powf(2 * absf(e->progress - P5f), 3);
+    float a12 = absf(1 - 2 * e->progress);
+    vec2 q = e->p;
+    float bl = step(a12, q.x + 0.25f) * step(a12, q.y + 0.25f);      // bottom-left gate
+    float tr = step(a12, 1.25f - q.x) * step(a12, 1.25f - q.y);      // top-right gate
+    float dist = absf(1 - bl * tr);                                  // GLSL: length(1.0 - bl.x*bl.y*tr.x*tr.y)
+    return mix4(e->progress < P5f ? e->a : e->b, colour(e, bgcolor), step(s, dist));
+}
+
+static vec4 gl_circleopen(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, smoothness, 0.3)
+    ARG1(bool, opening, 1)
+    INIT_END
+    float x = opening ? e->progress : 1 - e->progress;
+    float m = smoothstep(-smoothness, 0, 1.4142135624f * distance2(VEC2(P5f, P5f), e->p) - x * (1 + smoothness));
+    return mix4(e->a, e->b, opening ? 1 - m : m);
+}
+
+static vec4 gl_colorphase(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG4(Colour, fromStep, 0x00336600) // vec4(0.0, 0.2, 0.4, 0.0) packed as RGBA
+    ARG4(Colour, toStep,   0x99CCFFFF) // vec4(0.6, 0.8, 1.0, 1.0) packed as RGBA
+    INIT_END
+    vec4 f0 = colour(e, fromStep), t0 = colour(e, toStep);
+    float p = e->progress;
+    vec4 m = VEC4(
+        smoothstep(f0.p0, t0.p0, p),
+        smoothstep(f0.p1, t0.p1, p),
+        smoothstep(f0.p2, t0.p2, p),
+        smoothstep(f0.p3, t0.p3, p));
+    vec4 o;
+    o.p0 = mixf(e->a.p0, e->b.p0, m.p0);
+    o.p1 = mixf(e->a.p1, e->b.p1, m.p1);
+    o.p2 = mixf(e->a.p2, e->b.p2, m.p2);
+    o.p3 = mixf(e->a.p3, e->b.p3, m.p3);
+    return o;
+}
+
+static float otv_hash(float y, float p) // old_tv_lost_signal scanline hash
+{
+    return fract(sinf(y * 127.1f + p * 311.7f) * 43758.5453f);
+}
+
+static vec4 gl_old_tv_lost_signal(const XTransition *e) // by mernking gitlab: Godswork
+{ // License: MIT
+    INIT_END
+    float p = e->progress;
+    float strength = sinf(p * M_PIf);
+    vec2 tv = e->p;
+    vec4 colour_ = mix4(e->a, e->b, p);
+    // horizontal tracking lines (key effect)
+    float lineY = floorf(tv.y * 120);
+    float noise = otv_hash(lineY, p * 20);
+    float line = step(0.92f, noise);
+    // make lines drift during transition
+    float drift = sinf(tv.y * 30 + p * 10) * 0.02f * strength;
+    vec2 dxy = VEC2(drift, 0);
+    vec4 lineColor = mix4(getFromColor(add2(tv, dxy)), getToColor(add2(tv, dxy)), p);
+    // apply tearing only on selected scanlines
+    colour_ = mix4(colour_, lineColor, line * strength);
+    // mild scanline darkening (CRT feel)
+    float scan = sinf(tv.y * 900) * 0.03f;
+    float s = scan * strength;
+    colour_.p0 -= s; colour_.p1 -= s; colour_.p2 -= s;
+    return colour_;
+}
+
 static int parse_xtransition(AVFilterContext *ctx)
 {
     XFadeContext *s = ctx->priv;
@@ -4325,6 +4541,17 @@ static int parse_xtransition(AVFilterContext *ctx)
     else if (!av_strcasecmp(t, "gl_Revolve_Left")) k->xtransitionf = gl_Revolve_Left;
     else if (!av_strcasecmp(t, "gl_Drop_Zone_Flicker")) k->xtransitionf = gl_Drop_Zone_Flicker;
     else if (!av_strcasecmp(t, "gl_StripDatamoshGlitch")) k->xtransitionf = gl_StripDatamoshGlitch;
+    else if (!av_strcasecmp(t, "gl_BowTieHorizontal")) k->xtransitionf = gl_BowTieHorizontal;
+    else if (!av_strcasecmp(t, "gl_BowTieVertical")) k->xtransitionf = gl_BowTieVertical;
+    else if (!av_strcasecmp(t, "gl_BowTieWithParameter")) k->xtransitionf = gl_BowTieWithParameter;
+    else if (!av_strcasecmp(t, "gl_HorizontalClose")) k->xtransitionf = gl_HorizontalClose;
+    else if (!av_strcasecmp(t, "gl_HorizontalOpen")) k->xtransitionf = gl_HorizontalOpen;
+    else if (!av_strcasecmp(t, "gl_VerticalClose")) k->xtransitionf = gl_VerticalClose;
+    else if (!av_strcasecmp(t, "gl_VerticalOpen")) k->xtransitionf = gl_VerticalOpen;
+    else if (!av_strcasecmp(t, "gl_RectangleCrop")) k->xtransitionf = gl_RectangleCrop;
+    else if (!av_strcasecmp(t, "gl_circleopen")) k->xtransitionf = gl_circleopen;
+    else if (!av_strcasecmp(t, "gl_colorphase")) k->xtransitionf = gl_colorphase;
+    else if (!av_strcasecmp(t, "gl_old_tv_lost_signal")) k->xtransitionf = gl_old_tv_lost_signal;
     else if (!av_strcasecmp(t, "test_none")) k->xtransitionf = test_none;
     else if (!av_strcasecmp(t, "test_blend")) k->xtransitionf = test_blend;
     else if (!av_strcasecmp(t, "test_texture")) k->xtransitionf = test_texture;

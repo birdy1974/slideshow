@@ -1121,6 +1121,16 @@ class TestGLRegistry(unittest.TestCase):
             renderer.build_transition_xfade(item, 1.5, 0.0),
         )
 
+    def test_every_registry_port_is_compiled_into_the_patch(self) -> None:
+        """Each id in registry/transitions.json must have both a C transition
+        function and a dispatch registration in ffmpeg-patch/xfade-easing.h,
+        so the catalogue can never advertise a transition the build rejects."""
+        header = (Path(__file__).resolve().parents[2] / "ffmpeg-patch" / "xfade-easing.h").read_text(encoding="utf-8")
+        for e in self._load_registry()["gl"]:
+            tid = e["id"]
+            self.assertIn(f"static vec4 {tid}(const XTransition *e)", header, f"{tid}: no C port")
+            self.assertIn(f'av_strcasecmp(t, "{tid}")', header, f"{tid}: no dispatch entry")
+
 
 if __name__ == "__main__":
     unittest.main()
