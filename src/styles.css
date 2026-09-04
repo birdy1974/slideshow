@@ -132,7 +132,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 
 .stop-job{color:#8a3b32;border-color:#e0c4bf}.stop-job.wide{width:calc(100% - 42px);margin:8px 21px 0;height:38px}.review-panel .stop-job.wide{width:100%;margin:8px 0 0}
 
-#section-storyline,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}.zoom-slider{width:88px;height:4px;margin:0 2px;accent-color:#728f42;cursor:pointer}.zoom-controls.compact-zoom .zoom-slider{width:72px}.topbar nav button.jump{font-size:12px;padding:0 12px}
+#section-storyline,#section-transitions,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}.zoom-slider{width:88px;height:4px;margin:0 2px;accent-color:#728f42;cursor:pointer}.zoom-controls.compact-zoom .zoom-slider{width:72px}.topbar nav button.jump{font-size:12px;padding:0 12px}
 
 /* --- Storyline lightbox: prev/next walk, position badge, direct delete --- */
 .lightbox-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:46px;height:46px;border-radius:50%;border:1px solid #ffffff38;background:#1d211bd6;color:#e8ebe3;display:grid;place-items:center;cursor:pointer;transition:.15s}
