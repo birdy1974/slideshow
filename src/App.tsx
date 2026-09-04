@@ -187,23 +187,76 @@ function BrowserThumb({ root, file }: { root: MediaRoot, file: any }) {
   return <ImageIcon size={34}/>
 }
 
-// One shared <audio> element at a time; returns the key currently playing and a toggle.
+// One shared <audio> element at a time; returns the key currently playing, a
+// toggle, live playback progress and a seek function for the time bar.
 function useAudioPreview(onError: (message: string) => void) {
   const [playingKey, setPlayingKey] = useState<string | null>(null)
+  const [progress, setProgress] = useState({ current: 0, duration: 0 })
   const playerRef = useRef<HTMLAudioElement | null>(null)
   useEffect(() => () => { playerRef.current?.pause(); playerRef.current = null }, [])
   const toggle = (key: string, src: string, label: string) => {
-    if (playingKey === key) { playerRef.current?.pause(); playerRef.current = null; setPlayingKey(null); return }
+    if (playingKey === key) { playerRef.current?.pause(); playerRef.current = null; setPlayingKey(null); setProgress({ current: 0, duration: 0 }); return }
     playerRef.current?.pause()
     const player = new Audio(src)
     playerRef.current = player
-    const stop = () => { if (playerRef.current === player) { playerRef.current = null; setPlayingKey(null) } }
+    const stop = () => { if (playerRef.current === player) { playerRef.current = null; setPlayingKey(null); setProgress({ current: 0, duration: 0 }) } }
+    const sync = () => { if (playerRef.current === player) setProgress({ current: player.currentTime, duration: Number.isFinite(player.duration) ? player.duration : 0 }) }
     player.onended = stop
     player.onerror = () => { stop(); onError(`Could not play ${label}`) }
+    player.ontimeupdate = sync
+    player.onloadedmetadata = sync
+    player.ondurationchange = sync
+    player.onseeked = sync
+    setProgress({ current: 0, duration: 0 })
     setPlayingKey(key)
     player.play().catch(() => { stop(); onError(`Could not play ${label}`) })
   }
-  return { playingKey, toggle }
+  // Jump to a position (seconds) in the track that is currently playing.
+  const seek = (seconds: number) => {
+    const player = playerRef.current
+    if (!player || !Number.isFinite(player.duration)) return
+    player.currentTime = Math.min(Math.max(0, seconds), Math.max(0, player.duration - 0.05))
+    setProgress({ current: player.currentTime, duration: player.duration })
+  }
+  return { playingKey, toggle, progress, seek }
+}
+
+// Waveform-styled seek bar: bars left of the playhead are lit in the track
+// colour; click or drag anywhere on it to fast-forward / rewind the preview.
+// Pointer capture keeps the drag alive when the cursor leaves the bar.
+function AudioSeekBar({ bars = 55, seed = 0, color, current, duration, onSeek, className = '' }: {
+  bars?: number; seed?: number; color: string; current: number; duration: number; onSeek: (seconds: number) => void; className?: string;
+}) {
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const [hoverPct, setHoverPct] = useState<number | null>(null)
+  const pctFromEvent = (event: React.PointerEvent) => {
+    const rect = barRef.current?.getBoundingClientRect()
+    if (!rect || rect.width === 0) return 0
+    return Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+  }
+  const seekTo = (event: React.PointerEvent) => { if (duration > 0) onSeek(pctFromEvent(event) * duration) }
+  const playedPct = duration > 0 ? Math.min(1, current / duration) : 0
+  const label = duration > 0 ? `${formatClock(current)} / -${formatClock(duration - current)} / ${formatClock(duration)}` : 'Loading…'
+  return <div ref={barRef} className={`audio-seek ${className} ${dragging ? 'dragging' : ''} ${duration > 0 ? '' : 'disabled'}`} role="slider" aria-label="Seek" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(current)} aria-valuetext={label} title={label}
+    onPointerDown={e => { if (duration <= 0) return; e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setDragging(true); seekTo(e) }}
+    onPointerMove={e => { setHoverPct(pctFromEvent(e)); if (dragging) seekTo(e) }}
+    onPointerUp={e => { if (dragging) { seekTo(e); setDragging(false) } }}
+    onPointerCancel={() => setDragging(false)}
+    onPointerLeave={() => setHoverPct(null)}
+    onClick={e => e.stopPropagation()}>
+    {Array.from({ length: bars }).map((_, i) => {
+      const played = (i + 0.5) / bars <= playedPct
+      return <i key={i} style={{ height: `${8 + ((i * 17 + seed * 7) % 23)}px`, background: color, opacity: played ? 1 : 0.32 }} />
+    })}
+    {duration > 0 && <span className="audio-playhead" style={{ left: `${playedPct * 100}%` }} />}
+    {hoverPct != null && duration > 0 && !dragging && <span className="audio-hover-time" style={{ left: `${hoverPct * 100}%` }}>{formatClock(hoverPct * duration)}</span>}
+  </div>
+}
+
+function AudioTimeReadout({ current, duration }: { current: number; duration: number }) {
+  if (duration <= 0) return <span className="audio-time">…</span>
+  return <span className="audio-time"><b>{formatClock(current)}</b> / <em>-{formatClock(duration - current)}</em> / {formatClock(duration)}</span>
 }
 
 type MediaItem = {
@@ -1042,7 +1095,7 @@ function App() {
 
           <section className="panel audio-panel" id="section-soundtrack">
             <div className="panel-title compact"><div><span className="step">03</span><div><h2>Soundtracks</h2><p>Add multiple MP3 files and drag to set their play order.</p></div></div><div className="audio-total"><Clock3 size={14}/><span>Total soundtrack time</span><strong>{formatClock(audioTotalSeconds)}</strong></div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><Plus size={14}/> Add MP3</button></div>
-            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span></div><div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div><button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
+            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span></div>{audioPreview.playingKey===String(track.id) ? <div className="waveform-player"><AudioSeekBar seed={index} color={track.color} current={audioPreview.progress.current} duration={audioPreview.progress.duration} onSeek={audioPreview.seek}/><AudioTimeReadout current={audioPreview.progress.current} duration={audioPreview.progress.duration}/></div> : <div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div>}<button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
             <div className="audio-settings"><div><FieldLabel>When audio is shorter than the video</FieldLabel><Select value={audioPolicy} onChange={setAudioPolicy}><option>Loop & trim</option><option>Play once, then silence</option><option>Fit slideshow to audio</option></Select></div><div><FieldLabel>Music volume <span>{audioVolume}%</span></FieldLabel><input className="range" type="range" value={audioVolume} onChange={e=>setAudioVolume(Number(e.target.value))}/></div><label className="check-label"><input type="checkbox" checked={audioFade} onChange={e=>setAudioFade(e.target.checked)}/><span><Check size={11}/></span>Fade out soundtrack <small>2.0s</small></label><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><FolderOpen size={15}/> Add soundtrack</button></div>
           </section>
         <div className="export-row">
@@ -1255,7 +1308,7 @@ function MediaBrowser({ onClose, onAdd, audioOnly=false }: { onClose: () => void
   }
   const skippedEmpty = selected.filter((f:any)=>f.empty).length
   const addable = selected.filter((f:any)=>!f.empty)
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}<BrowserThumb root={fileRoot(file)} file={file}/>{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='audio'&&preview.playingKey===file.path ? <span className="card-player" onClick={e=>e.stopPropagation()}><AudioSeekBar bars={32} seed={3} color="#58703a" current={preview.progress.current} duration={preview.progress.duration} onSeek={preview.seek} className="compact"/><AudioTimeReadout current={preview.progress.current} duration={preview.progress.duration}/></span> : <BrowserThumb root={fileRoot(file)} file={file}/>}{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
 }
 
 // Pick a destination folder inside the mounted /output volume. Folders are
