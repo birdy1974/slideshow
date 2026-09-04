@@ -886,5 +886,73 @@ class VideoPlaysToEndTest(unittest.TestCase):
         self.assertEqual("copy", concat[concat.index("-c:v") + 1])
 
 
+class TemporaryCleanupTest(unittest.TestCase):
+    """After a job finishes, interim work files and stale previews are removed
+    while the output MP4 (and any preview the user is watching) is kept."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(
+            config_dir=base / "config",
+            photos_dir=base / "photos",
+            videos_dir=base / "videos",
+            output_dir=base / "out",
+            music_dir=base / "music",
+        )
+        for directory in (self.settings.work_dir, self.settings.preview_dir, self.settings.output_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        self.renderer = Renderer(Database(base / "cleanup.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.renderer.pool.shutdown(wait=False, cancel_futures=True)
+        self.temp.cleanup()
+
+    def test_cleanup_job_work_removes_job_dir_only(self) -> None:
+        job_dir = self.settings.work_dir / "abc123"
+        job_dir.mkdir(parents=True)
+        (job_dir / "segment-0000.mp4").write_bytes(b"x")
+        (job_dir / "ffmpeg.log").write_bytes(b"log")
+        # A different, still-running job must be left untouched.
+        other = self.settings.work_dir / "def456"
+        other.mkdir(parents=True)
+        (other / "segment-0000.mp4").write_bytes(b"x")
+
+        self.renderer._cleanup_job_work("abc123")
+
+        self.assertFalse(job_dir.exists())
+        self.assertTrue(other.exists())
+        self.assertFalse((job_dir / "segment-0000.mp4").exists())
+
+    def test_cleanup_job_work_noop_when_missing(self) -> None:
+        # Must not raise when the job dir is already gone.
+        self.renderer._cleanup_job_work("missing")
+
+    def test_prune_previews_keeps_newest(self) -> None:
+        from pathlib import Path
+        base = self.settings.preview_dir
+        older = base / "project-1-preview-old.mp4"
+        newer = base / "project-1-preview-new.mp4"
+        older.write_bytes(b"x")
+        newer.write_bytes(b"x")
+        # Force a clear mtime ordering so "newest" is deterministic.
+        import os
+        os.utime(older, (1_600_000_000, 1_600_000_000))
+        os.utime(newer, (1_700_000_000, 1_700_000_000))
+
+        removed = self.renderer._prune_previews()
+
+        self.assertEqual(1, removed)
+        self.assertFalse(older.exists())
+        self.assertTrue(newer.exists())
+
+    def test_prune_previews_keeps_rendered_output_untouched(self) -> None:
+        # Final MP4s live in /output; preview pruning must never touch them.
+        output = self.settings.output_dir / "movie.mp4"
+        output.write_bytes(b"x")
+        self.renderer._prune_previews()
+        self.assertTrue(output.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

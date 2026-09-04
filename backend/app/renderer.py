@@ -818,6 +818,52 @@ class Renderer:
         event.set(); self.db.update_job(job_id, status="cancelling", stage="Stopping FFmpeg")
         return True
 
+    def _cleanup_job_work(self, job_id: str) -> None:
+        """Delete a finished job's interim files (segments, soundtrack, ffmpeg.log).
+
+        The render output never lives here — previews go to ``preview_dir`` and
+        final MP4s go to the user's ``/output`` folder — so it is always safe to
+        remove the working directory once a job has stopped running. Scoped to
+        the single job so concurrent renders are never disturbed.
+        """
+        work = self.settings.work_dir / job_id
+        if not work.exists():
+            return
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+            log.info("Cleaned temporary work dir for job %s", job_id)
+        except Exception as exc:  # pragma: no cover - defensive only
+            log.warning("Could not clean work dir %s: %s", work, exc)
+
+    def _prune_previews(self) -> int:
+        """Delete stale preview MP4s, keeping only the most recent one.
+
+        Previews are regenerated constantly and are real disk users on the low
+        storage DS918+, so each finished generation prunes everything older than
+        the newest file. The newest is preserved so the preview the user is
+        watching (or just generated) still works; render MP4s in /output are
+        never touched here.
+        """
+        preview_dir = self.settings.preview_dir
+        if not preview_dir.exists():
+            return 0
+        files = [p for p in preview_dir.iterdir() if p.is_file()]
+        if not files:
+            return 0
+        newest = max(files, key=lambda p: p.stat().st_mtime)
+        removed = 0
+        for path in files:
+            if path.resolve() == newest.resolve():
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except Exception as exc:  # pragma: no cover - defensive only
+                log.warning("Could not delete old preview %s: %s", path, exc)
+        if removed:
+            log.info("Pruned %d stale preview file(s); kept %s", removed, newest.name)
+        return removed
+
     def _run(self, job_id: str, project: dict[str, Any], kind: str, cancelled: threading.Event) -> None:
         work = self.settings.work_dir / job_id
         work.mkdir(parents=True, exist_ok=True)
@@ -833,6 +879,16 @@ class Renderer:
             log.exception("Render job %s failed", job_id)
         finally:
             self.cancel_events.pop(job_id, None)
+            # Temporary files only: the render output (preview in preview_dir,
+            # final MP4 in /output) is intentionally preserved. Work dirs are
+            # per-job so concurrent renders stay untouched.
+            self._cleanup_job_work(job_id)
+            # Prune stale proxy previews, keeping the newest so the preview that
+            # just finished (or is being watched) still plays.
+            try:
+                self._prune_previews()
+            except Exception as exc:  # pragma: no cover - defensive only
+                log.warning("Preview prune for job %s failed: %s", job_id, exc)
 
     def _run_ffmpeg(self, command: list[str], cancelled: threading.Event, log_file: Path) -> None:
         with log_file.open("a", encoding="utf-8") as logs:
