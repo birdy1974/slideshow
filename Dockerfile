@@ -25,6 +25,9 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
 COPY --from=frontend /src/dist ./static
+# Same TTFs the browser preview uses, so FFmpeg renders identical typography.
+COPY public/fonts ./fonts
+ENV FONTS_DIR=/app/fonts
 RUN mkdir -p /config/work /config/previews /output /photos /videos /music
 EXPOSE 8080
 VOLUME ["/config", "/output"]

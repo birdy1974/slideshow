@@ -243,6 +243,297 @@ def fill_frame_filter(width: int, height: int, fps: int) -> str:
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
 
 
+# Bundled fonts (public/fonts in the repo, copied to FONTS_DIR in the image).
+# Keep in sync with FONT_GROUPS in src/App.tsx.
+FONT_FILES: dict[str, dict[str, str]] = {
+    "Montserrat": {
+        "Regular": "Montserrat-Regular.ttf",
+        "Bold": "Montserrat-Bold.ttf",
+        "Italic": "Montserrat-Italic.ttf",
+        "BoldItalic": "Montserrat-BoldItalic.ttf"
+    },
+    "Open Sans": {
+        "Regular": "OpenSans-Regular.ttf",
+        "Bold": "OpenSans-Bold.ttf",
+        "Italic": "OpenSans-Italic.ttf",
+        "BoldItalic": "OpenSans-BoldItalic.ttf"
+    },
+    "Roboto": {
+        "Regular": "Roboto-Regular.ttf",
+        "Bold": "Roboto-Bold.ttf",
+        "Italic": "Roboto-Italic.ttf",
+        "BoldItalic": "Roboto-BoldItalic.ttf"
+    },
+    "Lato": {
+        "Regular": "Lato-Regular.ttf",
+        "Bold": "Lato-Bold.ttf",
+        "Italic": "Lato-Italic.ttf",
+        "BoldItalic": "Lato-BoldItalic.ttf"
+    },
+    "Poppins": {
+        "Regular": "Poppins-Regular.ttf",
+        "Bold": "Poppins-Bold.ttf",
+        "Italic": "Poppins-Italic.ttf",
+        "BoldItalic": "Poppins-BoldItalic.ttf"
+    },
+    "Raleway": {
+        "Regular": "Raleway-Regular.ttf",
+        "Bold": "Raleway-Bold.ttf",
+        "Italic": "Raleway-Italic.ttf",
+        "BoldItalic": "Raleway-BoldItalic.ttf"
+    },
+    "Nunito": {
+        "Regular": "Nunito-Regular.ttf",
+        "Bold": "Nunito-Bold.ttf",
+        "Italic": "Nunito-Italic.ttf",
+        "BoldItalic": "Nunito-BoldItalic.ttf"
+    },
+    "Source Sans 3": {
+        "Regular": "SourceSans3-Regular.ttf",
+        "Bold": "SourceSans3-Bold.ttf",
+        "Italic": "SourceSans3-Italic.ttf",
+        "BoldItalic": "SourceSans3-BoldItalic.ttf"
+    },
+    "Oswald": {
+        "Regular": "Oswald-Regular.ttf",
+        "Bold": "Oswald-Bold.ttf"
+    },
+    "Playfair Display": {
+        "Regular": "PlayfairDisplay-Regular.ttf",
+        "Bold": "PlayfairDisplay-Bold.ttf",
+        "Italic": "PlayfairDisplay-Italic.ttf",
+        "BoldItalic": "PlayfairDisplay-BoldItalic.ttf"
+    },
+    "Merriweather": {
+        "Regular": "Merriweather-Regular.ttf",
+        "Bold": "Merriweather-Bold.ttf",
+        "Italic": "Merriweather-Italic.ttf",
+        "BoldItalic": "Merriweather-BoldItalic.ttf"
+    },
+    "Lora": {
+        "Regular": "Lora-Regular.ttf",
+        "Bold": "Lora-Bold.ttf",
+        "Italic": "Lora-Italic.ttf",
+        "BoldItalic": "Lora-BoldItalic.ttf"
+    },
+    "Cormorant Garamond": {
+        "Regular": "CormorantGaramond-Regular.ttf",
+        "Bold": "CormorantGaramond-Bold.ttf",
+        "Italic": "CormorantGaramond-Italic.ttf",
+        "BoldItalic": "CormorantGaramond-BoldItalic.ttf"
+    },
+    "Bebas Neue": {
+        "Regular": "BebasNeue-Regular.ttf"
+    },
+    "Anton": {
+        "Regular": "Anton-Regular.ttf"
+    },
+    "Pacifico": {
+        "Regular": "Pacifico-Regular.ttf"
+    },
+    "Dancing Script": {
+        "Regular": "DancingScript-Regular.ttf",
+        "Bold": "DancingScript-Bold.ttf"
+    },
+    "Caveat": {
+        "Regular": "Caveat-Regular.ttf",
+        "Bold": "Caveat-Bold.ttf"
+    },
+    "Great Vibes": {
+        "Regular": "GreatVibes-Regular.ttf"
+    }
+}
+DEJAVU_DIR = Path("/usr/share/fonts/truetype/dejavu")
+DEJAVU_FILES = {"Regular": "DejaVuSans.ttf", "Bold": "DejaVuSans-Bold.ttf", "Italic": "DejaVuSans-Oblique.ttf", "BoldItalic": "DejaVuSans-BoldOblique.ttf"}
+
+
+def font_file(family: str, bold: bool, italic: bool, fonts_dir: Path) -> str:
+    """Resolve a family + style to a TTF path FFmpeg drawtext can open.
+
+    Falls back within the family (no italic cut -> upright of same weight),
+    then to DejaVu Sans so a missing file never fails a render. Family names
+    are matched case-insensitively and ignoring spaces, so both "Open Sans"
+    and "OpenSans" work.
+    """
+    style = ("Bold" if bold else "") + ("Italic" if italic else "") or "Regular"
+    order = {
+        "Regular": ["Regular", "Bold"],
+        "Bold": ["Bold", "Regular"],
+        "Italic": ["Italic", "Regular", "BoldItalic", "Bold"],
+        "BoldItalic": ["BoldItalic", "Bold", "Italic", "Regular"],
+    }[style]
+    wanted = re.sub(r"\s+", "", family).lower()
+    for name, styles in FONT_FILES.items():
+        if re.sub(r"\s+", "", name).lower() != wanted:
+            continue
+        for candidate in order:
+            file = styles.get(candidate)
+            if file and (fonts_dir / file).exists():
+                return str(fonts_dir / file)
+        break
+    for candidate in order:
+        path = DEJAVU_DIR / DEJAVU_FILES[candidate]
+        if path.exists():
+            return str(path)
+    return str(DEJAVU_DIR / DEJAVU_FILES["Regular"])
+
+
+def frame_colour_change(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Two-colour text frame settings, mirroring the editor's clamping.
+
+    Returns None for single-colour frames. Otherwise: `to` (hex), `transition`
+    (friendly label), `time` (seconds, 0.2..hold) and `start` (seconds into
+    the visible hold, kept so the change finishes before the frame ends).
+    """
+    first = str(item.get("frameBackground", "#30382a"))
+    second = item.get("frameBackground2")
+    if not isinstance(second, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", second) or second.lower() == first.lower():
+        return None
+    def _num(key: str, default: float) -> float:
+        try:
+            value = float(item.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value == value else default
+    hold = max(0.2, _num("duration", 5.0))
+    time = min(hold, max(0.2, _num("frameTransitionTime", 1.0)))
+    start = min(max(0.0, hold - time), max(0.0, _num("frameTransitionStart", 0.0)))
+    return {"to": second, "transition": str(item.get("frameTransition") or "Fade"), "time": round(time, 3), "start": round(start, 3)}
+
+
+# EBU R128 loudness normalisation ------------------------------------------------
+LOUDNESS_MIN, LOUDNESS_MAX, LOUDNESS_DEFAULT = -24.0, -8.0, -14.0
+
+
+def normalization_settings(soundtrack: dict[str, Any]) -> tuple[bool, float]:
+    """(enabled, target LUFS) from the project's soundtrack settings.
+
+    Normalisation is on by default; the target is clamped to the UI's range.
+    """
+    enabled = soundtrack.get("normalize", True)
+    enabled = bool(enabled) if enabled is not None else True
+    try:
+        target = float(soundtrack.get("normalizeTarget", LOUDNESS_DEFAULT))
+    except (TypeError, ValueError):
+        target = LOUDNESS_DEFAULT
+    if target != target:
+        target = LOUDNESS_DEFAULT
+    return enabled, max(LOUDNESS_MIN, min(LOUDNESS_MAX, target))
+
+
+def parse_loudnorm_stats(stderr_text: str) -> dict[str, float] | None:
+    """Extract the JSON block `loudnorm=print_format=json` writes to stderr."""
+    match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", stderr_text, re.S)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+        stats = {key: float(data[key]) for key in ("input_i", "input_tp", "input_lra", "input_thresh")}
+        if "target_offset" in data:
+            stats["target_offset"] = float(data["target_offset"])
+        return stats
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def loudnorm_filter(target: float, stats: dict[str, float] | None, true_peak: float = -1.5, lra: float = 11.0) -> str:
+    """Second-pass (linear) loudnorm when measurements exist, dynamic otherwise.
+
+    With measured values loudnorm applies a plain gain change, which keeps the
+    music's dynamics intact; without them it falls back to its dynamic mode.
+    Infinite/-inf measurements (silence) are treated as unmeasured.
+    """
+    base = f"loudnorm=I={format_ffmpeg_number(target)}:TP={format_ffmpeg_number(true_peak)}:LRA={format_ffmpeg_number(lra)}"
+    if stats and all(abs(stats.get(key, float('inf'))) < 1e6 for key in ("input_i", "input_tp", "input_lra", "input_thresh")):
+        base += (
+            f":measured_I={format_ffmpeg_number(stats['input_i'])}:measured_TP={format_ffmpeg_number(stats['input_tp'])}"
+            f":measured_LRA={format_ffmpeg_number(stats['input_lra'])}:measured_thresh={format_ffmpeg_number(stats['input_thresh'])}"
+            f":offset={format_ffmpeg_number(stats.get('target_offset', 0.0))}:linear=true"
+        )
+    return base + ":print_format=none"
+
+
+def track_edit_filter(track: dict[str, Any]) -> str:
+    """Per-track cut/crop and fade filters, as a comma-terminated prefix.
+
+    The editor stores `trimStart`/`trimEnd` (seconds in the source file) and
+    `fadeIn`/`fadeOut` (seconds, measured inside the kept region). Only the
+    kept region reaches the concat, so the soundtrack length — and the UI's
+    total estimate — reflect the real audio time rather than the file length.
+    Returns "" when the track is untouched.
+    """
+    def _num(key: str) -> float:
+        try:
+            value = float(track.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, value) if value == value else 0.0
+    start, end, fade_in, fade_out = _num("trimStart"), _num("trimEnd"), _num("fadeIn"), _num("fadeOut")
+    if end and end <= start:
+        end = 0.0
+    parts: list[str] = []
+    if start or end:
+        trim = f"atrim=start={format_ffmpeg_number(start)}"
+        if end:
+            trim += f":end={format_ffmpeg_number(end)}"
+        parts += [trim, "asetpts=PTS-STARTPTS"]
+    kept = (end - start) if end else None
+    if kept is not None:
+        fade_in = min(fade_in, kept)
+        fade_out = min(fade_out, max(0.0, kept - fade_in))
+    if fade_in > 0:
+        parts.append(f"afade=t=in:st=0:d={format_ffmpeg_number(fade_in)}")
+    if fade_out > 0:
+        if kept is not None:
+            parts.append(f"afade=t=out:st={format_ffmpeg_number(max(0.0, kept - fade_out))}:d={format_ffmpeg_number(fade_out)}")
+        else:
+            # Unknown length (no OUT point): reverse, fade in, reverse back.
+            parts += ["areverse", f"afade=t=in:st=0:d={format_ffmpeg_number(fade_out)}", "areverse"]
+    return "".join(part + "," for part in parts)
+
+
+def soundtrack_fade_window(soundtrack: dict[str, Any], total_duration: float) -> tuple[float, float]:
+    """User-chosen end-of-slideshow fade: (fade seconds, silence seconds).
+
+    `fadeDuration` is how long the music takes to reach silence and `fadeTail`
+    how much silence is kept before the final frame. Both are clamped so the
+    fade never starts before the slideshow does; the silence is shortened
+    first, then the fade itself.
+    """
+    def _num(key: str, default: float) -> float:
+        try:
+            value = float(soundtrack.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, value) if value == value else default
+    fade = _num("fadeDuration", 2.0)
+    tail = _num("fadeTail", 0.0)
+    total = max(0.0, float(total_duration))
+    if fade + tail > total:
+        tail = max(0.0, min(tail, total - fade))
+        fade = min(fade, total - tail)
+    return round(fade, 3), round(tail, 3)
+
+
+def normalize_rotation(value: Any) -> int:
+    """Clamp a stored photo rotation to one of 0/90/180/270 degrees clockwise."""
+    try:
+        degrees = int(round(float(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+    return ((degrees % 360) + 360) % 360 // 90 * 90
+
+
+def rotation_filter(rotation: Any) -> str:
+    """FFmpeg filter that applies the user's quarter-turn photo orientation.
+
+    `transpose=1` is a lossless 90° clockwise turn and `transpose=2` a 90°
+    counter-clockwise one; a half turn is done with flips so no resampling
+    happens. Returns an empty string when there is nothing to rotate.
+    """
+    return {90: "transpose=1", 180: "hflip,vflip", 270: "transpose=2"}.get(normalize_rotation(rotation), "")
+
+
 def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1.0) -> str:
     """Show the *whole* picture, letterboxed over a blurred copy of itself.
 
@@ -580,15 +871,8 @@ class Renderer:
             italic = defaults.get("italic", False)
         size = max(8, int(float(size_pt) * width / 1920))
         colour = str(colour_raw).replace("#", "0x")
-        font_dir = "/usr/share/fonts/truetype/dejavu"
-        if bold and italic:
-            font = f"{font_dir}/DejaVuSans-BoldOblique.ttf"
-        elif italic:
-            font = f"{font_dir}/DejaVuSans-Oblique.ttf"
-        elif bold:
-            font = f"{font_dir}/DejaVuSans-Bold.ttf"
-        else:
-            font = f"{font_dir}/DejaVuSans.ttf"
+        family = str((item.get("fontFamily") if item.get("type") == "title" else defaults.get("fontFamily")) or "Montserrat")
+        font = font_file(family, bool(bold), bool(italic), self.settings.fonts_dir)
         alpha = f"if(lt(t,{start}),0,if(lt(t,{start+fade_in}),(t-{start})/{fade_in},if(lt(t,{end-fade_out}),1,if(lt(t,{end}),({end}-t)/{fade_out},0))))"
         return f"drawtext=fontfile='{font}':text='{ff_escape(text)}':fontsize={size}:fontcolor={colour}:alpha='{alpha}':x=(w-text_w)*{x/100}:y=(h-text_h)*{y/100}:shadowcolor=black@0.55:shadowx=2:shadowy=2:enable='between(t,{start},{end})'"
 
@@ -698,6 +982,12 @@ class Renderer:
                     background = "#30382a"
                 ffmpeg_background = "0x" + background[1:]
                 command += ["-f", "lavfi", "-i", f"color=c={ffmpeg_background}:s={width}x{height}:r={fps}:d={clip_t}"]
+                colour_change = frame_colour_change(item)
+                if colour_change is not None:
+                    # Second colour as another lavfi source; both are xfaded
+                    # below with the user's transition. The caption is drawn
+                    # afterwards so it stays fixed on top of the changing bed.
+                    command += ["-f", "lavfi", "-i", f"color=c=0x{colour_change['to'][1:]}:s={width}x{height}:r={fps}:d={clip_t}"]
             else:
                 source = source_path(self.settings, item)
                 if not source.exists(): raise RenderError(f"Media file is missing: {source}")
@@ -714,6 +1004,13 @@ class Renderer:
                     # are filled by freezing the first/last frame via tpad.
                     command += ["-i", str(source)]
             filters = [base_filter]
+            if kind_name == "image":
+                # Honour the orientation chosen in the photo preview popup
+                # before fitting, so the blurred backdrop and Ken Burns zoom
+                # see the picture the way the user sees it in the editor.
+                turn = rotation_filter(item.get("rotation"))
+                if turn:
+                    filters.insert(0, turn)
             if ken_burns:
                 delta = "0.0008" if "Zoom in" in effect else "-0.0008" if "Zoom out" in effect else "0.0003"
                 start_zoom = "1" if delta.startswith("0") else format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)
@@ -751,7 +1048,20 @@ class Renderer:
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
-            command += ["-vf", ",".join(filters), "-an", "-t", clip_t, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
+            colour_change = frame_colour_change(item) if kind_name == "title" else None
+            if colour_change is not None:
+                # The visible hold starts after the incoming xfade handle, so the
+                # user's "start at" is shifted by lead_in inside this segment.
+                offset = lead_in + colour_change["start"]
+                graph = (
+                    f"[0:v][1:v]xfade=transition={self.resolve_xfade(colour_change['transition'])}"
+                    f":duration={format_ffmpeg_number(colour_change['time'])}:offset={format_ffmpeg_number(offset)}[bg];"
+                    f"[bg]{','.join(filters)}[v]"
+                )
+                command += ["-filter_complex", graph, "-map", "[v]"]
+            else:
+                command += ["-vf", ",".join(filters)]
+            command += ["-an", "-t", clip_t, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
             self._run_ffmpeg(command, cancelled, log_file)
             segments.append(segment)
             progress(5 + 45 * (index + 1) / len(media), f"Prepared item {index+1} of {len(media)}")
@@ -925,7 +1235,17 @@ class Renderer:
             audio_filter = f"[{base_index}:a]volume='{format_ffmpeg_number(volume)}*({bed_gain})':eval=frame[bed]"
             fade = project.get("soundtrack", {}).get("fadeOut", True)
             if soundtrack and fade:
-                audio_filter = audio_filter.replace("[bed]", f",afade=t=out:st={format_ffmpeg_number(max(0, total_duration - 2))}:d=2[bed]")
+                fade_duration, fade_tail = soundtrack_fade_window(project.get("soundtrack", {}), total_duration)
+                if fade_duration > 0:
+                    fade_start = max(0.0, total_duration - fade_tail - fade_duration)
+                    audio_filter = audio_filter.replace(
+                        "[bed]",
+                        f",afade=t=out:st={format_ffmpeg_number(fade_start)}:d={format_ffmpeg_number(fade_duration)}"
+                        # Hard-mute the tail so looped music cannot creep back in
+                        # after the fade has reached silence.
+                        + (f",volume=enable='gte(t,{format_ffmpeg_number(fade_start + fade_duration)})':volume=0" if fade_tail > 0 else "")
+                        + "[bed]",
+                    )
             mix_labels = ["[bed]"]
             for movie_index, item in original_movies:
                 source = source_path(self.settings, item)
@@ -945,7 +1265,17 @@ class Renderer:
                 label = f"moviea{movie_index}"
                 audio_filter += f";[{movie_audio_index}:a]{original_filter}[{label}]"
                 mix_labels.append(f"[{label}]")
-            audio_filter += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0[aout]"
+            normalize, target = normalization_settings(project.get("soundtrack", {}))
+            if normalize:
+                # Final pass over the whole mix (music bed + any original movie
+                # audio) so the programme as a whole lands on the target and
+                # nothing clips after amix. Dynamic loudnorm keeps the fades,
+                # ducking envelopes and the user's volume slider intact, and
+                # the 200 ms afade at the very end masks loudnorm's tail.
+                audio_filter += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0:normalize=0[mixed];"
+                audio_filter += f"[mixed]{loudnorm_filter(target, None)},aresample=48000[aout]"
+            else:
+                audio_filter += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0[aout]"
             audio_map = ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
 
         command = [self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(timeline), *audio_args]
@@ -955,6 +1285,34 @@ class Renderer:
         run_compose(command, allow_qsv_fallback=False)
         progress(98, "Finalizing MP4")
         return output
+
+    def measure_loudness(self, source: Path, target: float, edit_filter: str = "", cancelled: threading.Event | None = None, log_file: Path | None = None) -> dict[str, float] | None:
+        """First loudnorm pass: integrated loudness / true peak / LRA of a file.
+
+        Returns None when FFmpeg cannot measure (unreadable file, silence), in
+        which case callers fall back to dynamic normalisation.
+        """
+        graph = f"{edit_filter}loudnorm=I={format_ffmpeg_number(target)}:TP=-1.5:LRA=11:print_format=json"
+        command = [self.settings.ffmpeg_bin, "-hide_banner", "-nostats", "-i", str(source), "-vn", "-af", graph, "-f", "null", "-"]
+        if log_file is not None:
+            with log_file.open("a", encoding="utf-8") as logs:
+                logs.write("\n$ " + " ".join(command) + "\n")
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            while process.poll() is None:
+                if cancelled is not None and cancelled.wait(.2):
+                    process.terminate()
+                    try: process.wait(5)
+                    except subprocess.TimeoutExpired: process.kill()
+                    raise RenderError("Render cancelled by user")
+            stderr_text = process.stderr.read() if process.stderr else ""
+        except OSError as exc:
+            log.warning("Loudness measurement failed for %s: %s", source.name, exc)
+            return None
+        if process.returncode:
+            log.warning("Loudness measurement of %s exited with %s", source.name, process.returncode)
+            return None
+        return parse_loudnorm_stats(stderr_text)
 
     def _probe_duration(self, path: Path) -> float:
         result=subprocess.run([self.settings.ffprobe_bin,"-v","error","-show_entries","format=duration","-of","json",str(path)],capture_output=True,text=True,timeout=30)
@@ -972,7 +1330,18 @@ class Renderer:
         output=work/"soundtrack.m4a"
         inputs=[]
         for source in sources: inputs += ["-i",str(source)]
-        normalized=";".join(f"[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]" for i in range(len(sources)))
+        normalize, target = normalization_settings(project.get("soundtrack", {}))
+        per_track: list[str] = []
+        for i in range(len(sources)):
+            edit = track_edit_filter(tracks[i])
+            if normalize:
+                # First pass measures the *kept* region (after cut/crop, before
+                # the user's fades so ramps do not skew the reading), second
+                # pass applies a linear gain so every song matches `target`.
+                stats = self.measure_loudness(sources[i], target, edit_filter=track_edit_filter({**tracks[i], "fadeIn": 0, "fadeOut": 0}), cancelled=cancelled, log_file=log_file)
+                edit += loudnorm_filter(target, stats) + ","
+            per_track.append(f"[{i}:a]{edit}aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
+        normalized=";".join(per_track)
         concat="".join(f"[a{i}]" for i in range(len(sources)))+f"concat=n={len(sources)}:v=0:a=1[aout]"
         command=[self.settings.ffmpeg_bin,"-hide_banner","-y",*inputs,"-filter_complex",normalized+";"+concat,"-map","[aout]","-vn","-c:a","aac","-b:a","192k",str(output)]
         self._run_ffmpeg(command,cancelled,log_file)

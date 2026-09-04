@@ -22,6 +22,15 @@ from app.renderer import (
     build_filter_graph,
     fill_frame_filter,
     fit_frame_filter,
+    loudnorm_filter,
+    normalization_settings,
+    parse_loudnorm_stats,
+    font_file,
+    frame_colour_change,
+    normalize_rotation,
+    rotation_filter,
+    soundtrack_fade_window,
+    track_edit_filter,
     format_ffmpeg_number,
     parse_number,
     xfade_name,
@@ -551,6 +560,46 @@ class SegmentFilterSelectionTest(unittest.TestCase):
             self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
         return [command[command.index("-vf") + 1] for command in commands if "-vf" in command]
 
+    def _segment_commands(self, media: list[dict]) -> list[list[str]]:
+        project = {"id": 1, "media": media, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"segment")
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        return [c for c in commands if "segment-" in c[-1]]
+
+    def test_two_colour_text_frame_xfades_backgrounds_under_text(self) -> None:
+        commands = self._segment_commands([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "title", "path": "Generated frame", "duration": 6, "text": "Hello", "effect": "None", "transition": "Fade", "transitionTime": 0.5,
+             "frameBackground": "#112233", "frameBackground2": "#aabbcc", "frameTransition": "Wipe left", "frameTransitionTime": 1.5, "frameTransitionStart": 2},
+        ])
+        title = commands[1]
+        inputs = [title[i + 1] for i, arg in enumerate(title) if arg == "-i"]
+        self.assertEqual(2, len(inputs))
+        self.assertIn("color=c=0x112233", inputs[0]); self.assertIn("color=c=0xaabbcc", inputs[1])
+        self.assertNotIn("-vf", title)
+        graph = title[title.index("-filter_complex") + 1]
+        # Offset = incoming xfade handle (1s from the previous clip) + user start (2s).
+        self.assertIn("[0:v][1:v]xfade=transition=wipeleft:duration=1.5:offset=3[bg]", graph)
+        self.assertLess(graph.index("xfade="), graph.index("drawtext"), "caption must be drawn on top of the colour change")
+        self.assertEqual("[v]", title[title.index("-map") + 1])
+
+    def test_single_colour_text_frame_keeps_plain_vf(self) -> None:
+        commands = self._segment_commands([
+            {"id": 2, "type": "title", "path": "Generated frame", "duration": 4, "text": "Hi", "effect": "None", "transition": "Fade", "transitionTime": 0.5, "frameBackground": "#112233", "frameBackground2": "#112233"},
+        ])
+        self.assertIn("-vf", commands[0]); self.assertNotIn("-filter_complex", commands[0])
+
     def test_image_is_fitted_video_is_filled(self) -> None:
         filters = self._segment_filters([
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5},
@@ -570,6 +619,138 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertIn("x='iw/2-(iw/zoom/2)'", filters[0], "zoompan defaults to the top-left corner")
         self.assertIn("y='ih/2-(ih/zoom/2)'", filters[0])
         self.assertIn(f"scale={int(1920 / KEN_BURNS_MAX_ZOOM) // 2 * 2}:", filters[0])
+
+
+    def test_photo_rotation_is_applied_before_fitting(self) -> None:
+        filters = self._segment_filters([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5, "rotation": 90},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5, "rotation": 270},
+            {"id": 3, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5, "rotation": 180},
+            {"id": 4, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5},
+            {"id": 5, "type": "video", "path": "/videos/a.mp4", "duration": 2, "effect": "Original motion", "transition": "Fade", "transitionTime": 0.5, "rotation": 90},
+        ])
+        self.assertTrue(filters[0].startswith("transpose=1,"), filters[0])
+        self.assertTrue(filters[1].startswith("transpose=2,"), filters[1])
+        self.assertLess(filters[1].index("transpose=2"), filters[1].index("zoompan="), "rotate before Ken Burns zoom")
+        self.assertTrue(filters[2].startswith("hflip,vflip,"), filters[2])
+        self.assertNotIn("transpose", filters[3])
+        self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
+
+
+class FontFileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.fonts = Path(self.temp.name)
+        for name in ("Montserrat-Regular", "Montserrat-Bold", "Montserrat-Italic", "Montserrat-BoldItalic", "Oswald-Regular", "Oswald-Bold", "Pacifico-Regular"):
+            (self.fonts / f"{name}.ttf").write_bytes(b"ttf")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_exact_style(self) -> None:
+        self.assertTrue(font_file("Montserrat", True, True, self.fonts).endswith("Montserrat-BoldItalic.ttf"))
+        self.assertTrue(font_file("montserrat", False, True, self.fonts).endswith("Montserrat-Italic.ttf"))
+
+    def test_missing_italic_or_bold_falls_back_within_family(self) -> None:
+        self.assertTrue(font_file("Oswald", True, True, self.fonts).endswith("Oswald-Bold.ttf"))
+        self.assertTrue(font_file("Oswald", False, True, self.fonts).endswith("Oswald-Regular.ttf"))
+        self.assertTrue(font_file("Pacifico", True, False, self.fonts).endswith("Pacifico-Regular.ttf"))
+
+    def test_unknown_family_or_missing_dir_uses_dejavu(self) -> None:
+        self.assertIn("DejaVuSans", font_file("Comic Sans", True, False, self.fonts))
+        self.assertIn("DejaVuSans", font_file("DejaVu Sans", False, True, self.fonts))
+        self.assertIn("DejaVuSans", font_file("Montserrat", False, False, self.fonts / "nope"))
+
+
+class FrameColourChangeTest(unittest.TestCase):
+    def test_none_for_single_or_invalid(self) -> None:
+        self.assertIsNone(frame_colour_change({"frameBackground": "#111111"}))
+        self.assertIsNone(frame_colour_change({"frameBackground": "#111111", "frameBackground2": "#111111"}))
+        self.assertIsNone(frame_colour_change({"frameBackground": "#111111", "frameBackground2": "linear-gradient(red,blue)"}))
+
+    def test_clamps_timing_inside_hold(self) -> None:
+        change = frame_colour_change({"duration": 4, "frameBackground": "#111111", "frameBackground2": "#222222", "frameTransition": "Circle open", "frameTransitionTime": 10, "frameTransitionStart": 9})
+        self.assertEqual({"to": "#222222", "transition": "Circle open", "time": 4.0, "start": 0.0}, change)
+        change = frame_colour_change({"duration": 5, "frameBackground": "#111111", "frameBackground2": "#222222", "frameTransitionTime": 2, "frameTransitionStart": 4.5})
+        self.assertEqual((2.0, 3.0, "Fade"), (change["time"], change["start"], change["transition"]))
+
+
+class TrackEditFilterTest(unittest.TestCase):
+    def test_untouched_track_adds_nothing(self) -> None:
+        self.assertEqual("", track_edit_filter({}))
+        self.assertEqual("", track_edit_filter({"trimStart": 0, "trimEnd": 0, "fadeIn": 0, "fadeOut": 0}))
+
+    def test_trim_and_fades_inside_kept_region(self) -> None:
+        graph = track_edit_filter({"trimStart": 12, "trimEnd": 160, "fadeIn": 2, "fadeOut": 3})
+        self.assertEqual("atrim=start=12:end=160,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=2,afade=t=out:st=145:d=3,", graph)
+
+    def test_end_only_and_start_only(self) -> None:
+        self.assertEqual("atrim=start=0:end=90,asetpts=PTS-STARTPTS,", track_edit_filter({"trimEnd": 90}))
+        self.assertEqual("atrim=start=30,asetpts=PTS-STARTPTS,", track_edit_filter({"trimStart": 30}))
+
+    def test_fade_out_without_out_point_uses_reverse(self) -> None:
+        self.assertEqual("areverse,afade=t=in:st=0:d=4,areverse,", track_edit_filter({"fadeOut": 4}))
+
+    def test_invalid_range_and_overlong_fades_are_clamped(self) -> None:
+        self.assertEqual("atrim=start=50,asetpts=PTS-STARTPTS,", track_edit_filter({"trimStart": 50, "trimEnd": 20}))
+        graph = track_edit_filter({"trimStart": 0, "trimEnd": 4, "fadeIn": 3, "fadeOut": 3})
+        self.assertIn("afade=t=in:st=0:d=3,", graph)
+        self.assertIn("afade=t=out:st=3:d=1,", graph)
+
+
+class LoudnessNormalizationTest(unittest.TestCase):
+    def test_settings_default_on_and_clamped(self) -> None:
+        self.assertEqual((True, -14.0), normalization_settings({}))
+        self.assertEqual((False, -14.0), normalization_settings({"normalize": False}))
+        self.assertEqual((True, -18.0), normalization_settings({"normalize": True, "normalizeTarget": -18}))
+        self.assertEqual((True, -24.0), normalization_settings({"normalizeTarget": -40}))
+        self.assertEqual((True, -8.0), normalization_settings({"normalizeTarget": 3}))
+        self.assertEqual((True, -14.0), normalization_settings({"normalizeTarget": "loud"}))
+
+    def test_parse_first_pass_json(self) -> None:
+        stderr = "size=N/A time=00:03:00\n[Parsed_loudnorm_0 @ 0x1] \n{\n\t\"input_i\" : \"-19.53\",\n\t\"input_tp\" : \"-2.10\",\n\t\"input_lra\" : \"9.40\",\n\t\"input_thresh\" : \"-29.80\",\n\t\"output_i\" : \"-14.01\",\n\t\"target_offset\" : \"0.12\"\n}\n"
+        stats = parse_loudnorm_stats(stderr)
+        self.assertEqual({"input_i": -19.53, "input_tp": -2.1, "input_lra": 9.4, "input_thresh": -29.8, "target_offset": 0.12}, stats)
+        self.assertIsNone(parse_loudnorm_stats("no json here"))
+
+    def test_second_pass_is_linear_with_measurements(self) -> None:
+        stats = {"input_i": -19.5, "input_tp": -2.1, "input_lra": 9.4, "input_thresh": -29.8, "target_offset": 0.1}
+        graph = loudnorm_filter(-14, stats)
+        self.assertTrue(graph.startswith("loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=-19.5:measured_TP=-2.1:measured_LRA=9.4:measured_thresh=-29.8:offset=0.1:linear=true"))
+        self.assertEqual("loudnorm=I=-14:TP=-1.5:LRA=11:print_format=none", loudnorm_filter(-14, None))
+        self.assertEqual("loudnorm=I=-14:TP=-1.5:LRA=11:print_format=none", loudnorm_filter(-14, {"input_i": float("-inf"), "input_tp": -99, "input_lra": 0, "input_thresh": -70}))
+
+
+class SoundtrackFadeWindowTest(unittest.TestCase):
+    def test_defaults_and_user_values(self) -> None:
+        self.assertEqual((2.0, 0.0), soundtrack_fade_window({}, 60))
+        self.assertEqual((4.5, 1.0), soundtrack_fade_window({"fadeDuration": 4.5, "fadeTail": 1}, 60))
+
+    def test_clamps_to_slideshow_length(self) -> None:
+        # Silence is sacrificed first, then the fade itself.
+        self.assertEqual((5.0, 1.0), soundtrack_fade_window({"fadeDuration": 5, "fadeTail": 3}, 6))
+        self.assertEqual((6.0, 0.0), soundtrack_fade_window({"fadeDuration": 9, "fadeTail": 3}, 6))
+        self.assertEqual((0.0, 0.0), soundtrack_fade_window({"fadeDuration": 2}, 0))
+
+    def test_garbage_falls_back(self) -> None:
+        self.assertEqual((2.0, 0.0), soundtrack_fade_window({"fadeDuration": "x", "fadeTail": None}, 30))
+        self.assertEqual((0.0, 0.0), soundtrack_fade_window({"fadeDuration": -4}, 30))
+
+
+class PhotoRotationHelpersTest(unittest.TestCase):
+    def test_normalize_rotation(self) -> None:
+        self.assertEqual(0, normalize_rotation(None))
+        self.assertEqual(0, normalize_rotation("garbage"))
+        self.assertEqual(90, normalize_rotation(90))
+        self.assertEqual(270, normalize_rotation(-90))
+        self.assertEqual(180, normalize_rotation(540))
+        self.assertEqual(0, normalize_rotation(360))
+
+    def test_rotation_filter(self) -> None:
+        self.assertEqual("", rotation_filter(0))
+        self.assertEqual("transpose=1", rotation_filter(90))
+        self.assertEqual("transpose=2", rotation_filter(-90))
+        self.assertEqual("hflip,vflip", rotation_filter(180))
 
 
 class VideoPlaysToEndTest(unittest.TestCase):

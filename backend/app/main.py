@@ -288,6 +288,26 @@ def probe_media(root: str = Query(pattern="^(photos|videos)$"), path: str = "") 
     return {"duration": duration}
 
 
+@app.get("/api/media/loudness")
+def media_loudness(root: str = Query(pattern="^(music|videos|photos)$"), path: str = "", start: float = Query(default=0, ge=0), end: float = Query(default=0, ge=0)) -> dict[str, Any]:
+    """Measure integrated loudness (EBU R128) of an audio file's kept region.
+
+    Used by the Soundtracks pane to show which songs are louder or quieter
+    before rendering. `start`/`end` mirror the track editor's cut points.
+    """
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS: raise HTTPException(415, "File has no supported audio")
+    if target.stat().st_size == 0: raise HTTPException(422, "File is empty (0 bytes)")
+    from .renderer import track_edit_filter
+    edit = track_edit_filter({"trimStart": start, "trimEnd": end})
+    stats = renderer.measure_loudness(target, -14.0, edit_filter=edit)
+    if not stats or abs(stats["input_i"]) > 1e6:
+        raise HTTPException(422, "Could not measure loudness (silent or unreadable audio)")
+    return {"integrated": round(stats["input_i"], 1), "truePeak": round(stats["input_tp"], 1), "range": round(stats["input_lra"], 1)}
+
+
 @app.get("/api/media/file")
 def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str = "") -> FileResponse:
     """Stream a media file from a read-only mount for thumbnails, lightbox, and MP3 preview.

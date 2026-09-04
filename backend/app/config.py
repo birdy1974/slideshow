@@ -17,6 +17,9 @@ class Settings:
     videos_dir: Path = Path(os.getenv("VIDEOS_DIR", "/videos"))
     music_dir: Path = Path(os.getenv("MUSIC_DIR", "/music"))
     output_dir: Path = Path(os.getenv("OUTPUT_DIR", "/output"))
+    # Bundled TTFs used by drawtext; the repo's public/fonts in development,
+    # /app/fonts inside the container.
+    fonts_dir: Path = Path(os.getenv("FONTS_DIR", "/app/fonts"))
     ffmpeg_bin: str = os.getenv("FFMPEG_BIN", "ffmpeg")
     ffprobe_bin: str = os.getenv("FFPROBE_BIN", "ffprobe")
     # Media probing happens on potentially slow NAS volumes / network mounts.

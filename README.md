@@ -9,7 +9,7 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - One-click "New project" that starts a completely blank project without touching saved ones
 - FFmpeg xfade catalogue, per-transition timing, random/bulk assignment, and GLSL-to-dissolve portability fallback
 - Ken Burns controls with selected-item and random bulk assignment
-- Timed captions, appear/disappear transitions, draggable title placement, typography, and frame backgrounds
+- Timed captions, appear/disappear transitions, draggable title placement, 20 bundled open-licence fonts (sans, serif, display & script — see `public/fonts/README.md`), and frame backgrounds
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming
 - Resilient media validation: 0-byte cloud-synced files are retried before failing a render, and slow NAS volumes get a generous (retryable) ffprobe timeout
 - Real 480p proxy previews streamed from the backend
@@ -48,6 +48,7 @@ pip install -r backend/requirements.txt
 CONFIG_DIR="$PWD/data/config" \
 PHOTOS_DIR="$PWD/data/photos" VIDEOS_DIR="$PWD/data/videos" \
 MUSIC_DIR="$PWD/data/music" OUTPUT_DIR="$PWD/data/output" \
+FONTS_DIR="$PWD/public/fonts" \
 uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000 --reload
 ```
 

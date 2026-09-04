@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp,
   Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
-  ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, Save,
-  Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
+  ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
+  Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
 
 type MediaRoot = 'photos' | 'videos' | 'music'
@@ -114,35 +114,41 @@ function itemThumbUrl(item?: MediaItem | null) {
 
 type LightboxTarget = { title: string; src: string; kind: 'image' | 'video' | 'audio' }
 
-function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, position }: LightboxTarget & {
+function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, position, rotation, onRotate }: LightboxTarget & {
   onClose: () => void;
   // Storyline bindings: when present, the lightbox can walk the storyline
   // (prev/next), show the current position, and delete the shown item.
   onPrev?: () => void; onNext?: () => void; onDelete?: () => void; position?: string;
+  // Photo orientation: current quarter-turn rotation and a handler receiving
+  // +90 (clockwise) or -90 (counter-clockwise). Only offered for photos.
+  rotation?: number; onRotate?: (delta: 90 | -90) => void;
 }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
   // Keyboard: ← / → walk the storyline, Escape closes. Only wired when the
   // lightbox is bound to storyline items (browser previews pass no handlers).
   useEffect(() => {
-    if (!onPrev && !onNext && !onDelete) return
+    if (!onPrev && !onNext && !onDelete && !onRotate) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'ArrowLeft') onPrev?.()
       else if (event.key === 'ArrowRight') onNext?.()
       else if (event.key === 'Escape') onClose()
+      else if ((event.key === 'r' || event.key === 'R') && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); onRotate?.(event.shiftKey ? -90 : 90) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onPrev, onNext, onDelete, onClose])
+  }, [onPrev, onNext, onDelete, onRotate, onClose])
+  const turn = normalizeRotation(rotation)
+  const canRotate = kind === 'image' && !!onRotate
   return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}>
     {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←)" aria-label="Previous media" onMouseDown={e => e.stopPropagation()} onClick={onPrev}><ChevronLeft size={26}/></button>}
     {onNext && <button type="button" className="lightbox-nav next" title="Next media (→)" aria-label="Next media" onMouseDown={e => e.stopPropagation()} onClick={onNext}><ChevronRight size={26}/></button>}
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
-      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
+      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
         : kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
-        : <img className="lightbox-media" src={src} alt={title} onError={() => setFailed(true)} />}
+        : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${turn === 90 || turn === 270 ? 'turned' : ''}`} style={rotationStyle(turn)} src={src} alt={title} onError={() => setFailed(true)} /></div>}
     </div>
   </div>
 }
@@ -161,7 +167,7 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
   if (failed) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
   const common = { src, className, onClick, onPointerDown, onError: () => setFailed(true), style } as const
   if (item.type === 'video') return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} />
-  return <img {...common} alt={item.name} />
+  return <img {...common} style={rotationStyle(item.rotation, style)} alt={item.name} />
 }
 
 // Thumbnail inside the media picker, with a fallback when the file is empty
@@ -181,23 +187,76 @@ function BrowserThumb({ root, file }: { root: MediaRoot, file: any }) {
   return <ImageIcon size={34}/>
 }
 
-// One shared <audio> element at a time; returns the key currently playing and a toggle.
+// One shared <audio> element at a time; returns the key currently playing, a
+// toggle, live playback progress and a seek function for the time bar.
 function useAudioPreview(onError: (message: string) => void) {
   const [playingKey, setPlayingKey] = useState<string | null>(null)
+  const [progress, setProgress] = useState({ current: 0, duration: 0 })
   const playerRef = useRef<HTMLAudioElement | null>(null)
   useEffect(() => () => { playerRef.current?.pause(); playerRef.current = null }, [])
   const toggle = (key: string, src: string, label: string) => {
-    if (playingKey === key) { playerRef.current?.pause(); playerRef.current = null; setPlayingKey(null); return }
+    if (playingKey === key) { playerRef.current?.pause(); playerRef.current = null; setPlayingKey(null); setProgress({ current: 0, duration: 0 }); return }
     playerRef.current?.pause()
     const player = new Audio(src)
     playerRef.current = player
-    const stop = () => { if (playerRef.current === player) { playerRef.current = null; setPlayingKey(null) } }
+    const stop = () => { if (playerRef.current === player) { playerRef.current = null; setPlayingKey(null); setProgress({ current: 0, duration: 0 }) } }
+    const sync = () => { if (playerRef.current === player) setProgress({ current: player.currentTime, duration: Number.isFinite(player.duration) ? player.duration : 0 }) }
     player.onended = stop
     player.onerror = () => { stop(); onError(`Could not play ${label}`) }
+    player.ontimeupdate = sync
+    player.onloadedmetadata = sync
+    player.ondurationchange = sync
+    player.onseeked = sync
+    setProgress({ current: 0, duration: 0 })
     setPlayingKey(key)
     player.play().catch(() => { stop(); onError(`Could not play ${label}`) })
   }
-  return { playingKey, toggle }
+  // Jump to a position (seconds) in the track that is currently playing.
+  const seek = (seconds: number) => {
+    const player = playerRef.current
+    if (!player || !Number.isFinite(player.duration)) return
+    player.currentTime = Math.min(Math.max(0, seconds), Math.max(0, player.duration - 0.05))
+    setProgress({ current: player.currentTime, duration: player.duration })
+  }
+  return { playingKey, toggle, progress, seek }
+}
+
+// Waveform-styled seek bar: bars left of the playhead are lit in the track
+// colour; click or drag anywhere on it to fast-forward / rewind the preview.
+// Pointer capture keeps the drag alive when the cursor leaves the bar.
+function AudioSeekBar({ bars = 55, seed = 0, color, current, duration, onSeek, className = '' }: {
+  bars?: number; seed?: number; color: string; current: number; duration: number; onSeek: (seconds: number) => void; className?: string;
+}) {
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const [hoverPct, setHoverPct] = useState<number | null>(null)
+  const pctFromEvent = (event: React.PointerEvent) => {
+    const rect = barRef.current?.getBoundingClientRect()
+    if (!rect || rect.width === 0) return 0
+    return Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+  }
+  const seekTo = (event: React.PointerEvent) => { if (duration > 0) onSeek(pctFromEvent(event) * duration) }
+  const playedPct = duration > 0 ? Math.min(1, current / duration) : 0
+  const label = duration > 0 ? `${formatClock(current)} / -${formatClock(duration - current)} / ${formatClock(duration)}` : 'Loading…'
+  return <div ref={barRef} className={`audio-seek ${className} ${dragging ? 'dragging' : ''} ${duration > 0 ? '' : 'disabled'}`} role="slider" aria-label="Seek" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(current)} aria-valuetext={label} title={label}
+    onPointerDown={e => { if (duration <= 0) return; e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setDragging(true); seekTo(e) }}
+    onPointerMove={e => { setHoverPct(pctFromEvent(e)); if (dragging) seekTo(e) }}
+    onPointerUp={e => { if (dragging) { seekTo(e); setDragging(false) } }}
+    onPointerCancel={() => setDragging(false)}
+    onPointerLeave={() => setHoverPct(null)}
+    onClick={e => e.stopPropagation()}>
+    {Array.from({ length: bars }).map((_, i) => {
+      const played = (i + 0.5) / bars <= playedPct
+      return <i key={i} style={{ height: `${8 + ((i * 17 + seed * 7) % 23)}px`, background: color, opacity: played ? 1 : 0.32 }} />
+    })}
+    {duration > 0 && <span className="audio-playhead" style={{ left: `${playedPct * 100}%` }} />}
+    {hoverPct != null && duration > 0 && !dragging && <span className="audio-hover-time" style={{ left: `${hoverPct * 100}%` }}>{formatClock(hoverPct * duration)}</span>}
+  </div>
+}
+
+function AudioTimeReadout({ current, duration }: { current: number; duration: number }) {
+  if (duration <= 0) return <span className="audio-time">…</span>
+  return <span className="audio-time"><b>{formatClock(current)}</b> / <em>-{formatClock(duration - current)}</em> / {formatClock(duration)}</span>
 }
 
 type MediaItem = {
@@ -211,9 +270,75 @@ type MediaItem = {
   // Videos can replace the soundtrack with their embedded audio.
   audioSource?: 'soundtrack' | 'original';
   textBold?: boolean; textItalic?: boolean; textUnderline?: boolean;
+  // Photo orientation fix in whole quarter turns (0, 90, 180, 270, clockwise).
+  // Applied in every thumbnail/lightbox and by the FFmpeg renderer.
+  rotation?: number;
+  // Text frames: optional second background colour reached via an xfade
+  // transition that starts `frameTransitionStart` seconds into the frame and
+  // lasts `frameTransitionTime` seconds. The caption stays fixed on top.
+  frameBackground2?: string; frameTransition?: string; frameTransitionTime?: number; frameTransitionStart?: number;
 }
 
-type AudioTrack = { id: number; name: string; path: string; duration: string; color: string }
+const isHex = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)
+// Effective two-colour settings for a text frame (null when single colour).
+function frameColourChange(item: MediaItem) {
+  if (item.type !== 'title' || !isHex(item.frameBackground2) || item.frameBackground2.toLowerCase() === String(item.frameBackground).toLowerCase()) return null
+  const hold = Math.max(0.2, Number(item.duration) || 0)
+  const time = Math.min(hold, Math.max(0.2, Number(item.frameTransitionTime) || 1))
+  const start = Math.min(Math.max(0, hold - time), Math.max(0, Number(item.frameTransitionStart) || 0))
+  return { from: item.frameBackground, to: item.frameBackground2, transition: item.frameTransition || 'Fade', time, start, hold }
+}
+// CSS approximation of the FFmpeg transition for editor/thumbnail previews.
+function quickTransitionClass(name: string) {
+  return /left/i.test(name) ? 'from-left' : /right/i.test(name) ? 'from-right' : /up/i.test(name) ? 'from-up' : /down/i.test(name) ? 'from-down' : /circle|radial/i.test(name) ? 'from-circle' : 'fade'
+}
+// Static gradient chip for thumbnails: A on the left, B on the right.
+function frameBackgroundStyle(item: MediaItem): React.CSSProperties {
+  const change = frameColourChange(item)
+  return change ? { background: `linear-gradient(100deg, ${change.from} 0 46%, ${change.to} 54% 100%)` } : { background: item.frameBackground }
+}
+
+type Rotation = 0 | 90 | 180 | 270
+function normalizeRotation(value: unknown): Rotation {
+  const n = Math.round(Number(value) || 0)
+  return ((((n % 360) + 360) % 360) as Rotation)
+}
+function rotationStyle(rotation: number | undefined, base?: React.CSSProperties): React.CSSProperties | undefined {
+  const r = normalizeRotation(rotation)
+  if (!r) return base
+  // The standalone `rotate` property composes with existing transforms and
+  // CSS animations (Ken Burns style slow-zoom) instead of overriding them.
+  return { ...base, rotate: `${r}deg` }
+}
+
+type AudioTrack = {
+  id: number; name: string; path: string; duration: string; color: string;
+  // Per-track edit (seconds): keep only [trimStart, trimEnd) of the file and
+  // ramp the volume at the kept region's edges. All optional; missing = whole file.
+  trimStart?: number; trimEnd?: number; fadeIn?: number; fadeOut?: number;
+  // Measured integrated loudness of the kept region (LUFS), from 'Analyse levels'.
+  loudness?: number; truePeak?: number;
+}
+
+// Real audio contribution of a track: the kept region, not the file length.
+function trackSourceSeconds(track: AudioTrack) { return parseClock(track.duration) }
+function trackKeptRange(track: AudioTrack): { start: number; end: number } {
+  const total = trackSourceSeconds(track)
+  const start = Math.max(0, Math.min(Number(track.trimStart) || 0, total || Infinity))
+  const rawEnd = Number(track.trimEnd)
+  const end = total > 0 ? Math.min(total, rawEnd > 0 ? rawEnd : total) : (rawEnd > 0 ? rawEnd : 0)
+  return { start, end: Math.max(start, end) }
+}
+function trackKeptSeconds(track: AudioTrack) { const r = trackKeptRange(track); return Math.max(0, r.end - r.start) }
+function trackIsEdited(track: AudioTrack) {
+  const total = trackSourceSeconds(track); const r = trackKeptRange(track)
+  return r.start > 0.01 || (total > 0 && r.end < total - 0.01) || (Number(track.fadeIn) || 0) > 0 || (Number(track.fadeOut) || 0) > 0
+}
+const formatClockPrecise = (seconds: number) => {
+  const s = Math.max(0, Number(seconds) || 0)
+  const m = Math.floor(s / 60); const rest = s - m * 60
+  return `${m}:${rest < 10 ? '0' : ''}${rest.toFixed(1)}`
+}
 
 const initialMedia: MediaItem[] = []
 
@@ -243,6 +368,9 @@ function timelineModel(items: MediaItem[]) {
   const total = items.length ? starts[items.length - 1] + durations[items.length - 1] : 0
   return { durations, starts, transitions, total }
 }
+const clampLufs = (value: unknown) => { const n = Number(value); return Number.isFinite(n) ? Math.min(-8, Math.max(-24, Math.round(n))) : -14 }
+const clampFade = (value: unknown, fallback: number) => { const n = Number(value); return Number.isFinite(n) ? Math.min(30, Math.max(0, Math.round(n * 2) / 2)) : fallback }
+
 const formatClock = (seconds: number) => {
   const total = Math.max(0, Math.floor(Number(seconds) || 0))
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
@@ -301,7 +429,41 @@ function probeMediaDuration(src: string, kind: 'audio' | 'video' = 'audio'): Pro
   })
 }
 
-const FONT_FAMILIES = ['Montserrat', 'Open Sans', 'Roboto', 'Playfair Display', 'Source Sans 3', 'DejaVu Sans']
+// Bundled fonts (public/fonts, OFL/Apache licensed). Keep in sync with
+// FONT_FILES in backend/app/renderer.py so the render matches the preview.
+const FONT_GROUPS: Record<string, string[]> = {
+  "Sans-serif": [
+    "Montserrat",
+    "Open Sans",
+    "Roboto",
+    "Lato",
+    "Poppins",
+    "Raleway",
+    "Nunito",
+    "Source Sans 3",
+    "Oswald",
+    "DejaVu Sans"
+  ],
+  "Serif": [
+    "Playfair Display",
+    "Merriweather",
+    "Lora",
+    "Cormorant Garamond"
+  ],
+  "Display & script": [
+    "Bebas Neue",
+    "Anton",
+    "Pacifico",
+    "Dancing Script",
+    "Caveat",
+    "Great Vibes"
+  ]
+}
+const FONT_FAMILIES = Object.values(FONT_GROUPS).flat()
+// Families with no italic cut: the browser would synthesise a slant that FFmpeg
+// cannot, so the italic toggle is disabled for them.
+const FONTS_WITHOUT_ITALIC = new Set(["Oswald", "Bebas Neue", "Anton", "Pacifico", "Dancing Script", "Caveat", "Great Vibes"])
+const FONT_SAMPLE = 'The quick brown fox · Zomer 2026 · 0123456789'
 
 function parsePresetNumber(label: string, fallback: number) {
   const match = String(label || '').match(/([\d.]+)/)
@@ -472,6 +634,15 @@ function App() {
   const [audioPolicy, setAudioPolicy] = useState('Loop & trim')
   const [audioVolume, setAudioVolume] = useState(78)
   const [audioFade, setAudioFade] = useState(true)
+  // Soundtrack fade-out at the end of the last photo: how long the fade takes
+  // and how much silence is left before the final frame.
+  const [audioFadeDuration, setAudioFadeDuration] = useState(2)
+  const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
+  const [audioFadeTail, setAudioFadeTail] = useState(0)
+  // Loudness normalisation (EBU R128): per-track matching + final mix pass.
+  const [audioNormalize, setAudioNormalize] = useState(true)
+  const [audioNormalizeTarget, setAudioNormalizeTarget] = useState(-14)
+  const [analysingLevels, setAnalysingLevels] = useState(false)
   const [resolution, setResolution] = useState('Full HD · 1080p')
   const [frameRate, setFrameRate] = useState('30 fps')
   const [bitrate, setBitrate] = useState('8 Mbps · High')
@@ -509,6 +680,9 @@ function App() {
   const [defaultTextY, setDefaultTextY] = useState(72)
   const [showTextStyles, setShowTextStyles] = useState(false)
   const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)
+  // Id of a text frame created by "Add text frame" that has not been saved
+  // yet: Cancel/close removes it again, only Done keeps it in the storyline.
+  const [pendingTextFrame, setPendingTextFrame] = useState<number | null>(null)
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([])
   const [draggedAudioId, setDraggedAudioId] = useState<number | null>(null)
   const [showFolderPicker, setShowFolderPicker] = useState(false)
@@ -529,7 +703,33 @@ function App() {
   // applies, so the on-screen total can never drift or go negative.
   const timeline = useMemo(() => timelineModel(media), [media])
   const total = timeline.total
-  const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => sum + parseClock(track.duration), 0), [audioTracks])
+  const audioFadeTooLong = audioFade && audioTracks.length > 0 && total > 0 && audioFadeDuration + audioFadeTail > total
+  const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => sum + trackKeptSeconds(track), 0), [audioTracks])
+  // Measure every soundtrack's loudness server-side so the rows can show
+  // which songs are louder/quieter than the others (and than the target).
+  const analyseLevels = async () => {
+    if (!audioTracks.length || analysingLevels) return
+    setAnalysingLevels(true)
+    let measured = 0
+    try {
+      for (const track of audioTracks) {
+        const range = trackKeptRange(track)
+        const q = `root=music&path=${encodeMediaRelative(mediaRelativePath('music', mediaItemPath(track)))}&start=${range.start}&end=${range.end}`
+        try {
+          const response = await fetch(`/api/media/loudness?${q}`)
+          if (!response.ok) throw new Error(await readApiError(response, 'Loudness analysis failed'))
+          const data = await response.json()
+          setAudioTracks(items => items.map(x => x.id === track.id ? { ...x, loudness: Number(data.integrated), truePeak: Number(data.truePeak) } : x))
+          measured++
+        } catch (error) { notify(`${track.name}: ${error instanceof Error ? error.message : 'could not measure'}`) }
+      }
+      if (measured) notify(`Measured ${measured} track${measured === 1 ? '' : 's'}`)
+    } finally { setAnalysingLevels(false) }
+  }
+  const loudnessSpread = useMemo(() => {
+    const values = audioTracks.map(t => t.loudness).filter((v): v is number => Number.isFinite(v))
+    return values.length > 1 ? Math.max(...values) - Math.min(...values) : 0
+  }, [audioTracks])
   const hasOriginalMovieAudio = useMemo(() => media.some(item => item.type === 'video' && item.audioSource === 'original'), [media])
   // The final program has sound even without a music track when a movie uses
   // its embedded audio; use this for output-size and duration reporting.
@@ -561,6 +761,10 @@ function App() {
   const previewItems = useMemo(() => media.filter(x => x.type !== 'title'), [media])
   const previewIndex = storyPreviewId == null ? -1 : previewItems.findIndex(x => x.id === storyPreviewId)
   const previewedItem = previewIndex >= 0 ? previewItems[previewIndex] : null
+  const rotatePreviewedItem = (delta: 90 | -90) => {
+    if (!previewedItem || previewedItem.type !== 'image') return
+    patch(previewedItem.id, { rotation: normalizeRotation((previewedItem.rotation || 0) + delta) })
+  }
   const deletePreviewedItem = () => {
     if (!previewedItem) return
     // After deleting, continue with the item that follows (or the one before
@@ -578,7 +782,7 @@ function App() {
     if(saved.project){setProjectName(saved.project.name);setRandomOrder(Boolean(saved.project.randomOrder))}
     if(Array.isArray(saved.media))setMedia(saved.media)
     if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72)}
-    if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut)}
+    if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path);setOutputFilename(saved.output.filename)}
     if(saved.timeline){setTimelineRows(saved.timeline.rows);setTimelineZoom(saved.timeline.zoom)}
   }
@@ -597,7 +801,7 @@ function App() {
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
     textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY },
-    soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:2 },
+    soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
     output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename:outputFilename },
     timeline: { rows:timelineRows, zoom:timelineZoom },
   })
@@ -626,7 +830,7 @@ function App() {
   const blankProjectSnapshot = () => ({
     schemaVersion: 1, project: { name: 'Untitled', randomOrder: false }, media: [],
     textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72 },
-    soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2 },
+    soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: 'slideshow' },
     timeline: { rows: 'auto', zoom: 1 },
   })
@@ -638,7 +842,7 @@ function App() {
     setMedia([])
     setRandomOrder(false)
     setAudioTracks([])
-    setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true)
+    setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0); setAudioNormalize(true); setAudioNormalizeTarget(-14)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
     setOutputPath('/output'); setOutputFilename('slideshow')
     setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72)
@@ -713,6 +917,29 @@ function App() {
     })
     setDraggedId(null)
   }
+  // Push item(s) to a 1-based slot in the storyline: the moved items are
+  // inserted there (keeping their relative order) and everything else shifts.
+  const [flashIds, setFlashIds] = useState<number[]>([])
+  const highlightItems = (ids: number[]) => {
+    setFlashIds(ids)
+    window.setTimeout(() => {
+      document.querySelector(`[data-item-id="${ids[0]}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 30)
+    window.setTimeout(() => setFlashIds(current => current === ids ? [] : current), 1800)
+  }
+  const moveItemsToPosition = (ids: number[], position: number) => {
+    if (!ids.length) return
+    const moving = media.filter(x => ids.includes(x.id))
+    if (!moving.length) return
+    const remaining = media.filter(x => !ids.includes(x.id))
+    const slot = Math.min(Math.max(1, Math.round(position)), remaining.length + 1) - 1
+    const next = [...remaining.slice(0, slot), ...moving, ...remaining.slice(slot)]
+    if (next.every((x, i) => x.id === media[i].id)) return
+    setMedia(next)
+    highlightItems(moving.map(x => x.id))
+    notify(moving.length === 1 ? `Moved ${moving[0].name} to position ${slot + 1}` : `Moved ${moving.length} items to positions ${slot + 1}–${slot + moving.length}`)
+  }
+  const [bulkPosition, setBulkPosition] = useState(1)
   const deleteSelectedItems = () => {
     if (selectedIds.length === 0) return
     setMedia(items => {
@@ -807,7 +1034,16 @@ function App() {
   const addTitleFrame = () => {
     const id = Date.now()
     setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration: 4, effect: 'None', transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: 4, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
+    setPendingTextFrame(id)
     setEditingTextFrame(id)
+  }
+  const closeTextFrameEditor = (save: boolean) => {
+    if (!save && editingTextFrame !== null && editingTextFrame === pendingTextFrame) {
+      setMedia(items => items.filter(x => x.id !== editingTextFrame))
+      setSelectedIds(ids => ids.filter(id => id !== editingTextFrame))
+    }
+    setPendingTextFrame(null)
+    setEditingTextFrame(null)
   }
   const dropAudioOn = (targetId: number) => {
     if (draggedAudioId === null || draggedAudioId === targetId) return setDraggedAudioId(null)
@@ -950,6 +1186,7 @@ function App() {
       <nav>
         <button className={activeTab === 'editor' ? 'active' : ''} onClick={() => setActiveTab('editor')}><LayoutGrid size={16}/> Editor</button>
         <button type="button" onClick={() => jumpTo('section-storyline')}>Storyline</button>
+        <button type="button" onClick={() => jumpTo('section-transitions')} title="Jump to the transition tools at the bottom of the storyline">Transitions</button>
         <button type="button" onClick={() => jumpTo('section-soundtrack')}>Soundtrack</button>
         <button type="button" onClick={() => jumpTo('section-output')}>Output</button>
         <button type="button" onClick={() => jumpTo('section-render')}>Ready to generate</button>
@@ -983,24 +1220,24 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><NumberStepper value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} /><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
             {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
 
-            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><button className="random-button" onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
+            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><button className="random-button" onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
 
-            <div className="bulk-bar"><span>TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={30} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
+            <div className="bulk-bar" id="section-transitions"><span>TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={30} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration}>Apply to all</button><i/><button className="random-button" onClick={() => { randomize(); notify('Effects and transitions randomized') }}><Shuffle size={14}/> Randomize all</button></div>
             <div className="media-view-bar"><span className="view-label">VIEW</span><div className="mode-toggle"><button className={!compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(false)} title="Show the full detail list"><List size={14}/> List</button><button className={compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(true)} title="Show a compact thumbnail grid with quick multi-selection"><LayoutGrid size={14}/> Compact</button></div>{compactMediaView && <div className="zoom-controls compact-zoom"><button onClick={() => setCompactZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out — smaller thumbnails"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={1.6} step={0.1} value={compactZoom} aria-label="Compact thumbnail zoom" onChange={e => setCompactZoom(Number(e.target.value))}/><span>{Math.round(compactZoom * 100)}%</span><button onClick={() => setCompactZoom(z => Math.min(1.6, +(z + .2).toFixed(1)))} title="Zoom in — bigger thumbnails"><ZoomIn size={14}/></button></div>}<span className="view-hint">Select frames with the check marks · Shift-click for a range · “Select all” grabs every frame in one go · drag to reorder · click a picture to view it</span></div>
             {compactMediaView && <div className="compact-actions"><button className="btn soft" disabled={!media.length} onClick={() => setSelectedIds(media.map(x => x.id))} title="Select every frame in one go"><Check size={14}/> Select all</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>Clear selection</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={14}/> Delete selected</button><span className="compact-count">{selectedIds.length} of {media.length} frame{media.length === 1 ? '' : 's'} selected</span></div>}
             {!compactMediaView && <div className="timeline-head"><span>MEDIA</span><span>SLIDE / CLIP</span><span>EFFECT</span><span>TRANSITION TO NEXT</span><span>AUDIO</span><span></span></div>}
-            {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? { background: item.frameBackground } : undefined} onClick={e => { if (item.type === 'title') setEditingTextFrame(item.id); else { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type === 'title' ? 'Edit text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}<b>{String(index + 1).padStart(2, '0')}</b></div><button className="compact-select" title="Select frame · Shift-click for a range" aria-label={selectedIds.includes(item.id) ? `Deselect ${item.name}` : `Select ${item.name}`} aria-pressed={selectedIds.includes(item.id)} onClick={e => { e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selectedIds.includes(item.id) && <Check size={11}/>}</span></button><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
+            {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? frameBackgroundStyle(item) : undefined} onClick={e => { if (item.type === 'title') setEditingTextFrame(item.id); else { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type === 'title' ? 'Edit text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div><button className="compact-select" title="Select frame · Shift-click for a range" aria-label={selectedIds.includes(item.id) ? `Deselect ${item.name}` : `Select ${item.name}`} aria-pressed={selectedIds.includes(item.id)} onClick={e => { e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selectedIds.includes(item.id) && <Check size={11}/>}</span></button><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
               {media.map((item, index) => {
                 const thumb = itemThumbUrl(item)
-                return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''}`} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
+                return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
-                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?{background:item.frameBackground}:undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}<b>{String(index + 1).padStart(2, '0')}</b></div>
+                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
                   <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                   <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
@@ -1016,8 +1253,9 @@ function App() {
 
           <section className="panel audio-panel" id="section-soundtrack">
             <div className="panel-title compact"><div><span className="step">03</span><div><h2>Soundtracks</h2><p>Add multiple MP3 files and drag to set their play order.</p></div></div><div className="audio-total"><Clock3 size={14}/><span>Total soundtrack time</span><strong>{formatClock(audioTotalSeconds)}</strong></div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><Plus size={14}/> Add MP3</button></div>
-            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span></div><div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div><button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
-            <div className="audio-settings"><div><FieldLabel>When audio is shorter than the video</FieldLabel><Select value={audioPolicy} onChange={setAudioPolicy}><option>Loop & trim</option><option>Play once, then silence</option><option>Fit slideshow to audio</option></Select></div><div><FieldLabel>Music volume <span>{audioVolume}%</span></FieldLabel><input className="range" type="range" value={audioVolume} onChange={e=>setAudioVolume(Number(e.target.value))}/></div><label className="check-label"><input type="checkbox" checked={audioFade} onChange={e=>setAudioFade(e.target.checked)}/><span><Check size={11}/></span>Fade out soundtrack <small>2.0s</small></label><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><FolderOpen size={15}/> Add soundtrack</button></div>
+            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span>{trackIsEdited(track) && <em className="trim-badge" title="This track is edited · click the scissors to change"><Scissors size={10}/> {formatClock(trackKeptRange(track).start)}–{formatClock(trackKeptRange(track).end)} · {formatClock(trackKeptSeconds(track))}{(Number(track.fadeIn)||0) > 0 && <i title={`Fade in ${track.fadeIn}s`}>⟋{track.fadeIn}s</i>}{(Number(track.fadeOut)||0) > 0 && <i title={`Fade out ${track.fadeOut}s`}>⟍{track.fadeOut}s</i>}</em>}{Number.isFinite(track.loudness) && <LoudnessMeter loudness={track.loudness!} target={audioNormalizeTarget} normalized={audioNormalize}/>}</div>{audioPreview.playingKey===String(track.id) ? <div className="waveform-player"><AudioSeekBar seed={index} color={track.color} current={audioPreview.progress.current} duration={audioPreview.progress.duration} onSeek={audioPreview.seek}/><AudioTimeReadout current={audioPreview.progress.current} duration={audioPreview.progress.duration}/></div> : <div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div>}<button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className={`icon-button ${trackIsEdited(track)?'edited':''}`} title="Cut, crop and fade this track" aria-label="Edit track" onClick={()=>{ if (audioPreview.playingKey) audioPreview.toggle(audioPreview.playingKey, '', ''); setEditingTrackId(track.id) }}><Scissors size={15}/></button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
+            <div className="audio-settings"><div><FieldLabel>When audio is shorter than the video</FieldLabel><Select value={audioPolicy} onChange={setAudioPolicy}><option>Loop & trim</option><option>Play once, then silence</option><option>Fit slideshow to audio</option></Select></div><div><FieldLabel>Music volume <span>{audioVolume}%</span></FieldLabel><input className="range" type="range" value={audioVolume} onChange={e=>setAudioVolume(Number(e.target.value))}/></div><div className="fade-settings"><label className="check-label"><input type="checkbox" checked={audioFade} onChange={e=>setAudioFade(e.target.checked)}/><span><Check size={11}/></span>Fade out soundtrack at the end{audioFade && <small>{audioFadeDuration.toFixed(1)}s</small>}</label>{audioFade && <><input className="range" type="range" min={0.5} max={15} step={0.5} value={audioFadeDuration} onChange={e=>setAudioFadeDuration(Number(e.target.value))} title="Fade-out duration"/><FieldLabel>Silence before the final frame <span>{audioFadeTail.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={10} step={0.5} value={audioFadeTail} onChange={e=>setAudioFadeTail(Number(e.target.value))} title="Seconds of silence kept after the fade, before the slideshow ends"/>{audioFadeTooLong && <em className="fade-hint"><AlertTriangle size={11}/> Longer than the slideshow ({formatClock(total)}) · clamped when rendering</em>}</>}</div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><FolderOpen size={15}/> Add soundtrack</button></div>
+            <div className="normalize-settings"><label className="check-label"><input type="checkbox" checked={audioNormalize} onChange={e=>setAudioNormalize(e.target.checked)}/><span><Check size={11}/></span>Normalise soundtrack levels<small title="EBU R128: each song is matched to the target, then the whole mix gets a final pass">{audioNormalize ? `${audioNormalizeTarget} LUFS` : 'off'}</small></label>{audioNormalize && <div className="normalize-slider"><span>Quiet · −24</span><input className="range" type="range" min={-24} max={-8} step={1} value={audioNormalizeTarget} onChange={e=>setAudioNormalizeTarget(Number(e.target.value))} title="Target loudness (−14 LUFS = streaming standard, −23 = TV, −11 = loud)"/><span>−8 · Loud</span><em className="normalize-preset">{audioNormalizeTarget <= -22 ? 'TV / broadcast' : audioNormalizeTarget <= -16 ? 'Quiet / podcast' : audioNormalizeTarget <= -12 ? 'Streaming standard' : 'Loud'}</em></div>}<button type="button" className="btn ghost" disabled={!audioTracks.length || analysingLevels || !backendOnline} title="Measure each track's loudness with FFmpeg" onClick={() => void analyseLevels()}>{analysingLevels ? <RefreshCw className="spin" size={14}/> : <Activity size={14}/>} {analysingLevels ? 'Analysing…' : 'Analyse levels'}</button>{loudnessSpread >= 3 && !audioNormalize && <em className="fade-hint"><AlertTriangle size={11}/> Tracks differ by {loudnessSpread.toFixed(1)} dB · enable normalisation to match them</em>}</div>
           </section>
         <div className="export-row">
           <section className="panel output-panel" id="section-output"><div className="panel-title compact"><div><span className="step">04</span><div><h2>Output</h2><p>Choose quality and destination.</p></div></div><button type="button" className="btn soft" title="Clear all files in the output directory" onClick={() => setShowClearOutputConfirm(true)}><Trash2 size={14}/> Clear output</button></div>
@@ -1028,14 +1266,15 @@ function App() {
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
-          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li></ul><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process.</p></section>
+          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process.</p></section>
         </div>
         </div>
       </div>
     </main>}
 
+    {editingTrackId != null && (() => { const track = audioTracks.find(x => x.id === editingTrackId); return track ? <SoundtrackEditor track={track} onChange={change => setAudioTracks(items => items.map(x => x.id === track.id ? { ...x, ...change } : x))} onClose={() => setEditingTrackId(null)} /> : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} update={change=>patch(editingTextFrame,change)} onClose={()=>setEditingTextFrame(null)}/>} 
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
         const additions: AudioTrack[] = []
@@ -1089,7 +1328,7 @@ function App() {
           additions.push({
             id: Date.now() + index, name: file.name, path: file.path, src,
             type: file.kind as 'image' | 'video', duration,
-            effect: isVideo ? 'Original motion' : 'Ken Burns · Zoom in',
+            effect: isVideo ? 'Original motion' : 'None',
             transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS,
             audioSource: isVideo ? 'soundtrack' : undefined,
             text: '', textMode: 'overlay', textStart: 0, textEnd: duration,
@@ -1111,25 +1350,185 @@ function App() {
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onClose={() => setStoryPreviewId(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
 
-function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontColor, setFontColor, bold, setBold, italic, setItalic, underline, setUnderline }: {
+function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontColor, setFontColor, bold, setBold, italic, setItalic, underline, setUnderline, sample }: {
   fontFamily: string; setFontFamily: (v: string) => void;
   fontSize: number; setFontSize: (v: number) => void;
   fontColor: string; setFontColor: (v: string) => void;
   bold: boolean; setBold: (v: boolean) => void;
   italic: boolean; setItalic: (v: boolean) => void;
   underline: boolean; setUnderline: (v: boolean) => void;
+  sample?: string;
 }) {
   return <div className="type-controls-stack">
-    <div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}>{FONT_FAMILIES.map(f => <option key={f}>{f}</option>)}</Select></div>
+    <div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}>{Object.entries(FONT_GROUPS).map(([group, names]) => <optgroup key={group} label={group}>{names.map(f => <option key={f} value={f}>{f}</option>)}</optgroup>)}</Select><div className="font-sample" style={{ fontFamily: `'${fontFamily}', sans-serif`, fontWeight: bold ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }} title="Live sample in the selected font">{sample || FONT_SAMPLE}</div></div>
     <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={200} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
     <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
-    <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic ? 'active' : ''} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
+    <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
+}
+
+// Compact loudness readout for a soundtrack row: measured LUFS, a bar on a
+// −30…−5 scale, the target marker, and the gain normalisation will apply.
+function LoudnessMeter({ loudness, target, normalized }: { loudness: number; target: number; normalized: boolean }) {
+  const pct = (v: number) => `${Math.min(100, Math.max(0, (v + 30) / 25 * 100))}%`
+  const delta = target - loudness
+  const tone = Math.abs(delta) < 1.5 ? 'ok' : delta > 0 ? 'quiet' : 'loud'
+  return <span className={`loudness-meter ${tone}`} title={`Measured ${loudness.toFixed(1)} LUFS · target ${target} LUFS${normalized ? ` · normalisation will apply ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} dB` : ''}`}>
+    <b>{loudness.toFixed(1)} LUFS</b>
+    <span className="loudness-bar"><i style={{ width: pct(loudness) }} /><u style={{ left: pct(target) }} /></span>
+    {normalized ? <small>{delta >= 0 ? '+' : ''}{delta.toFixed(1)} dB</small> : <small>{tone === 'ok' ? 'on target' : tone === 'quiet' ? 'quieter' : 'louder'}</small>}
+  </span>
+}
+
+// The "01" badge on a storyline item, editable: click, type a slot number
+// (↑/↓ also work) and press Enter to push the item there. Esc cancels.
+function PositionBadge({ index, count, onMove, className = '' }: { index: number; count: number; onMove: (position: number) => void; className?: string }) {
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState(String(index + 1))
+  useEffect(() => { if (!editing) setText(String(index + 1)) }, [index, editing])
+  const commit = () => { const v = Number(text); setEditing(false); if (Number.isFinite(v) && v >= 1 && Math.round(v) !== index + 1) onMove(v) }
+  if (!editing) return <b className={`position-badge ${className}`} title={`Position ${index + 1} of ${count} · click to move to another position`} onClick={e => { e.stopPropagation(); setEditing(true) }} onPointerDown={e => e.stopPropagation()}>{String(index + 1).padStart(2, '0')}</b>
+  return <input className={`position-input ${className}`} autoFocus type="number" min={1} max={count} value={text} aria-label="Move to position" title={`Enter a position 1–${count} and press Enter`} onChange={e => setText(e.target.value)} onFocus={e => e.target.select()} onBlur={commit} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} draggable={false} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); commit() } else if (e.key === 'Escape') { setText(String(index + 1)); setEditing(false) } }} />
+}
+
+// m:ss.s text field that commits on blur/Enter (module-level so it keeps its
+// draft text while the editor re-renders on every playback tick).
+function TimeField({ label, value, onCommit, min, max }: { label: string; value: number; onCommit: (v: number) => void; min: number; max: number }) {
+  const [text, setText] = useState(formatClockPrecise(value))
+  useEffect(() => setText(formatClockPrecise(value)), [value])
+  const commit = () => { const v = parseClock(text); if (Number.isFinite(v) && text.trim()) onCommit(Math.min(max, Math.max(min, v))); else setText(formatClockPrecise(value)) }
+  return <label className="time-field"><span>{label}</span><input value={text} onChange={e => setText(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }} /></label>
+}
+
+// Popup editor for one soundtrack: drag IN/OUT handles on a large waveform to
+// cut/crop, drag the fade corners (or use the sliders) for fade in/out, and
+// preview only the kept region. Everything is stored on the track in seconds;
+// the renderer applies the same trim + afade.
+function SoundtrackEditor({ track, onChange, onClose }: { track: AudioTrack; onChange: (change: Partial<AudioTrack>) => void; onClose: () => void }) {
+  const src = mediaFileUrl('music', mediaItemPath(track))
+  const [fileSeconds, setFileSeconds] = useState(trackSourceSeconds(track))
+  const [playing, setPlaying] = useState(false)
+  const [position, setPosition] = useState(0)
+  const [drag, setDrag] = useState<null | 'in' | 'out' | 'fadeIn' | 'fadeOut' | 'seek'>(null)
+  const playerRef = useRef<HTMLAudioElement | null>(null)
+  const stripRef = useRef<HTMLDivElement | null>(null)
+  const original = useRef<Partial<AudioTrack>>({ trimStart: track.trimStart, trimEnd: track.trimEnd, fadeIn: track.fadeIn, fadeOut: track.fadeOut })
+  const total = fileSeconds
+  const start = Math.max(0, Math.min(Number(track.trimStart) || 0, total))
+  const end = Math.min(total, (Number(track.trimEnd) || 0) > 0 ? Number(track.trimEnd) : total)
+  const kept = Math.max(0, end - start)
+  const fadeIn = Math.min(Number(track.fadeIn) || 0, kept)
+  const fadeOut = Math.min(Number(track.fadeOut) || 0, kept)
+  const MIN_KEEP = 1
+
+  // Audio element for previewing the kept region.
+  useEffect(() => {
+    const player = new Audio(src)
+    playerRef.current = player
+    player.preload = 'metadata'
+    const sync = () => { if (Number.isFinite(player.duration) && player.duration > 0) setFileSeconds(player.duration) }
+    player.onloadedmetadata = sync; player.ondurationchange = sync
+    player.ontimeupdate = () => setPosition(player.currentTime)
+    player.onended = () => setPlaying(false)
+    return () => { player.pause(); playerRef.current = null }
+  }, [src])
+  // Stop at OUT point; apply live gain so the fades are audible in the preview.
+  useEffect(() => {
+    const player = playerRef.current
+    if (!player) return
+    if (position >= end - 0.02 && playing) { player.pause(); setPlaying(false); player.currentTime = start; setPosition(start) }
+    const t = position - start
+    let gain = 1
+    if (fadeIn > 0 && t < fadeIn) gain = Math.max(0, t / fadeIn)
+    if (fadeOut > 0 && (end - position) < fadeOut) gain = Math.min(gain, Math.max(0, (end - position) / fadeOut))
+    player.volume = Math.min(1, Math.max(0, gain))
+  }, [position, start, end, fadeIn, fadeOut, playing])
+  // Persist the file length so the storyline total stays right once known.
+  useEffect(() => { if (total > 0 && Math.abs(parseClock(track.duration) - total) > 0.5) onChange({ duration: formatClock(total) }) }, [total])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const togglePlay = () => {
+    const player = playerRef.current; if (!player) return
+    if (playing) { player.pause(); setPlaying(false); return }
+    if (position < start || position >= end - 0.05) player.currentTime = start
+    player.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
+  }
+  const seekTo = (seconds: number) => { const p = playerRef.current; const v = Math.min(Math.max(seconds, start), Math.max(start, end - 0.05)); if (p) p.currentTime = v; setPosition(v) }
+  const secondsFromEvent = (event: React.PointerEvent | PointerEvent) => {
+    const rect = stripRef.current?.getBoundingClientRect(); if (!rect || !total) return 0
+    return Math.min(total, Math.max(0, (event.clientX - rect.left) / rect.width * total))
+  }
+  const round = (v: number) => Math.round(v * 10) / 10
+  const setIn = (v: number) => onChange({ trimStart: round(Math.min(Math.max(0, v), end - MIN_KEEP)) })
+  const setOut = (v: number) => onChange({ trimEnd: round(Math.max(Math.min(total, v), start + MIN_KEEP)) })
+  const setFadeIn = (v: number) => onChange({ fadeIn: round(Math.min(Math.max(0, v), Math.max(0, kept - fadeOut))) })
+  const setFadeOut = (v: number) => onChange({ fadeOut: round(Math.min(Math.max(0, v), Math.max(0, kept - fadeIn))) })
+  const onStripDown = (kind: NonNullable<typeof drag>) => (e: React.PointerEvent) => {
+    e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setDrag(kind)
+    applyDrag(kind, secondsFromEvent(e))
+  }
+  const applyDrag = (kind: NonNullable<typeof drag>, seconds: number) => {
+    if (kind === 'in') setIn(seconds)
+    else if (kind === 'out') setOut(seconds)
+    else if (kind === 'fadeIn') setFadeIn(seconds - start)
+    else if (kind === 'fadeOut') setFadeOut(end - seconds)
+    else seekTo(seconds)
+  }
+  useEffect(() => {
+    if (!drag) return
+    const move = (e: PointerEvent) => applyDrag(drag, secondsFromEvent(e))
+    const up = () => setDrag(null)
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up)
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
+  })
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); else if (e.key === ' ' && (e.target as HTMLElement)?.tagName !== 'INPUT') { e.preventDefault(); togglePlay() } }
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
+  })
+  const pct = (v: number) => total > 0 ? `${Math.min(100, Math.max(0, v / total * 100))}%` : '0%'
+  const bars = 120
+  const cancel = () => { onChange(original.current); onClose() }
+  const reset = () => onChange({ trimStart: 0, trimEnd: total, fadeIn: 0, fadeOut: 0 })
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={cancel}><div className="soundtrack-editor" onMouseDown={e => e.stopPropagation()}>
+    <div className="preview-top"><div><strong>{track.name}</strong><span>SOUNDTRACK EDITOR · CUT, CROP &amp; FADE</span></div><button type="button" onClick={cancel} aria-label="Close editor"><X size={20}/></button></div>
+    <div className="editor-body">
+      <div className="editor-strip-wrap">
+        <div className="ruler"><span>0:00</span><span>{formatClock(total / 4)}</span><span>{formatClock(total / 2)}</span><span>{formatClock(total * 3 / 4)}</span><span>{formatClock(total)}</span></div>
+        <div ref={stripRef} className={`editor-strip ${drag ? 'dragging' : ''}`} onPointerDown={onStripDown('seek')}>
+          <div className="strip-bars">{Array.from({ length: bars }).map((_, i) => { const at = (i + 0.5) / bars * total; const inKeep = at >= start && at <= end; return <i key={i} style={{ height: `${18 + ((i * 29 + track.id * 7) % 61)}%`, background: track.color, opacity: inKeep ? (at <= position ? 1 : 0.7) : 0.18 }} /> })}</div>
+          <div className="cut-shade left" style={{ width: pct(start) }} />
+          <div className="cut-shade right" style={{ left: pct(end) }} />
+          {fadeIn > 0 && <div className="fade-ramp in" style={{ left: pct(start), width: pct(fadeIn) }} />}
+          {fadeOut > 0 && <div className="fade-ramp out" style={{ left: pct(end - fadeOut), width: pct(fadeOut) }} />}
+          <div className="playhead" style={{ left: pct(position) }} />
+          <button type="button" className="trim-handle in" style={{ left: pct(start) }} title={`IN · ${formatClockPrecise(start)} · drag to set the start`} onPointerDown={onStripDown('in')}><ChevronRight size={12}/></button>
+          <button type="button" className="trim-handle out" style={{ left: pct(end) }} title={`OUT · ${formatClockPrecise(end)} · drag to set the end`} onPointerDown={onStripDown('out')}><ChevronLeft size={12}/></button>
+          <button type="button" className="fade-handle in" style={{ left: pct(start + fadeIn) }} title={`Fade in ${fadeIn.toFixed(1)}s · drag to change`} onPointerDown={onStripDown('fadeIn')} />
+          <button type="button" className="fade-handle out" style={{ left: pct(end - fadeOut) }} title={`Fade out ${fadeOut.toFixed(1)}s · drag to change`} onPointerDown={onStripDown('fadeOut')} />
+        </div>
+        <div className="strip-legend"><span><i className="swatch keep" /> kept · {formatClockPrecise(kept)}</span><span><i className="swatch cut" /> cut · {formatClockPrecise(Math.max(0, total - kept))}</span><span><i className="swatch ramp" /> fade ramps</span></div>
+      </div>
+      <div className="editor-controls">
+        <div className="transport"><button type="button" className={`btn ${playing ? 'dark' : 'soft'}`} onClick={togglePlay} disabled={!total}>{playing ? <Pause size={15}/> : <Play size={15}/>} {playing ? 'Pause' : 'Play kept region'}</button><button type="button" className="btn ghost" onClick={() => seekTo(start)} title="Jump to IN"><ChevronLeft size={14}/> IN</button><button type="button" className="btn ghost" onClick={() => seekTo(Math.max(start, end - 5))} title="Jump to 5 s before OUT">OUT <ChevronRight size={14}/></button><AudioTimeReadout current={Math.max(0, position - start)} duration={kept} /></div>
+        <div className="editor-fields">
+          <TimeField label="Start (IN)" value={start} min={0} max={end - MIN_KEEP} onCommit={setIn} />
+          <TimeField label="End (OUT)" value={end} min={start + MIN_KEEP} max={total} onCommit={setOut} />
+          <div className="time-field static"><span>Kept length</span><b>{formatClockPrecise(kept)}</b></div>
+          <div className="time-field static"><span>File length</span><b>{formatClockPrecise(total)}</b></div>
+        </div>
+        <div className="editor-fades">
+          <div><FieldLabel>Fade in <span>{fadeIn.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={10} step={0.1} value={fadeIn} onChange={e => setFadeIn(Number(e.target.value))} /></div>
+          <div><FieldLabel>Fade out <span>{fadeOut.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={10} step={0.1} value={fadeOut} onChange={e => setFadeOut(Number(e.target.value))} /></div>
+        </div>
+        <p className="editor-note"><Info size={13}/> Drag the green handles to cut the start and end; drag the small round handles to lengthen the fade ramps. Only the kept region counts toward the soundtrack length and is rendered.</p>
+      </div>
+    </div>
+    <div className="modal-foot"><span>Kept {formatClockPrecise(kept)} of {formatClockPrecise(total)}</span><button className="btn ghost" onClick={reset}>Reset</button><button className="btn ghost" onClick={cancel}>Cancel</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div>
+  </div></div>
 }
 
 function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,onClose}: any) {
@@ -1149,7 +1548,32 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
   </div></div>
 }
 
-function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,onClose:()=>void}) {
+// Loops the A→B background change inside the editor canvas using a CSS
+// approximation of the chosen xfade (fade / wipe direction / circle). The
+// exact look comes from the FFmpeg preview or render.
+function ColourChangePreview({ change, playing }: { change: NonNullable<ReturnType<typeof frameColourChange>>; playing: boolean }) {
+  const name = useMemo(() => `bgchange${Math.random().toString(36).slice(2, 8)}`, [])
+  const cls = quickTransitionClass(change.transition)
+  const p0 = Math.max(0, Math.min(100, change.start / change.hold * 100))
+  const p1 = Math.max(p0, Math.min(100, (change.start + change.time) / change.hold * 100))
+  const hidden = cls === 'from-left' ? 'transform:translateX(-100%)' : cls === 'from-right' ? 'transform:translateX(100%)' : cls === 'from-up' ? 'transform:translateY(-100%)' : cls === 'from-down' ? 'transform:translateY(100%)' : cls === 'from-circle' ? 'clip-path:circle(0% at 50% 50%)' : 'opacity:0'
+  const shown = cls === 'from-circle' ? 'clip-path:circle(75% at 50% 50%)' : cls === 'fade' ? 'opacity:1' : 'transform:none'
+  const css = `@keyframes ${name}{0%,${p0.toFixed(2)}%{${hidden}}${p1.toFixed(2)}%,100%{${shown}}}`
+  return <>
+    <style>{css}</style>
+    <div className="bg-change-layer" style={{ background: change.to, animationName: name, animationDuration: `${change.hold}s`, animationIterationCount: 'infinite', animationTimingFunction: 'linear', animationPlayState: playing ? 'running' : 'paused' }} />
+  </>
+}
+
+function TextFrameEditor({item,update,onSave,onCancel,isNew=false}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,onSave:()=>void,onCancel:()=>void,isNew?:boolean}) {
+  const original = useRef(item)
+  // Existing frames: Cancel restores the values from before the editor opened.
+  // New frames: Cancel removes the frame entirely (handled by the caller).
+  const cancel = () => { if (!isNew) update(original.current); onCancel() }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') cancel() }
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
+  })
   // Title cards keep their own type settings. Do not inherit live project
   // defaults — those apply only to captions drawn on pictures.
   const family = item.fontFamily || 'Montserrat'
@@ -1160,24 +1584,38 @@ function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial
   const underline = item.textUnderline ?? false
   // Keep swatches to real colours: FFmpeg can render these exactly in the MP4.
   const backgrounds=['#30382a','#14213d','#6f4238','#37474f','#5b285f','#163c44']
-  const original = useRef(item)
+  const change = frameColourChange(item)
+  const sameAsA = !isHex(item.frameBackground2)
+  const colourB = item.frameBackground2 || item.frameBackground
+  const [bgPlaying, setBgPlaying] = useState(true)
   return <div className="modal-backdrop dark-backdrop"><div className="frame-editor">
-    <div className="preview-top"><div><strong>Text frame editor</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={onClose}><X size={20}/></button></div>
+    <div className="preview-top"><div><strong>{isNew ? 'New text frame' : 'Text frame editor'}</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={cancel} title={isNew ? 'Discard this text frame' : 'Cancel changes'}><X size={20}/></button></div>
     <div className="frame-editor-body">
       <div className="frame-canvas" style={{background:item.frameBackground}}>
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:family,fontSize:`${Math.min(size,54)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
+        {change && <ColourChangePreview key={`${change.from}-${change.to}-${change.transition}-${change.time}-${change.start}-${change.hold}`} change={change} playing={bgPlaying} />}
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:`'${family}', sans-serif`,fontSize:`${Math.min(size,54)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
           <Move size={14}/><span>{item.text}</span>
         </div>
       </div>
       <aside>
         <div><FieldLabel>Frame text</FieldLabel><textarea value={item.text} onChange={e=>update({text:e.target.value})}/></div>
-        <TypeControls fontFamily={family} setFontFamily={v => update({fontFamily:v})} fontSize={size} setFontSize={v => update({fontSize:v})} fontColor={color} setFontColor={v => update({fontColor:v})} bold={bold} setBold={v => update({textBold:v})} italic={italic} setItalic={v => update({textItalic:v})} underline={underline} setUnderline={v => update({textUnderline:v})} />
-        <div><FieldLabel>Background</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom colour</span><input type="color" value={item.frameBackground.startsWith('#')?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div>
+        <TypeControls fontFamily={family} setFontFamily={v => update({fontFamily:v})} fontSize={size} setFontSize={v => update({fontSize:v})} fontColor={color} setFontColor={v => update({fontColor:v})} bold={bold} setBold={v => update({textBold:v})} italic={italic} setItalic={v => update({textItalic:v})} underline={underline} setUnderline={v => update({textUnderline:v})} sample={item.text} />
+        <div className="bg-columns">
+          <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(item.frameBackground)?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div>
+          <div className={sameAsA?'dimmed':''}><FieldLabel>Colour B</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} disabled={sameAsA} className={colourB===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground2:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" disabled={sameAsA} value={isHex(colourB)?colourB:'#30382a'} onChange={e=>update({frameBackground2:e.target.value})}/></div><label className="check-label dark"><input type="checkbox" checked={sameAsA} onChange={e=>update(e.target.checked?{frameBackground2:undefined}:{frameBackground2:backgrounds.find(b=>b!==item.frameBackground)||'#14213d',frameTransition:item.frameTransition||'Fade',frameTransitionTime:item.frameTransitionTime||1,frameTransitionStart:item.frameTransitionStart??Math.max(0,(item.duration-1)/2)})}/><span><Check size={11}/></span>Same as A</label></div>
+        </div>
+        {change && <div className="bg-transition">
+          <div className="ab-chip"><i style={{background:change.from}}/><ChevronRight size={12}/><i style={{background:change.to}}/><span>{change.transition} · starts {change.start.toFixed(1)}s · {change.time.toFixed(1)}s</span><button type="button" className={`icon-button ${bgPlaying?'playing':''}`} title={bgPlaying?'Pause preview':'Play the colour change'} onClick={()=>setBgPlaying(p=>!p)}>{bgPlaying?<Pause size={13}/>:<Play size={13}/>}</button></div>
+          <div><FieldLabel>Transition A → B</FieldLabel><Select value={change.transition} onChange={v=>update({frameTransition:v})}>{Object.entries(transitionGroups).map(([group,names])=><optgroup key={group} label={group}>{names.map(name=><option key={name}>{name}</option>)}</optgroup>)}</Select></div>
+          <div><FieldLabel>Start at <span>{change.start.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={Math.max(0,item.duration-change.time)} step={0.1} value={change.start} onChange={e=>update({frameTransitionStart:Number(e.target.value)})}/></div>
+          <div><FieldLabel>Duration <span>{change.time.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0.2} max={item.duration} step={0.1} value={change.time} onChange={e=>{const t=Number(e.target.value);update({frameTransitionTime:t,frameTransitionStart:Math.min(change.start,Math.max(0,item.duration-t))})}}/></div>
+          <div className="bg-timeline" title="Frame timeline: A · transition · B"><i style={{background:change.from,flex:change.start}}/><i className="mix" style={{background:`linear-gradient(90deg,${change.from},${change.to})`,flex:change.time}}/><i style={{background:change.to,flex:Math.max(0,change.hold-change.start-change.time)}}/></div>
+        </div>}
         <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(item.textX)}% · Y {Math.round(item.textY)}%</strong></div>
         <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the sidebar.</p>
       </aside>
     </div>
-    <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn ghost" onClick={()=>{ update(original.current); onClose() }}>Cancel</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div>
+    <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn ghost" onClick={cancel}>{isNew ? 'Discard' : 'Cancel'}</button><button className="btn dark" onClick={onSave}><Check size={15}/> {isNew ? 'Add to storyline' : 'Save'}</button></div>
   </div></div>
 }
 
@@ -1229,7 +1667,7 @@ function MediaBrowser({ onClose, onAdd, audioOnly=false }: { onClose: () => void
   }
   const skippedEmpty = selected.filter((f:any)=>f.empty).length
   const addable = selected.filter((f:any)=>!f.empty)
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}<BrowserThumb root={fileRoot(file)} file={file}/>{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button></>}<hr/><strong>SECURITY</strong><p>Only configured read-only mounts are accessible. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='audio'&&preview.playingKey===file.path ? <span className="card-player" onClick={e=>e.stopPropagation()}><AudioSeekBar bars={32} seed={3} color="#58703a" current={preview.progress.current} duration={preview.progress.duration} onSeek={preview.seek} className="compact"/><AudioTimeReadout current={preview.progress.current} duration={preview.progress.duration}/></span> : <BrowserThumb root={fileRoot(file)} file={file}/>}{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
 }
 
 // Pick a destination folder inside the mounted /output volume. Folders are
@@ -1323,7 +1761,7 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
   const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video key={currentItem.id} className={playing ? 'slow-zoom' : ''} src={currentUrl} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} src={currentUrl} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem?.text || ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video key={currentItem.id} className={playing ? 'slow-zoom' : ''} src={currentUrl} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={rotationStyle(currentItem?.rotation)} src={currentUrl} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem?.text || ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () => void }) {
