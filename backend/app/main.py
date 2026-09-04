@@ -53,6 +53,12 @@ class TransitionPreviewRequest(BaseModel):
     transition: str = "Fade"
     duration: float = Field(default=1.0, ge=0.1, le=10)
     textDefaults: dict[str, Any] = Field(default_factory=dict)
+    transitionParams: dict[str, Any] | None = None
+    transitionEasing: str | None = None
+    transitionReverse: int | None = None
+    easing: str | None = None
+    reverse: int | None = None
+    params: dict[str, Any] | None = None
 
 
 def validate_mount_references(payload: dict[str, Any]) -> None:
@@ -352,7 +358,11 @@ def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
 
     handle = max(1.0, request.duration)
     media = [dict(request.outgoing), dict(request.incoming)]
-    media[0].update(duration=handle, transition=request.transition, transitionTime=request.duration, previewTrim=True)
+    # Collect easing/reverse/params from several accepted field names (frontend may send either)
+    preview_params = request.transitionParams or request.params or {}
+    preview_easing = request.transitionEasing or request.easing
+    preview_reverse = request.transitionReverse if request.transitionReverse is not None else request.reverse
+    media[0].update(duration=handle, transition=request.transition, transitionTime=request.duration, previewTrim=True, transitionParams=preview_params, transitionEasing=preview_easing, transitionReverse=preview_reverse)
     media[1].update(duration=handle, previewTrim=True)
     payload = {
         "id": "transition",
