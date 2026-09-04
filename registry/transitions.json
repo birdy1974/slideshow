@@ -46,6 +46,43 @@
       ]
     },
     {
+      "id": "gl_BowTieHorizontal",
+      "label": "GL · Bow Tie Horizontal",
+      "group": "GL · Wipes & geometry",
+      "author": "huynx",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_BowTieWithParameter",
+      "label": "GL · Bow Tie Parameter",
+      "group": "GL · Wipes & geometry",
+      "author": "KMojek",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "adjust",
+          "default": "0.5"
+        },
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_BowTieVertical",
+      "label": "GL · Bow Tie Vertical",
+      "group": "GL · Wipes & geometry",
+      "author": "huynx",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
       "id": "gl_Box",
       "label": "GL · Box",
       "group": "GL · Wipes & geometry",
@@ -63,6 +100,27 @@
         {
           "name": "location",
           "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_circleopen",
+      "label": "GL · Circle Open",
+      "group": "GL · Wipes & geometry",
+      "author": "gre",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.3"
+        },
+        {
+          "name": "opening",
+          "default": "1",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "1 = iris opens, 0 = iris closes"
         }
       ]
     },
@@ -287,6 +345,36 @@
       "params": []
     },
     {
+      "id": "gl_HorizontalClose",
+      "label": "GL · Horizontal Close",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_HorizontalOpen",
+      "label": "GL · Horizontal Open",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_RectangleCrop",
+      "label": "GL · Rectangle Crop",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "bgcolor",
+          "default": "#000000",
+          "hint": "background colour shown while the rect crops in (#RRGGBB or 0xRRGGBBAA)"
+        }
+      ]
+    },
+    {
       "id": "gl_Rectangle",
       "label": "GL · Rectangle Zoom Reveal",
       "group": "GL · Wipes & geometry",
@@ -373,6 +461,22 @@
           "default": "0"
         }
       ]
+    },
+    {
+      "id": "gl_VerticalClose",
+      "label": "GL · Vertical Close",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_VerticalOpen",
+      "label": "GL · Vertical Open",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
     },
     {
       "id": "gl_wind",
@@ -1878,6 +1982,14 @@
       "params": []
     },
     {
+      "id": "gl_old_tv_lost_signal",
+      "label": "GL · Old TV Lost Signal",
+      "group": "GL · Glitch & static",
+      "author": "mernking (gitlab: Godswork)",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
       "id": "gl_parametric_glitch",
       "label": "GL · Parametric Glitch",
       "group": "GL · Glitch & static",
@@ -2018,6 +2130,25 @@
         {
           "name": "power",
           "default": "5"
+        }
+      ]
+    },
+    {
+      "id": "gl_colorphase",
+      "label": "GL · Colour Phase",
+      "group": "GL · Colour & burn",
+      "author": "gre",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "fromStep",
+          "default": "#003366",
+          "hint": "per-channel fade start (R,G,B,A steps 0..1 packed as colour); must be below toStep"
+        },
+        {
+          "name": "toStep",
+          "default": "#99CCFF",
+          "hint": "per-channel fade end; all channels must be above fromStep"
         }
       ]
     },
