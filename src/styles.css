@@ -326,3 +326,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .timeline-inspector.with-gl .gl-params{width:100%}
 .timeline-inspector.with-gl .transition-meta{width:100%}
 
+
+/* Random transition source picker (xfade / GL / both) */
+.bulk-bar .random-scope-label{font:800 8px Manrope;letter-spacing:1.1px;color:#7d8178}
+.bulk-bar .select-wrap{height:29px;width:170px;flex:0 0 auto}
+.bulk-tools .select-wrap[aria-hidden]{width:150px}
