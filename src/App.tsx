@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp,
-  Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
+  Clock3, Cpu, Download, Eraser, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
@@ -670,6 +670,7 @@ function App() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showClearAllConfirm, setShowClearAllConfirm] = useState(false)
   const [showClearOutputConfirm, setShowClearOutputConfirm] = useState(false)
+  const [showCleanTempConfirm, setShowCleanTempConfirm] = useState(false)
   const [fontFamily, setFontFamily] = useState('Montserrat')
   const [fontSize, setFontSize] = useState('48')
   const [fontColor, setFontColor] = useState('#ffffff')
@@ -984,6 +985,34 @@ function App() {
       setShowClearOutputConfirm(false)
     }
   }
+  const cleanTempFiles = async () => {
+    try {
+      const response = await fetch('/api/cleanup', { method: 'POST' })
+      if (response.ok) {
+        const result = await response.json()
+        notify(`Temporary files cleaned (${result.deleted_files} file${result.deleted_files === 1 ? '' : 's'}, ${result.deleted_dirs} folder${result.deleted_dirs === 1 ? '' : 's'})`)
+      } else {
+        let errorMsg = 'Failed to clean temporary files'
+        try {
+          const data = await response.json()
+          if (data.detail) errorMsg = data.detail
+        } catch {}
+        notify(errorMsg)
+      }
+    } catch (error) {
+      notify(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      // The cleanup removed the preview/job we were tracking; detach the UI
+      // from them so nothing keeps pointing at a freshly deleted file.
+      setPreviewUrl(null)
+      setShowPreview(false)
+      setActiveJobId(null)
+      setRendering(false)
+      setPreviewing(false)
+      setProgress(0)
+      setShowCleanTempConfirm(false)
+    }
+  }
   const clearAllProjects = async () => {
     try {
       // Delete all projects from database
@@ -1258,7 +1287,7 @@ function App() {
             <div className="normalize-settings"><label className="check-label"><input type="checkbox" checked={audioNormalize} onChange={e=>setAudioNormalize(e.target.checked)}/><span><Check size={11}/></span>Normalise soundtrack levels<small title="EBU R128: each song is matched to the target, then the whole mix gets a final pass">{audioNormalize ? `${audioNormalizeTarget} LUFS` : 'off'}</small></label>{audioNormalize && <div className="normalize-slider"><span>Quiet · −24</span><input className="range" type="range" min={-24} max={-8} step={1} value={audioNormalizeTarget} onChange={e=>setAudioNormalizeTarget(Number(e.target.value))} title="Target loudness (−14 LUFS = streaming standard, −23 = TV, −11 = loud)"/><span>−8 · Loud</span><em className="normalize-preset">{audioNormalizeTarget <= -22 ? 'TV / broadcast' : audioNormalizeTarget <= -16 ? 'Quiet / podcast' : audioNormalizeTarget <= -12 ? 'Streaming standard' : 'Loud'}</em></div>}<button type="button" className="btn ghost" disabled={!audioTracks.length || analysingLevels || !backendOnline} title="Measure each track's loudness with FFmpeg" onClick={() => void analyseLevels()}>{analysingLevels ? <RefreshCw className="spin" size={14}/> : <Activity size={14}/>} {analysingLevels ? 'Analysing…' : 'Analyse levels'}</button>{loudnessSpread >= 3 && !audioNormalize && <em className="fade-hint"><AlertTriangle size={11}/> Tracks differ by {loudnessSpread.toFixed(1)} dB · enable normalisation to match them</em>}</div>
           </section>
         <div className="export-row">
-          <section className="panel output-panel" id="section-output"><div className="panel-title compact"><div><span className="step">04</span><div><h2>Output</h2><p>Choose quality and destination.</p></div></div><button type="button" className="btn soft" title="Clear all files in the output directory" onClick={() => setShowClearOutputConfirm(true)}><Trash2 size={14}/> Clear output</button></div>
+          <section className="panel output-panel" id="section-output"><div className="panel-title compact"><div><span className="step">04</span><div><h2>Output</h2><p>Choose quality and destination.</p></div></div><div className="panel-actions"><button type="button" className="btn soft" disabled={rendering||previewing} title="Delete interim segments, soundtrack caches and proxy previews. Rendered MP4s and saved projects are kept." onClick={() => setShowCleanTempConfirm(true)}><Eraser size={14}/> Clean temp files</button><button type="button" className="btn soft" title="Clear all files in the output directory" onClick={() => setShowClearOutputConfirm(true)}><Trash2 size={14}/> Clear output</button></div></div>
             <div className="form-grid two"><div><FieldLabel>Resolution</FieldLabel><Select value={resolution} onChange={setResolution}><option>4K UHD · 2160p</option><option>Full HD · 1080p</option><option>HD · 720p</option><option>SD · 480p</option></Select></div><div><FieldLabel>Frame rate</FieldLabel><Select value={frameRate} onChange={setFrameRate}><option>24 fps</option><option>25 fps</option><option>30 fps</option><option>50 fps</option><option>60 fps</option></Select></div></div>
             <div className="form-grid two"><div><FieldLabel>Video bitrate</FieldLabel><Select value={bitrate} onChange={setBitrate}><option>4 Mbps · Standard</option><option>8 Mbps · High</option><option>12 Mbps · Very high</option><option>20 Mbps · Maximum</option></Select></div><div><FieldLabel>Encoder</FieldLabel><Select value={encoder} onChange={setEncoder}><option>Auto · Quick Sync</option><option>Intel Quick Sync</option><option>CPU · x264</option></Select></div></div>
             <div><FieldLabel>Output folder</FieldLabel><div className="path-field"><FolderOpen size={15}/><input value={outputPath} onChange={e=>setOutputPath(e.target.value)}/><button onClick={()=>setShowFolderPicker(true)} title="Browse the mounted /output volume">Browse</button></div></div>
@@ -1266,7 +1295,7 @@ function App() {
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
-          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process.</p></section>
+          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
         </div>
         </div>
       </div>
@@ -1349,6 +1378,7 @@ function App() {
     {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
+    {showCleanTempConfirm && <ConfirmDialog title="Clean temporary files?" message={`This deletes every intermediate render segment, soundtrack cache and proxy preview (the work and preview folders), and clears the render history. Rendered MP4 files in ${outputPath || '/output'} and your saved projects are kept. This cannot be undone.`} confirmLabel="Clean temp files" onConfirm={cleanTempFiles} onCancel={()=>setShowCleanTempConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
     {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}

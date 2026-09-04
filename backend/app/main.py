@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -368,8 +369,13 @@ def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     try:
         output = renderer.render(payload, "preview", work, threading.Event(), lambda _p, _s: None)
     except Exception as exc:
+        # Interim segment files are no longer needed once the render stops.
+        shutil.rmtree(work, ignore_errors=True)
         log.exception("Transition preview failed")
         raise HTTPException(422, f"Could not render transition preview: {exc}") from exc
+    # The proxy MP4 is served straight from preview_dir; its interim segments
+    # in the work dir are temporary and can be removed right away.
+    shutil.rmtree(work, ignore_errors=True)
     return FileResponse(output, media_type="video/mp4", filename="transition-preview.mp4", content_disposition_type="inline")
 
 
