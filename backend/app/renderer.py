@@ -401,6 +401,58 @@ def frame_colour_change(item: dict[str, Any]) -> dict[str, Any] | None:
     return {"to": second, "transition": str(item.get("frameTransition") or "Fade"), "time": round(time, 3), "start": round(start, 3)}
 
 
+# EBU R128 loudness normalisation ------------------------------------------------
+LOUDNESS_MIN, LOUDNESS_MAX, LOUDNESS_DEFAULT = -24.0, -8.0, -14.0
+
+
+def normalization_settings(soundtrack: dict[str, Any]) -> tuple[bool, float]:
+    """(enabled, target LUFS) from the project's soundtrack settings.
+
+    Normalisation is on by default; the target is clamped to the UI's range.
+    """
+    enabled = soundtrack.get("normalize", True)
+    enabled = bool(enabled) if enabled is not None else True
+    try:
+        target = float(soundtrack.get("normalizeTarget", LOUDNESS_DEFAULT))
+    except (TypeError, ValueError):
+        target = LOUDNESS_DEFAULT
+    if target != target:
+        target = LOUDNESS_DEFAULT
+    return enabled, max(LOUDNESS_MIN, min(LOUDNESS_MAX, target))
+
+
+def parse_loudnorm_stats(stderr_text: str) -> dict[str, float] | None:
+    """Extract the JSON block `loudnorm=print_format=json` writes to stderr."""
+    match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", stderr_text, re.S)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+        stats = {key: float(data[key]) for key in ("input_i", "input_tp", "input_lra", "input_thresh")}
+        if "target_offset" in data:
+            stats["target_offset"] = float(data["target_offset"])
+        return stats
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def loudnorm_filter(target: float, stats: dict[str, float] | None, true_peak: float = -1.5, lra: float = 11.0) -> str:
+    """Second-pass (linear) loudnorm when measurements exist, dynamic otherwise.
+
+    With measured values loudnorm applies a plain gain change, which keeps the
+    music's dynamics intact; without them it falls back to its dynamic mode.
+    Infinite/-inf measurements (silence) are treated as unmeasured.
+    """
+    base = f"loudnorm=I={format_ffmpeg_number(target)}:TP={format_ffmpeg_number(true_peak)}:LRA={format_ffmpeg_number(lra)}"
+    if stats and all(abs(stats.get(key, float('inf'))) < 1e6 for key in ("input_i", "input_tp", "input_lra", "input_thresh")):
+        base += (
+            f":measured_I={format_ffmpeg_number(stats['input_i'])}:measured_TP={format_ffmpeg_number(stats['input_tp'])}"
+            f":measured_LRA={format_ffmpeg_number(stats['input_lra'])}:measured_thresh={format_ffmpeg_number(stats['input_thresh'])}"
+            f":offset={format_ffmpeg_number(stats.get('target_offset', 0.0))}:linear=true"
+        )
+    return base + ":print_format=none"
+
+
 def track_edit_filter(track: dict[str, Any]) -> str:
     """Per-track cut/crop and fade filters, as a comma-terminated prefix.
 
@@ -1213,7 +1265,17 @@ class Renderer:
                 label = f"moviea{movie_index}"
                 audio_filter += f";[{movie_audio_index}:a]{original_filter}[{label}]"
                 mix_labels.append(f"[{label}]")
-            audio_filter += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0[aout]"
+            normalize, target = normalization_settings(project.get("soundtrack", {}))
+            if normalize:
+                # Final pass over the whole mix (music bed + any original movie
+                # audio) so the programme as a whole lands on the target and
+                # nothing clips after amix. Dynamic loudnorm keeps the fades,
+                # ducking envelopes and the user's volume slider intact, and
+                # the 200 ms afade at the very end masks loudnorm's tail.
+                audio_filter += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0:normalize=0[mixed];"
+                audio_filter += f"[mixed]{loudnorm_filter(target, None)},aresample=48000[aout]"
+            else:
+                audio_filter += ";" + "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0[aout]"
             audio_map = ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
 
         command = [self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(timeline), *audio_args]
@@ -1223,6 +1285,34 @@ class Renderer:
         run_compose(command, allow_qsv_fallback=False)
         progress(98, "Finalizing MP4")
         return output
+
+    def measure_loudness(self, source: Path, target: float, edit_filter: str = "", cancelled: threading.Event | None = None, log_file: Path | None = None) -> dict[str, float] | None:
+        """First loudnorm pass: integrated loudness / true peak / LRA of a file.
+
+        Returns None when FFmpeg cannot measure (unreadable file, silence), in
+        which case callers fall back to dynamic normalisation.
+        """
+        graph = f"{edit_filter}loudnorm=I={format_ffmpeg_number(target)}:TP=-1.5:LRA=11:print_format=json"
+        command = [self.settings.ffmpeg_bin, "-hide_banner", "-nostats", "-i", str(source), "-vn", "-af", graph, "-f", "null", "-"]
+        if log_file is not None:
+            with log_file.open("a", encoding="utf-8") as logs:
+                logs.write("\n$ " + " ".join(command) + "\n")
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            while process.poll() is None:
+                if cancelled is not None and cancelled.wait(.2):
+                    process.terminate()
+                    try: process.wait(5)
+                    except subprocess.TimeoutExpired: process.kill()
+                    raise RenderError("Render cancelled by user")
+            stderr_text = process.stderr.read() if process.stderr else ""
+        except OSError as exc:
+            log.warning("Loudness measurement failed for %s: %s", source.name, exc)
+            return None
+        if process.returncode:
+            log.warning("Loudness measurement of %s exited with %s", source.name, process.returncode)
+            return None
+        return parse_loudnorm_stats(stderr_text)
 
     def _probe_duration(self, path: Path) -> float:
         result=subprocess.run([self.settings.ffprobe_bin,"-v","error","-show_entries","format=duration","-of","json",str(path)],capture_output=True,text=True,timeout=30)
@@ -1240,7 +1330,18 @@ class Renderer:
         output=work/"soundtrack.m4a"
         inputs=[]
         for source in sources: inputs += ["-i",str(source)]
-        normalized=";".join(f"[{i}:a]{track_edit_filter(tracks[i])}aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]" for i in range(len(sources)))
+        normalize, target = normalization_settings(project.get("soundtrack", {}))
+        per_track: list[str] = []
+        for i in range(len(sources)):
+            edit = track_edit_filter(tracks[i])
+            if normalize:
+                # First pass measures the *kept* region (after cut/crop, before
+                # the user's fades so ramps do not skew the reading), second
+                # pass applies a linear gain so every song matches `target`.
+                stats = self.measure_loudness(sources[i], target, edit_filter=track_edit_filter({**tracks[i], "fadeIn": 0, "fadeOut": 0}), cancelled=cancelled, log_file=log_file)
+                edit += loudnorm_filter(target, stats) + ","
+            per_track.append(f"[{i}:a]{edit}aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
+        normalized=";".join(per_track)
         concat="".join(f"[a{i}]" for i in range(len(sources)))+f"concat=n={len(sources)}:v=0:a=1[aout]"
         command=[self.settings.ffmpeg_bin,"-hide_banner","-y",*inputs,"-filter_complex",normalized+";"+concat,"-map","[aout]","-vn","-c:a","aac","-b:a","192k",str(output)]
         self._run_ffmpeg(command,cancelled,log_file)

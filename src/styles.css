@@ -244,3 +244,17 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* Font picker live sample */
 .font-sample{margin-top:6px;padding:7px 10px;border:1px dashed #494e4566;border-radius:6px;font-size:15px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.92}
 .style-buttons button[disabled]{opacity:.35;cursor:not-allowed}
+
+/* Loudness normalisation */
+.normalize-settings{margin:-6px 20px 18px;padding:10px 12px;background:#f1f2ec;border:1px solid #dfe0da;border-radius:9px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.normalize-settings .check-label{height:auto}.normalize-settings .check-label small{margin-left:6px;font:700 10px Manrope;color:#587439}
+.normalize-slider{display:flex;align-items:center;gap:8px;flex:1;min-width:260px;font:600 9px Manrope;color:#858a7d}
+.normalize-slider .range{height:24px;flex:1;min-width:120px}
+.normalize-preset{font:700 9px Manrope;font-style:normal;color:#587439;background:#e9f2d9;border-radius:4px;padding:3px 7px;white-space:nowrap}
+.loudness-meter{display:inline-flex;align-items:center;gap:6px;margin-top:3px;font:700 9px Manrope;color:#585c53}
+.loudness-meter b{min-width:62px}
+.loudness-bar{position:relative;width:90px;height:6px;border-radius:3px;background:#dfe0da;overflow:visible}
+.loudness-bar i{display:block;height:100%;border-radius:3px;background:#99ad78}
+.loudness-bar u{position:absolute;top:-3px;width:2px;height:12px;background:#3c4137;margin-left:-1px}
+.loudness-meter.loud .loudness-bar i{background:#d98a4a}.loudness-meter.quiet .loudness-bar i{background:#7f9fc4}.loudness-meter.ok .loudness-bar i{background:#78a13e}
+.loudness-meter small{color:#858a7d;font-weight:600}

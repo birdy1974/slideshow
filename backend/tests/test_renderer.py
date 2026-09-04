@@ -22,6 +22,9 @@ from app.renderer import (
     build_filter_graph,
     fill_frame_filter,
     fit_frame_filter,
+    loudnorm_filter,
+    normalization_settings,
+    parse_loudnorm_stats,
     font_file,
     frame_colour_change,
     normalize_rotation,
@@ -693,6 +696,29 @@ class TrackEditFilterTest(unittest.TestCase):
         graph = track_edit_filter({"trimStart": 0, "trimEnd": 4, "fadeIn": 3, "fadeOut": 3})
         self.assertIn("afade=t=in:st=0:d=3,", graph)
         self.assertIn("afade=t=out:st=3:d=1,", graph)
+
+
+class LoudnessNormalizationTest(unittest.TestCase):
+    def test_settings_default_on_and_clamped(self) -> None:
+        self.assertEqual((True, -14.0), normalization_settings({}))
+        self.assertEqual((False, -14.0), normalization_settings({"normalize": False}))
+        self.assertEqual((True, -18.0), normalization_settings({"normalize": True, "normalizeTarget": -18}))
+        self.assertEqual((True, -24.0), normalization_settings({"normalizeTarget": -40}))
+        self.assertEqual((True, -8.0), normalization_settings({"normalizeTarget": 3}))
+        self.assertEqual((True, -14.0), normalization_settings({"normalizeTarget": "loud"}))
+
+    def test_parse_first_pass_json(self) -> None:
+        stderr = "size=N/A time=00:03:00\n[Parsed_loudnorm_0 @ 0x1] \n{\n\t\"input_i\" : \"-19.53\",\n\t\"input_tp\" : \"-2.10\",\n\t\"input_lra\" : \"9.40\",\n\t\"input_thresh\" : \"-29.80\",\n\t\"output_i\" : \"-14.01\",\n\t\"target_offset\" : \"0.12\"\n}\n"
+        stats = parse_loudnorm_stats(stderr)
+        self.assertEqual({"input_i": -19.53, "input_tp": -2.1, "input_lra": 9.4, "input_thresh": -29.8, "target_offset": 0.12}, stats)
+        self.assertIsNone(parse_loudnorm_stats("no json here"))
+
+    def test_second_pass_is_linear_with_measurements(self) -> None:
+        stats = {"input_i": -19.5, "input_tp": -2.1, "input_lra": 9.4, "input_thresh": -29.8, "target_offset": 0.1}
+        graph = loudnorm_filter(-14, stats)
+        self.assertTrue(graph.startswith("loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=-19.5:measured_TP=-2.1:measured_LRA=9.4:measured_thresh=-29.8:offset=0.1:linear=true"))
+        self.assertEqual("loudnorm=I=-14:TP=-1.5:LRA=11:print_format=none", loudnorm_filter(-14, None))
+        self.assertEqual("loudnorm=I=-14:TP=-1.5:LRA=11:print_format=none", loudnorm_filter(-14, {"input_i": float("-inf"), "input_tp": -99, "input_lra": 0, "input_thresh": -70}))
 
 
 class SoundtrackFadeWindowTest(unittest.TestCase):

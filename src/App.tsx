@@ -316,6 +316,8 @@ type AudioTrack = {
   // Per-track edit (seconds): keep only [trimStart, trimEnd) of the file and
   // ramp the volume at the kept region's edges. All optional; missing = whole file.
   trimStart?: number; trimEnd?: number; fadeIn?: number; fadeOut?: number;
+  // Measured integrated loudness of the kept region (LUFS), from 'Analyse levels'.
+  loudness?: number; truePeak?: number;
 }
 
 // Real audio contribution of a track: the kept region, not the file length.
@@ -366,6 +368,7 @@ function timelineModel(items: MediaItem[]) {
   const total = items.length ? starts[items.length - 1] + durations[items.length - 1] : 0
   return { durations, starts, transitions, total }
 }
+const clampLufs = (value: unknown) => { const n = Number(value); return Number.isFinite(n) ? Math.min(-8, Math.max(-24, Math.round(n))) : -14 }
 const clampFade = (value: unknown, fallback: number) => { const n = Number(value); return Number.isFinite(n) ? Math.min(30, Math.max(0, Math.round(n * 2) / 2)) : fallback }
 
 const formatClock = (seconds: number) => {
@@ -636,6 +639,10 @@ function App() {
   const [audioFadeDuration, setAudioFadeDuration] = useState(2)
   const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
   const [audioFadeTail, setAudioFadeTail] = useState(0)
+  // Loudness normalisation (EBU R128): per-track matching + final mix pass.
+  const [audioNormalize, setAudioNormalize] = useState(true)
+  const [audioNormalizeTarget, setAudioNormalizeTarget] = useState(-14)
+  const [analysingLevels, setAnalysingLevels] = useState(false)
   const [resolution, setResolution] = useState('Full HD · 1080p')
   const [frameRate, setFrameRate] = useState('30 fps')
   const [bitrate, setBitrate] = useState('8 Mbps · High')
@@ -695,6 +702,31 @@ function App() {
   const total = timeline.total
   const audioFadeTooLong = audioFade && audioTracks.length > 0 && total > 0 && audioFadeDuration + audioFadeTail > total
   const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => sum + trackKeptSeconds(track), 0), [audioTracks])
+  // Measure every soundtrack's loudness server-side so the rows can show
+  // which songs are louder/quieter than the others (and than the target).
+  const analyseLevels = async () => {
+    if (!audioTracks.length || analysingLevels) return
+    setAnalysingLevels(true)
+    let measured = 0
+    try {
+      for (const track of audioTracks) {
+        const range = trackKeptRange(track)
+        const q = `root=music&path=${encodeMediaRelative(mediaRelativePath('music', mediaItemPath(track)))}&start=${range.start}&end=${range.end}`
+        try {
+          const response = await fetch(`/api/media/loudness?${q}`)
+          if (!response.ok) throw new Error(await readApiError(response, 'Loudness analysis failed'))
+          const data = await response.json()
+          setAudioTracks(items => items.map(x => x.id === track.id ? { ...x, loudness: Number(data.integrated), truePeak: Number(data.truePeak) } : x))
+          measured++
+        } catch (error) { notify(`${track.name}: ${error instanceof Error ? error.message : 'could not measure'}`) }
+      }
+      if (measured) notify(`Measured ${measured} track${measured === 1 ? '' : 's'}`)
+    } finally { setAnalysingLevels(false) }
+  }
+  const loudnessSpread = useMemo(() => {
+    const values = audioTracks.map(t => t.loudness).filter((v): v is number => Number.isFinite(v))
+    return values.length > 1 ? Math.max(...values) - Math.min(...values) : 0
+  }, [audioTracks])
   const hasOriginalMovieAudio = useMemo(() => media.some(item => item.type === 'video' && item.audioSource === 'original'), [media])
   // The final program has sound even without a music track when a movie uses
   // its embedded audio; use this for output-size and duration reporting.
@@ -747,7 +779,7 @@ function App() {
     if(saved.project){setProjectName(saved.project.name);setRandomOrder(Boolean(saved.project.randomOrder))}
     if(Array.isArray(saved.media))setMedia(saved.media)
     if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72)}
-    if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0))}
+    if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path);setOutputFilename(saved.output.filename)}
     if(saved.timeline){setTimelineRows(saved.timeline.rows);setTimelineZoom(saved.timeline.zoom)}
   }
@@ -766,7 +798,7 @@ function App() {
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
     textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY },
-    soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail },
+    soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
     output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename:outputFilename },
     timeline: { rows:timelineRows, zoom:timelineZoom },
   })
@@ -795,7 +827,7 @@ function App() {
   const blankProjectSnapshot = () => ({
     schemaVersion: 1, project: { name: 'Untitled', randomOrder: false }, media: [],
     textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72 },
-    soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0 },
+    soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: 'slideshow' },
     timeline: { rows: 'auto', zoom: 1 },
   })
@@ -807,7 +839,7 @@ function App() {
     setMedia([])
     setRandomOrder(false)
     setAudioTracks([])
-    setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0)
+    setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0); setAudioNormalize(true); setAudioNormalizeTarget(-14)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
     setOutputPath('/output'); setOutputFilename('slideshow')
     setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72)
@@ -1186,8 +1218,9 @@ function App() {
 
           <section className="panel audio-panel" id="section-soundtrack">
             <div className="panel-title compact"><div><span className="step">03</span><div><h2>Soundtracks</h2><p>Add multiple MP3 files and drag to set their play order.</p></div></div><div className="audio-total"><Clock3 size={14}/><span>Total soundtrack time</span><strong>{formatClock(audioTotalSeconds)}</strong></div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><Plus size={14}/> Add MP3</button></div>
-            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span>{trackIsEdited(track) && <em className="trim-badge" title="This track is edited · click the scissors to change"><Scissors size={10}/> {formatClock(trackKeptRange(track).start)}–{formatClock(trackKeptRange(track).end)} · {formatClock(trackKeptSeconds(track))}{(Number(track.fadeIn)||0) > 0 && <i title={`Fade in ${track.fadeIn}s`}>⟋{track.fadeIn}s</i>}{(Number(track.fadeOut)||0) > 0 && <i title={`Fade out ${track.fadeOut}s`}>⟍{track.fadeOut}s</i>}</em>}</div>{audioPreview.playingKey===String(track.id) ? <div className="waveform-player"><AudioSeekBar seed={index} color={track.color} current={audioPreview.progress.current} duration={audioPreview.progress.duration} onSeek={audioPreview.seek}/><AudioTimeReadout current={audioPreview.progress.current} duration={audioPreview.progress.duration}/></div> : <div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div>}<button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className={`icon-button ${trackIsEdited(track)?'edited':''}`} title="Cut, crop and fade this track" aria-label="Edit track" onClick={()=>{ if (audioPreview.playingKey) audioPreview.toggle(audioPreview.playingKey, '', ''); setEditingTrackId(track.id) }}><Scissors size={15}/></button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
+            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span>{trackIsEdited(track) && <em className="trim-badge" title="This track is edited · click the scissors to change"><Scissors size={10}/> {formatClock(trackKeptRange(track).start)}–{formatClock(trackKeptRange(track).end)} · {formatClock(trackKeptSeconds(track))}{(Number(track.fadeIn)||0) > 0 && <i title={`Fade in ${track.fadeIn}s`}>⟋{track.fadeIn}s</i>}{(Number(track.fadeOut)||0) > 0 && <i title={`Fade out ${track.fadeOut}s`}>⟍{track.fadeOut}s</i>}</em>}{Number.isFinite(track.loudness) && <LoudnessMeter loudness={track.loudness!} target={audioNormalizeTarget} normalized={audioNormalize}/>}</div>{audioPreview.playingKey===String(track.id) ? <div className="waveform-player"><AudioSeekBar seed={index} color={track.color} current={audioPreview.progress.current} duration={audioPreview.progress.duration} onSeek={audioPreview.seek}/><AudioTimeReadout current={audioPreview.progress.current} duration={audioPreview.progress.duration}/></div> : <div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div>}<button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className={`icon-button ${trackIsEdited(track)?'edited':''}`} title="Cut, crop and fade this track" aria-label="Edit track" onClick={()=>{ if (audioPreview.playingKey) audioPreview.toggle(audioPreview.playingKey, '', ''); setEditingTrackId(track.id) }}><Scissors size={15}/></button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
             <div className="audio-settings"><div><FieldLabel>When audio is shorter than the video</FieldLabel><Select value={audioPolicy} onChange={setAudioPolicy}><option>Loop & trim</option><option>Play once, then silence</option><option>Fit slideshow to audio</option></Select></div><div><FieldLabel>Music volume <span>{audioVolume}%</span></FieldLabel><input className="range" type="range" value={audioVolume} onChange={e=>setAudioVolume(Number(e.target.value))}/></div><div className="fade-settings"><label className="check-label"><input type="checkbox" checked={audioFade} onChange={e=>setAudioFade(e.target.checked)}/><span><Check size={11}/></span>Fade out soundtrack at the end{audioFade && <small>{audioFadeDuration.toFixed(1)}s</small>}</label>{audioFade && <><input className="range" type="range" min={0.5} max={15} step={0.5} value={audioFadeDuration} onChange={e=>setAudioFadeDuration(Number(e.target.value))} title="Fade-out duration"/><FieldLabel>Silence before the final frame <span>{audioFadeTail.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={10} step={0.5} value={audioFadeTail} onChange={e=>setAudioFadeTail(Number(e.target.value))} title="Seconds of silence kept after the fade, before the slideshow ends"/>{audioFadeTooLong && <em className="fade-hint"><AlertTriangle size={11}/> Longer than the slideshow ({formatClock(total)}) · clamped when rendering</em>}</>}</div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><FolderOpen size={15}/> Add soundtrack</button></div>
+            <div className="normalize-settings"><label className="check-label"><input type="checkbox" checked={audioNormalize} onChange={e=>setAudioNormalize(e.target.checked)}/><span><Check size={11}/></span>Normalise soundtrack levels<small title="EBU R128: each song is matched to the target, then the whole mix gets a final pass">{audioNormalize ? `${audioNormalizeTarget} LUFS` : 'off'}</small></label>{audioNormalize && <div className="normalize-slider"><span>Quiet · −24</span><input className="range" type="range" min={-24} max={-8} step={1} value={audioNormalizeTarget} onChange={e=>setAudioNormalizeTarget(Number(e.target.value))} title="Target loudness (−14 LUFS = streaming standard, −23 = TV, −11 = loud)"/><span>−8 · Loud</span><em className="normalize-preset">{audioNormalizeTarget <= -22 ? 'TV / broadcast' : audioNormalizeTarget <= -16 ? 'Quiet / podcast' : audioNormalizeTarget <= -12 ? 'Streaming standard' : 'Loud'}</em></div>}<button type="button" className="btn ghost" disabled={!audioTracks.length || analysingLevels || !backendOnline} title="Measure each track's loudness with FFmpeg" onClick={() => void analyseLevels()}>{analysingLevels ? <RefreshCw className="spin" size={14}/> : <Activity size={14}/>} {analysingLevels ? 'Analysing…' : 'Analyse levels'}</button>{loudnessSpread >= 3 && !audioNormalize && <em className="fade-hint"><AlertTriangle size={11}/> Tracks differ by {loudnessSpread.toFixed(1)} dB · enable normalisation to match them</em>}</div>
           </section>
         <div className="export-row">
           <section className="panel output-panel" id="section-output"><div className="panel-title compact"><div><span className="step">04</span><div><h2>Output</h2><p>Choose quality and destination.</p></div></div><button type="button" className="btn soft" title="Clear all files in the output directory" onClick={() => setShowClearOutputConfirm(true)}><Trash2 size={14}/> Clear output</button></div>
@@ -1302,6 +1335,19 @@ function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontCo
     <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
     <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
+}
+
+// Compact loudness readout for a soundtrack row: measured LUFS, a bar on a
+// −30…−5 scale, the target marker, and the gain normalisation will apply.
+function LoudnessMeter({ loudness, target, normalized }: { loudness: number; target: number; normalized: boolean }) {
+  const pct = (v: number) => `${Math.min(100, Math.max(0, (v + 30) / 25 * 100))}%`
+  const delta = target - loudness
+  const tone = Math.abs(delta) < 1.5 ? 'ok' : delta > 0 ? 'quiet' : 'loud'
+  return <span className={`loudness-meter ${tone}`} title={`Measured ${loudness.toFixed(1)} LUFS · target ${target} LUFS${normalized ? ` · normalisation will apply ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} dB` : ''}`}>
+    <b>{loudness.toFixed(1)} LUFS</b>
+    <span className="loudness-bar"><i style={{ width: pct(loudness) }} /><u style={{ left: pct(target) }} /></span>
+    {normalized ? <small>{delta >= 0 ? '+' : ''}{delta.toFixed(1)} dB</small> : <small>{tone === 'ok' ? 'on target' : tone === 'quiet' ? 'quieter' : 'louder'}</small>}
+  </span>
 }
 
 // m:ss.s text field that commits on blur/Enter (module-level so it keeps its
