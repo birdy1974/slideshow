@@ -42,6 +42,59 @@ XFADE = {
     "Cover left":"coverleft", "Cover right":"coverright", "Cover up":"coverup", "Cover down":"coverdown", "Reveal left":"revealleft", "Reveal right":"revealright", "Reveal up":"revealup", "Reveal down":"revealdown",
 }
 
+# GL transitions ported via xfade-easing (custom ffmpeg). Friendly label -> ffmpeg id is 1:1 lowercase, but we accept both.
+# Full list from gl-transitions / scriptituk – 64 entries. Params are documented; defaults handled by FFmpeg.
+GL_TRANSITIONS = {
+    "gl_angular","gl_Bars","gl_blend","gl_BookFlip","gl_Bounce","gl_BowTie","gl_ButterflyWaveScrawler",
+    "gl_cannabisleaf","gl_chessboard","gl_CornerVanish","gl_CrazyParametricFun","gl_crosshatch","gl_CrossOut",
+    "gl_crosswarp","gl_CrossZoom","gl_cube","gl_Diamond","gl_DirectionalScaled","gl_directionalwarp","gl_doorway",
+    "gl_DoubleDiamond","gl_Dreamy","gl_EdgeTransition","gl_Exponential_Swish","gl_fadecolor","gl_FanIn","gl_FanOut",
+    "gl_FanUp","gl_Flower","gl_GridFlip","gl_heart","gl_hexagonalize","gl_InvertedPageCurl","gl_kaleidoscope",
+    "gl_LinearBlur","gl_Lissajous_Tiles","gl_morph","gl_Mosaic","gl_perlin","gl_pinwheel","gl_polar_function",
+    "gl_PolkaDotsCurtain","gl_powerKaleido","gl_randomNoisex","gl_randomsquares","gl_ripple","gl_Rolls",
+    "gl_RotateScaleVanish","gl_rotateTransition","gl_rotate_scale_fade","gl_SimpleBookCurl","gl_SimplePageCurl",
+    "gl_Slides","gl_squareswire","gl_StageCurtains","gl_StarWipe","gl_static_wipe","gl_StereoViewer","gl_Stripe_Wipe",
+    "gl_swap","gl_Swirl","gl_WaterDrop","gl_windowblinds","gl_windowslice",
+}
+# Friendly GL names used by the UI (prefix GL ·) -> ffmpeg id
+GL_FRIENDLY_TO_ID = {
+    "GL · Angular":"gl_angular","GL · Bars":"gl_Bars","GL · Blend":"gl_blend","GL · Book Flip":"gl_BookFlip","GL · Bounce":"gl_Bounce",
+    "GL · Bow Tie":"gl_BowTie","GL · Butterfly Wave Scrawler":"gl_ButterflyWaveScrawler","GL · Cannabis Leaf":"gl_cannabisleaf","GL · Chessboard":"gl_chessboard",
+    "GL · Corner Vanish":"gl_CornerVanish","GL · Crazy Parametric Fun":"gl_CrazyParametricFun","GL · Crosshatch":"gl_crosshatch","GL · Cross Out":"gl_CrossOut",
+    "GL · Cross Warp":"gl_crosswarp","GL · Cross Zoom":"gl_CrossZoom","GL · Cube":"gl_cube","GL · Diamond":"gl_Diamond","GL · Directional Scaled":"gl_DirectionalScaled",
+    "GL · Directional Warp":"gl_directionalwarp","GL · Doorway":"gl_doorway","GL · Double Diamond":"gl_DoubleDiamond","GL · Dreamy":"gl_Dreamy","GL · Edge Transition":"gl_EdgeTransition",
+    "GL · Exponential Swish":"gl_Exponential_Swish","GL · Fade Color":"gl_fadecolor","GL · Fan In":"gl_FanIn","GL · Fan Out":"gl_FanOut","GL · Fan Up":"gl_FanUp",
+    "GL · Flower":"gl_Flower","GL · Grid Flip":"gl_GridFlip","GL · Heart":"gl_heart","GL · Hexagonalize":"gl_hexagonalize","GL · Inverted Page Curl":"gl_InvertedPageCurl",
+    "GL · Kaleidoscope":"gl_kaleidoscope","GL · Linear Blur":"gl_LinearBlur","GL · Lissajous Tiles":"gl_Lissajous_Tiles","GL · Morph":"gl_morph","GL · Mosaic":"gl_Mosaic",
+    "GL · Perlin":"gl_perlin","GL · Pinwheel":"gl_pinwheel","GL · Polar Function":"gl_polar_function","GL · Polka Dots Curtain":"gl_PolkaDotsCurtain","GL · Power Kaleido":"gl_powerKaleido",
+    "GL · Random Noise X":"gl_randomNoisex","GL · Random Squares":"gl_randomsquares","GL · Ripple":"gl_ripple","GL · Rolls":"gl_Rolls","GL · Rotate Scale Vanish":"gl_RotateScaleVanish",
+    "GL · Rotate Transition":"gl_rotateTransition","GL · Rotate Scale Fade":"gl_rotate_scale_fade","GL · Simple Book Curl":"gl_SimpleBookCurl","GL · Simple Page Curl":"gl_SimplePageCurl",
+    "GL · Slides":"gl_Slides","GL · Squares Wire":"gl_squareswire","GL · Stage Curtains":"gl_StageCurtains","GL · Star Wipe":"gl_StarWipe","GL · Static Wipe":"gl_static_wipe",
+    "GL · Stereo Viewer":"gl_StereoViewer","GL · Stripe Wipe":"gl_Stripe_Wipe","GL · Swap":"gl_swap","GL · Swirl":"gl_Swirl","GL · Water Drop":"gl_WaterDrop","GL · Window Blinds":"gl_windowblinds","GL · Window Slice":"gl_windowslice",
+}
+GL_ID_TO_FRIENDLY = {v:k for k,v in GL_FRIENDLY_TO_ID.items()}
+
+# Easing catalogue supported by the patched xfade (custom ffmpeg). Empty/linear = no easing.
+EASING_PRESETS = [
+    "linear",
+    "quadratic","quadratic-in","quadratic-out","quadratic-in-out",
+    "cubic","cubic-in","cubic-out","cubic-in-out",
+    "quartic","quartic-in","quartic-out","quartic-in-out",
+    "quintic","quintic-in","quintic-out","quintic-in-out",
+    "sinusoidal","sinusoidal-in","sinusoidal-out","sinusoidal-in-out",
+    "exponential","exponential-in","exponential-out","exponential-in-out",
+    "circular","circular-in","circular-out","circular-in-out",
+    "elastic","elastic-in","elastic-out","elastic-in-out",
+    "back","back-in","back-out","back-in-out",
+    "bounce","bounce-in","bounce-out","bounce-in-out",
+    "squareroot","squareroot-in","squareroot-out","squareroot-in-out",
+    "cuberoot","cuberoot-in","cuberoot-out","cuberoot-in-out",
+    "flipelastic","flipelastic-in","flipelastic-out","flipelastic-in-out",
+    "flipback","flipback-in","flipback-out","flipback-in-out",
+    "ease","ease-in","ease-out","ease-in-out","cubic-bezier(0.42,0,0.58,1)","cubic-bezier(0.25,0.1,0.25,1)","step-start","step-end",
+]
+
+
 
 def parse_number(label: str, fallback: float) -> float:
     match = re.search(r"([\d.]+)", label or "")
@@ -73,9 +126,30 @@ def source_path(settings: Settings, item: dict[str, Any]) -> Path:
 
 
 def xfade_name(label: str) -> str:
-    # GLSL shaders are not portable on the DS918+ software path; use a safe
-    # dissolve fallback while retaining the exact requested value in SQLite.
-    return XFADE.get(label, "dissolve" if label.startswith("GLSL") else "fade")
+    if not label:
+        return "fade"
+    # Direct gl_* identifiers (custom ffmpeg) are passed through unchanged
+    if label in GL_TRANSITIONS:
+        return label
+    if label.startswith("gl_"):
+        return label
+    # Friendly GL names from the UI (GL · Cube) -> ffmpeg id
+    if label in GL_FRIENDLY_TO_ID:
+        return GL_FRIENDLY_TO_ID[label]
+    if label.startswith("GL ") or label.startswith("GL ·"):
+        # try normalised
+        norm = label.strip()
+        if norm in GL_FRIENDLY_TO_ID:
+            return GL_FRIENDLY_TO_ID[norm]
+        # fallback: strip prefix and lower
+        return "dissolve" if label.startswith("GL") else "fade"
+    # Native XFADE catalogue
+    if label in XFADE:
+        return XFADE[label]
+    # Legacy GLSL prefix from old stock path
+    if label.startswith("GLSL"):
+        return "dissolve"
+    return "fade"
 
 
 def _parse_xfade_help(text: str) -> set[str]:
@@ -97,6 +171,114 @@ def probe_xfade_transitions(ffmpeg_bin: str) -> set[str]:
     except Exception:
         return set()
     return _parse_xfade_help(f"{result.stdout or ''}\n{result.stderr or ''}")
+
+
+def probe_xfade_has_easing(ffmpeg_bin: str) -> bool:
+    """Whether the installed xfade supports the custom `easing`/`reverse` options."""
+    try:
+        result = subprocess.run([ffmpeg_bin, "-hide_banner", "-h", "filter=xfade"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return False
+    text = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    return "easing" in text and "reverse" in text
+
+
+def parse_transition_label(label: str) -> tuple[str, dict[str, str]]:
+    """Split a label like 'gl_cube' or 'gl_cube(persp=0.7,unzoom=0.3)' into id + params."""
+    if not label:
+        return "fade", {}
+    label = label.strip()
+    if "(" in label and label.endswith(")"):
+        try:
+            name, rest = label.split("(", 1)
+            rest = rest[:-1]
+            params: dict[str,str] = {}
+            # split by comma or colon or semicolon
+            for part in re.split(r"[,;]", rest):
+                part=part.strip()
+                if not part:
+                    continue
+                if "=" in part:
+                    k,v = part.split("=",1)
+                    params[k.strip()] = v.strip()
+                elif ":" in part:
+                    # allow colon as separator key:value? fallback
+                    k,v = part.split(":",1)
+                    params[k.strip()] = v.strip()
+            return name.strip(), params
+        except Exception:
+            return label, {}
+    return label, {}
+
+
+def format_transition_params(ffmpeg_id: str, params: dict[str, Any] | None) -> str:
+    """Build 'gl_cube(persp=0.7,unzoom=0.3)' preserving raw values (colours, numbers)."""
+    if not params:
+        return ffmpeg_id
+    cleaned = {}
+    for k, v in params.items():
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        # keep as string; strip whitespace
+        cleaned[k.strip()] = str(v).strip()
+    if not cleaned:
+        return ffmpeg_id
+    inner = ",".join(f"{k}={v}" for k, v in cleaned.items())
+    return f"{ffmpeg_id}({inner})"
+
+
+def build_xfade_filter(transition_label: str, duration: float, offset: float, easing: str | None = None, reverse: int | bool | None = None, params: dict[str, Any] | None = None, ffmpeg_bin: str | None = None) -> str:
+    """Build xfade filter fragment, handling gl params, easing and reverse.
+
+    If the local ffmpeg lacks easing support (stock build), easing/reverse are
+    silently stripped so the filter remains valid. GL transitions on stock
+    builds will have been filtered via resolve_xfade -> fallback.
+    """
+    ffmpeg_id = xfade_name(transition_label)
+    # If caller passed params separately, merge with inline params
+    base_id, inline_params = parse_transition_label(ffmpeg_id)
+    merged: dict[str, str] = {}
+    merged.update(inline_params)
+    if params:
+        for k,v in params.items():
+            if v is None or (isinstance(v,str) and not v.strip()):
+                continue
+            merged[k] = str(v)
+    transition_str = format_transition_params(base_id, merged if merged else None)
+
+    # Validate easing – keep linear as default (no extra option needed)
+    easing_str = None
+    if easing and isinstance(easing, str):
+        e = easing.strip()
+        if e and e.lower() not in ("", "linear"):
+            # allow css forms like cubic-bezier(...) steps(...) etc.
+            easing_str = e
+
+    reverse_int = 0
+    if reverse is not None:
+        try:
+            reverse_int = int(bool(reverse)) if isinstance(reverse, bool) else int(reverse)
+        except Exception:
+            reverse_int = 1 if reverse else 0
+        if reverse_int not in (0,1,2,3):
+            reverse_int = 1 if reverse_int else 0
+
+    # Probe easing support if ffmpeg_bin provided
+    has_easing = True
+    if ffmpeg_bin and easing_str:
+        has_easing = probe_xfade_has_easing(ffmpeg_bin)
+        if not has_easing:
+            easing_str = None
+            reverse_int = 0
+
+    parts = [f"transition={transition_str}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
+    if easing_str and has_easing:
+        # escape colon/quote inside easing (unlikely)
+        parts.append(f"easing={easing_str}")
+    if reverse_int and has_easing:
+        parts.append(f"reverse={reverse_int}")
+    return "xfade:" + ":".join(parts) if False else "xfade=" + ":".join(parts)
+
 
 
 class RenderError(RuntimeError):
@@ -610,6 +792,8 @@ class Renderer:
         self._ffmpeg_version: str | None = None
         self._version_probed = False
         self._version_lock = threading.Lock()
+        self._xfade_has_easing: bool | None = None
+        self._easing_lock = threading.Lock()
 
     def warm_capabilities(self) -> None:
         """Probe ffmpeg version, the xfade catalogue and Quick Sync once, in a
@@ -627,6 +811,7 @@ class Renderer:
             try:
                 self.ffmpeg_version()
                 self.xfade_supported()
+                self.xfade_has_easing()
                 self.qsv_encodable()
             except Exception:
                 log.exception("Capability warm-up failed; capabilities will re-probe lazily")
@@ -660,6 +845,13 @@ class Renderer:
                 self._xfade_supported = probe_xfade_transitions(self.settings.ffmpeg_bin)
         return self._xfade_supported
 
+    def xfade_has_easing(self) -> bool:
+        """Whether this FFmpeg's xfade supports easing/reverse (custom build)."""
+        with self._easing_lock:
+            if self._xfade_has_easing is None:
+                self._xfade_has_easing = probe_xfade_has_easing(self.settings.ffmpeg_bin)
+        return bool(self._xfade_has_easing)
+
     def resolve_xfade(self, label: str) -> str:
         """Map a UI transition to one this FFmpeg can run, degrading safely.
 
@@ -668,19 +860,90 @@ class Renderer:
         An empty probe result means detection failed: keep the mapped name.
         """
         name = xfade_name(label)
+        # strip params for support check e.g. gl_cube(persp=0.7) -> gl_cube
+        base, _ = parse_transition_label(name)
+        # gl transitions may be reported as gl_* in help; compare base
         supported = self.xfade_supported()
-        if not supported or name in supported:
+        if not supported or base in supported:
             return name
-        fallback = "dissolve" if "dissolve" in supported else sorted(supported)[0]
+        # If the bare name is not supported but base is gl_* , fallback to dissolve (stock ffmpeg)
+        fallback = "dissolve" if "dissolve" in supported else (sorted(supported)[0] if supported else "fade")
         log.warning("Transition '%s' (%s) is not supported by this FFmpeg build; falling back to '%s'", label, name, fallback)
         return fallback
+
+    def build_transition_xfade(self, item: dict[str, Any], duration: float, offset: float) -> str:
+        """Build the full xfade=... filter fragment for a media item's transition.
+
+        Reads transition / transitionParams / transitionEasing / transitionReverse
+        (and legacy transitionStr) from the item. Stock ffmpeg silently drops
+        easing/reverse; custom build renders them. Unknown GL params are left to
+        FFmpeg to validate (it will error with a useful message).
+        """
+        label = str(item.get("transition") or item.get("transitionStr") or "Fade")
+        # Normalise label: allow bare id or friendly
+        params = item.get("transitionParams") or item.get("transition_params") or {}
+        # also accept transitionParams as JSON string (database persistence)
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except Exception:
+                params = {}
+        if not isinstance(params, dict):
+            params = {}
+        easing = item.get("transitionEasing") or item.get("transition_easing") or item.get("easing")
+        reverse = item.get("transitionReverse") if "transitionReverse" in item else item.get("reverse")
+        if reverse is None:
+            reverse = item.get("transition_reverse")
+        # Also support inline params in label (e.g. gl_cube(persp=0.7)) if params empty
+        # Resolve first to get fallback if needed
+        resolved = self.resolve_xfade(label)
+        base, _ = parse_transition_label(resolved)
+        # If fallback happened (custom -> dissolve), don't attach GL params/easing
+        if base == "dissolve" and label not in ("dissolve","Dissolve") and xfade_name(label) != "dissolve":
+            # fallback case: strip easing/params
+            return f"xfade=transition=dissolve:duration={format_ffmpeg_number(duration)}:offset={format_ffmpeg_number(offset)}"
+        # Decide whether to include easing (only if custom ffmpeg supports it)
+        has_easing = self.xfade_has_easing()
+        if not has_easing:
+            easing = None
+            reverse = 0
+        # Build final transition string with params
+        ffmpeg_id = xfade_name(label)
+        # If caller stored friendly but we have params, rebuild correctly
+        base_id, inline = parse_transition_label(ffmpeg_id)
+        merged: dict[str, Any] = {}
+        merged.update(inline)
+        for k,v in params.items():
+            if v is None or (isinstance(v,str) and not v.strip()):
+                continue
+            merged[k] = str(v).strip()
+        transition_str = format_transition_params(base_id, merged if merged else None)
+        # Re-compose with easing/reverse exactly like build_xfade_filter but without extra probe
+        parts = [f"transition={transition_str}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
+        if easing and str(easing).strip().lower() not in ("", "linear"):
+            parts.append(f"easing={str(easing).strip()}")
+        try:
+            rev = int(reverse) if reverse is not None else 0
+        except Exception:
+            rev = 1 if reverse else 0
+        if rev and rev not in (0,1,2,3):
+            rev = 1
+        if rev:
+            parts.append(f"reverse={rev}")
+        return "xfade=" + ":".join(parts)
 
     def capabilities(self) -> dict[str, Any]:
         # Feeds /api/health, so it must answer instantly even mid-render: the
         # version comes from the once-per-process cache and Quick Sync from a
         # non-blocking read of the background probe's result.
         ffmpeg = shutil.which(self.settings.ffmpeg_bin)
-        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "cpuEncoding": bool(ffmpeg)}
+        supported = self.xfade_supported() if self._xfade_supported is not None else set()
+        has_easing = self._xfade_has_easing if self._xfade_has_easing is not None else False
+        # Non-blocking: if not yet probed, report False/unknown; warm thread will fill soon
+        if self._xfade_has_easing is None and self._xfade_supported is not None:
+            # try quick probe without lock if not yet done? report false until warm
+            has_easing = False
+        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "cpuEncoding": bool(ffmpeg), "xfadeTransitions": len(supported) if supported else 0, "hasEasing": bool(has_easing), "hasGL": bool(supported and any(s.startswith("gl_") for s in supported))}
 
     def qsv_encodable_cached(self) -> bool:
         """Non-blocking view of the Quick Sync probe (False until it finishes).
@@ -1122,6 +1385,7 @@ class Renderer:
             segments.append(segment)
             progress(5 + 45 * (index + 1) / len(media), f"Prepared item {index+1} of {len(media)}")
 
+        # Transition specs per gap (include easing/params/reverse). We keep resolved names for fallback logging but build filter via build_transition_xfade.
         xfade_names = [self.resolve_xfade(str(media[index].get("transition", "Fade"))) for index in range(len(media) - 1)]
         total_duration = sum(durations) + sum(transitions)
         progress(55, "Composing transitions and soundtrack")
@@ -1204,14 +1468,16 @@ class Renderer:
             # its hold. Segment N+1 starts with its incoming cloned-frame
             # handle. Fading those handles gives an additive transition without
             # stealing time from either clip's configured hold.
+            # Build xfade with params/easing/reverse from the outgoing media's transition config
+            xfade_fragment = self.build_transition_xfade(media[index], transition, 0.0)
+            # xfade_fragment is like "xfade=transition=gl_cube(...):duration=1:offset=0:easing=...:reverse=..."
             transition_graph = (
                 f"[0:v]trim=start={format_ffmpeg_number(lead_in + hold)}:"
                 f"end={format_ffmpeg_number(lead_in + hold + transition)},"
                 f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
                 f"[1:v]trim=start=0:end={format_ffmpeg_number(transition)},"
                 f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
-                f"[outgoing][incoming]xfade=transition={xfade_names[index]}:"
-                f"duration={format_ffmpeg_number(transition)}:offset=0,"
+                f"[outgoing][incoming]{xfade_fragment},"
                 f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[vout]"
             )
             transition_command = [

@@ -262,6 +262,10 @@ function AudioTimeReadout({ current, duration }: { current: number; duration: nu
 type MediaItem = {
   id: number; name: string; path: string; src: string; type: 'image' | 'video' | 'title';
   duration: number; effect: string; transition: string; transitionTime: number;
+  // Extended transition config for custom ffmpeg (xfade-easing): per-clip GL params, easing and reverse
+  transitionParams?: Record<string, string | number>;
+  transitionEasing?: string;
+  transitionReverse?: number;
   text: string; textMode: 'overlay' | 'frame';
   textStart: number; textEnd: number; textEnter: string; textExit: string;
   textEnterDuration: number; textExitDuration: number;
@@ -499,9 +503,8 @@ function dragOnStage(event: React.PointerEvent<HTMLElement>, onMove: (x: number,
   window.addEventListener('pointerup', stop)
 }
 
-// FFmpeg's complete built-in xfade catalogue, plus two clearly-labelled
-// experimental GLSL choices. Friendly labels are mapped to filter names later.
-const transitionGroups = {
+// 1) Native xfade catalogue (FFmpeg built-in) — 58 transitions, unchanged from ayosec/FFmpeg docs
+const nativeTransitionGroups: Record<string, string[]> = {
   'Fades & blends': ['Fade', 'Fade black', 'Fade white', 'Fade grays', 'Fade fast', 'Fade slow', 'Dissolve', 'Distance', 'Pixelize', 'H blur'],
   'Wipes': ['Wipe left', 'Wipe right', 'Wipe up', 'Wipe down', 'Wipe top-left', 'Wipe top-right', 'Wipe bottom-left', 'Wipe bottom-right'],
   'Slides & smooth': ['Slide left', 'Slide right', 'Slide up', 'Slide down', 'Smooth left', 'Smooth right', 'Smooth up', 'Smooth down'],
@@ -509,17 +512,120 @@ const transitionGroups = {
   'Slices': ['Diagonal top-left', 'Diagonal top-right', 'Diagonal bottom-left', 'Diagonal bottom-right', 'Horizontal left slice', 'Horizontal right slice', 'Vertical up slice', 'Vertical down slice'],
   'Squeeze, wind & zoom': ['Squeeze horizontal', 'Squeeze vertical', 'Zoom in', 'Horizontal left wind', 'Horizontal right wind', 'Vertical up wind', 'Vertical down wind'],
   'Cover & reveal': ['Cover left', 'Cover right', 'Cover up', 'Cover down', 'Reveal left', 'Reveal right', 'Reveal up', 'Reveal down'],
-  'Experimental GLSL': ['GLSL · Dreamy', 'GLSL · Cube'],
 }
+// 2) GL Transitions — ported GLSL from https://github.com/scriptituk/xfade-easing#ported-glsl-transitions and https://gl-transitions.com/ (64)
+// Custom FFmpeg (xfade-easing) exposes them as gl_* C implementations with easing/reverse support.
+// Grouped alphabetically for the picker (maximises browseability). Backend maps friendly -> ffmpeg id.
+const glTransitionGroups: Record<string, string[]> = {
+  'GL · A — F': ['GL · Angular','GL · Bars','GL · Blend','GL · Book Flip','GL · Bounce','GL · Bow Tie','GL · Butterfly Wave Scrawler','GL · Cannabis Leaf','GL · Chessboard','GL · Corner Vanish','GL · Crazy Parametric Fun','GL · Cross Out','GL · Cross Warp','GL · Cross Zoom','GL · Crosshatch','GL · Cube'],
+  'GL · D — H': ['GL · Diamond','GL · Directional Scaled','GL · Directional Warp','GL · Doorway','GL · Double Diamond','GL · Dreamy','GL · Edge Transition','GL · Exponential Swish','GL · Fade Color','GL · Fan In','GL · Fan Out','GL · Fan Up','GL · Flower','GL · Grid Flip','GL · Heart','GL · Hexagonalize'],
+  'GL · I — R': ['GL · Inverted Page Curl','GL · Kaleidoscope','GL · Linear Blur','GL · Lissajous Tiles','GL · Morph','GL · Mosaic','GL · Perlin','GL · Pinwheel','GL · Polar Function','GL · Polka Dots Curtain','GL · Power Kaleido','GL · Random Noise X','GL · Random Squares','GL · Ripple','GL · Rolls','GL · Rotate Scale Fade'],
+  'GL · S — W': ['GL · Rotate Scale Vanish','GL · Rotate Transition','GL · Simple Book Curl','GL · Simple Page Curl','GL · Slides','GL · Squares Wire','GL · Stage Curtains','GL · Star Wipe','GL · Static Wipe','GL · Stereo Viewer','GL · Stripe Wipe','GL · Swap','GL · Swirl','GL · Water Drop','GL · Window Blinds','GL · Window Slice'],
+}
+// Keep legacy key for code that still imports transitionGroups (combines both for global search / random)
+const transitionGroups: Record<string, string[]> = { ...nativeTransitionGroups, ...glTransitionGroups }
 const transitions = Object.values(transitionGroups).flat()
+const nativeTransitions = Object.values(nativeTransitionGroups).flat()
+const glTransitions = Object.values(glTransitionGroups).flat()
+
+// GL params catalogue (defaults from scriptituk README). Used for the sliders in the GL picker.
+const glParams: Record<string, Array<{name:string, default:string}>> = {
+  'GL · Angular': [{name:'startingAngle',default:'90'}, {name:'clockwise',default:'0'}],
+  'GL · Bars': [{name:'vertical',default:'0'}],
+  'GL · Blend': [{name:'mode',default:'0'}],
+  'GL · Book Flip': [],
+  'GL · Bounce': [{name:'bounces',default:'3'}, {name:'direction',default:'0'}, {name:'shadowAlpha',default:'0.6'}, {name:'shadowHeight',default:'0.075'}, {name:'shadowColor',default:'0'}],
+  'GL · Bow Tie': [{name:'vertical',default:'0'}],
+  'GL · Butterfly Wave Scrawler': [{name:'amplitude',default:'1'}, {name:'waves',default:'30'}, {name:'colorSeparation',default:'0.3'}],
+  'GL · Cannabis Leaf': [],
+  'GL · Chessboard': [{name:'grid',default:'8'}],
+  'GL · Corner Vanish': [],
+  'GL · Crazy Parametric Fun': [{name:'a',default:'4'}, {name:'b',default:'1'}, {name:'amplitude',default:'120'}, {name:'smoothness',default:'0.1'}],
+  'GL · Cross Out': [{name:'smoothness',default:'0.05'}],
+  'GL · Cross Warp': [],
+  'GL · Cross Zoom': [{name:'strength',default:'0.4'}, {name:'centerFrom.x',default:'0.25'}, {name:'centerFrom.y',default:'0.5'}, {name:'centerTo.x',default:'0.75'}, {name:'centerTo.y',default:'0.5'}],
+  'GL · Crosshatch': [{name:'center.x',default:'0.5'}, {name:'center.y',default:'0.5'}, {name:'threshold',default:'3'}, {name:'fadeEdge',default:'0.1'}],
+  'GL · Cube': [{name:'persp',default:'0.7'}, {name:'unzoom',default:'0.3'}, {name:'reflection',default:'0.4'}, {name:'floating',default:'3'}, {name:'background',default:'0'}],
+  'GL · Diamond': [{name:'smoothness',default:'0.05'}],
+  'GL · Directional Scaled': [{name:'direction.x',default:'0'}, {name:'direction.y',default:'1'}, {name:'scale',default:'0.7'}, {name:'background',default:'0'}],
+  'GL · Directional Warp': [{name:'smoothness',default:'0.1'}, {name:'direction.x',default:'-1'}, {name:'direction.y',default:'1'}],
+  'GL · Doorway': [{name:'reflection',default:'0.4'}, {name:'perspective',default:'0.4'}, {name:'depth',default:'3'}, {name:'background',default:'0'}],
+  'GL · Double Diamond': [{name:'smoothness',default:'0.05'}],
+  'GL · Dreamy': [],
+  'GL · Edge Transition': [{name:'edgeThickness',default:'0.001'}, {name:'edgeBrightness',default:'8'}],
+  'GL · Exponential Swish': [{name:'zoom',default:'0.8'}, {name:'angle',default:'0'}, {name:'offset.x',default:'0'}, {name:'offset.y',default:'0'}, {name:'exponent',default:'4'}, {name:'wrap.x',default:'2'}, {name:'wrap.y',default:'2'}, {name:'blur',default:'0'}, {name:'background',default:'0'}],
+  'GL · Fade Color': [{name:'color',default:'0'}, {name:'colorPhase',default:'0.4'}],
+  'GL · Fan In': [{name:'smoothness',default:'0.05'}],
+  'GL · Fan Out': [{name:'smoothness',default:'0.05'}],
+  'GL · Fan Up': [{name:'smoothness',default:'0.05'}],
+  'GL · Flower': [{name:'smoothness',default:'0.05'}, {name:'rotation',default:'360'}],
+  'GL · Grid Flip': [{name:'size.x',default:'4'}, {name:'size.y',default:'4'}, {name:'pause',default:'0.1'}, {name:'dividerWidth',default:'0.05'}, {name:'randomness',default:'0.1'}, {name:'background',default:'0'}],
+  'GL · Heart': [],
+  'GL · Hexagonalize': [{name:'steps',default:'50'}, {name:'horizontalHexagons',default:'20'}],
+  'GL · Inverted Page Curl': [{name:'angle',default:'100'}, {name:'radius',default:'0.159'}, {name:'reverseEffect',default:'0'}],
+  'GL · Kaleidoscope': [{name:'speed',default:'1'}, {name:'angle',default:'1'}, {name:'power',default:'1.5'}],
+  'GL · Linear Blur': [{name:'intensity',default:'0.1'}],
+  'GL · Lissajous Tiles': [{name:'grid.x',default:'10'}, {name:'grid.y',default:'10'}, {name:'speed',default:'0.5'}, {name:'freq.x',default:'2'}, {name:'freq.y',default:'3'}, {name:'offset',default:'2'}, {name:'zoom',default:'0.8'}, {name:'fade',default:'3'}, {name:'power',default:'3'}, {name:'background',default:'0'}],
+  'GL · Morph': [{name:'strength',default:'0.1'}],
+  'GL · Mosaic': [{name:'endx',default:'2'}, {name:'endy',default:'-1'}],
+  'GL · Perlin': [{name:'scale',default:'4'}, {name:'smoothness',default:'0.01'}],
+  'GL · Pinwheel': [{name:'speed',default:'2'}],
+  'GL · Polar Function': [{name:'segments',default:'5'}],
+  'GL · Polka Dots Curtain': [{name:'dots',default:'20'}, {name:'centre.x',default:'0'}, {name:'centre.y',default:'0'}],
+  'GL · Power Kaleido': [{name:'scale',default:'2'}, {name:'z',default:'1.5'}, {name:'speed',default:'5'}],
+  'GL · Random Noise X': [],
+  'GL · Random Squares': [{name:'size.x',default:'10'}, {name:'size.y',default:'10'}, {name:'smoothness',default:'0.5'}],
+  'GL · Ripple': [{name:'amplitude',default:'100'}, {name:'speed',default:'50'}],
+  'GL · Rolls': [{name:'type',default:'0'}, {name:'rotDown',default:'0'}],
+  'GL · Rotate Scale Fade': [{name:'centre.x',default:'0.5'}, {name:'centre.y',default:'0.5'}, {name:'rotations',default:'1'}, {name:'scale',default:'8'}, {name:'background',default:'0.15'}],
+  'GL · Rotate Scale Vanish': [{name:'fadeInSecond',default:'1'}, {name:'reverseEffect',default:'0'}, {name:'reverseRotation',default:'0'}, {name:'background',default:'0'}, {name:'trkMat',default:'0'}],
+  'GL · Rotate Transition': [],
+  'GL · Simple Book Curl': [{name:'angle',default:'150'}, {name:'radius',default:'0.1'}, {name:'shadow',default:'0.2'}],
+  'GL · Simple Page Curl': [{name:'angle',default:'80'}, {name:'radius',default:'0.15'}, {name:'roll',default:'0'}, {name:'reverseEffect',default:'0'}, {name:'greyBack',default:'0'}, {name:'opacity',default:'0.8'}, {name:'shadow',default:'0.2'}],
+  'GL · Slides': [{name:'type',default:'0'}, {name:'slideIn',default:'0'}],
+  'GL · Squares Wire': [{name:'squares.x',default:'10'}, {name:'squares.y',default:'10'}, {name:'direction.x',default:'1.0'}, {name:'direction.y',default:'-0.5'}, {name:'smoothness',default:'1.6'}],
+  'GL · Stage Curtains': [{name:'color',default:'0xCC1A33FF'}, {name:'bumps',default:'15'}, {name:'drop',default:'0.1'}],
+  'GL · Star Wipe': [{name:'borderThickness',default:'0.01'}, {name:'starRotation',default:'0.75'}, {name:'borderColor',default:'1'}],
+  'GL · Static Wipe': [{name:'upToDown',default:'1'}, {name:'maxSpan',default:'0.5'}],
+  'GL · Stereo Viewer': [{name:'zoom',default:'0.9'}, {name:'radius',default:'0.25'}, {name:'flip',default:'0'}, {name:'background',default:'0'}, {name:'trkMat',default:'0'}],
+  'GL · Stripe Wipe': [{name:'nlayers',default:'3'}, {name:'layerSpread',default:'0.5'}, {name:'color1',default:'0x3319CCFF'}, {name:'color2',default:'0x66CCFFFF'}, {name:'shadowIntensity',default:'0.7'}, {name:'shadowSpread',default:'0'}, {name:'angle',default:'0'}],
+  'GL · Swap': [{name:'reflection',default:'0.4'}, {name:'perspective',default:'0.2'}, {name:'depth',default:'3'}, {name:'background',default:'0'}],
+  'GL · Swirl': [{name:'radius',default:'1'}, {name:'clockwise',default:'1'}],
+  'GL · Water Drop': [{name:'amplitude',default:'30'}, {name:'speed',default:'30'}],
+  'GL · Window Blinds': [],
+  'GL · Window Slice': [{name:'count',default:'10'}, {name:'smoothness',default:'0.5'}],
+};
+
+// Easing catalogue for the custom xfade-easing build (native-like + CSS + extra)
+const easingGroups: Record<string,string[]> = {
+  'Linear': ['linear'],
+  'Standard (in/out/in-out)': ['quadratic','quadratic-in','quadratic-out','quadratic-in-out','cubic','cubic-in','cubic-out','cubic-in-out','quartic','quartic-in','quartic-out','quartic-in-out','quintic','quintic-in','quintic-out','quintic-in-out','sinusoidal','sinusoidal-in','sinusoidal-out','sinusoidal-in-out','exponential','exponential-in','exponential-out','exponential-in-out','circular','circular-in','circular-out','circular-in-out'],
+  'Elastic / Back / Bounce': ['elastic','elastic-in','elastic-out','elastic-in-out','back','back-in','back-out','back-in-out','bounce','bounce-in','bounce-out','bounce-in-out','squareroot','cuberoot','flipelastic','flipback'],
+  'CSS': ['ease','ease-in','ease-out','ease-in-out','cubic-bezier(0.42,0,0.58,1)','cubic-bezier(0.25,0.1,0.25,1)','step-start','step-end'],
+};
+const easings = Object.values(easingGroups).flat()
+const EASING_DEFAULT = 'linear'
 const effects = ['None', 'Ken Burns · Zoom in', 'Ken Burns · Zoom out', 'Ken Burns · Pan left', 'Ken Burns · Pan right', 'Original motion']
 
 function TransitionOptions() {
-  return <>{Object.entries(transitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}</>
+  return <>
+    {Object.entries(nativeTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}
+    {Object.entries(glTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}
+  </>
+}
+function NativeTransitionOptions() {
+  return <>{Object.entries(nativeTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}</>
+}
+function GLTransitionOptions() {
+  return <>{Object.entries(glTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}</>
+}
+function CombinedTransitionOptions() {
+  return <TransitionOptions/>
 }
 
 function transitionSymbol(name: string) {
   const n = name.toLowerCase()
+  if (n.startsWith('gl')) return '✦'
   if (n.includes('left')) return '←'
   if (n.includes('right')) return '→'
   if (n.includes('up')) return '↑'
@@ -527,9 +633,91 @@ function transitionSymbol(name: string) {
   if (n.includes('circle') || n.includes('radial')) return '◉'
   if (n.includes('zoom')) return '⊕'
   if (n.includes('dissolve') || n.includes('pixel')) return '░'
-  if (n.includes('glsl')) return '✦'
   if (n.includes('fade')) return '◐'
   return '◇'
+}
+function isGLTransition(name: string) {
+  return name.startsWith('GL ·') || name.startsWith('gl_')
+}
+function getGLParams(name: string) {
+  return (glParams as Record<string, {name:string,default:string}[]>)[name] || []
+}
+
+function GLParamControls({ transition, params, onChange }: { transition: string; params: Record<string,string|number>; onChange: (next: Record<string,string|number>)=>void }) {
+  const defs = getGLParams(transition)
+  if (!defs.length) return <small className="gl-no-params">No extra parameters — uses defaults.</small>
+  return <div className="gl-params">
+    {defs.map(def => {
+      const raw = params[def.name]
+      const value = raw !== undefined ? String(raw) : def.default
+      const isColor = /^0x/i.test(def.default) || /color/i.test(def.name)
+      // numeric slider range heuristic: 0..max based on default
+      const numDefault = Number(def.default)
+      const isNumeric = Number.isFinite(numDefault) && !isColor
+      const min = 0
+      const max = isNumeric ? (numDefault <= 1 ? 1 : numDefault < 5 ? 5 : numDefault < 20 ? 20 : numDefault <= 100 ? 120 : 360) : 10
+      const step = isNumeric ? (max <= 1 ? 0.01 : max <= 20 ? 0.1 : 1) : 0.1
+      return <label key={def.name} className="gl-param">
+        <span title={def.name}>{def.name}<em>{value}</em></span>
+        {isColor ? <div className="color-control compact"><input type="color" value={String(value).startsWith('#')?String(value):'#30382a'} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}}/><input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/></div>
+        : isNumeric ? <div className="gl-slider"><input type="range" min={min} max={max} step={step} value={Number(value) || 0} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}}/><input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/></div>
+        : <input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/>}
+      </label>
+    })}
+  </div>
+}
+
+function EasingSelect({ value, onChange }: { value: string; onChange: (v:string)=>void }) {
+  const v = value && value.trim() ? value : EASING_DEFAULT
+  return <Select value={v} onChange={onChange}>{Object.entries(easingGroups).map(([g, opts])=> <optgroup label={g} key={g}>{opts.map(o=> <option key={o} value={o}>{o}</option>)}</optgroup>)}</Select>
+}
+
+function TransitionPicker({ value, params, easing, reverse, onChange }: { value: string; params?: Record<string,string|number>; easing?: string; reverse?: number; onChange: (next:{transition?:string, transitionParams?:Record<string,string|number>, transitionEasing?:string, transitionReverse?:number})=>void }) {
+  const isGL = isGLTransition(value)
+  return <div className="transition-picker">
+    <div className="picker-tabs"><button className={!isGL?'active':''} onClick={()=>onChange({transition: nativeTransitions[0]})}>XFade</button><button className={isGL?'active':''} onClick={()=>onChange({transition: glTransitions[0]})}>GL Transitions</button></div>
+    {!isGL ? <Select value={value} onChange={v=>onChange({transition:v})}><NativeTransitionOptions/></Select>
+    : <Select value={value} onChange={v=>onChange({transition:v})}><GLTransitionOptions/></Select>}
+    {isGL && <GLParamControls transition={value} params={params||{}} onChange={next=>onChange({transitionParams: next})}/>}
+    <div className="transition-meta">
+      <label>Easing <EasingSelect value={easing||EASING_DEFAULT} onChange={v=>onChange({transitionEasing:v})}/></label>
+      <label className="check-label"><input type="checkbox" checked={Boolean(reverse)} onChange={e=>onChange({transitionReverse: e.target.checked?1:0})}/><span><Check size={11}/></span> Reverse</label>
+    </div>
+  </div>
+}
+
+function TransitionCell({ item, onPatch }: { item: MediaItem; onPatch: (patch: Partial<MediaItem>)=>void }) {
+  const [open, setOpen] = useState(false)
+  const isGL = isGLTransition(item.transition)
+  const params = (item.transitionParams as Record<string,string|number>) || {}
+  const easing = item.transitionEasing || EASING_DEFAULT
+  const reverse = item.transitionReverse || 0
+  // ensure transitionTime clamped
+  const max = 3600
+  return <div className="transition-cell">
+    <Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => {
+      // when switching type, clear params if moving to native, keep but reset to defaults if to GL?
+      if (isGLTransition(v)) {
+        const defs = getGLParams(v)
+        const nextParams: Record<string,string> = {}
+        // keep existing keys that overlap, else default
+        for (const d of defs) nextParams[d.name] = String(params[d.name] ?? d.default)
+        onPatch({ transition: v, transitionParams: nextParams, transitionEasing: easing, transitionReverse: reverse })
+      } else {
+        onPatch({ transition: v })
+      }
+    }}><TransitionOptions/></Select>
+    <NumberStepper value={item.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} max={max} step={0.1} suffix="s" ariaLabel={`${item.name} transition time`} onChange={v => onPatch({ transitionTime: v })} />
+    {(isGL || easing !== EASING_DEFAULT || reverse) && <button type="button" className={`icon-button small ${open?'active':''}`} title={isGL ? 'Edit GL parameters, easing and reverse' : 'Edit easing and reverse'} onClick={()=>setOpen(o=>!o)}><Settings2 size={13}/></button>}
+    {open && <div className="transition-popover">
+      {isGL && <><FieldLabel>GL parameters <small>{item.transition}</small></FieldLabel><GLParamControls transition={item.transition} params={params} onChange={next=>onPatch({transitionParams: next})}/></>}
+      <div className="transition-meta">
+        <label>Easing <EasingSelect value={easing} onChange={v=>onPatch({transitionEasing: v})}/></label>
+        <label className="check-label"><input type="checkbox" checked={Boolean(reverse)} onChange={e=>onPatch({transitionReverse: e.target.checked?1:0})}/><span><Check size={11}/></span> Reverse</label>
+      </div>
+      <button className="btn ghost small" onClick={()=>setOpen(false)}><X size={12}/> Close</button>
+    </div>}
+  </div>
 }
 
 function TimelineRuler({ start, duration, zoom, audioLength }: { start:number, duration:number, zoom:number, audioLength?: string }) {
@@ -778,10 +966,28 @@ function App() {
     notify(`Removed ${previewedItem.name} from the storyline`)
   }
 
+  const normalizeTransition = (t:string) => {
+    if (!t) return t
+    if (t === 'GLSL · Dreamy') return 'GL · Dreamy'
+    if (t === 'GLSL · Cube') return 'GL · Cube'
+    if (t.startsWith('GLSL')) return t.replace('GLSL','GL')
+    return t
+  }
   const applySavedProject=(saved:any)=>{
     if(saved.id)setProjectId(saved.id)
     if(saved.project){setProjectName(saved.project.name);setRandomOrder(Boolean(saved.project.randomOrder))}
-    if(Array.isArray(saved.media))setMedia(saved.media)
+    if(Array.isArray(saved.media)){
+      const normalized = saved.media.map((m:any)=> {
+        if (m.transition) m.transition = normalizeTransition(m.transition)
+        if (m.frameTransition) m.frameTransition = normalizeTransition(m.frameTransition)
+        // ensure transitionParams is object
+        if (typeof m.transitionParams === 'string') { try{ m.transitionParams = JSON.parse(m.transitionParams)}catch{ m.transitionParams = {}}}
+        if (!m.transitionEasing) m.transitionEasing = EASING_DEFAULT
+        if (m.transitionReverse == null) m.transitionReverse = 0
+        return m
+      })
+      setMedia(normalized)
+    }
     if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72)}
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path);setOutputFilename(saved.output.filename)}
@@ -1249,10 +1455,10 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b></button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button><span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
-            {selectedTransitions.length > 0 && <div className="timeline-inspector"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={media.find(x => x.id === selectedTransitions[0])?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v} : item))}><TransitionOptions/></Select><NumberStepper value={media.find(x => x.id === selectedTransitions[0])?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} /><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTransitions.length > 0 && (()=>{ const first = media.find(x => x.id === selectedTransitions[0]); const isGL = first && isGLTransition(first.transition); return <div className="timeline-inspector with-gl"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={first?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v, transitionParams: isGLTransition(v) ? (item.transitionParams||{}) : undefined} : item))}><TransitionOptions/></Select><NumberStepper value={first?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} />{isGL && first && <GLParamControls transition={first.transition} params={(first.transitionParams as Record<string,string|number>)||{}} onChange={next=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionParams: next}:item))}/>} <div className="transition-meta"><EasingSelect value={first?.transitionEasing||EASING_DEFAULT} onChange={v=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionEasing:v}:item))}/><label className="check-label"><input type="checkbox" checked={Boolean(first?.transitionReverse)} onChange={e=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionReverse: e.target.checked?1:0}:item))}/><span><Check size={11}/></span> Reverse</label></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>})()}
             {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
 
             <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><button className="random-button" onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
@@ -1270,7 +1476,7 @@ function App() {
                   <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className="item-text-edit"><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                   <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
-                  {index < media.length - 1 ? <div className="transition-cell"><Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => patch(item.id, { transition: v })}><TransitionOptions/></Select><NumberStepper value={item.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} max={transitionMaxFor(media, index)} step={0.1} suffix="s" ariaLabel={`${item.name} transition time`} onChange={v => updateTransition(item.id, v)} /></div> : <div className="end-card"><Check size={13}/> End of story</div>}
+                  {index < media.length - 1 ? <TransitionCell item={item} onPatch={patch_ => patch(item.id, patch_)} /> : <div className="end-card"><Check size={13}/> End of story</div>}
                   {item.type === 'video' ? <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original movie audio</option></Select><small>{item.audioSource === 'original' ? 'Crossfades with soundtrack' : 'Keeps soundtrack playing'}</small></div> : <div className="movie-audio muted">—</div>}
                   <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
                 </div>
@@ -1370,7 +1576,7 @@ function App() {
         notify(`${files.length} mounted media file${files.length === 1 ? '' : 's'} added`)
       })()
     }}/>} 
-    {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onApply={(transition, duration) => { patch(media[index].id, { transition, transitionTime: duration }); setTransitionPreviewId(null); notify(`Applied ${transition} transition`) }} /> : null })()}
+    {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onApply={(patchData) => { patch(media[index].id, patchData); setTransitionPreviewId(null); notify(`Applied ${patchData.transition} transition`) }} /> : null })()}
     {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
     {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
@@ -1789,38 +1995,53 @@ function ConfirmDialog({ title, message, confirmLabel, onConfirm, onCancel }: { 
   </div></div>
 }
 
-function TransitionPreview({ outgoing, incoming, onClose, onApply }: { outgoing: MediaItem; incoming: MediaItem; onClose: () => void; onApply: (transition: string, duration: number) => void }) {
+function TransitionPreview({ outgoing, incoming, onClose, onApply }: { outgoing: MediaItem; incoming: MediaItem; onClose: () => void; onApply: (patch: Partial<MediaItem>) => void }) {
   const [choice, setChoice] = useState(outgoing.transition)
   const [duration, setDuration] = useState(outgoing.transitionTime ?? DEFAULT_TRANSITION_SECONDS)
+  const [params, setParams] = useState<Record<string,string|number>>((outgoing.transitionParams as Record<string,string|number>)||{})
+  const [easing, setEasing] = useState(outgoing.transitionEasing || EASING_DEFAULT)
+  const [reverse, setReverse] = useState(outgoing.transitionReverse || 0)
+  const [tab, setTab] = useState<'xfade'|'gl'>(isGLTransition(choice)?'gl':'xfade')
   const [accurateUrl, setAccurateUrl] = useState<string | null>(null)
   const [rendering, setRendering] = useState(false)
   const [error, setError] = useState('')
   const [loopKey, setLoopKey] = useState(0)
+  // when choice changes, sync tab and reset params if needed
+  useEffect(()=>{ setTab(isGLTransition(choice)?'gl':'xfade'); if(isGLTransition(choice)){ const defs=getGLParams(choice); const next:Record<string,string>={}; for(const d of defs) next[d.name]= String(params[d.name] ?? d.default); if(Object.keys(next).length) setParams(next)} }, [choice]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const controller = new AbortController()
     let objectUrl = ''
     const timer = window.setTimeout(async () => {
       setRendering(true); setError(''); setAccurateUrl(null)
       try {
-        const response = await fetch('/api/transitions/preview', { method: 'POST', headers: {'Content-Type':'application/json'}, signal: controller.signal, body: JSON.stringify({ outgoing, incoming, transition: choice, duration }) })
+        const body:any = { outgoing, incoming, transition: choice, duration, transitionParams: params, transitionEasing: easing, transitionReverse: reverse }
+        const response = await fetch('/api/transitions/preview', { method: 'POST', headers: {'Content-Type':'application/json'}, signal: controller.signal, body: JSON.stringify(body) })
         if (!response.ok) throw new Error(await readApiError(response, 'Preview failed'))
         objectUrl = URL.createObjectURL(await response.blob())
         setAccurateUrl(objectUrl)
       } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'Preview failed') }
       finally { if (!controller.signal.aborted) setRendering(false) }
-    }, 450)
+    }, 500)
     return () => { window.clearTimeout(timer); controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [choice, duration, outgoing, incoming])
+  }, [choice, duration, params, easing, reverse, outgoing, incoming])
   const quickClass = /left/i.test(choice) ? 'from-left' : /right/i.test(choice) ? 'from-right' : /up/i.test(choice) ? 'from-up' : /down/i.test(choice) ? 'from-down' : 'fade'
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="transition-preview-modal" onMouseDown={e=>e.stopPropagation()}>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="transition-preview-modal wide" onMouseDown={e=>e.stopPropagation()}>
     <div className="preview-top"><div><strong>Transition preview</strong><span>{outgoing.name} → {incoming.name}</span></div><button onClick={onClose}><X size={20}/></button></div>
     <div className="transition-preview-body"><div className="transition-preview-stage">
       {accurateUrl ? <video key={`${accurateUrl}-${loopKey}`} src={accurateUrl} controls autoPlay loop /> : <div key={`${choice}-${duration}-${loopKey}`} className={`quick-transition ${quickClass}`} style={{'--transition-speed':`${duration}s`} as React.CSSProperties}><div><MediaThumb item={outgoing}/></div><div><MediaThumb item={incoming}/></div></div>}
       <span className="preview-quality">{accurateUrl ? 'ACCURATE FFMPEG · 360P' : rendering ? 'QUICK PREVIEW · RENDERING 360P…' : 'QUICK PREVIEW'}</span>
       {error && <div className="transition-preview-error"><AlertTriangle size={15}/>{error}</div>}
       <button className="btn ghost replay-transition" onClick={()=>setLoopKey(x=>x+1)}><Play size={13}/> Replay</button>
-    </div><aside><label>Transition</label><Select value={choice} onChange={setChoice}><TransitionOptions/></Select><label>Duration</label><NumberStepper value={duration} min={MIN_TRANSITION_SECONDS} max={10} step={.1} suffix="s" ariaLabel="Preview transition duration" onChange={setDuration}/><div className="transition-choice-list">{Object.entries(transitionGroups).map(([group, names])=><section key={group}><strong>{group}</strong>{names.map(name=><button className={choice===name?'active':''} onClick={()=>setChoice(name)} key={name}><i>{transitionSymbol(name)}</i>{name}</button>)}</section>)}</div></aside></div>
-    <div className="modal-foot"><span>Changes are applied only when you confirm.</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>onApply(choice,duration)}>Apply transition</button></div>
+    </div><aside>
+      <div className="picker-tabs"><button className={tab==='xfade'?'active':''} onClick={()=>{setTab('xfade'); if(isGLTransition(choice)) setChoice(nativeTransitions[0])}}>XFade ({nativeTransitions.length})</button><button className={tab==='gl'?'active':''} onClick={()=>{setTab('gl'); if(!isGLTransition(choice)) setChoice(glTransitions[0])}}>GL Transitions ({glTransitions.length})</button></div>
+      {tab==='xfade' ? <Select value={choice} onChange={setChoice}><NativeTransitionOptions/></Select> : <Select value={choice} onChange={setChoice}><GLTransitionOptions/></Select>}
+      {isGLTransition(choice) && <div className="gl-preview-params"><FieldLabel>GL parameters — {choice}</FieldLabel><GLParamControls transition={choice} params={params} onChange={setParams}/></div>}
+      <label>Duration</label><NumberStepper value={duration} min={MIN_TRANSITION_SECONDS} max={10} step={.1} suffix="s" ariaLabel="Preview transition duration" onChange={setDuration}/>
+      <label>Easing</label><EasingSelect value={easing} onChange={setEasing}/>
+      <label className="check-label"><input type="checkbox" checked={Boolean(reverse)} onChange={e=>setReverse(e.target.checked?1:0)}/><span><Check size={11}/></span> Reverse</label>
+      <div className="transition-choice-list">{(tab==='xfade'?Object.entries(nativeTransitionGroups):Object.entries(glTransitionGroups)).map(([group, names])=><section key={group}><strong>{group}</strong>{names.map(name=><button className={choice===name?'active':''} onClick={()=>setChoice(name)} key={name}><i>{transitionSymbol(name)}</i>{name}</button>)}</section>)}</div>
+    </aside></div>
+    <div className="modal-foot"><span>Uses /api/transitions/preview — accurate 360p FFmpeg render with your params, easing and reverse.</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>onApply({transition: choice, transitionTime: duration, transitionParams: params, transitionEasing: easing, transitionReverse: reverse})}>Apply transition</button></div>
   </div></div>
 }
 
