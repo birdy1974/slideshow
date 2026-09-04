@@ -153,11 +153,22 @@ def xfade_name(label: str) -> str:
 
 
 def _parse_xfade_help(text: str) -> set[str]:
-    """Transition constant names from `ffmpeg -h filter=xfade` output."""
-    block = re.search(r"^\s*transition\s+<int>[^\n]*\n(.*?)^\s*duration\s+<duration>", text, re.S | re.M)
+    """Transition constant names from `ffmpeg -h filter=xfade` output.
+
+    Stock FFmpeg declares `transition <int>` and lists each constant with its
+    numeric value; the xfade-easing build declares `transition <string>` and
+    lists the same constants without a number. Both layouts are handled.
+    """
+    block = re.search(r"^\s*transition\s+<(?:int|string)>[^\n]*\n(.*?)^\s*duration\s+<duration>", text, re.S | re.M)
     if not block:
         return set()
-    return {name for name in re.findall(r"^\s+(\w+)\s+-?\d+\s+\.\.", block.group(1), re.M) if name != "custom"}
+    names = {name for name in re.findall(r"^\s+(\w+)\s+(?:-?\d+\s+)?\.\.", block.group(1), re.M) if name != "custom"}
+    if names and "easing" in text.lower():
+        # The custom build accepts every ported GL transition by name but does
+        # not enumerate them in the help text; advertise them so resolve_xfade
+        # does not downgrade gl_* picks to dissolve.
+        names |= GL_TRANSITIONS
+    return names
 
 
 def probe_xfade_transitions(ffmpeg_bin: str) -> set[str]:
@@ -227,6 +238,21 @@ def format_transition_params(ffmpeg_id: str, params: dict[str, Any] | None) -> s
     return f"{ffmpeg_id}({inner})"
 
 
+def quote_xfade_value(value: str) -> str:
+    """Quote an xfade option value so FFmpeg's filtergraph parser keeps it whole.
+
+    Inside a -filter_complex string an unquoted ',' ends the current filter
+    and ':' ends the current option, so 'gl_cube(persp=0.7,unzoom=0.3)' or
+    'cubic-bezier(0.25,0.1,0.25,1)' would be split into garbage ("No such
+    filter: '0.1'"). Wrapping the value in single quotes is the documented
+    xfade-easing form (transition='gl_cube(...)':easing='cubic-bezier(...)').
+    Plain identifiers are left unquoted so existing graphs/tests are unchanged.
+    """
+    if not any(ch in value for ch in ",:'\\[];"):
+        return value
+    return "'" + value.replace("\\", "\\\\").replace("'", r"\'") + "'"
+
+
 def build_xfade_filter(transition_label: str, duration: float, offset: float, easing: str | None = None, reverse: int | bool | None = None, params: dict[str, Any] | None = None, ffmpeg_bin: str | None = None) -> str:
     """Build xfade filter fragment, handling gl params, easing and reverse.
 
@@ -271,13 +297,14 @@ def build_xfade_filter(transition_label: str, duration: float, offset: float, ea
             easing_str = None
             reverse_int = 0
 
-    parts = [f"transition={transition_str}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
+    parts = [f"transition={quote_xfade_value(transition_str)}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
     if easing_str and has_easing:
-        # escape colon/quote inside easing (unlikely)
-        parts.append(f"easing={easing_str}")
+        # CSS easings carry commas (cubic-bezier(a,b,c,d), steps(n,pos)):
+        # quote so the filtergraph parser does not split the chain there.
+        parts.append(f"easing={quote_xfade_value(easing_str)}")
     if reverse_int and has_easing:
         parts.append(f"reverse={reverse_int}")
-    return "xfade:" + ":".join(parts) if False else "xfade=" + ":".join(parts)
+    return "xfade=" + ":".join(parts)
 
 
 
@@ -918,10 +945,12 @@ class Renderer:
                 continue
             merged[k] = str(v).strip()
         transition_str = format_transition_params(base_id, merged if merged else None)
-        # Re-compose with easing/reverse exactly like build_xfade_filter but without extra probe
-        parts = [f"transition={transition_str}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
+        # Re-compose with easing/reverse exactly like build_xfade_filter but without extra probe.
+        # Values containing ',' (GL params, CSS easings) must be quoted or the
+        # filtergraph parser splits the chain there — see quote_xfade_value.
+        parts = [f"transition={quote_xfade_value(transition_str)}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
         if easing and str(easing).strip().lower() not in ("", "linear"):
-            parts.append(f"easing={str(easing).strip()}")
+            parts.append(f"easing={quote_xfade_value(str(easing).strip())}")
         try:
             rev = int(reverse) if reverse is not None else 0
         except Exception:
