@@ -12,6 +12,7 @@ from unittest import mock
 from app.database import Database
 from app.config import Settings
 from app.renderer import (
+    GL_TRANSITIONS,
     OutputExistsError,
     RenderError,
     Renderer,
@@ -20,6 +21,8 @@ from app.renderer import (
     _summarize_ffmpeg_log,
     KEN_BURNS_MAX_ZOOM,
     build_filter_graph,
+    build_xfade_filter,
+    quote_xfade_value,
     fill_frame_filter,
     fit_frame_filter,
     loudnorm_filter,
@@ -184,6 +187,114 @@ class RendererFallbackTest(unittest.TestCase):
     def test_failed_probe_keeps_full_catalogue(self) -> None:
         self.renderer._xfade_supported = set()
         self.assertEqual("hrwind", self.renderer.resolve_xfade("Horizontal right wind"))
+
+
+# Shape of `ffmpeg -h filter=xfade` on the custom xfade-easing build (FFmpeg
+# 8.x + scriptituk patch): `transition` becomes a <string> option, constants
+# are listed without numeric values, and easing/reverse options appear. The
+# gl_* transitions are accepted by name but are NOT enumerated in the help.
+CUSTOM_XFADE_HELP = """
+xfade AVOptions:
+   easing            <string>     ..FV....... set cross fade easing
+   reverse           <int>        ..FV....... reverse easing/transition (from 0 to 3) (default 0)
+   transition        <string>     ..FV....... set cross fade transition
+     custom                       ..FV....... custom transition
+     fade                         ..FV....... fade transition
+     wipeleft                     ..FV....... wipe left transition
+     dissolve                     ..FV....... dissolve transition
+     hrwind                       ..FV....... hr wind transition
+     revealdown                   ..FV....... reveal down transition
+   duration          <duration>   ..FV....... set cross fade duration (default 1)
+   offset            <duration>   ..FV....... set cross fade start relative to first input stream (default 0)
+   expr              <string>     ..FV....... set expression for custom transition
+"""
+
+
+class CustomBuildProbeTest(unittest.TestCase):
+    """The xfade-easing build must be recognised, not treated as 'probe failed'."""
+
+    def test_string_typed_transition_option_is_parsed(self) -> None:
+        names = _parse_xfade_help(CUSTOM_XFADE_HELP)
+        self.assertIn("fade", names)
+        self.assertIn("hrwind", names)
+        self.assertIn("revealdown", names)
+        self.assertNotIn("custom", names)
+
+    def test_custom_build_advertises_gl_transitions(self) -> None:
+        names = _parse_xfade_help(CUSTOM_XFADE_HELP)
+        self.assertTrue(GL_TRANSITIONS <= names, "gl_* must be reported as supported on the custom build")
+        # ...but never on a stock build, which would reject them at render time.
+        self.assertFalse(GL_TRANSITIONS & _parse_xfade_help(FFMPEG5_XFADE_HELP))
+
+    def test_custom_build_keeps_gl_picks(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        renderer = Renderer(Database(Path(temp.name) / "test.db"), Settings())
+        renderer._xfade_supported = _parse_xfade_help(CUSTOM_XFADE_HELP)
+        renderer._xfade_has_easing = True
+        self.assertEqual("gl_cube", renderer.resolve_xfade("GL · Cube"))
+        self.assertEqual("gl_Swirl", renderer.resolve_xfade("GL · Swirl"))
+        self.assertTrue(renderer.capabilities()["hasGL"])
+
+
+class XfadeFilterQuotingTest(unittest.TestCase):
+    """GL params and CSS easings contain commas; an unquoted comma ends the
+    filter in a -filter_complex chain ("No such filter: '0.1'"), so those
+    values must be single-quoted. Plain names must stay unquoted so existing
+    graphs are byte-for-byte unchanged."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.renderer = Renderer(Database(Path(self.temp.name) / "test.db"), Settings())
+        self.renderer._xfade_supported = _parse_xfade_help(CUSTOM_XFADE_HELP)
+        self.renderer._xfade_has_easing = True
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_plain_values_are_not_quoted(self) -> None:
+        self.assertEqual("gl_cube", quote_xfade_value("gl_cube"))
+        self.assertEqual("cubic-in-out", quote_xfade_value("cubic-in-out"))
+        self.assertEqual("steps(4)", quote_xfade_value("steps(4)"))
+        self.assertEqual("gl_cube(persp=0.7)", quote_xfade_value("gl_cube(persp=0.7)"))
+
+    def test_values_with_commas_are_quoted(self) -> None:
+        self.assertEqual("'gl_cube(persp=0.7,unzoom=0.3)'", quote_xfade_value("gl_cube(persp=0.7,unzoom=0.3)"))
+        self.assertEqual("'cubic-bezier(0.25,0.1,0.25,1)'", quote_xfade_value("cubic-bezier(0.25,0.1,0.25,1)"))
+        self.assertEqual("'steps(4,jump-start)'", quote_xfade_value("steps(4,jump-start)"))
+
+    def test_render_path_quotes_multi_param_gl_transition(self) -> None:
+        item = {
+            "transition": "GL · Cube",
+            "transitionParams": {"persp": 0.7, "unzoom": 0.3, "reflection": 0.4, "floating": 3, "background": 0},
+            "transitionEasing": "cubic-bezier(0.25,0.1,0.25,1)",
+            "transitionReverse": 1,
+        }
+        fragment = self.renderer.build_transition_xfade(item, 1.0, 0.0)
+        self.assertEqual(
+            "xfade=transition='gl_cube(persp=0.7,unzoom=0.3,reflection=0.4,floating=3,background=0)'"
+            ":duration=1:offset=0:easing='cubic-bezier(0.25,0.1,0.25,1)':reverse=1",
+            fragment,
+        )
+
+    def test_render_path_leaves_simple_fragments_unchanged(self) -> None:
+        self.assertEqual("xfade=transition=fade:duration=1:offset=0", self.renderer.build_transition_xfade({"transition": "Fade"}, 1.0, 0.0))
+        self.assertEqual(
+            "xfade=transition=gl_cube(persp=0.7):duration=1:offset=0:easing=bounce:reverse=2",
+            self.renderer.build_transition_xfade({"transition": "GL · Cube", "transitionParams": {"persp": 0.7}, "transitionEasing": "bounce", "transitionReverse": 2}, 1.0, 0.0),
+        )
+
+    def test_build_xfade_filter_quotes_too(self) -> None:
+        fragment = build_xfade_filter("gl_cube(persp=0.7,unzoom=0.3)", 1, 0.5, easing="steps(4,jump-start)", reverse=2)
+        self.assertEqual("xfade=transition='gl_cube(persp=0.7,unzoom=0.3)':duration=1:offset=0.5:easing='steps(4,jump-start)':reverse=2", fragment)
+
+    def test_stock_build_strips_easing_and_params_via_fallback(self) -> None:
+        self.renderer._xfade_supported = _parse_xfade_help(FFMPEG5_XFADE_HELP)
+        self.renderer._xfade_has_easing = False
+        item = {"transition": "GL · Cube", "transitionParams": {"persp": 0.7, "unzoom": 0.3}, "transitionEasing": "bounce", "transitionReverse": 1}
+        self.assertEqual("xfade=transition=dissolve:duration=1:offset=0", self.renderer.build_transition_xfade(item, 1.0, 0.0))
+        native = {"transition": "Wipe left", "transitionEasing": "cubic-bezier(0.25,0.1,0.25,1)", "transitionReverse": 1}
+        self.assertEqual("xfade=transition=wipeleft:duration=1:offset=0", self.renderer.build_transition_xfade(native, 1.0, 0.0))
 
 
 class TransitionTimingTest(unittest.TestCase):
