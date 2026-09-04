@@ -42,37 +42,49 @@ XFADE = {
     "Cover left":"coverleft", "Cover right":"coverright", "Cover up":"coverup", "Cover down":"coverdown", "Reveal left":"revealleft", "Reveal right":"revealright", "Reveal up":"revealup", "Reveal down":"revealdown",
 }
 
-# GL transitions ported via xfade-easing (custom ffmpeg). Friendly label -> ffmpeg id is 1:1 lowercase, but we accept both.
-# Full list from gl-transitions / scriptituk – 64 entries. Params are documented; defaults handled by FFmpeg.
-GL_TRANSITIONS = {
-    "gl_angular","gl_Bars","gl_blend","gl_BookFlip","gl_Bounce","gl_BowTie","gl_ButterflyWaveScrawler",
-    "gl_cannabisleaf","gl_chessboard","gl_CornerVanish","gl_CrazyParametricFun","gl_crosshatch","gl_CrossOut",
-    "gl_crosswarp","gl_CrossZoom","gl_cube","gl_Diamond","gl_DirectionalScaled","gl_directionalwarp","gl_doorway",
-    "gl_DoubleDiamond","gl_Dreamy","gl_EdgeTransition","gl_Exponential_Swish","gl_fadecolor","gl_FanIn","gl_FanOut",
-    "gl_FanUp","gl_Flower","gl_GridFlip","gl_heart","gl_hexagonalize","gl_InvertedPageCurl","gl_kaleidoscope",
-    "gl_LinearBlur","gl_Lissajous_Tiles","gl_morph","gl_Mosaic","gl_perlin","gl_pinwheel","gl_polar_function",
-    "gl_PolkaDotsCurtain","gl_powerKaleido","gl_randomNoisex","gl_randomsquares","gl_ripple","gl_Rolls",
-    "gl_RotateScaleVanish","gl_rotateTransition","gl_rotate_scale_fade","gl_SimpleBookCurl","gl_SimplePageCurl",
-    "gl_Slides","gl_squareswire","gl_StageCurtains","gl_StarWipe","gl_static_wipe","gl_StereoViewer","gl_Stripe_Wipe",
-    "gl_swap","gl_Swirl","gl_WaterDrop","gl_windowblinds","gl_windowslice",
-}
-# Friendly GL names used by the UI (prefix GL ·) -> ffmpeg id
-GL_FRIENDLY_TO_ID = {
-    "GL · Angular":"gl_angular","GL · Bars":"gl_Bars","GL · Blend":"gl_blend","GL · Book Flip":"gl_BookFlip","GL · Bounce":"gl_Bounce",
-    "GL · Bow Tie":"gl_BowTie","GL · Butterfly Wave Scrawler":"gl_ButterflyWaveScrawler","GL · Cannabis Leaf":"gl_cannabisleaf","GL · Chessboard":"gl_chessboard",
-    "GL · Corner Vanish":"gl_CornerVanish","GL · Crazy Parametric Fun":"gl_CrazyParametricFun","GL · Crosshatch":"gl_crosshatch","GL · Cross Out":"gl_CrossOut",
-    "GL · Cross Warp":"gl_crosswarp","GL · Cross Zoom":"gl_CrossZoom","GL · Cube":"gl_cube","GL · Diamond":"gl_Diamond","GL · Directional Scaled":"gl_DirectionalScaled",
-    "GL · Directional Warp":"gl_directionalwarp","GL · Doorway":"gl_doorway","GL · Double Diamond":"gl_DoubleDiamond","GL · Dreamy":"gl_Dreamy","GL · Edge Transition":"gl_EdgeTransition",
-    "GL · Exponential Swish":"gl_Exponential_Swish","GL · Fade Color":"gl_fadecolor","GL · Fan In":"gl_FanIn","GL · Fan Out":"gl_FanOut","GL · Fan Up":"gl_FanUp",
-    "GL · Flower":"gl_Flower","GL · Grid Flip":"gl_GridFlip","GL · Heart":"gl_heart","GL · Hexagonalize":"gl_hexagonalize","GL · Inverted Page Curl":"gl_InvertedPageCurl",
-    "GL · Kaleidoscope":"gl_kaleidoscope","GL · Linear Blur":"gl_LinearBlur","GL · Lissajous Tiles":"gl_Lissajous_Tiles","GL · Morph":"gl_morph","GL · Mosaic":"gl_Mosaic",
-    "GL · Perlin":"gl_perlin","GL · Pinwheel":"gl_pinwheel","GL · Polar Function":"gl_polar_function","GL · Polka Dots Curtain":"gl_PolkaDotsCurtain","GL · Power Kaleido":"gl_powerKaleido",
-    "GL · Random Noise X":"gl_randomNoisex","GL · Random Squares":"gl_randomsquares","GL · Ripple":"gl_ripple","GL · Rolls":"gl_Rolls","GL · Rotate Scale Vanish":"gl_RotateScaleVanish",
-    "GL · Rotate Transition":"gl_rotateTransition","GL · Rotate Scale Fade":"gl_rotate_scale_fade","GL · Simple Book Curl":"gl_SimpleBookCurl","GL · Simple Page Curl":"gl_SimplePageCurl",
-    "GL · Slides":"gl_Slides","GL · Squares Wire":"gl_squareswire","GL · Stage Curtains":"gl_StageCurtains","GL · Star Wipe":"gl_StarWipe","GL · Static Wipe":"gl_static_wipe",
-    "GL · Stereo Viewer":"gl_StereoViewer","GL · Stripe Wipe":"gl_Stripe_Wipe","GL · Swap":"gl_swap","GL · Swirl":"gl_Swirl","GL · Water Drop":"gl_WaterDrop","GL · Window Blinds":"gl_windowblinds","GL · Window Slice":"gl_windowslice",
-}
-GL_ID_TO_FRIENDLY = {v:k for k,v in GL_FRIENDLY_TO_ID.items()}
+# GL transitions (gl-transitions.com catalogue) are ported into the custom ffmpeg
+# via ffmpeg-patch/xfade-easing.h. The authoritative catalogue (id, friendly label,
+# group, params, defaults) lives in registry/transitions.json, shared with the
+# frontend so both sides never drift. Friendly labels are what saved projects
+# store; ids are what ffmpeg receives (xfade-easing dispatch is case-insensitive).
+def _registry_candidates() -> list[Path]:
+    cands: list[Path] = []
+    env = os.environ.get("SLIDESHOW_REGISTRY")
+    if env:
+        cands.append(Path(env))
+    here = Path(__file__).resolve()
+    cands.append(here.parents[2] / "registry" / "transitions.json")  # repo checkout
+    cands.append(Path("/app/registry/transitions.json"))             # Docker image
+    cands.append(Path.cwd() / "registry" / "transitions.json")
+    return cands
+
+
+def _load_gl_registry() -> tuple[frozenset[str], dict[str, str]]:
+    for path in _registry_candidates():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        entries = data.get("gl") if isinstance(data, dict) else None
+        if not entries:
+            continue
+        ids: set[str] = set()
+        labels: dict[str, str] = {}
+        for e in entries:
+            tid, label = str(e.get("id", "")).strip(), str(e.get("label", "")).strip()
+            if not tid.startswith("gl_") or not label or tid in ids or label in labels:
+                continue
+            ids.add(tid)
+            labels[label] = tid
+        if ids:
+            log.info("Loaded %d GL transitions from %s", len(ids), path)
+            return frozenset(ids), labels
+    log.warning("registry/transitions.json not found; GL transition catalogue unavailable")
+    return frozenset(), {}
+
+
+GL_TRANSITIONS, GL_FRIENDLY_TO_ID = _load_gl_registry()
+GL_ID_TO_FRIENDLY = {v: k for k, v in GL_FRIENDLY_TO_ID.items()}
 
 # Easing catalogue supported by the patched xfade (custom ffmpeg). Empty/linear = no easing.
 EASING_PRESETS = [

@@ -1065,5 +1065,72 @@ class TemporaryCleanupTest(unittest.TestCase):
         self.assertTrue(output.exists())
 
 
+class TestGLRegistry(unittest.TestCase):
+    """The shared registry/transitions.json is the single source of truth for the
+    GL catalogue; backend structures must mirror it exactly."""
+
+    def _load_registry(self):
+        import json as _json
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[2] / "registry" / "transitions.json"
+        return _json.loads(path.read_text(encoding="utf-8"))
+
+    def test_registry_integrity(self):
+        data = self._load_registry()
+        entries = data["gl"]
+        self.assertGreaterEqual(len(entries), 100)
+        ids = [e["id"] for e in entries]
+        labels = [e["label"] for e in entries]
+        self.assertEqual(len(ids), len(set(ids)), "ids must be unique")
+        self.assertEqual(len(labels), len(set(labels)), "labels must be unique — projects store labels")
+        for e in entries:
+            self.assertTrue(e["id"].startswith("gl_"), e)
+            self.assertTrue(e["label"].startswith("GL · "), e)
+            self.assertTrue(e["group"].startswith("GL · "), e)
+            self.assertIsInstance(e["params"], list, e)
+            for p in e["params"]:
+                self.assertIn("name", p)
+                self.assertIn("default", p)
+
+    def test_backend_structures_mirror_registry(self):
+        from app.renderer import GL_FRIENDLY_TO_ID
+        entries = self._load_registry()["gl"]
+        self.assertEqual({e["id"] for e in entries}, set(GL_TRANSITIONS))
+        self.assertEqual({e["label"]: e["id"] for e in entries}, GL_FRIENDLY_TO_ID)
+
+    def test_new_ports_resolve(self):
+        for label, tid in (
+            ("GL · Doom Screen", "gl_DoomScreenTransition"),
+            ("GL · Tiles Wave", "gl_TilesWave"),
+            ("GL · Film Burn", "gl_FilmBurn"),
+            ("GL · TV Static", "gl_TVStatic"),
+            ("GL · Zoom Right Wipe", "gl_ZoomRigthWipe"),
+        ):
+            self.assertEqual(tid, xfade_name(label))
+
+    def test_new_port_builds_filter(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        renderer = Renderer(Database(Path(temp.name) / "test.db"), Settings())
+        renderer._xfade_supported = _parse_xfade_help(CUSTOM_XFADE_HELP)
+        renderer._xfade_has_easing = True
+        item = {"transition": "GL · Burn", "transitionParams": {"color": 16742400, "threshold": 0.3},
+                "transitionEasing": "quadratic-in-out", "transitionReverse": 1}
+        self.assertEqual(
+            "xfade=transition='gl_burn(color=16742400,threshold=0.3)':duration=1.5:offset=0:easing=quadratic-in-out:reverse=1",
+            renderer.build_transition_xfade(item, 1.5, 0.0),
+        )
+
+    def test_every_registry_port_is_compiled_into_the_patch(self) -> None:
+        """Each id in registry/transitions.json must have both a C transition
+        function and a dispatch registration in ffmpeg-patch/xfade-easing.h,
+        so the catalogue can never advertise a transition the build rejects."""
+        header = (Path(__file__).resolve().parents[2] / "ffmpeg-patch" / "xfade-easing.h").read_text(encoding="utf-8")
+        for e in self._load_registry()["gl"]:
+            tid = e["id"]
+            self.assertIn(f"static vec4 {tid}(const XTransition *e)", header, f"{tid}: no C port")
+            self.assertIn(f'av_strcasecmp(t, "{tid}")', header, f"{tid}: no dispatch entry")
+
+
 if __name__ == "__main__":
     unittest.main()

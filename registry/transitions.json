@@ -1,0 +1,2315 @@
+{
+  "version": 1,
+  "comment": "Single source of truth for the GL transition catalogue. Consumed by backend/app/renderer.py and src/App.tsx. id = ffmpeg transition name (dispatch is case-insensitive). label = UI name shown in pickers; NEVER rename a label (saved projects store it). group = UI optgroup. params = UI controls + defaults (order = positional arg order).",
+  "gl": [
+    {
+      "id": "gl_angular",
+      "label": "GL · Angular",
+      "group": "GL · Wipes & geometry",
+      "author": "Fernando Kuteken",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "startingAngle",
+          "default": "90"
+        },
+        {
+          "name": "clockwise",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_Bars",
+      "label": "GL · Bars",
+      "group": "GL · Wipes & geometry",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "vertical",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_BowTie",
+      "label": "GL · Bow Tie",
+      "group": "GL · Wipes & geometry",
+      "author": "huynx",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "vertical",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_BowTieHorizontal",
+      "label": "GL · Bow Tie Horizontal",
+      "group": "GL · Wipes & geometry",
+      "author": "huynx",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_BowTieWithParameter",
+      "label": "GL · Bow Tie Parameter",
+      "group": "GL · Wipes & geometry",
+      "author": "KMojek",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "adjust",
+          "default": "0.5"
+        },
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_BowTieVertical",
+      "label": "GL · Bow Tie Vertical",
+      "group": "GL · Wipes & geometry",
+      "author": "huynx",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_Box",
+      "label": "GL · Box",
+      "group": "GL · Wipes & geometry",
+      "author": "lql",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "rectIn",
+          "default": "1",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        },
+        {
+          "name": "location",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_circleopen",
+      "label": "GL · Circle Open",
+      "group": "GL · Wipes & geometry",
+      "author": "gre",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.3"
+        },
+        {
+          "name": "opening",
+          "default": "1",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "1 = iris opens, 0 = iris closes"
+        }
+      ]
+    },
+    {
+      "id": "gl_circle",
+      "label": "GL · Circle Reveal",
+      "group": "GL · Wipes & geometry",
+      "author": "Fernando Kuteken",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "center.x",
+          "default": "0.5"
+        },
+        {
+          "name": "center.y",
+          "default": "0.5"
+        },
+        {
+          "name": "backColor",
+          "default": "0x1A1A1AFF"
+        }
+      ]
+    },
+    {
+      "id": "gl_CornerVanish",
+      "label": "GL · Corner Vanish",
+      "group": "GL · Wipes & geometry",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_Diamond",
+      "label": "GL · Diamond",
+      "group": "GL · Wipes & geometry",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.05"
+        }
+      ]
+    },
+    {
+      "id": "gl_Directional",
+      "label": "GL · Directional",
+      "group": "GL · Wipes & geometry",
+      "author": "Gaëtan Renaudeau",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "direction.x",
+          "default": "0"
+        },
+        {
+          "name": "direction.y",
+          "default": "1"
+        }
+      ]
+    },
+    {
+      "id": "gl_directional_easing",
+      "label": "GL · Directional Easing",
+      "group": "GL · Wipes & geometry",
+      "author": "Max Plotnikov",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "direction.x",
+          "default": "0"
+        },
+        {
+          "name": "direction.y",
+          "default": "1"
+        }
+      ]
+    },
+    {
+      "id": "gl_DirectionalScaled",
+      "label": "GL · Directional Scaled",
+      "group": "GL · Wipes & geometry",
+      "author": "Thibaut Foussard",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "direction.x",
+          "default": "0"
+        },
+        {
+          "name": "direction.y",
+          "default": "1"
+        },
+        {
+          "name": "scale",
+          "default": "0.7"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_directionalwarp",
+      "label": "GL · Directional Warp",
+      "group": "GL · Wipes & geometry",
+      "author": "pschroen",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.1"
+        },
+        {
+          "name": "direction.x",
+          "default": "-1"
+        },
+        {
+          "name": "direction.y",
+          "default": "1"
+        }
+      ]
+    },
+    {
+      "id": "gl_directionalwipe",
+      "label": "GL · Directional Wipe",
+      "group": "GL · Wipes & geometry",
+      "author": "gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "direction.x",
+          "default": "1"
+        },
+        {
+          "name": "direction.y",
+          "default": "-1"
+        },
+        {
+          "name": "smoothness",
+          "default": "0.5"
+        }
+      ]
+    },
+    {
+      "id": "gl_DoubleDiamond",
+      "label": "GL · Double Diamond",
+      "group": "GL · Wipes & geometry",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.05"
+        }
+      ]
+    },
+    {
+      "id": "gl_EdgeTransition",
+      "label": "GL · Edge Transition",
+      "group": "GL · Wipes & geometry",
+      "author": "Woohyun Kim",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "edgeThickness",
+          "default": "0.001"
+        },
+        {
+          "name": "edgeBrightness",
+          "default": "8"
+        }
+      ]
+    },
+    {
+      "id": "gl_FanIn",
+      "label": "GL · Fan In",
+      "group": "GL · Wipes & geometry",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.05"
+        }
+      ]
+    },
+    {
+      "id": "gl_FanOut",
+      "label": "GL · Fan Out",
+      "group": "GL · Wipes & geometry",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.05"
+        }
+      ]
+    },
+    {
+      "id": "gl_FanUp",
+      "label": "GL · Fan Up",
+      "group": "GL · Wipes & geometry",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.05"
+        }
+      ]
+    },
+    {
+      "id": "gl_heart",
+      "label": "GL · Heart",
+      "group": "GL · Wipes & geometry",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_HorizontalClose",
+      "label": "GL · Horizontal Close",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_HorizontalOpen",
+      "label": "GL · Horizontal Open",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_RectangleCrop",
+      "label": "GL · Rectangle Crop",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "bgcolor",
+          "default": "#000000",
+          "hint": "background colour shown while the rect crops in (#RRGGBB or 0xRRGGBBAA)"
+        }
+      ]
+    },
+    {
+      "id": "gl_Rectangle",
+      "label": "GL · Rectangle Zoom Reveal",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "bgcolor",
+          "default": "0x000000FF"
+        }
+      ]
+    },
+    {
+      "id": "gl_StageCurtains",
+      "label": "GL · Stage Curtains",
+      "group": "GL · Wipes & geometry",
+      "author": "scriptituk",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "color",
+          "default": "0xCC1A33FF"
+        },
+        {
+          "name": "bumps",
+          "default": "15"
+        },
+        {
+          "name": "drop",
+          "default": "0.1"
+        }
+      ]
+    },
+    {
+      "id": "gl_static_wipe",
+      "label": "GL · Static Wipe",
+      "group": "GL · Wipes & geometry",
+      "author": "Ben Lucas",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "upToDown",
+          "default": "1"
+        },
+        {
+          "name": "maxSpan",
+          "default": "0.5"
+        }
+      ]
+    },
+    {
+      "id": "gl_Stripe_Wipe",
+      "label": "GL · Stripe Wipe",
+      "group": "GL · Wipes & geometry",
+      "author": "Boundless",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "nlayers",
+          "default": "3"
+        },
+        {
+          "name": "layerSpread",
+          "default": "0.5"
+        },
+        {
+          "name": "color1",
+          "default": "0x3319CCFF"
+        },
+        {
+          "name": "color2",
+          "default": "0x66CCFFFF"
+        },
+        {
+          "name": "shadowIntensity",
+          "default": "0.7"
+        },
+        {
+          "name": "shadowSpread",
+          "default": "0"
+        },
+        {
+          "name": "angle",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_VerticalClose",
+      "label": "GL · Vertical Close",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_VerticalOpen",
+      "label": "GL · Vertical Open",
+      "group": "GL · Wipes & geometry",
+      "author": "martiniti",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_wind",
+      "label": "GL · Wind",
+      "group": "GL · Wipes & geometry",
+      "author": "gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "size",
+          "default": "0.2"
+        },
+        {
+          "name": "reversed",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_windowblinds",
+      "label": "GL · Window Blinds",
+      "group": "GL · Wipes & geometry",
+      "author": "Fabien Benetou",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_windowslice",
+      "label": "GL · Window Slice",
+      "group": "GL · Wipes & geometry",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "count",
+          "default": "10"
+        },
+        {
+          "name": "smoothness",
+          "default": "0.5"
+        }
+      ]
+    },
+    {
+      "id": "gl_Bounce",
+      "label": "GL · Bounce",
+      "group": "GL · Slides & reveals",
+      "author": "Adrian Purser",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "bounces",
+          "default": "3"
+        },
+        {
+          "name": "direction",
+          "default": "0"
+        },
+        {
+          "name": "shadowAlpha",
+          "default": "0.6"
+        },
+        {
+          "name": "shadowHeight",
+          "default": "0.075"
+        },
+        {
+          "name": "shadowColor",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_chessboard",
+      "label": "GL · Chessboard",
+      "group": "GL · Slides & reveals",
+      "author": "lql",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "grid",
+          "default": "8"
+        }
+      ]
+    },
+    {
+      "id": "gl_LeftRight",
+      "label": "GL · Left-Right Split",
+      "group": "GL · Slides & reveals",
+      "author": "zhmy",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_Slides",
+      "label": "GL · Slides",
+      "group": "GL · Slides & reveals",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "type",
+          "default": "0"
+        },
+        {
+          "name": "slideIn",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_splitSlideInHorizontal",
+      "label": "GL · Split Slide In · Horizontal",
+      "group": "GL · Slides & reveals",
+      "author": "OllyOllyOlly",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_splitSlideInVertical",
+      "label": "GL · Split Slide In · Vertical",
+      "group": "GL · Slides & reveals",
+      "author": "OllyOllyOlly",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_splitSlideInOutHorizontal",
+      "label": "GL · Split Slide In-Out · Horizontal",
+      "group": "GL · Slides & reveals",
+      "author": "OllyOllyOlly",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_splitSlideInOutVertical",
+      "label": "GL · Split Slide In-Out · Vertical",
+      "group": "GL · Slides & reveals",
+      "author": "OllyOllyOlly",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_splitSlideOutHorizontal",
+      "label": "GL · Split Slide Out · Horizontal",
+      "group": "GL · Slides & reveals",
+      "author": "OllyOllyOlly",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_splitSlideOutVertical",
+      "label": "GL · Split Slide Out · Vertical",
+      "group": "GL · Slides & reveals",
+      "author": "OllyOllyOlly",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "reverse",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_squeeze",
+      "label": "GL · Squeeze Zoom",
+      "group": "GL · Slides & reveals",
+      "author": "gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "colorSeparation",
+          "default": "0.04"
+        }
+      ]
+    },
+    {
+      "id": "gl_swap",
+      "label": "GL · Swap",
+      "group": "GL · Slides & reveals",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "reflection",
+          "default": "0.4"
+        },
+        {
+          "name": "perspective",
+          "default": "0.2"
+        },
+        {
+          "name": "depth",
+          "default": "3"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_TopBottom",
+      "label": "GL · Top-Bottom Split",
+      "group": "GL · Slides & reveals",
+      "author": "zhmy",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_x_axis_translation",
+      "label": "GL · X-Axis Translation",
+      "group": "GL · Slides & reveals",
+      "author": "lizhongjian",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_CrossZoom",
+      "label": "GL · Cross Zoom",
+      "group": "GL · Zoom & spin",
+      "author": "rectalogic",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "strength",
+          "default": "0.4"
+        },
+        {
+          "name": "centerFrom.x",
+          "default": "0.25"
+        },
+        {
+          "name": "centerFrom.y",
+          "default": "0.5"
+        },
+        {
+          "name": "centerTo.x",
+          "default": "0.75"
+        },
+        {
+          "name": "centerTo.y",
+          "default": "0.5"
+        }
+      ]
+    },
+    {
+      "id": "gl_DreamyZoom",
+      "label": "GL · Dreamy Zoom",
+      "group": "GL · Zoom & spin",
+      "author": "Zeh Fernando",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "rotation",
+          "default": "6"
+        },
+        {
+          "name": "scale",
+          "default": "1.2"
+        }
+      ]
+    },
+    {
+      "id": "gl_Exponential_Swish",
+      "label": "GL · Exponential Swish",
+      "group": "GL · Zoom & spin",
+      "author": "Boundless",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "zoom",
+          "default": "0.8"
+        },
+        {
+          "name": "angle",
+          "default": "0"
+        },
+        {
+          "name": "offset.x",
+          "default": "0"
+        },
+        {
+          "name": "offset.y",
+          "default": "0"
+        },
+        {
+          "name": "exponent",
+          "default": "4"
+        },
+        {
+          "name": "wrap.x",
+          "default": "2"
+        },
+        {
+          "name": "wrap.y",
+          "default": "2"
+        },
+        {
+          "name": "blur",
+          "default": "0"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_morph",
+      "label": "GL · Morph",
+      "group": "GL · Zoom & spin",
+      "author": "paniq",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "strength",
+          "default": "0.1"
+        }
+      ]
+    },
+    {
+      "id": "gl_pinwheel",
+      "label": "GL · Pinwheel",
+      "group": "GL · Zoom & spin",
+      "author": "Mr Speaker",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "speed",
+          "default": "2"
+        }
+      ]
+    },
+    {
+      "id": "gl_Revolve_Left",
+      "label": "GL · Revolve",
+      "group": "GL · Zoom & spin",
+      "author": "bread",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "center.x",
+          "default": "0.46"
+        },
+        {
+          "name": "center.y",
+          "default": "0.52"
+        },
+        {
+          "name": "direction",
+          "default": "-1"
+        },
+        {
+          "name": "maxRotation",
+          "default": "1.95"
+        },
+        {
+          "name": "peakZoom",
+          "default": "2.22"
+        },
+        {
+          "name": "swirl",
+          "default": "2.85"
+        },
+        {
+          "name": "barrel",
+          "default": "0.38"
+        },
+        {
+          "name": "motionBlur",
+          "default": "1"
+        },
+        {
+          "name": "switchStart",
+          "default": "0.30"
+        },
+        {
+          "name": "switchEnd",
+          "default": "0.50"
+        },
+        {
+          "name": "shadow",
+          "default": "0.16"
+        }
+      ]
+    },
+    {
+      "id": "gl_rotate_scale_fade",
+      "label": "GL · Rotate Scale Fade",
+      "group": "GL · Zoom & spin",
+      "author": "Fernando Kuteken",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "centre.x",
+          "default": "0.5"
+        },
+        {
+          "name": "centre.y",
+          "default": "0.5"
+        },
+        {
+          "name": "rotations",
+          "default": "1"
+        },
+        {
+          "name": "scale",
+          "default": "8"
+        },
+        {
+          "name": "background",
+          "default": "0.15"
+        }
+      ]
+    },
+    {
+      "id": "gl_RotateScaleVanish",
+      "label": "GL · Rotate Scale Vanish",
+      "group": "GL · Zoom & spin",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "fadeInSecond",
+          "default": "1"
+        },
+        {
+          "name": "reverseEffect",
+          "default": "0"
+        },
+        {
+          "name": "reverseRotation",
+          "default": "0"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        },
+        {
+          "name": "trkMat",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_rotateTransition",
+      "label": "GL · Rotate Transition",
+      "group": "GL · Zoom & spin",
+      "author": "haiyoucuv",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_scale_in",
+      "label": "GL · Scale In",
+      "group": "GL · Zoom & spin",
+      "author": "haiyoucuv",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_SimpleZoom",
+      "label": "GL · Simple Zoom",
+      "group": "GL · Zoom & spin",
+      "author": "0gust1",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "zoom_quickness",
+          "default": "0.8"
+        }
+      ]
+    },
+    {
+      "id": "gl_SimpleZoomOut",
+      "label": "GL · Simple Zoom Out",
+      "group": "GL · Zoom & spin",
+      "author": "Tianshuo",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "zoom_quickness",
+          "default": "0.8"
+        },
+        {
+          "name": "fade",
+          "default": "1",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_Swirl",
+      "label": "GL · Swirl",
+      "group": "GL · Zoom & spin",
+      "author": "Sergey Kosarevsky",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "radius",
+          "default": "1"
+        },
+        {
+          "name": "clockwise",
+          "default": "1"
+        }
+      ]
+    },
+    {
+      "id": "gl_tangentMotionBlur",
+      "label": "GL · Tangent Motion Blur",
+      "group": "GL · Zoom & spin",
+      "author": "chenkai",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_ZoomInCircles",
+      "label": "GL · Zoom In Circles",
+      "group": "GL · Zoom & spin",
+      "author": "dycm8009",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_zoomInOut",
+      "label": "GL · Zoom In-Out",
+      "group": "GL · Zoom & spin",
+      "author": "OllyOllyOlly",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_ZoomLeftWipe",
+      "label": "GL · Zoom Left Wipe",
+      "group": "GL · Zoom & spin",
+      "author": "Handk",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "zoom_quickness",
+          "default": "0.8"
+        }
+      ]
+    },
+    {
+      "id": "gl_ZoomRigthWipe",
+      "label": "GL · Zoom Right Wipe",
+      "group": "GL · Zoom & spin",
+      "author": "Handk",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "zoom_quickness",
+          "default": "0.8"
+        }
+      ]
+    },
+    {
+      "id": "gl_BookFlip",
+      "label": "GL · Book Flip",
+      "group": "GL · 3D, curls & folds",
+      "author": "hong",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_cube",
+      "label": "GL · Cube",
+      "group": "GL · 3D, curls & folds",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "persp",
+          "default": "0.7"
+        },
+        {
+          "name": "unzoom",
+          "default": "0.3"
+        },
+        {
+          "name": "reflection",
+          "default": "0.4"
+        },
+        {
+          "name": "floating",
+          "default": "3"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_doorway",
+      "label": "GL · Doorway",
+      "group": "GL · 3D, curls & folds",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "reflection",
+          "default": "0.4"
+        },
+        {
+          "name": "perspective",
+          "default": "0.4"
+        },
+        {
+          "name": "depth",
+          "default": "3"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_Fold",
+      "label": "GL · Fold",
+      "group": "GL · 3D, curls & folds",
+      "author": "nwoeanhinnogaehr",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_GridFlip",
+      "label": "GL · Grid Flip",
+      "group": "GL · 3D, curls & folds",
+      "author": "TimDonselaar",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "size.x",
+          "default": "4"
+        },
+        {
+          "name": "size.y",
+          "default": "4"
+        },
+        {
+          "name": "pause",
+          "default": "0.1"
+        },
+        {
+          "name": "dividerWidth",
+          "default": "0.05"
+        },
+        {
+          "name": "randomness",
+          "default": "0.1"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_InvertedPageCurl",
+      "label": "GL · Inverted Page Curl",
+      "group": "GL · 3D, curls & folds",
+      "author": "Hewlett-Packard",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "angle",
+          "default": "100"
+        },
+        {
+          "name": "radius",
+          "default": "0.159"
+        },
+        {
+          "name": "reverseEffect",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_Rolls",
+      "label": "GL · Rolls",
+      "group": "GL · 3D, curls & folds",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "type",
+          "default": "0"
+        },
+        {
+          "name": "rotDown",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_SimpleBookCurl",
+      "label": "GL · Simple Book Curl",
+      "group": "GL · 3D, curls & folds",
+      "author": "scriptituk",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "angle",
+          "default": "150"
+        },
+        {
+          "name": "radius",
+          "default": "0.1"
+        },
+        {
+          "name": "shadow",
+          "default": "0.2"
+        }
+      ]
+    },
+    {
+      "id": "gl_SimpleFlip",
+      "label": "GL · Simple Flip",
+      "group": "GL · 3D, curls & folds",
+      "author": "nwoeanhinnogaehr",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_SimplePageCurl",
+      "label": "GL · Simple Page Curl",
+      "group": "GL · 3D, curls & folds",
+      "author": "Andrew Hung",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "angle",
+          "default": "80"
+        },
+        {
+          "name": "radius",
+          "default": "0.15"
+        },
+        {
+          "name": "roll",
+          "default": "0"
+        },
+        {
+          "name": "reverseEffect",
+          "default": "0"
+        },
+        {
+          "name": "greyBack",
+          "default": "0"
+        },
+        {
+          "name": "opacity",
+          "default": "0.8"
+        },
+        {
+          "name": "shadow",
+          "default": "0.2"
+        }
+      ]
+    },
+    {
+      "id": "gl_StereoViewer",
+      "label": "GL · Stereo Viewer",
+      "group": "GL · 3D, curls & folds",
+      "author": "Ted Schundler",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "zoom",
+          "default": "0.9"
+        },
+        {
+          "name": "radius",
+          "default": "0.25"
+        },
+        {
+          "name": "flip",
+          "default": "0"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        },
+        {
+          "name": "trkMat",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_AdvancedMosaic",
+      "label": "GL · Advanced Mosaic",
+      "group": "GL · Tiles & blocks",
+      "author": "Sergey Kosarevsky",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "pixelSize",
+          "default": "50"
+        }
+      ]
+    },
+    {
+      "id": "gl_flyeye",
+      "label": "GL · Fly Eye",
+      "group": "GL · Tiles & blocks",
+      "author": "gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "size",
+          "default": "0.04"
+        },
+        {
+          "name": "zoom",
+          "default": "50"
+        },
+        {
+          "name": "colorSeparation",
+          "default": "0.3"
+        }
+      ]
+    },
+    {
+      "id": "gl_fragment",
+      "label": "GL · Fragment",
+      "group": "GL · Tiles & blocks",
+      "author": "lbl",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_hexagonalize",
+      "label": "GL · Hexagonalize",
+      "group": "GL · Tiles & blocks",
+      "author": "Fernando Kuteken",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "steps",
+          "default": "50"
+        },
+        {
+          "name": "horizontalHexagons",
+          "default": "20"
+        }
+      ]
+    },
+    {
+      "id": "gl_Lissajous_Tiles",
+      "label": "GL · Lissajous Tiles",
+      "group": "GL · Tiles & blocks",
+      "author": "Boundless",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "grid.x",
+          "default": "10"
+        },
+        {
+          "name": "grid.y",
+          "default": "10"
+        },
+        {
+          "name": "speed",
+          "default": "0.5"
+        },
+        {
+          "name": "freq.x",
+          "default": "2"
+        },
+        {
+          "name": "freq.y",
+          "default": "3"
+        },
+        {
+          "name": "offset",
+          "default": "2"
+        },
+        {
+          "name": "zoom",
+          "default": "0.8"
+        },
+        {
+          "name": "fade",
+          "default": "3"
+        },
+        {
+          "name": "power",
+          "default": "3"
+        },
+        {
+          "name": "background",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_Mosaic",
+      "label": "GL · Mosaic",
+      "group": "GL · Tiles & blocks",
+      "author": "Xaychru",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "endx",
+          "default": "2"
+        },
+        {
+          "name": "endy",
+          "default": "-1"
+        }
+      ]
+    },
+    {
+      "id": "gl_mosaic_transition",
+      "label": "GL · Mosaic Fade",
+      "group": "GL · Tiles & blocks",
+      "author": "YueDev",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "mosaicNum",
+          "default": "10"
+        }
+      ]
+    },
+    {
+      "id": "gl_PuzzleRight",
+      "label": "GL · Puzzle",
+      "group": "GL · Tiles & blocks",
+      "author": "JustKirillS",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "size.x",
+          "default": "4"
+        },
+        {
+          "name": "size.y",
+          "default": "4"
+        },
+        {
+          "name": "pause",
+          "default": "0.1"
+        },
+        {
+          "name": "dividerWidth",
+          "default": "0.005"
+        }
+      ]
+    },
+    {
+      "id": "gl_squareswire",
+      "label": "GL · Squares Wire",
+      "group": "GL · Tiles & blocks",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "squares.x",
+          "default": "10"
+        },
+        {
+          "name": "squares.y",
+          "default": "10"
+        },
+        {
+          "name": "direction.x",
+          "default": "1.0"
+        },
+        {
+          "name": "direction.y",
+          "default": "-0.5"
+        },
+        {
+          "name": "smoothness",
+          "default": "1.6"
+        }
+      ]
+    },
+    {
+      "id": "gl_TilesWave",
+      "label": "GL · Tiles Wave",
+      "group": "GL · Tiles & blocks",
+      "author": "numb3r23",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "tileCount.x",
+          "default": "8"
+        },
+        {
+          "name": "tileCount.y",
+          "default": "8"
+        },
+        {
+          "name": "flipX",
+          "default": "1",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        },
+        {
+          "name": "flipY",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_ButterflyWaveScrawler",
+      "label": "GL · Butterfly Wave Scrawler",
+      "group": "GL · Kaleido & fun",
+      "author": "mandubian",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "amplitude",
+          "default": "1"
+        },
+        {
+          "name": "waves",
+          "default": "30"
+        },
+        {
+          "name": "colorSeparation",
+          "default": "0.3"
+        }
+      ]
+    },
+    {
+      "id": "gl_cannabisleaf",
+      "label": "GL · Cannabis Leaf",
+      "group": "GL · Kaleido & fun",
+      "author": "Flexi23",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_CrazyParametricFun",
+      "label": "GL · Crazy Parametric Fun",
+      "group": "GL · Kaleido & fun",
+      "author": "mandubian",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "a",
+          "default": "4"
+        },
+        {
+          "name": "b",
+          "default": "1"
+        },
+        {
+          "name": "amplitude",
+          "default": "120"
+        },
+        {
+          "name": "smoothness",
+          "default": "0.1"
+        }
+      ]
+    },
+    {
+      "id": "gl_Flower",
+      "label": "GL · Flower",
+      "group": "GL · Kaleido & fun",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.05"
+        },
+        {
+          "name": "rotation",
+          "default": "360"
+        }
+      ]
+    },
+    {
+      "id": "gl_kaleidoscope",
+      "label": "GL · Kaleidoscope",
+      "group": "GL · Kaleido & fun",
+      "author": "nwoeanhinnogaehr",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "speed",
+          "default": "1"
+        },
+        {
+          "name": "angle",
+          "default": "1"
+        },
+        {
+          "name": "power",
+          "default": "1.5"
+        }
+      ]
+    },
+    {
+      "id": "gl_polar_function",
+      "label": "GL · Polar Function",
+      "group": "GL · Kaleido & fun",
+      "author": "Fernando Kuteken",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "segments",
+          "default": "5"
+        }
+      ]
+    },
+    {
+      "id": "gl_powerKaleido",
+      "label": "GL · Power Kaleido",
+      "group": "GL · Kaleido & fun",
+      "author": "Boundless",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "scale",
+          "default": "2"
+        },
+        {
+          "name": "z",
+          "default": "1.5"
+        },
+        {
+          "name": "speed",
+          "default": "5"
+        }
+      ]
+    },
+    {
+      "id": "gl_BlockDissolve",
+      "label": "GL · Block Dissolve",
+      "group": "GL · Dissolve & noise",
+      "author": "nwoeanhinnogaehr",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "blocksize",
+          "default": "0.02"
+        }
+      ]
+    },
+    {
+      "id": "gl_CrossOut",
+      "label": "GL · Cross Out",
+      "group": "GL · Dissolve & noise",
+      "author": "Mark Craig",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.05"
+        }
+      ]
+    },
+    {
+      "id": "gl_DefocusBlur",
+      "label": "GL · Defocus Blur",
+      "group": "GL · Dissolve & noise",
+      "author": "Sergey Kosarevsky",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "blurSize",
+          "default": "0.02"
+        }
+      ]
+    },
+    {
+      "id": "gl_displacement",
+      "label": "GL · Displacement",
+      "group": "GL · Dissolve & noise",
+      "author": "Travis Fischer",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "strength",
+          "default": "0.5"
+        },
+        {
+          "name": "map",
+          "default": "-4",
+          "min": "-24",
+          "max": "-2",
+          "step": "2",
+          "hint": "negative = generated texture (even = still, odd = animated); 0..1 = grey, #RRGGBB / 0xRRGGBBAA = colour"
+        }
+      ]
+    },
+    {
+      "id": "gl_Dreamy",
+      "label": "GL · Dreamy",
+      "group": "GL · Dissolve & noise",
+      "author": "mikolalysenko",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_LinearBlur",
+      "label": "GL · Linear Blur",
+      "group": "GL · Dissolve & noise",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "intensity",
+          "default": "0.1"
+        }
+      ]
+    },
+    {
+      "id": "gl_luma",
+      "label": "GL · Luma Mask",
+      "group": "GL · Dissolve & noise",
+      "author": "gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "map",
+          "default": "-14",
+          "min": "-24",
+          "max": "-2",
+          "step": "2",
+          "hint": "negative = generated texture (even = still, odd = animated); 0..1 = grey, #RRGGBB / 0xRRGGBBAA = colour"
+        }
+      ]
+    },
+    {
+      "id": "gl_perlin",
+      "label": "GL · Perlin",
+      "group": "GL · Dissolve & noise",
+      "author": "Rich Harris",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "scale",
+          "default": "4"
+        },
+        {
+          "name": "smoothness",
+          "default": "0.01"
+        }
+      ]
+    },
+    {
+      "id": "gl_PolkaDotsCurtain",
+      "label": "GL · Polka Dots Curtain",
+      "group": "GL · Dissolve & noise",
+      "author": "bobylito",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "dots",
+          "default": "20"
+        },
+        {
+          "name": "centre.x",
+          "default": "0"
+        },
+        {
+          "name": "centre.y",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_randomNoisex",
+      "label": "GL · Random Noise X",
+      "group": "GL · Dissolve & noise",
+      "author": "towrabbit",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_randomsquares",
+      "label": "GL · Random Squares",
+      "group": "GL · Dissolve & noise",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "size.x",
+          "default": "10"
+        },
+        {
+          "name": "size.y",
+          "default": "10"
+        },
+        {
+          "name": "smoothness",
+          "default": "0.5"
+        }
+      ]
+    },
+    {
+      "id": "gl_ripple",
+      "label": "GL · Ripple",
+      "group": "GL · Dissolve & noise",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "amplitude",
+          "default": "100"
+        },
+        {
+          "name": "speed",
+          "default": "50"
+        }
+      ]
+    },
+    {
+      "id": "gl_StarWipe",
+      "label": "GL · Star Wipe",
+      "group": "GL · Dissolve & noise",
+      "author": "Ben Lucas",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "borderThickness",
+          "default": "0.01"
+        },
+        {
+          "name": "starRotation",
+          "default": "0.75"
+        },
+        {
+          "name": "borderColor",
+          "default": "1"
+        }
+      ]
+    },
+    {
+      "id": "gl_WaterDrop",
+      "label": "GL · Water Drop",
+      "group": "GL · Dissolve & noise",
+      "author": "Paweł Płóciennik",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "amplitude",
+          "default": "30"
+        },
+        {
+          "name": "speed",
+          "default": "30"
+        }
+      ]
+    },
+    {
+      "id": "gl_crosswarp",
+      "label": "GL · Cross Warp",
+      "group": "GL · Glitch & static",
+      "author": "Eke Péter",
+      "since": "xfade-easing v3.6.6",
+      "params": []
+    },
+    {
+      "id": "gl_crosshatch",
+      "label": "GL · Crosshatch",
+      "group": "GL · Glitch & static",
+      "author": "pthrasher",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "center.x",
+          "default": "0.5"
+        },
+        {
+          "name": "center.y",
+          "default": "0.5"
+        },
+        {
+          "name": "threshold",
+          "default": "3"
+        },
+        {
+          "name": "fadeEdge",
+          "default": "0.1"
+        }
+      ]
+    },
+    {
+      "id": "gl_Drop_Zone_Flicker",
+      "label": "GL · Drop Zone Flicker",
+      "group": "GL · Glitch & static",
+      "author": "bread",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "frameRate",
+          "default": "24"
+        },
+        {
+          "name": "rgbOffset",
+          "default": "0.014"
+        },
+        {
+          "name": "blockAmount",
+          "default": "0.72"
+        },
+        {
+          "name": "ghostAmount",
+          "default": "0.62"
+        },
+        {
+          "name": "redCyan",
+          "default": "0.58"
+        },
+        {
+          "name": "scanline",
+          "default": "0.075"
+        }
+      ]
+    },
+    {
+      "id": "gl_GlitchDisplace",
+      "label": "GL · Glitch Displace",
+      "group": "GL · Glitch & static",
+      "author": "Matt DesLauriers",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_GlitchMemories",
+      "label": "GL · Glitch Memories",
+      "group": "GL · Glitch & static",
+      "author": "Gunnar Roth",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_old_tv_lost_signal",
+      "label": "GL · Old TV Lost Signal",
+      "group": "GL · Glitch & static",
+      "author": "mernking (gitlab: Godswork)",
+      "since": "slideshow port batch D",
+      "params": []
+    },
+    {
+      "id": "gl_parametric_glitch",
+      "label": "GL · Parametric Glitch",
+      "group": "GL · Glitch & static",
+      "author": "Yoni Maltsman @friendlyspinach",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "ampx",
+          "default": "1"
+        },
+        {
+          "name": "ampy",
+          "default": "1"
+        }
+      ]
+    },
+    {
+      "id": "gl_StaticFade",
+      "label": "GL · Static Fade",
+      "group": "GL · Glitch & static",
+      "author": "Ben Lucas",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "n_noise_pixels",
+          "default": "200"
+        },
+        {
+          "name": "static_luminosity",
+          "default": "0.8"
+        }
+      ]
+    },
+    {
+      "id": "gl_StripDatamoshGlitch",
+      "label": "GL · Strip Datamosh Glitch",
+      "group": "GL · Glitch & static",
+      "author": "bread",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "strength",
+          "default": "1"
+        },
+        {
+          "name": "horizontalBars",
+          "default": "42"
+        },
+        {
+          "name": "verticalSlits",
+          "default": "18"
+        },
+        {
+          "name": "tear",
+          "default": "0.18"
+        },
+        {
+          "name": "chroma",
+          "default": "0.032"
+        },
+        {
+          "name": "residue",
+          "default": "0.62"
+        },
+        {
+          "name": "noiseAmount",
+          "default": "0.16"
+        },
+        {
+          "name": "scanAmount",
+          "default": "0.13"
+        },
+        {
+          "name": "flashAmount",
+          "default": "0.20"
+        }
+      ]
+    },
+    {
+      "id": "gl_TVStatic",
+      "label": "GL · TV Static",
+      "group": "GL · Glitch & static",
+      "author": "Brandon Anzaldi",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "offset",
+          "default": "0.05"
+        }
+      ]
+    },
+    {
+      "id": "gl_blend",
+      "label": "GL · Blend",
+      "group": "GL · Colour & burn",
+      "author": "scriptituk",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "mode",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "id": "gl_burn",
+      "label": "GL · Burn",
+      "group": "GL · Colour & burn",
+      "author": "gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "color",
+          "default": "0xE66633FF"
+        }
+      ]
+    },
+    {
+      "id": "gl_burn0",
+      "label": "GL · Burn Noise",
+      "group": "GL · Colour & burn",
+      "author": "liubailin2020@gmail.com",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "burnColor",
+          "default": "0xFF8000FF"
+        }
+      ]
+    },
+    {
+      "id": "gl_ColourDistance",
+      "label": "GL · Colour Distance",
+      "group": "GL · Colour & burn",
+      "author": "P-Seebauer",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "power",
+          "default": "5"
+        }
+      ]
+    },
+    {
+      "id": "gl_colorphase",
+      "label": "GL · Colour Phase",
+      "group": "GL · Colour & burn",
+      "author": "gre",
+      "since": "slideshow port batch D",
+      "params": [
+        {
+          "name": "fromStep",
+          "default": "#003366",
+          "hint": "per-channel fade start (R,G,B,A steps 0..1 packed as colour); must be below toStep"
+        },
+        {
+          "name": "toStep",
+          "default": "#99CCFF",
+          "hint": "per-channel fade end; all channels must be above fromStep"
+        }
+      ]
+    },
+    {
+      "id": "gl_coord_from_in",
+      "label": "GL · Coordinate Morph",
+      "group": "GL · Colour & burn",
+      "author": "haiyoucuv",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_DoomScreenTransition",
+      "label": "GL · Doom Screen",
+      "group": "GL · Colour & burn",
+      "author": "Zeh Fernando",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "bars",
+          "default": "30"
+        },
+        {
+          "name": "amplitude",
+          "default": "2"
+        },
+        {
+          "name": "noise",
+          "default": "0.1"
+        },
+        {
+          "name": "frequency",
+          "default": "0.5"
+        },
+        {
+          "name": "dripScale",
+          "default": "0.5"
+        }
+      ]
+    },
+    {
+      "id": "gl_fadecolor",
+      "label": "GL · Fade Color",
+      "group": "GL · Colour & burn",
+      "author": "gre",
+      "since": "xfade-easing v3.6.6",
+      "params": [
+        {
+          "name": "color",
+          "default": "0"
+        },
+        {
+          "name": "colorPhase",
+          "default": "0.4"
+        }
+      ]
+    },
+    {
+      "id": "gl_fadegrayscale",
+      "label": "GL · Fade Grayscale",
+      "group": "GL · Colour & burn",
+      "author": "gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "intensity",
+          "default": "0.3"
+        }
+      ]
+    },
+    {
+      "id": "gl_FilmBurn",
+      "label": "GL · Film Burn",
+      "group": "GL · Colour & burn",
+      "author": "Anastasia Dunbar",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "Seed",
+          "default": "2.31"
+        }
+      ]
+    },
+    {
+      "id": "gl_HSVfade",
+      "label": "GL · HSV Fade",
+      "group": "GL · Colour & burn",
+      "author": "nwoeanhinnogaehr",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_luminance_melt",
+      "label": "GL · Luminance Melt",
+      "group": "GL · Colour & burn",
+      "author": "0gust1",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "direction",
+          "default": "1"
+        },
+        {
+          "name": "l_threshold",
+          "default": "0.8"
+        },
+        {
+          "name": "above",
+          "default": "0",
+          "min": "0",
+          "max": "1",
+          "step": "1",
+          "hint": "0 = off, 1 = on"
+        }
+      ]
+    },
+    {
+      "id": "gl_multiply_blend",
+      "label": "GL · Multiply Blend",
+      "group": "GL · Colour & burn",
+      "author": "Fernando Kuteken",
+      "since": "slideshow port",
+      "params": []
+    },
+    {
+      "id": "gl_Overexposure",
+      "label": "GL · Overexposure",
+      "group": "GL · Colour & burn",
+      "author": "Ben Zhang",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "strength",
+          "default": "0.6"
+        }
+      ]
+    },
+    {
+      "id": "gl_undulatingBurnOut",
+      "label": "GL · Undulating Burn Out",
+      "group": "GL · Colour & burn",
+      "author": "pthrasher, adapted by gre",
+      "since": "slideshow port",
+      "params": [
+        {
+          "name": "smoothness",
+          "default": "0.03"
+        },
+        {
+          "name": "center.x",
+          "default": "0.5"
+        },
+        {
+          "name": "center.y",
+          "default": "0.5"
+        },
+        {
+          "name": "color",
+          "default": "0x000000FF"
+        }
+      ]
+    }
+  ]
+}

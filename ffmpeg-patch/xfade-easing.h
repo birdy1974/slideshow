@@ -2175,6 +2175,1420 @@ static vec4 gl_windowslice(const XTransition *e) // by gre
     return step(pr, fract(count * e->p.x)) ? e->b : e->a;
 }
 
+// Batch A ports (this project): additional GL Transition shaders from
+// https://github.com/gl-transitions/gl-transitions ported to the xfade-easing
+// C model. Names, algorithms, parameter names and credits follow the sources.
+
+static vec4 gl_Fold(const XTransition *e) // by nwoeanhinnogaehr
+{ // License: MIT
+    INIT_END
+    float pr = minf(e->progress, 0.99999f); // avoids 1/(1-progress) producing NaN*0
+    vec4 a = getFromColor((e->p.x - pr) / (1 - pr), e->p.y);
+    vec4 b = getToColor(e->p.x / maxf(pr, 0.00001f), e->p.y);
+    return mix4(a, b, step(e->p.x, e->progress));
+}
+
+static vec4 gl_Directional(const XTransition *e) // by Gaëtan Renaudeau
+{ // License: MIT
+    INIT_BEGIN
+    ARG2(vec2, direction, 0, 1)
+    INIT_END
+    vec2 p = add2(e->p, mul2(sign2(direction), vec2f(e->progress)));
+    vec2 f = fract2(p);
+    float in = step(0, p.y) * step(p.y, 1) * step(0, p.x) * step(p.x, 1);
+    return mix4(getToColor(f), getFromColor(f), in);
+}
+
+static vec4 gl_directional_easing(const XTransition *e) // by Max Plotnikov
+{ // License: MIT
+    INIT_BEGIN
+    ARG2(vec2, direction, 0, 1)
+    INIT_END
+    float easing = sqrtf((2 - e->progress) * e->progress);
+    vec2 p = add2(e->p, mul2(sign2(direction), vec2f(easing)));
+    vec2 f = fract2(p);
+    float in = step(0, p.y) * step(p.y, 1) * step(0, p.x) * step(p.x, 1);
+    return mix4(getToColor(f), getFromColor(f), in);
+}
+
+static vec4 gl_directionalwipe(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG2(vec2, direction, 1, -1)
+    ARG1(float, smoothness, 0.5)
+    INIT_END
+    float l = maxf(length2(direction), 0.00001f);
+    vec2 v = div2f(direction, l);
+    v = div2f(v, absf(v.x) + absf(v.y));
+    float d = v.x * P5f + v.y * P5f;
+    float m = (1 - step(e->progress, 0)) *
+        (1 - smoothstep(-smoothness, 0, v.x * e->p.x + v.y * e->p.y - (d - P5f + e->progress * (1 + smoothness))));
+    return mix4(e->a, e->b, clipUI(m));
+}
+
+static vec4 gl_wind(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, size, 0.2)
+    ARG1(int, reversed, 0)
+    INIT_END
+    float x = reversed ? 1 - e->p.x : e->p.x;
+    float r = frandf(0, e->p.y);
+    float m = smoothstep(0, -size, x * (1 - size) + size * r - e->progress * (1 + size));
+    return mix4(e->a, e->b, m);
+}
+
+static vec4 gl_x_axis_translation(const XTransition *e) // by lizhongjian
+{ // License: MIT
+    INIT_END
+    if (e->p.x >= e->progress)
+        return getFromColor(e->p.x - e->progress, e->p.y);
+    return mix4(e->a, e->b, e->progress);
+}
+
+static vec4 gl_TopBottom(const XTransition *e) // by zhmy
+{ // License: MIT
+    INIT_END
+    float size = mixf(1, 3, e->progress * 0.2f);
+    vec2 spto = add2f(mul2f(sub2f(e->p, P5f), size), P5f);
+    vec2 spfr = VEC2(e->p.x, e->p.y + 1 - e->progress);
+    if (betweenUI2(spfr))
+        return getToColor(spfr);
+    if (betweenUI2(spto))
+        return mul4f(getFromColor(spto), 1 - e->progress);
+    return colour(e, 0); // black
+}
+
+static vec4 gl_LeftRight(const XTransition *e) // by zhmy
+{ // License: MIT
+    INIT_END
+    float size = mixf(1, 3, e->progress * 0.2f);
+    vec2 spto = add2f(mul2f(sub2f(e->p, P5f), size), P5f);
+    vec2 spfr = VEC2(e->p.x - (1 - e->progress), e->p.y);
+    if (betweenUI2(spfr))
+        return getToColor(spfr);
+    if (betweenUI2(spto))
+        return mul4f(getFromColor(spto), 1 - e->progress);
+    return colour(e, 0); // black
+}
+
+static vec4 gl_splitSlideInHorizontal(const XTransition *e) // by OllyOllyOlly
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, reverse, 0)
+    INIT_END
+    float modifier = reverse ? -1.f : 1.f;
+    vec2 toP = (e->p.y > P5f)
+        ? VEC2(e->p.x - e->progress * modifier + modifier, e->p.y)
+        : VEC2(e->p.x + e->progress * modifier - modifier, e->p.y);
+    return betweenUI2(toP) ? getToColor(toP) : e->a;
+}
+
+static vec4 gl_splitSlideInVertical(const XTransition *e) // by OllyOllyOlly
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, reverse, 0)
+    INIT_END
+    float modifier = reverse ? -1.f : 1.f;
+    vec2 p = (e->p.x > P5f)
+        ? VEC2(e->p.x, e->p.y - e->progress * modifier + modifier)
+        : VEC2(e->p.x, e->p.y + e->progress * modifier - modifier);
+    return betweenUI2(p) ? getToColor(p) : e->a;
+}
+
+static vec4 gl_splitSlideInOutHorizontal(const XTransition *e) // by OllyOllyOlly
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, reverse, 0)
+    INIT_END
+    float modifier = (e->p.y > P5f ? 1.f : -1.f) * (reverse ? -1.f : 1.f);
+    vec2 fromP = VEC2(e->p.x + e->progress * modifier, e->p.y);
+    vec2 toP = VEC2(e->p.x + e->progress * modifier - modifier, e->p.y);
+    return betweenUI2(fromP) ? getFromColor(fromP) : getToColor(toP);
+}
+
+static vec4 gl_splitSlideInOutVertical(const XTransition *e) // by OllyOllyOlly
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, reverse, 0)
+    INIT_END
+    float modifier = (e->p.x > P5f ? 1.f : -1.f) * (reverse ? -1.f : 1.f);
+    vec2 fromP = VEC2(e->p.x, e->p.y + e->progress * modifier);
+    vec2 toP = VEC2(e->p.x, e->p.y + e->progress * modifier - modifier);
+    return betweenUI2(fromP) ? getFromColor(fromP) : getToColor(toP);
+}
+
+static vec4 gl_splitSlideOutHorizontal(const XTransition *e) // by OllyOllyOlly
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, reverse, 0)
+    INIT_END
+    float modifier = (e->p.y > P5f ? 1.f : -1.f) * (reverse ? -1.f : 1.f);
+    vec2 p = VEC2(e->p.x + e->progress * modifier, e->p.y);
+    return betweenUI2(p) ? getFromColor(p) : e->b;
+}
+
+static vec4 gl_splitSlideOutVertical(const XTransition *e) // by OllyOllyOlly
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, reverse, 0)
+    INIT_END
+    float modifier = (e->p.x > P5f ? 1.f : -1.f) * (reverse ? -1.f : 1.f);
+    vec2 p = VEC2(e->p.x, e->p.y + e->progress * modifier);
+    return betweenUI2(p) ? getFromColor(p) : e->b;
+}
+
+static vec4 gl_scale_in(const XTransition *e) // by haiyoucuv
+{ // License: MIT
+    INIT_END
+    vec2 s = origin2(mul2f(centre2(e->p), e->progress));
+    return mix4(e->a, getToColor(s), e->progress);
+}
+
+static vec4 gl_SimpleZoom(const XTransition *e) // by 0gust1
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, zoom_quickness, 0.8)
+    VAR1(float, nQuick, av_clipf(zoom_quickness, 0.2f, 1))
+    INIT_END
+    vec2 z = origin2(mul2f(centre2(e->p), 1 - smoothstep(0, nQuick, e->progress)));
+    return mix4(getFromColor(z), e->b, smoothstep(nQuick - 0.2f, 1, e->progress));
+}
+
+static vec4 gl_SimpleZoomOut(const XTransition *e) // by Tianshuo
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, zoom_quickness, 0.8)
+    ARG1(int, fade, 1)
+    VAR1(float, nQuick, av_clipf(zoom_quickness, 0.2f, 1))
+    INIT_END
+    float t = smoothstep(1 - nQuick, 1, e->progress);
+    vec2 z = origin2(mul2f(centre2(e->p), t)); // zoom(uv, 1 - smoothstep(...))
+    float m = fade ? t : (e->progress < 1 - nQuick ? 0.f : 1.f);
+    return mix4(e->a, getToColor(z), m);
+}
+
+static vec4 gl_zoomInOut(const XTransition *e) // by OllyOllyOlly
+{ // License: MIT
+    INIT_END
+    float zoomFrom = smoothstep(0, 1, e->progress * 2);
+    float zoomTo = smoothstep(0, 1, (1 - e->progress) * 2);
+    float crossfade = smoothstep(0.4f, 0.6f, e->progress);
+    return mix4(
+        getFromColor(origin2(mul2f(centre2(e->p), 1 - zoomFrom))),
+        getToColor(origin2(mul2f(centre2(e->p), 1 - zoomTo))),
+        crossfade);
+}
+
+static vec4 gl_ZoomLeftWipe(const XTransition *e) // by Handk
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, zoom_quickness, 0.8)
+    VAR1(float, nQuick, av_clipf(zoom_quickness, 0, P5f))
+    INIT_END
+    if (e->progress < P5f) {
+        float amount = smoothstep(0, nQuick, e->progress);
+        float f = amount < P5f ? 1 - amount : amount;
+        return getFromColor(origin2(mul2f(centre2(e->p), f)));
+    }
+    float t = (e->progress - P5f) * 2;
+    return mix4(e->a, e->b, step(1 - e->p.x, t));
+}
+
+static vec4 gl_ZoomRigthWipe(const XTransition *e) // by Handk (sic)
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, zoom_quickness, 0.8)
+    VAR1(float, nQuick, av_clipf(zoom_quickness, 0, P5f))
+    INIT_END
+    if (e->progress < P5f) {
+        float amount = smoothstep(0, nQuick, e->progress);
+        float f = amount < P5f ? 1 - amount : amount;
+        return getFromColor(origin2(mul2f(centre2(e->p), f)));
+    }
+    float t = (e->progress - P5f) * 2;
+    return mix4(e->a, e->b, step(e->p.x, t));
+}
+
+static vec4 gl_ZoomInCircles(const XTransition *e) // by dycm8009
+{ // License: MIT
+    INIT_END
+    vec2 r = mul2f(mul2(centre2(e->p), VEC2(1, 1 / e->ratio)), 2);
+    float pro = e->progress / 0.8f;
+    float z = pro * 0.2f;
+    float t = 0;
+    if (pro > 1) {
+        z = 0.2f + (pro - 1) * 5;
+        t = clipUI((e->progress - 0.8f) / 0.07f);
+    }
+    float d = length2(r);
+    vec2 q = e->p;
+    if (d < 0.5f + z) {
+        // inner circle: unzoomed
+    } else if (d < 0.8f + z * 1.5f) {
+        q = origin2(mul2f(centre2(q), 1 - 0.15f * pro));
+        t *= 0.5f;
+    } else if (d < 1.2f + z * 2.5f) {
+        q = origin2(mul2f(centre2(q), 1 - 0.2f * pro));
+        t *= 0.2f;
+    } else {
+        q = origin2(mul2f(centre2(q), 1 - 0.25f * pro));
+    }
+    return mix4(getFromColor(q), getToColor(q), t);
+}
+
+static vec4 gl_circle(const XTransition *e) // by Fernando Kuteken
+{ // License: MIT
+    INIT_BEGIN
+    ARG2(vec2, center, 0.5, 0.5)
+    ARG4(Colour, backColor, 0x1A1A1AFF)
+    INIT_END
+    float distance = distance2(e->p, center);
+    float radius = sqrtf(8) * absf(e->progress - P5f);
+    if (distance > radius)
+        return colour(e, backColor);
+    return (e->progress < P5f) ? e->a : e->b;
+}
+
+static vec4 gl_Rectangle(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_BEGIN
+    ARG4(Colour, bgcolor, 0x000000FF)
+    INIT_END
+    float s = powf(2 * absf(e->progress - P5f), 3);
+    float a12 = 1 - absf(1 - 2 * e->progress); // upstream: 1.0 - 2.0*abs(progress - 0.5)
+    vec2 sq = e->p;
+    vec2 bl = { step(a12, sq.x + 0.25f), step(a12, sq.y + 0.25f) };
+    float dist = bl.x * bl.y;
+    vec2 tr = { step(a12, 1.25f - sq.x), step(a12, 1.25f - sq.y) };
+    dist *= tr.x * tr.y;
+    return mix4(e->progress < P5f ? e->a : e->b, colour(e, bgcolor), step(s, dist));
+}
+
+static vec4 gl_Box(const XTransition *e) // by lql
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, rectIn, 1)   // 0: box reveals, 1: box covers
+    ARG1(int, location, 0) // center:0, left_top:1, left_bottom:2, right_top:3, right_bottom:4
+    INIT_END
+    float p = rectIn == 1 ? 1 - e->progress : e->progress;
+    float x1, y1, x2, y2;
+    if (location == 0) {
+        x1 = y1 = P5f * (1 - p);
+        x2 = y2 = 1 - x1;
+    } else {
+        x1 = (location == 1 || location == 2) ? 0.f : 1 - p;
+        y1 = (location == 1 || location == 3) ? 1 - p : 0.f;
+        x2 = (location == 1 || location == 2) ? p : 1.f;
+        y2 = (location == 1 || location == 3) ? 1.f : p;
+    }
+    float in_rect = step(x1, e->p.x) * step(e->p.x, x2) * step(y1, e->p.y) * step(e->p.y, y2);
+    in_rect = rectIn == 1 ? 1 - in_rect : in_rect;
+    return mix4(e->a, e->b, in_rect);
+}
+
+static vec4 gl_luma(const XTransition *e) // by gre
+{ // License: MIT
+    // The GLSL original samples a user-supplied luma mask texture. Here the mask
+    // is a generated texture type (see background textures, default diamond).
+    INIT_BEGIN
+    ARG4(Colour, map, -14) // texture type (negative) or colour
+    INIT_END
+    vec4 c = colour(e, map);
+    float mask = e->k->is_rgb ? c.p2 : c.p0; // red component / luma
+    return mix4(e->b, e->a, step(e->progress, mask));
+}
+
+static vec4 gl_displacement(const XTransition *e) // by Travis Fischer
+{ // License: MIT
+    // The GLSL original samples a user displacement map. Here the map is a
+    // generated texture type (default glowing marbling).
+    INIT_BEGIN
+    ARG1(float, strength, 0.5)
+    ARG4(Colour, map, -4) // texture type (negative) or colour
+    INIT_END
+    vec4 c = colour(e, map);
+    float displacement = (e->k->is_rgb ? c.p2 : c.p0) * strength;
+    vec2 uvFrom = { e->p.x + e->progress * displacement, e->p.y };
+    vec2 uvTo = { e->p.x - (1 - e->progress) * displacement, e->p.y };
+    return mix4(getFromColor(uvFrom), getToColor(uvTo), e->progress);
+}
+
+
+// Batch B ports: colour, burn and noise driven GL Transitions.
+
+// additive tint for colour parameters: colour() converted to native space
+// without the opaque black pedestal, so adding it never lifts the blacks
+static inline vec4 tint(const XTransition *e, Colour c)
+{
+    vec4 v = colour(e, c);
+    v.p3 -= 1; // remove opacity, keep chroma/luma contribution only
+    if (!e->k->is_rgb) // remove the digital headroom offsets added by gbr2yuv
+        v.p0 -= 16.f / 255, v.p1 -= 0.5f, v.p2 -= 0.5f;
+    return v;
+}
+
+// computed (r,g,b) tint addition in native space
+static inline vec4 gbr_delta(const XTransition *e, float r, float g, float b)
+{
+    if (e->k->is_rgb)
+        return VEC4(g, b, r, 0);
+    return sub4(gbr2yuv(VEC4(g, b, r, 0)), Od);
+}
+
+static vec4 gl_burn(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG4(Colour, color, 0xE66633FF)
+    INIT_END
+    vec4 c = tint(e, color);
+    vec4 fa = add4(e->a, mul4f(c, e->progress));
+    vec4 ta = add4(e->b, mul4f(c, 1 - e->progress));
+    return mix4(fa, ta, e->progress);
+}
+
+static float b0_noise(vec2 st) // Morgan McGuire, https://www.shadertoy.com/view/4dS3Wd
+{
+    vec2 i = floor2(st);
+    vec2 f = fract2(st);
+    float a = frand2(i);
+    float b = frand2(add2(i, VEC2(1, 0)));
+    float c = frand2(add2(i, VEC2(0, 1)));
+    float d = frand2(add2(i, VEC2(1, 1)));
+    vec2 u = mul2(mul2(f, f), sub2f(mul2f(f, 2), -3)); // f*f*(3-2*f)
+    return mixf(a, b, u.x) + (c - a) * u.y * (1 - u.x) + (d - b) * u.x * u.y;
+}
+
+static vec4 gl_burn0(const XTransition *e) // by liubailin2020@gmail.com
+{ // License: MIT
+    INIT_BEGIN
+    ARG4(Colour, burnColor, 0xFF8000FF)
+    INIT_END
+    if (e->progress <= 0)
+        return e->a;
+    if (e->progress >= 1)
+        return e->b;
+    vec2 st = mul2f(e->p, 4);
+    float value = 0, amplitude = P5f;
+    for (int i = 0; i < 4; i++) { // fbm, OCTAVES = 4
+        value += amplitude * b0_noise(st);
+        st = mul2f(st, 2);
+        amplitude *= P5f;
+    }
+    float l = smoothstep(e->progress, e->progress + 0.05f, value);
+    float edge = (1 - l) * l * 5;
+    return add4(mix4(e->b, e->a, l), mul4f(tint(e, burnColor), edge));
+}
+
+static vec4 gl_fadegrayscale(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, intensity, 0.3)
+    INIT_END
+    vec4 fc = e->a, tc = e->b;
+    if (!e->k->is_rgb)
+        fc = yuv2gbr(fc), tc = yuv2gbr(tc); // work in (g,b,r)
+    float fg = dot3(fc, VEC3(0.7152f, 0.0722f, 0.2126f)); // BT.709 grey of (g,b,r)
+    float tg = dot3(tc, VEC3(0.7152f, 0.0722f, 0.2126f));
+    vec4 f = mix4(vec3f(fg), fc, smoothstep(1 - intensity, 0, e->progress));
+    vec4 t = mix4(vec3f(tg), tc, smoothstep(intensity, 1, e->progress));
+    vec4 c = mix4(f, t, e->progress);
+    return e->k->is_rgb ? c : clipUI4(gbr2yuv(c));
+}
+
+static vec4 gl_multiply_blend(const XTransition *e) // by Fernando Kuteken
+{ // License: MIT
+    INIT_END
+    vec4 blended = VEC4(e->a.p0 * e->b.p0, e->a.p1 * e->b.p1,
+                        e->a.p2 * e->b.p2, e->a.p3 * e->b.p3);
+    return (e->progress < P5f)
+        ? mix4(e->a, blended, 2 * e->progress)
+        : mix4(blended, e->b, 2 * e->progress - 1);
+}
+
+static vec4 gl_ColourDistance(const XTransition *e) // by P-Seebauer
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, power, 5)
+    INIT_END
+    vec4 d = sub4(e->a, e->b);
+    float dist = sqrtf(dot3(d, d) + d.p3 * d.p3);
+    float m = step(dist, e->progress);
+    return mix4(mix4(e->a, e->b, m), e->b, powf(e->progress, power));
+}
+
+static vec4 h2r_rgb2hsv(vec4 c) // http://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
+{ // c is (r,g,b)
+    float r = c.p0, g = c.p1, b = c.p2;
+    float t1 = b <= g; // step(c.b, c.g)
+    float px = t1 ? g : b, py = t1 ? b : g, pz = t1 ? 0 : -1, pw = t1 ? -1.f / 3 : 2.f / 3;
+    float t2 = px <= r; // step(p.x, c.r)
+    float qx = t2 ? r : px, qy = py, qz = t2 ? pz : pw, qw = t2 ? px : r;
+    float d = qx - minf(qw, qy);
+    return VEC3(fabsf(qz + (qw - qy) / (6 * d + 0.001f)), d / (qx + 0.001f), qx);
+}
+
+static vec4 h2r_hsv2rgb(vec4 c) // c is (h,s,v), returns (r,g,b)
+{
+    float h = c.p0, s = c.p1, v = c.p2;
+    float pr = absf(fract(h + 1) * 6 - 3);
+    float pg = absf(fract(h + 2.f / 3) * 6 - 3);
+    float pb = absf(fract(h + 1.f / 3) * 6 - 3);
+    return VEC3(v * mixf(1, clipUI(pr - 1), s),
+                v * mixf(1, clipUI(pg - 1), s),
+                v * mixf(1, clipUI(pb - 1), s));
+}
+
+static vec4 gl_HSVfade(const XTransition *e) // by nwoeanhinnogaehr
+{ // License: MIT
+    INIT_END
+    vec4 a = e->a, b = e->b;
+    if (!e->k->is_rgb)
+        a = yuv2gbr(a), b = yuv2gbr(b); // now (g,b,r)
+    // to (r,g,b) for the hue maths
+    vec4 ahsv = h2r_rgb2hsv(VEC3(a.p2, a.p0, a.p1));
+    vec4 bhsv = h2r_rgb2hsv(VEC3(b.p2, b.p0, b.p1));
+    vec4 m = mix4(ahsv, bhsv, e->progress);
+    vec4 rgb = h2r_hsv2rgb(m); // (r,g,b)
+    vec4 c = VEC4(rgb.p1, rgb.p2, rgb.p0, 1); // back to (g,b,r) plane order, opaque
+    return e->k->is_rgb ? c : gbr2yuv(c);
+}
+
+static vec4 gl_Overexposure(const XTransition *e) // by Ben Zhang
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, strength, 0.6)
+    INIT_END
+    float from_m = 1 - e->progress + sinf(M_PIf * e->progress) * strength;
+    float to_m = e->progress + sinf(M_PIf * e->progress) * strength;
+    vec4 a = e->a, b = e->b;
+    return VEC4(a.p0 * a.p3 * from_m + b.p0 * b.p3 * to_m,
+                a.p1 * a.p3 * from_m + b.p1 * b.p3 * to_m,
+                a.p2 * a.p3 * from_m + b.p2 * b.p3 * to_m,
+                mixf(a.p3, b.p3, e->progress));
+}
+
+static float sf_rnd(vec2 st) // StaticFade noise
+{
+    return fract(sinf(dot2(st, VEC2(10.5302340293f, 70.23492931f))) * 12345.5453123f);
+}
+
+static vec4 gl_StaticFade(const XTransition *e) // by Ben Lucas
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, n_noise_pixels, 200)
+    ARG1(float, static_luminosity, 0.8)
+    INIT_END
+    float baseMix = step(P5f, e->progress);
+    vec4 transitionMix = mix4(e->a, e->b, baseMix);
+    vec2 uvStatic = div2f(floor2(mul2f(e->p, n_noise_pixels)), n_noise_pixels);
+    vec4 staticColor = VEC4(
+        static_luminosity * sf_rnd(mul2(uvStatic, VEC2(e->progress * 2, e->progress * 3))),
+        static_luminosity * sf_rnd(mul2(uvStatic, VEC2(e->progress * 3, e->progress * 5))),
+        static_luminosity * sf_rnd(mul2(uvStatic, VEC2(e->progress * 5, e->progress * 7))),
+        1);
+    float transitionProgress = absf(2 * (e->progress - P5f));
+    float staticThresh = minf(1, 1.2f * (1 - transitionProgress) - 0.1f);
+    float staticMix = step(sf_rnd(uvStatic), staticThresh);
+    return mix4(transitionMix, staticColor, staticMix);
+}
+
+static float tv_noise(vec2 co, float progress)
+{
+    float dt = dot2(mul2f(co, progress), VEC2(12.9898f, 78.233f));
+    return fract(sinf(glmod(dt, 3.14f)) * 43758.5453f);
+}
+
+static vec4 gl_TVStatic(const XTransition *e) // by Brandon Anzaldi
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, offset, 0.05)
+    INIT_END
+    if (e->progress < offset)
+        return e->a;
+    if (e->progress > 1 - offset)
+        return e->b;
+    return vec3f(tv_noise(e->p, e->progress));
+}
+
+static vec4 gl_BlockDissolve(const XTransition *e) // by nwoeanhinnogaehr
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, blocksize, 0.02)
+    INIT_END
+    float r = frand2(floor2(div2f(e->p, maxf(blocksize, 0.0001f))));
+    return mix4(e->a, e->b, step(r, e->progress));
+}
+
+static float ubo_quadratic_in_out(float t)
+{
+    float p = 2 * t * t;
+    return t < P5f ? p : -p + 4 * t - 1;
+}
+
+static vec4 gl_undulatingBurnOut(const XTransition *e) // by pthrasher, adapted by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, smoothness, 0.03)
+    ARG2(vec2, center, 0.5, 0.5)
+    ARG4(Colour, color, 0x000000FF)
+    INIT_END
+    // wave position for this pixel
+    vec2 q = sub2(e->p, center);
+    float degs = degrees(atan2f(q.y, q.x)) + 180;
+    degs *= M_PIf * 30 / 360; // range 0..30pi
+    float magnitude = mixf(0.02f, 0.09f, smoothstep(0, 1, e->progress));
+    float offset = mixf(40, 30, smoothstep(0, 1, e->progress));
+    float ed = ubo_quadratic_in_out(sinf(degs));
+    float r_wave = e->progress + ed * magnitude * sinf(e->progress * offset);
+    // gradient
+    float dist = distance2(center, e->p);
+    float d = r_wave - dist;
+    float m = mixf(
+        smoothstep(-smoothness, 0, r_wave - dist * (1 + smoothness)),
+        -1 - step(0.005f, d),
+        step(-0.005f, d) * step(d, 0.01f));
+    vec4 cfrom = e->a, cto = e->b;
+    return mix4(mix4(cfrom, cto, m), mix4(cfrom, colour(e, color), 0.75f), step(m, -2));
+}
+
+static float fb_sigmoid(float x, float a)
+{
+    float b = powf(x * 2, a) / 2;
+    return (x > P5f) ? 1 - powf(2 - x * 2, a) / 2 : b;
+}
+
+static float fb_rand1(float co, float Seed)
+{
+    return fract(sinf(co * 24.9898f + Seed) * 43758.5453f);
+}
+
+static float fb_apow(float a, float b) { return powf(absf(a), b) * sign(b); }
+static float fb_smooth_mix(float a, float b, float c) { return mixf(a, b, fb_sigmoid(c, 2)); }
+
+static float fb_random(vec2 co, float shft, float Seed)
+{
+    co = add2f(co, 10);
+    return fb_smooth_mix(
+        fract(sinf(dot2(co, VEC2(12.9898f + floorf(shft) * P5f, 78.233f + Seed))) * 43758.5453f),
+        fract(sinf(dot2(co, VEC2(12.9898f + floorf(shft + 1) * P5f, 78.233f + Seed))) * 43758.5453f),
+        fract(shft));
+}
+
+static float fb_smooth_random(vec2 co, float shft, float Seed)
+{
+    return fb_smooth_mix(
+        fb_smooth_mix(fb_random(floor2(co), shft, Seed),
+                      fb_random(floor2(add2(co, VEC2(1, 0))), shft, Seed), fract(co.x)),
+        fb_smooth_mix(fb_random(floor2(add2(co, VEC2(0, 1))), shft, Seed),
+                      fb_random(floor2(add2(co, VEC2(1, 1))), shft, Seed), fract(co.x)),
+        fract(co.y));
+}
+
+static vec4 gl_FilmBurn(const XTransition *e) // by Anastasia Dunbar
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, Seed, 2.31)
+    INIT_END
+    float progress = e->progress;
+    vec2 p = e->p;
+    vec4 f = vec4f(0);
+    for (int i = 0; i < 13; i++) {
+        float fi = i;
+        float s = sinf(p.x * fb_rand1(fi, Seed) * 6 + progress * 8 + fb_rand1(fi + 1.43f, Seed))
+                * sinf(p.y * fb_rand1(fi + 4.4f, Seed) * 6 + progress * 6 + fb_rand1(fi + 2.4f, Seed));
+        f = add3f(f, s);
+        float l = 1 - clipUI(length2(sub2(p, VEC2(
+            fb_smooth_random(vec2f(progress * 1.3f), fi + 1, Seed),
+            fb_smooth_random(vec2f(progress * P5f), fi + 6.25f, Seed))))
+            * mixf(20, 70, fb_rand1(fi, Seed)));
+        f = add3f(f, l);
+    }
+    f = add3f(f, 4);
+    f = div3f(f, 11);
+    f = VEC3(fb_apow(f.p0 * 1.0f, 1),
+             fb_apow(f.p1 * 0.7f, 2 - sinf(progress * M_PIf)),
+             fb_apow(f.p2 * 0.6f, 1.3f)); // pow3(f * (1, 0.7, 0.6), (1, 2-sin(pi p), 1.3)), (r,g,b)
+    float m = sinf(progress * M_PIf);
+    f = mul3f(f, m);
+    // breathing zoom around the centre
+    p = sub2f(p, P5f);
+    p = mul2f(p, 1 + fb_smooth_random(vec2f(progress * 5), 6.3f, Seed) * m * 0.05f);
+    p = add2f(p, P5f);
+    // 50-tap circular blur of the sigmoid mix
+    float sig = fb_sigmoid(progress, 10);
+    float bluramount = m * 0.03f;
+    vec4 blurred = vec4f(0);
+    for (int i = 0; i < 50; i++) {
+        float i50 = i / 50.f;
+        vec2 qv = mul2f(cossin2(radians(i50 * 360)), bluramount + frandf(i, p.x + p.y));
+        vec2 uv2 = add2(p, mul2f(qv, bluramount));
+        blurred = add4(blurred, mix4(getFromColor(uv2), getToColor(uv2), sig));
+    }
+    blurred = div4f(blurred, 50);
+    return add4(blurred, gbr_delta(e, f.p0, f.p1, f.p2));
+}
+
+// Simplex noise for luminance_melt (Ian McEwan / Ashima Arts, MIT)
+static float lm_permute(float x) { return glmod((x * 34 + 1) * x, 289); }
+
+static float lm_snoise(vec2 v)
+{
+    const float Cx = 0.211324865405187f, Cy = 0.366025403784439f,
+                Cz = -0.577350269189626f, Cw = 0.024390243902439f;
+    vec2 i = floor2(add2f(v, dot2(v, VEC2(Cy, Cy))));
+    vec2 x0 = add2(sub2(v, i), vec2f(dot2(i, VEC2(Cx, Cx))));
+    vec2 i1 = (x0.x > x0.y) ? VEC2(1, 0) : VEC2(0, 1);
+    vec4 x12 = {{ x0.x + Cx - i1.x, x0.y + Cx - i1.y, x0.x + Cz, x0.y + Cz }};
+    i = sub2(i, mul2f(floor2(mul2f(i, 1 / 289.f)), 289));
+    float p0 = lm_permute(lm_permute(i.y) + i.x);
+    float p1 = lm_permute(lm_permute(i.y + i1.y) + i.x + i1.x);
+    float p2 = lm_permute(lm_permute(i.y + 1) + i.x + 1);
+    float m0 = maxf(P5f - dot2(x0, x0), 0);
+    float m1 = maxf(P5f - (x12.p0 * x12.p0 + x12.p1 * x12.p1), 0);
+    float m2 = maxf(P5f - (x12.p2 * x12.p2 + x12.p3 * x12.p3), 0);
+    m0 *= m0; m0 *= m0; m1 *= m1; m1 *= m1; m2 *= m2; m2 *= m2;
+    float x_0 = 2 * fract(p0 * Cw) - 1, x_1 = 2 * fract(p1 * Cw) - 1, x_2 = 2 * fract(p2 * Cw) - 1;
+    float h0 = absf(x_0) - P5f, h1 = absf(x_1) - P5f, h2 = absf(x_2) - P5f;
+    float ox0 = floorf(x_0 + P5f), ox1 = floorf(x_1 + P5f), ox2 = floorf(x_2 + P5f);
+    float a00 = x_0 - ox0, a01 = x_1 - ox1, a02 = x_2 - ox2;
+    m0 *= 1.79284291400159f - 0.85373472095314f * (a00 * a00 + h0 * h0);
+    m1 *= 1.79284291400159f - 0.85373472095314f * (a01 * a01 + h1 * h1);
+    m2 *= 1.79284291400159f - 0.85373472095314f * (a02 * a02 + h2 * h2);
+    float g0 = a00 * x0.x + h0 * x0.y;
+    float g1 = a01 * x12.p0 + h1 * x12.p2;
+    float g2 = a02 * x12.p1 + h2 * x12.p3;
+    return 130 * (m0 * g0 + m1 * g1 + m2 * g2);
+}
+
+static vec4 gl_luminance_melt(const XTransition *e) // by 0gust1
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, direction, 1)      // 0: up, 1: down
+    ARG1(float, l_threshold, 0.8)
+    ARG1(int, above, 0)          // melt above or below the luminance threshold
+    INIT_END
+    if (e->progress <= 0)
+        return e->a;
+    if (e->progress >= 1)
+        return e->b;
+    vec2 center = { 1, (float)direction };
+    float x = e->progress;
+    float dist = distance2(center, e->p) - x * expf(lm_snoise(VEC2(e->p.x, 0)));
+    float r = x - frandf(e->p.x, 0.1f);
+    float lum = e->k->is_rgb ? dot3(e->a, VEC3(0.587f, 0.114f, 0.299f)) : e->a.p0;
+    float m;
+    if (above)
+        m = (dist <= r && lum > l_threshold) ? 1 : x * x * x;
+    else
+        m = (dist <= r && lum < l_threshold) ? 1 : x * x * x;
+    return mix4(e->a, e->b, m);
+}
+
+static vec4 gl_coord_from_in(const XTransition *e) // by haiyoucuv
+{ // License: MIT
+    INIT_END
+    vec4 coordTo = e->b, coordFrom = e->a;
+    vec2 u1 = mix2(e->p, VEC2(coordTo.p0, coordTo.p1), e->progress);
+    vec2 u2 = mix2(VEC2(coordFrom.p0, coordFrom.p1), e->p, e->progress);
+    return mix4(getFromColor(u1), getToColor(u2), e->progress);
+}
+
+static vec4 gl_GlitchMemories(const XTransition *e) // by Gunnar Roth
+{ // License: MIT
+    INIT_END
+    // the GLSL original quantises a noise offset per "frame" of progress
+    vec2 uv_noise = div2f(floor2(VEC2(e->progress * 1200, e->progress * 3500)), 64);
+    vec2 dist = e->progress > 0 ? mul2f(sub2f(fract2(uv_noise), P5f), 0.3f * (1 - e->progress)) : VEC2(0, 0);
+    vec4 red   = mix4(getFromColor(add2(e->p, mul2f(dist, 0.2f))), getToColor(add2(e->p, mul2f(dist, 0.2f))), e->progress);
+    vec4 green = mix4(getFromColor(add2(e->p, mul2f(dist, 0.3f))), getToColor(add2(e->p, mul2f(dist, 0.3f))), e->progress);
+    vec4 blue  = mix4(getFromColor(add2(e->p, mul2f(dist, 0.5f))), getToColor(add2(e->p, mul2f(dist, 0.5f))), e->progress);
+    return VEC4(red.p0, green.p1, blue.p2, 1);
+}
+
+static vec4 gl_DreamyZoom(const XTransition *e) // by Zeh Fernando
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, rotation, 6) // degrees (source DEG2RAD kept verbatim: 0.0392699)
+    ARG1(float, scale, 1.2)
+    VAR1(float, DEG2RAD, 0.03926990816987241548f)
+    INIT_END
+    float progress = e->progress;
+    float phase = progress < P5f ? progress * 2 : (progress - P5f) * 2;
+    float angleOffset = progress < P5f ? mixf(0, rotation * DEG2RAD, phase)
+                                       : mixf(-rotation * DEG2RAD, 0, phase);
+    float newScale = progress < P5f ? mixf(1, scale, phase) : mixf(scale, 1, phase);
+    vec2 p = mul2(div2f(sub2f(e->p, P5f), newScale), VEC2(e->ratio, 1));
+    float angle = atan2f(p.y, p.x) + angleOffset;
+    float dist = length2(p);
+    p = VEC2(cosf(angle) * dist / e->ratio + P5f, sinf(angle) * dist + P5f);
+    vec4 c = progress < P5f ? getFromColor(p) : getToColor(p);
+    return add4(c, vec4f(progress < P5f ? mixf(0, 1, phase) : mixf(1, 0, phase)));
+}
+
+
+// Batch C ports: tiled, complex and glitch GL Transitions.
+
+static vec4 gl_AdvancedMosaic(const XTransition *e) // by Sergey Kosarevsky (corporateshark)
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, pixelSize, 50)
+    INIT_END
+    float T = e->progress;
+    float size = (T < P5f) ? mixf(1, pixelSize, T * 2) : mixf(pixelSize, 1, (T - P5f) * 2);
+    float D = maxf(size * 0.005f, 0.001f);
+    vec2 UV = div2f(sub2f(e->p, P5f), D);
+    vec2 coord = VEC2(clipUI(D * ceilf(UV.x - P5f) + P5f), clipUI(D * ceilf(UV.y - P5f) + P5f));
+    return mix4(getFromColor(coord), getToColor(coord), T);
+}
+
+static vec4 gl_mosaic_transition(const XTransition *e) // by YueDev
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, mosaicNum, 10)
+    INIT_END
+    float m = minf(e->progress, 1 - e->progress);
+    float mosaicWidth = 2 / maxf(mosaicNum, 1) * m;
+    vec2 mosaicUV = e->p;
+    if (mosaicWidth > 0) {
+        float mX = floorf(e->p.x / mosaicWidth) + P5f;
+        float mY = floorf(e->p.y / mosaicWidth) + P5f;
+        mosaicUV = VEC2(mX * mosaicWidth, mY * mosaicWidth);
+    }
+    return mix4(getFromColor(mosaicUV), getToColor(mosaicUV), e->progress * e->progress);
+}
+
+static inline float tw_flip(float t, float s) // TilesWave cell squeeze
+{
+    return (t < P5f) ? (t - s) * P5f / (P5f - s) : (t - P5f) * P5f / (P5f - s) + P5f;
+}
+
+static vec4 gl_TilesWave(const XTransition *e) // by numb3r23
+{ // License: MIT
+    INIT_BEGIN
+    ARG2(vec2, tileCount, 8, 8)
+    ARG1(int, flipX, 1)
+    ARG1(int, flipY, 0)
+    INIT_END
+    vec2 count = { maxf(1, tileCount.x), maxf(1, tileCount.y) };
+    vec2 tileSize = rcp2(count);
+    vec2 posInTile = fract2(mul2(e->p, count));
+    vec2 tileNum = floor2(mul2(e->p, count));
+    float countTiles = count.x * count.y;
+    float offset = (tileNum.y + tileNum.x * count.y) / countTiles;
+    float timeOffset = av_clipf((e->progress - offset) * countTiles, 0, P5f);
+    float sinTime = 1 - absf(cosf(fract(timeOffset) * M_PIf));
+    vec2 texC = posInTile;
+    if (sinTime <= P5f) {
+        if (flipX) {
+            if (texC.x < sinTime || texC.x > 1 - sinTime)
+                return e->a;
+            texC.x = tw_flip(texC.x, sinTime);
+        }
+        if (flipY) {
+            if (texC.y < sinTime || texC.y > 1 - sinTime)
+                return e->a;
+            texC.y = tw_flip(texC.y, sinTime);
+        }
+        return getFromColor(add2(mul2(tileNum, tileSize), mul2(texC, tileSize)));
+    }
+    if (flipX) {
+        if (texC.x > sinTime || texC.x < 1 - sinTime)
+            return e->b;
+        texC.x = 1 - tw_flip(texC.x, sinTime);
+    }
+    if (flipY) {
+        if (texC.y > sinTime || texC.y < 1 - sinTime)
+            return e->b;
+        texC.y = 1 - tw_flip(texC.y, sinTime);
+    }
+    return getToColor(add2(mul2(tileNum, tileSize), mul2(texC, tileSize)));
+}
+
+static vec4 gl_flyeye(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, size, 0.04)
+    ARG1(float, zoom, 50)
+    ARG1(float, colorSeparation, 0.3)
+    INIT_END
+    float inv = 1 - e->progress;
+    vec2 disp = { size * cosf(zoom * e->p.x), size * sinf(zoom * e->p.y) };
+    vec4 texTo = getToColor(add2(e->p, mul2f(disp, inv)));
+    vec4 texFrom = VEC4(
+        getFromColor(add2(e->p, mul2f(disp, e->progress * (1 - colorSeparation)))).p0,
+        getFromColor(add2(e->p, mul2f(disp, e->progress))).p1,
+        getFromColor(add2(e->p, mul2f(disp, e->progress * (1 + colorSeparation)))).p2,
+        1);
+    return add4(mul4f(texTo, e->progress), mul4f(texFrom, inv));
+}
+
+static vec4 gl_squeeze(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, colorSeparation, 0.04)
+    INIT_END
+    float pr = minf(e->progress, 0.99999f);
+    float y = P5f + (e->p.y - P5f) / (1 - pr);
+    if (y < 0 || y > 1)
+        return e->b;
+    vec2 fp = VEC2(e->p.x, y);
+    vec2 off = { 0, e->progress * colorSeparation };
+    vec4 c  = getFromColor(fp);
+    vec4 cn = getFromColor(sub2(fp, off));
+    vec4 cp = getFromColor(add2(fp, off));
+    return VEC4(cn.p0, c.p1, cp.p2, c.p3);
+}
+
+static vec4 gl_SimpleFlip(const XTransition *e) // by nwoeanhinnogaehr
+{ // License: MIT
+    INIT_END
+    float ap = maxf(absf(e->progress - P5f), 0.0001f);
+    vec2 q = e->p;
+    vec2 flipped = { (e->p.x - P5f) / ap * P5f + P5f, e->p.y };
+    vec4 a = getFromColor(flipped);
+    vec4 b = getToColor(flipped);
+    float s = step(absf(q.x - P5f), ap);
+    vec4 c = mix4(a, b, step(P5f, e->progress));
+    return VEC4(c.p0 * s, c.p1 * s, c.p2 * s, 1);
+}
+
+static float pz_delta(vec2 p, vec2 size)
+{
+    vec2 rs = rcp2(size);
+    vec2 rp = floor2(mul2(size, p));
+    float minX = minf(absf(p.x - rs.x * rp.x), absf(p.x - rs.x * (rp.x + 1)));
+    float minY = minf(absf(p.y - rs.y * (rp.y + 1)), absf(p.y - rs.y * rp.y));
+    return minf(minX, minY);
+}
+
+static vec4 gl_PuzzleRight(const XTransition *e) // by JustKirillS
+{ // License: MIT
+    INIT_BEGIN
+    ARG2(vec2, size, 4, 4)
+    ARG1(float, pause, 0.1)
+    ARG1(float, dividerWidth, 0.005)
+    INIT_END
+    float progress = e->progress;
+    if (progress < pause) {
+        float a = pz_delta(e->p, size) < dividerWidth ? 1 - progress / pause : 1.f;
+        return mix4(colour(e, 0), e->a, a);
+    }
+    if (progress < 1 - pause) {
+        if (pz_delta(e->p, size) < dividerWidth)
+            return colour(e, 0);
+        float currentProg = (progress - pause) / (1 - pause * 2);
+        vec2 rectanglePos = floor2(mul2(size, e->p));
+        float r = frand2(rectanglePos) - 0.1f;
+        float cp = smoothstep(0, maxf(1 - r, 0.001f), currentProg);
+        float rectangleSize = 1 / size.x;
+        float offset = rectangleSize / 2 + rectanglePos.x * rectangleSize;
+        vec2 p = e->p;
+        p.x = (p.x - offset) / maxf(absf(cp - P5f), 0.001f) * P5f + offset;
+        vec4 a = getFromColor(p);
+        vec4 b = getToColor(p);
+        float s = step(absf(size.x * (e->p.x - rectanglePos.x * rectangleSize) - P5f), absf(cp - P5f));
+        vec4 c = mix4(b, a, step(cp, P5f));
+        return VEC4(c.p0 * s, c.p1 * s, c.p2 * s, 1);
+    }
+    float a = pz_delta(e->p, size) < dividerWidth ? (progress - 1 + pause) / pause : 1.f;
+    return mix4(colour(e, 0), e->b, a);
+}
+
+static vec2 fr_random2(vec2 par)
+{
+    float r = frand2(par);
+    return VEC2(r, frand2(add2f(par, r)));
+}
+
+static vec4 gl_fragment(const XTransition *e) // by lbl
+{ // License: MIT
+    INIT_END
+    if (e->progress <= 0)
+        return e->a;
+    if (e->progress >= 1)
+        return e->b;
+    const float duration = 8;
+    float time = e->progress * duration;
+    vec4 col = e->b;
+    for (int i = 0; i < 10; i++) {
+        vec2 point = fr_random2(vec2f(i));
+        vec2 dir = fr_random2(VEC2(i, i + 11.f));
+        dir = div2f(dir, maxf(length2(dir), 0.0001f));
+        float v = (1 + frand2(dir) * P5f) * 0.2f;
+        vec2 ofst = mul2f(dir, clipUI(time - P5f) * v);
+        vec2 U = sub2(e->p, ofst);
+        if (!betweenUI2(U))
+            continue;
+        float dist_i = distance2(U, point);
+        bool closest = true;
+        for (int j = 0; j < 10; j++)
+            if (distance2(U, fr_random2(vec2f(j))) < dist_i) {
+                closest = false;
+                break;
+            }
+        if (closest) {
+            col = getFromColor(U);
+            break;
+        }
+    }
+    return col;
+}
+
+static vec4 gl_DefocusBlur(const XTransition *e) // by Sergey Kosarevsky (corporateshark)
+{ // License: MIT (12-tap Poisson disk)
+    INIT_BEGIN
+    ARG1(float, blurSize, 0.02)
+    INIT_END
+    static const vec2 taps[12] = {
+        {-0.326f, -0.406f}, {-0.840f, -0.074f}, {-0.696f,  0.457f}, {-0.203f,  0.621f},
+        { 0.962f, -0.195f}, { 0.473f, -0.480f}, { 0.519f,  0.767f}, { 0.185f, -0.893f},
+        { 0.507f,  0.064f}, { 0.896f,  0.412f}, {-0.322f, -0.933f}, {-0.792f, -0.598f},
+    };
+    float T = e->progress;
+    float D = (T < P5f) ? mixf(0, blurSize, T * 2) : mixf(blurSize, 0, (T - P5f) * 2);
+    vec4 C0 = e->a, C1 = e->b;
+    for (int i = 0; i < 12; i++) {
+        vec2 t = add2(mul2f(taps[i], D), e->p);
+        C0 = add4(C0, getFromColor(t));
+        C1 = add4(C1, getToColor(t));
+    }
+    return mix4(div4f(C0, 13), div4f(C1, 13), T);
+}
+
+// tangentMotionBlur helpers
+static float tmb_A(float aA1, float aA2) { return 1 - 3 * aA2 + 3 * aA1; }
+static float tmb_B(float aA1, float aA2) { return 3 * aA2 - 6 * aA1; }
+static float tmb_C(float aA1) { return 3 * aA1; }
+static float tmb_slope(float aT, float aA1, float aA2) { return 3 * tmb_A(aA1, aA2) * aT * aT + 2 * tmb_B(aA1, aA2) * aT + tmb_C(aA1); }
+static float tmb_calc(float aT, float aA1, float aA2) { return ((tmb_A(aA1, aA2) * aT + tmb_B(aA1, aA2)) * aT + tmb_C(aA1)) * aT; }
+static float tmb_tforx(float aX, float mX1, float mX2)
+{
+    float t = aX;
+    for (int i = 0; i < 4; i++) {
+        float slope = tmb_slope(t, mX1, mX2);
+        if (slope == 0)
+            break;
+        t -= (tmb_calc(t, mX1, mX2) - aX) / slope;
+    }
+    return t;
+}
+static float tmb_keyspline(float aX) // KeySpline(.68,.01,.17,.98)
+{
+    return tmb_calc(tmb_tforx(aX, 0.68f, 0.17f), 0.01f, 0.98f);
+}
+static float tmb_normpdf(float x) { float d = x - P5f; return expf(-20 * d * d); }
+
+static vec2 tmb_rotate(vec2 uv, float angle, vec2 anchor) // CCW mat2(c,-s,s,c) * uv
+{
+    uv = sub2(uv, anchor);
+    float s = sinf(angle), c = cosf(angle);
+    uv = VEC2(c * uv.x + s * uv.y, -s * uv.x + c * uv.y);
+    return add2(uv, anchor);
+}
+
+static vec4 tmb_blur(const XTransition *e, vec2 st, vec2 speed, int nb) // 21-tap directional blur
+{
+    float offset = frand2(st);
+    vec4 color = vec4f(0);
+    float total = 0;
+    for (int t = 0; t <= 20; t++) {
+        float percent = (t + offset) / 20;
+        float weight = 4 * (percent - percent * percent);
+        vec2 newuv = fract2(add2(st, mul2f(speed, percent)));
+        color = add4(color, mul4f(getColor(e, newuv.x, newuv.y, nb), weight));
+        total += weight;
+    }
+    color.p3 = 1;
+    return div4f(color, total);
+}
+
+static vec4 gl_tangentMotionBlur(const XTransition *e) // by chenkai
+{ // License: MIT
+    INIT_END
+    float ratio = e->ratio;
+    float progress = e->progress;
+    float easingTime = tmb_keyspline(progress);
+    float blur = tmb_normpdf(easingTime);
+    float rotation = M_PIf; // 180 degrees
+    float r = easingTime <= P5f ? rotation * easingTime : -rotation + rotation * easingTime;
+    vec2 cur = e->p;
+    cur.y /= ratio;
+    cur = tmb_rotate(cur, r, VEC2(1, 0));
+    cur.y *= ratio;
+    const float timeInterval = 0.0167f * 2; // ~2 frames at 30 fps
+    r = easingTime <= P5f ? rotation * (easingTime + timeInterval)
+                          : -rotation + rotation * (easingTime + timeInterval);
+    vec2 nxt = e->p;
+    nxt.y /= ratio;
+    nxt = tmb_rotate(nxt, r, VEC2(1, 0));
+    nxt.y *= ratio;
+    vec2 speed = mul2f(div2f(sub2(nxt, cur), timeInterval), blur * P5f);
+    return tmb_blur(e, cur, speed, easingTime <= P5f ? 0 : 1);
+}
+
+static float gd_random(vec2 co) // GlitchDisplace noise (mod 3.14 flavour)
+{
+    float dt = dot2(co, VEC2(12.9898f, 78.233f));
+    return fract(sinf(glmod(dt, 3.14f)) * 43758.5453f);
+}
+
+static float gd_voronoi(vec2 x)
+{
+    vec2 p = floor2(x);
+    vec2 f = fract2(x);
+    float res = 8;
+    for (int j = -1; j <= 1; j++)
+        for (int i = -1; i <= 1; i++) {
+            vec2 b = { i, j };
+            vec2 r = add2(sub2(b, f), vec2f(gd_random(add2(p, b))));
+            float d = dot2(r, r);
+            res = minf(res, d);
+        }
+    return sqrtf(res);
+}
+
+static vec2 gd_displace(vec4 tex, vec2 texCoord, float dotDepth, float textureDepth, float strength)
+{
+    vec4 dis = add4(sub4(mul4f(tex, dotDepth), mul4f(tex, textureDepth)), vec4f(1));
+    dis.p0 = (dis.p0 - 1 + textureDepth * dotDepth) * strength;
+    dis.p1 = (dis.p1 - 1 + textureDepth * dotDepth) * strength;
+    return add2(texCoord, VEC2(dis.p0, dis.p1));
+}
+
+static float gd_ease1(float t)
+{
+    return (t == 0 || t == 1) ? t
+        : (t < P5f) ? P5f * exp2f(20 * t - 10) : 1 - P5f * exp2f(10 - 20 * t);
+}
+static float gd_ease2(float t) { return t == 1 ? 1 : 1 - exp2f(-10 * t); }
+
+static vec4 gl_GlitchDisplace(const XTransition *e) // by Matt DesLauriers
+{ // License: MIT
+    INIT_END
+    float progress = e->progress;
+    vec4 color1 = e->a, color2 = e->b;
+    // the GLSL original also computes a 0.003-scale voronoi band but never uses it
+    vec2 disp  = gd_displace(color1, e->p, 0.33f, 0.7f, 1 - gd_ease1(progress));
+    vec2 disp2 = gd_displace(color2, e->p, 0.33f, 0.5f, gd_ease2(progress));
+    vec4 dColor1 = getToColor(disp);
+    vec4 dColor2 = getFromColor(disp2);
+    float val = gd_ease1(progress);
+    vec4 mn = { minf(dColor2.p0, dColor1.p0), minf(dColor2.p1, dColor1.p1), minf(dColor2.p2, dColor1.p2), 1 };
+    float gray = dot3(mn, VEC3(0.299f, 0.587f, 0.114f));
+    dColor2 = mul3f(vec3f(gray), 2);
+    color1 = mix4(color1, dColor2, smoothstep(0, P5f, progress));
+    color2 = mix4(color2, dColor1, smoothstep(1, P5f, progress));
+    return mix4(color1, color2, val);
+}
+
+static vec4 gl_parametric_glitch(const XTransition *e) // by Yoni Maltsman @friendlyspinach
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, ampx, 1)
+    ARG1(float, ampy, 1)
+    INIT_END
+    float progress = e->progress;
+    vec4 from = e->a, to = e->b;
+    float sphere = dot3(from, from) - 1;
+    float spiralX = cosf(sphere - e->p.x / (progress + 0.01f));
+    float spiralY = sinf(sphere - e->p.y / (progress + 0.01f));
+    vec2 st = { fract(ampx * e->p.x * spiralX), fract(ampy * e->p.y * spiralY) };
+    vec2 diff = sub2(e->p, st);
+    return mix4(getFromColor(add2(e->p, mul2f(diff, progress))), to, progress);
+}
+
+static float dst_rand(int num)
+{
+    return fract(glmod(num * 67123.313f, 12) * sinf(num * 10.3f) * cosf(num));
+}
+
+static vec4 gl_DoomScreenTransition(const XTransition *e) // by Zeh Fernando
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(int, bars, 30)
+    ARG1(float, amplitude, 2)
+    ARG1(float, noise, 0.1)
+    ARG1(float, frequency, 0.5)
+    ARG1(float, dripScale, 0.5)
+    INIT_END
+    int bar = av_clip((int)(e->p.x * bars), 0, bars - 1);
+    float fn = bar * frequency * 0.1f * bars;
+    float wave = (cosf(fn * P5f) * cosf(fn * 0.13f) * sinf((fn + 10) * 0.3f)) / 2 + P5f;
+    float pos = (noise == 0 ? wave : mixf(wave, dst_rand(bar), noise))
+              + (dripScale == 0 ? 0 : sinf(bar / (float)(bars - 1) * M_PIf) * dripScale);
+    float scale = 1 + pos * amplitude;
+    float phase = e->progress * scale;
+    if (phase + e->p.y < 1)
+        return getFromColor(e->p.x, e->p.y + phase);
+    return e->b;
+}
+
+// Revolve_Left helpers
+static float rv_envelope(float t)
+{
+    float rise = smoothstep(0, 1, (t - 0.10f) / 0.33f);
+    float fall = 1 - smoothstep(0, 1, (t - 0.43f) / 0.29f);
+    return rise * fall;
+}
+
+static vec4 gl_Revolve_Left(const XTransition *e) // by bread
+{ // License: MIT
+    INIT_BEGIN
+    ARG2(vec2, center, 0.46, 0.52)
+    ARG1(float, direction, -1)
+    ARG1(float, maxRotation, 1.95)
+    ARG1(float, peakZoom, 2.22)
+    ARG1(float, swirl, 2.85)
+    ARG1(float, barrel, 0.38)
+    ARG1(float, motionBlur, 1)
+    ARG1(float, switchStart, 0.30)
+    ARG1(float, switchEnd, 0.50)
+    ARG1(float, shadow, 0.16)
+    INIT_END
+    float progress = e->progress;
+    if (progress <= 0)
+        return e->a;
+    if (progress >= 1)
+        return e->b;
+    float env = rv_envelope(progress);
+    float span = 0.060f * motionBlur * env;
+    vec4 color = vec4f(0);
+    float total = 0;
+    for (int i = -8; i <= 8; i++) {
+        float x = i / 8.f;
+        float w = 1 - absf(x);
+        w = w * w + 0.01f;
+        float t = clipUI(progress + x * span);
+        // warpUv for this t
+        float et = rv_envelope(t);
+        vec2 p = sub2(e->p, center);
+        p.x *= e->ratio;
+        float r = length2(p);
+        float edgeSpin = maxRotation * et;
+        float coreSpin = swirl * et * powf(1 - clipUI(r / 0.96f), 1.55f);
+        float visibleAngle = direction * (edgeSpin + coreSpin);
+        p = rot2(p, visibleAngle); // source rotates by -visibleAngle CCW
+        float sc = 1 + (peakZoom - 1) * powf(et, 0.85f);
+        p = div2f(p, sc);
+        float rr = length2(p);
+        p = mul2f(p, 1 + barrel * et * rr * rr * 2.8f);
+        p.x /= e->ratio;
+        p = add2(p, center);
+        p = VEC2(av_clipf(p.x, 0.001f, 0.999f), av_clipf(p.y, 0.001f, 0.999f));
+        float reveal = smoothstep(switchStart, switchEnd, t);
+        color = add4(color, mul4f(mix4(getFromColor(p), getToColor(p), reveal), w));
+        total += w;
+    }
+    color = div4f(color, total);
+    vec2 q = sub2f(e->p, P5f);
+    q.x *= e->ratio;
+    float vignette = 1 - shadow * env * smoothstep(0.35f, 0.95f, length2(q));
+    return mul3f(color, vignette);
+}
+
+// Drop_Zone_Flicker curve tables (indexed by frame number)
+static const float dz_reveal[23] = {
+    0.00f, 0.28f, 0.43f, 0.46f, 0.38f, 0.48f, 0.26f, 0.10f, 0.00f, 0.00f,
+    0.30f, 0.58f, 1.00f, 0.70f, 0.42f, 0.55f, 0.72f, 0.88f, 0.34f, 0.48f,
+    0.56f, 0.76f, 0.93f
+};
+static const float dz_glitch[23] = {
+    0.00f, 0.92f, 0.92f, 0.92f, 0.92f, 0.92f, 0.38f, 0.38f, 0.38f, 0.38f,
+    0.78f, 0.12f, 0.74f, 0.74f, 0.74f, 0.74f, 0.74f, 0.88f, 0.88f, 0.88f,
+    0.88f, 0.88f, 0.28f
+};
+
+static float dz_hash12(vec2 p)
+{
+    p = fract2(mul2(p, VEC2(443.8975f, 397.2973f)));
+    p = add2f(p, dot2(p, VEC2(p.y, p.x) ) + 19.19f);
+    return fract(p.x * p.y);
+}
+
+static vec2 dz_safeUv(vec2 uv)
+{
+    return VEC2(av_clipf(uv.x, 0.001f, 0.999f), av_clipf(uv.y, 0.001f, 0.999f));
+}
+
+static vec4 gl_Drop_Zone_Flicker(const XTransition *e) // by bread
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, frameRate, 24)
+    ARG1(float, rgbOffset, 0.014)
+    ARG1(float, blockAmount, 0.72)
+    ARG1(float, ghostAmount, 0.62)
+    ARG1(float, redCyan, 0.58)
+    ARG1(float, scanline, 0.075)
+    INIT_END
+    float progress = e->progress;
+    if (progress <= 0)
+        return e->a;
+    if (progress >= 1)
+        return e->b;
+    float fi = floorf(progress * frameRate);
+    float reveal = fi < 23 ? dz_reveal[av_clip((int)fi, 0, 22)] : 1.f;
+    float glitch = fi < 23 ? dz_glitch[av_clip((int)fi, 0, 22)] : 0.f;
+    float rnd = dz_hash12(VEC2(fi, 9.13f));
+    vec2 jitter = mul2f(VEC2((rnd - P5f) * 0.042f, (dz_hash12(VEC2(fi, 2.71f)) - P5f) * 0.010f), glitch);
+    vec2 fromUv = dz_safeUv(add2(e->p, jitter));
+    vec2 toUv = dz_safeUv(sub2(e->p, mul2f(jitter, 0.55f)));
+    // block mask
+    vec2 big = floor2(mul2(e->p, VEC2(4, 2)));
+    vec2 small = floor2(mul2(e->p, VEC2(8, 4)));
+    float wide = step(0.48f, dz_hash12(VEC2(big.x, fi * 1.37f)));
+    float chunks = step(0.56f, dz_hash12(add2(small, VEC2(fi * 2.11f, fi * 0.73f))));
+    float verticalCut = smoothstep(-0.035f, 0.035f,
+        e->p.x - mixf(0.18f, 0.78f, dz_hash12(VEC2(fi, 4.7f))));
+    float block = clipUI(mixf(wide, chunks, 0.38f) * 0.72f + verticalCut * 0.28f);
+    float localReveal = clipUI(reveal + (block - P5f) * blockAmount * glitch
+        + (dz_hash12(VEC2(fi, floorf(e->p.y * 9))) - P5f) * 0.18f * glitch);
+    localReveal = smoothstep(0.22f, 0.78f, localReveal);
+    float amt = rgbOffset * glitch;
+    vec2 o = { amt, 0 };
+    vec4 oldClip = VEC4(getFromColor(fromUv).p0,
+                        getFromColor(dz_safeUv(sub2(fromUv, o))).p1,
+                        getFromColor(dz_safeUv(add2(fromUv, o))).p2, 1);
+    vec4 newClip = VEC4(getToColor(toUv).p0,
+                        getToColor(dz_safeUv(add2(toUv, o))).p1,
+                        getToColor(dz_safeUv(sub2(toUv, o))).p2, 1);
+    vec4 color = mix4(oldClip, newClip, localReveal);
+    float leftWash = (1 - smoothstep(0.10f, 0.78f, e->p.x)) * glitch;
+    float cyanWash = smoothstep(0.08f, 0.62f, e->p.x) * (1 - smoothstep(0.86f, 1, e->p.x)) * glitch;
+    vec4 redGhost = VEC4(oldClip.p0 * 0.42f, oldClip.p1 * 0.38f, oldClip.p2 * 1.34f, 1);
+    vec4 cyanGhost = VEC4(newClip.p0 * 1.12f, newClip.p1 * 1.24f, newClip.p2 * 0.48f, 1);
+    color = mix4(color, redGhost, clipUI(leftWash * redCyan * 0.42f));
+    color = mix4(color, cyanGhost, clipUI(cyanWash * redCyan * 0.30f));
+    float oldReturn = glitch * (1 - smoothstep(0.94f, 1, reveal));
+    oldReturn *= 0.18f + 0.52f * (1 - absf(localReveal - P5f) * 2);
+    color = mix4(color, oldClip, clipUI(oldReturn * ghostAmount));
+    float lines = sinf((e->p.y + fi * 0.017f) * (e->k->mh + 1)); // scanline per frame row
+    color = add3f(color, lines * scanline * glitch);
+    color = add3f(color, (dz_hash12(VEC2(fi, 12.4f)) - 0.35f) * 0.10f * glitch);
+    return VEC4(clipUI(color.p0), clipUI(color.p1), clipUI(color.p2), 1);
+}
+
+// StripDatamoshGlitch helpers
+static float sg_hash1(float n) { return fract(sinf(n) * 43758.5453123f); }
+static float sg_hash2(vec2 p) { return fract(sinf(dot2(p, VEC2(127.1f, 311.7f))) * 43758.5453123f); }
+
+static float sg_stripeY(vec2 uv, float density, float seed, float minWidth, float maxWidth)
+{
+    float y = uv.y * density + seed * 0.137f;
+    float id = floorf(y);
+    float f = fract(y);
+    float c = sg_hash2(VEC2(id, seed));
+    float w = mixf(minWidth, maxWidth, sg_hash2(VEC2(id + 9.17f, seed + 2.31f)));
+    return 1 - smoothstep(w, w + 0.018f, absf(f - c));
+}
+
+static float sg_stripeX(vec2 uv, float density, float seed, float minWidth, float maxWidth)
+{
+    float x = uv.x * density + seed * 0.091f;
+    float id = floorf(x);
+    float f = fract(x);
+    float c = sg_hash2(VEC2(id, seed + 41));
+    float w = mixf(minWidth, maxWidth, sg_hash2(VEC2(id + 4.7f, seed + 8.9f)));
+    return 1 - smoothstep(w, w + 0.012f, absf(f - c));
+}
+
+static float sg_brokenGate(vec2 uv, float row, float rnd, float frame)
+{
+    float segs = mixf(1, 9, sg_hash2(VEC2(row, frame + 44)));
+    float seg = floorf(uv.x * segs);
+    return step(0.16f, sg_hash2(VEC2(seg, row + frame * 3 + rnd)));
+}
+
+static vec4 sg_chroma(vec2 uv, vec2 s, int nb, const XTransition *e)
+{
+    vec4 c = VEC4(getColor(e, uv.x, uv.y, nb).p0,
+                  getColor(e, uv.x - s.x, uv.y - s.y, nb).p1,
+                  getColor(e, uv.x + s.x, uv.y + s.y, nb).p2, 1);
+    return c;
+}
+
+static vec4 gl_StripDatamoshGlitch(const XTransition *e) // by bread
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, strength, 1)
+    ARG1(float, horizontalBars, 42)
+    ARG1(float, verticalSlits, 18)
+    ARG1(float, tear, 0.18)
+    ARG1(float, chroma, 0.032)
+    ARG1(float, residue, 0.62)
+    ARG1(float, noiseAmount, 0.16)
+    ARG1(float, scanAmount, 0.13)
+    ARG1(float, flashAmount, 0.20)
+    INIT_END
+    float progress = e->progress;
+    if (progress <= 0)
+        return e->a;
+    if (progress >= 1)
+        return e->b;
+    float b = powf(maxf(0, sinf(progress * M_PIf)), 0.42f) * strength;
+    float frame = floorf(progress * 30);
+    vec2 uv = e->p;
+    // horizontal mask
+    float r1 = floorf((uv.y + sg_hash1(frame) * 0.031f) * horizontalBars * 0.38f);
+    float r2 = floorf((uv.y + sg_hash1(frame + 2) * 0.013f) * horizontalBars);
+    float r3 = floorf((uv.y + sg_hash1(frame + 7) * 0.006f) * horizontalBars * 3.4f);
+    float thick = sg_stripeY(uv, horizontalBars * 0.38f, frame + 1, 0.035f, 0.22f)
+                * step(0.42f, sg_hash2(VEC2(r1, frame + 10)))
+                * sg_brokenGate(uv, r1, sg_hash2(VEC2(r1, frame)), frame);
+    float mid = sg_stripeY(uv, horizontalBars, frame + 4, 0.014f, 0.11f)
+              * step(0.48f, sg_hash2(VEC2(r2, frame + 20)))
+              * sg_brokenGate(uv, r2, sg_hash2(VEC2(r2, frame)), frame + 3);
+    float hair = sg_stripeY(uv, horizontalBars * 3.4f, frame + 9, 0.004f, 0.035f)
+               * step(0.62f, sg_hash2(VEC2(r3, frame + 30)));
+    float h = clipUI(maxf(thick, maxf(mid, hair)));
+    // vertical mask
+    float colr = floorf((uv.x + sg_hash1(frame + 12) * 0.017f) * verticalSlits);
+    float v = clipUI(sg_stripeX(uv, verticalSlits, frame + 13, 0.01f, 0.075f)
+            * step(0.66f, sg_hash2(VEC2(colr, frame + 19))));
+    float glitch = clipUI(maxf(h, v * 0.75f));
+    float row = floorf(uv.y * horizontalBars);
+    float rowRnd = sg_hash2(VEC2(row, frame + 5));
+    float bandDelay = (rowRnd - P5f) * 0.30f * h;
+    float reveal = smoothstep(0.18f, 0.84f, progress + bandDelay);
+    // distortion offsets
+    float colRnd = sg_hash2(VEC2(floorf(uv.x * verticalSlits), frame + 27));
+    float xTear = (rowRnd - P5f) * 2 * tear * b * h + sinf(uv.y * 120 + progress * 95) * 0.006f * b;
+    float yDrag = (colRnd - P5f) * 0.13f * b * v;
+    float micro = (sg_hash2(VEC2(row, floorf(uv.x * verticalSlits) + frame)) - P5f) * 0.018f * b * maxf(h, v);
+    vec2 fromUv = add2(uv, VEC2(xTear + micro, yDrag));
+    vec2 toUv = add2(uv, VEC2(-xTear + micro, yDrag));
+    vec2 split = VEC2(chroma * b * (1 + 1.7f * glitch), chroma * 0.22f * b * v);
+    vec4 color = mix4(sg_chroma(fromUv, split, 0, e), sg_chroma(toUv, split, 1, e), reveal);
+    // time-slice residue
+    vec2 smearUv = uv;
+    smearUv.x += (rowRnd - P5f) * 0.46f * b * h;
+    smearUv.y += (sg_hash2(VEC2(row, frame + 31)) - P5f) * 0.045f * b * h;
+    float sliceReveal = smoothstep(0.28f, 0.78f, progress + (rowRnd - P5f) * 0.22f);
+    vec4 sliceColor = mix4(
+        sg_chroma(smearUv, mul2f(split, 1.65f), 0, e),
+        sg_chroma(sub2(smearUv, VEC2((rowRnd - P5f) * 0.18f * b, 0)), mul2f(split, 1.65f), 1, e),
+        sliceReveal);
+    color = mix4(color, sliceColor, clipUI(h * b * residue));
+    // scan sparks
+    float hairLine = sg_stripeY(uv, 190, frame + 55, 0.002f, 0.012f)
+                   * step(0.70f, sg_hash2(VEC2(floorf(uv.y * 190), frame + 56)));
+    color = add4(color, mul4f(gbr_delta(e, 0.72f, 0.90f, 1.0f), hairLine * b * 0.28f));
+    float scan = P5f + P5f * sinf(uv.y * 980 + progress * 130);
+    color = mul3f(color, 1 - scanAmount * b * scan);
+    vec2 nCell = floor2(mul2(uv, VEC2(360 * e->ratio, 210)));
+    float n = sg_hash2(add2(nCell, VEC2(frame * 7, frame * 13)));
+    color = add3f(color, (n - P5f) * noiseAmount * b * (0.55f + glitch));
+    // desaturate at the damage peak
+    float luma = dot3(color, VEC3(0.587f, 0.114f, 0.299f));
+    vec4 grey = vec3f(luma);
+    grey.p3 = color.p3; // keep alpha (GLSL mixes .rgb only)
+    color = mix4(color, grey, clipUI(0.18f * b * glitch));
+    float strobe = step(0.78f, sg_hash2(VEC2(frame, 3.14f))) * powf(b, 1.65f);
+    color = add3f(color, strobe * flashAmount);
+    return VEC4(clipUI(color.p0), clipUI(color.p1), clipUI(color.p2), 1);
+}
+
+
 // test transitions --------------------------------------------------
 
 static vec4 test_none(const XTransition *e)
@@ -2766,6 +4180,222 @@ static int parse_easing(AVFilterContext *ctx)
 }
 
 // extended transition name and customisation arguments
+// Batch D — final CPU-portable originals from gl-transitions.com (huynx, KMojek, martiniti, gre, mernking)
+// After this batch every shader in the gl-transitions catalogue that can run on the
+// xfade-easing CPU model is ported.
+
+static bool bth_in_triangle(vec2 p, vec2 a, vec2 b, vec2 c)
+{
+    bool b1 = dot2(VEC2(p.x - a.x, p.y - a.y), VEC2(c.y - a.y, a.x - c.x)) < 0,
+         b2 = dot2(VEC2(p.x - b.x, p.y - b.y), VEC2(a.y - b.y, b.x - a.x)) < 0,
+         b3 = dot2(VEC2(p.x - c.x, p.y - c.y), VEC2(b.y - c.y, c.x - b.x)) < 0;
+    return b1 == b2 && b2 == b3;
+}
+static float bth_blur_edge(vec2 bot1, vec2 bot2, vec2 top, vec2 testPt)
+{
+    vec2 lineDir = sub2(bot1, top);
+    vec2 perpDir = VEC2(lineDir.y, -lineDir.x);
+    vec2 dirToPt = sub2(bot1, testPt);
+    float dist1 = absf(dot2(normalize2(perpDir), dirToPt));
+    lineDir = sub2(bot2, top);
+    perpDir = VEC2(lineDir.y, -lineDir.x);
+    dirToPt = sub2(bot2, testPt);
+    float min_dist = minf(absf(dot2(normalize2(perpDir), dirToPt)), dist1);
+    return (min_dist < 0.005f) ? min_dist / 0.005f : 1;
+}
+
+static vec4 gl_BowTieHorizontal(const XTransition *e) // by huynx
+{ // License: MIT
+    INIT_END
+    vec2 uv = e->p;
+    float progress = e->progress;
+    vec2 lv1 = VEC2(progress, P5f), lv2 = VEC2(0, P5f - progress), lv3 = VEC2(0, P5f + progress);
+    if (bth_in_triangle(uv, lv1, lv2, lv3)) { // in_left_triangle
+        if (progress < 0.1f)
+            return e->a;
+        if (uv.x < P5f)
+            return mix4(e->a, e->b, bth_blur_edge(lv2, lv3, lv1, uv));
+        return progress > 0 ? e->b : e->a;
+    }
+    vec2 rv1 = VEC2(1 - progress, P5f), rv2 = VEC2(1, P5f - progress), rv3 = VEC2(1, P5f + progress);
+    if (bth_in_triangle(uv, rv1, rv2, rv3)) { // in_right_triangle
+        if (uv.x >= P5f)
+            return mix4(e->a, e->b, bth_blur_edge(rv2, rv3, rv1, uv));
+        return e->a;
+    }
+    return e->a;
+}
+
+static vec4 gl_BowTieVertical(const XTransition *e) // by huynx
+{ // License: MIT
+    INIT_END
+    vec2 uv = e->p;
+    float progress = e->progress;
+    vec2 tv1 = VEC2(P5f, progress), tv2 = VEC2(P5f - progress, 0), tv3 = VEC2(P5f + progress, 0);
+    if (bth_in_triangle(uv, tv1, tv2, tv3)) { // in_top_triangle
+        if (progress < 0.1f)
+            return e->a;
+        if (uv.y < P5f)
+            return mix4(e->a, e->b, bth_blur_edge(tv2, tv3, tv1, uv));
+        return progress > 0 ? e->b : e->a;
+    }
+    vec2 bv1 = VEC2(P5f, 1 - progress), bv2 = VEC2(P5f - progress, 1), bv3 = VEC2(P5f + progress, 1);
+    if (bth_in_triangle(uv, bv1, bv2, bv3)) { // in_bottom_triangle
+        if (uv.y >= P5f)
+            return mix4(e->a, e->b, bth_blur_edge(bv2, bv3, bv1, uv));
+        return e->a;
+    }
+    return e->a;
+}
+
+static bool btw_in_triangle(vec2 p, vec2 a, vec2 b, vec2 c)
+{
+    return bth_in_triangle(p, a, b, c);
+}
+static vec4 btw_first_half(const XTransition *e, vec2 uv, float prog, float adjust)
+{
+    const float height = 0.5f;
+    if (uv.y < P5f) {
+        if (btw_in_triangle(uv, VEC2(0, prog - height), VEC2(1, prog - height), VEC2(adjust, prog)))
+            return e->b;
+    } else if (btw_in_triangle(uv, VEC2(0, 1 - prog + height), VEC2(1, 1 - prog + height), VEC2(adjust, 1 - prog))) {
+        return e->b;
+    }
+    return e->a;
+}
+static vec4 btw_second_half(const XTransition *e, vec2 uv, float prog, float adjust)
+{
+    const float height = 0.5f;
+    if (uv.x > adjust) {
+        if (btw_in_triangle(uv, VEC2(prog + height, 1), VEC2(prog + height, 0), VEC2(mixf(adjust, 1, 2 * (prog - P5f)), P5f)))
+            return e->a;
+    } else if (btw_in_triangle(uv, VEC2(1 - prog - height, 1), VEC2(1 - prog - height, 0), VEC2(mixf(adjust, 0, 2 * (prog - P5f)), P5f))) {
+        return e->a;
+    }
+    return e->b;
+}
+
+static vec4 gl_BowTieWithParameter(const XTransition *e) // by KMojek
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, adjust, 0.5)
+    ARG1(bool, reverse, 0)
+    INIT_END
+    float progress = e->progress;
+    if (reverse)
+        return progress < P5f
+            ? btw_second_half(e, e->p, 1 - progress, adjust)
+            : btw_first_half(e, e->p, 1 - progress, adjust);
+    return progress < P5f
+        ? btw_first_half(e, e->p, progress, adjust)
+        : btw_second_half(e, e->p, progress, adjust);
+}
+
+static vec4 gl_HorizontalClose(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float s = 2 - absf((e->p.y - P5f) / (e->progress - 1)) - 2 * e->progress;
+    return mix4(e->a, e->b, smoothstep(P5f, 0, s));
+}
+
+static vec4 gl_HorizontalOpen(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float regress = 1 - e->progress;
+    float s = 2 - absf((e->p.y - P5f) / (regress - 1)) - 2 * regress;
+    return mix4(e->a, e->b, smoothstep(0, P5f, s));
+}
+
+static vec4 gl_VerticalClose(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float s = 2 - absf((e->p.x - P5f) / (e->progress - 1)) - 2 * e->progress;
+    return mix4(e->a, e->b, smoothstep(P5f, 0, s));
+}
+
+static vec4 gl_VerticalOpen(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_END
+    float regress = 1 - e->progress;
+    float s = 2 - absf((e->p.x - P5f) / (regress - 1)) - 2 * regress;
+    return mix4(e->a, e->b, smoothstep(0, P5f, s));
+}
+
+static vec4 gl_RectangleCrop(const XTransition *e) // by martiniti
+{ // License: MIT
+    INIT_BEGIN
+    ARG4(Colour, bgcolor, 0x000000FF)
+    INIT_END
+    float s = powf(2 * absf(e->progress - P5f), 3);
+    float a12 = absf(1 - 2 * e->progress);
+    vec2 q = e->p;
+    float bl = step(a12, q.x + 0.25f) * step(a12, q.y + 0.25f);      // bottom-left gate
+    float tr = step(a12, 1.25f - q.x) * step(a12, 1.25f - q.y);      // top-right gate
+    float dist = absf(1 - bl * tr);                                  // GLSL: length(1.0 - bl.x*bl.y*tr.x*tr.y)
+    return mix4(e->progress < P5f ? e->a : e->b, colour(e, bgcolor), step(s, dist));
+}
+
+static vec4 gl_circleopen(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG1(float, smoothness, 0.3)
+    ARG1(bool, opening, 1)
+    INIT_END
+    float x = opening ? e->progress : 1 - e->progress;
+    float m = smoothstep(-smoothness, 0, 1.4142135624f * distance2(VEC2(P5f, P5f), e->p) - x * (1 + smoothness));
+    return mix4(e->a, e->b, opening ? 1 - m : m);
+}
+
+static vec4 gl_colorphase(const XTransition *e) // by gre
+{ // License: MIT
+    INIT_BEGIN
+    ARG4(Colour, fromStep, 0x00336600) // vec4(0.0, 0.2, 0.4, 0.0) packed as RGBA
+    ARG4(Colour, toStep,   0x99CCFFFF) // vec4(0.6, 0.8, 1.0, 1.0) packed as RGBA
+    INIT_END
+    vec4 f0 = colour(e, fromStep), t0 = colour(e, toStep);
+    float p = e->progress;
+    vec4 m = VEC4(
+        smoothstep(f0.p0, t0.p0, p),
+        smoothstep(f0.p1, t0.p1, p),
+        smoothstep(f0.p2, t0.p2, p),
+        smoothstep(f0.p3, t0.p3, p));
+    vec4 o;
+    o.p0 = mixf(e->a.p0, e->b.p0, m.p0);
+    o.p1 = mixf(e->a.p1, e->b.p1, m.p1);
+    o.p2 = mixf(e->a.p2, e->b.p2, m.p2);
+    o.p3 = mixf(e->a.p3, e->b.p3, m.p3);
+    return o;
+}
+
+static float otv_hash(float y, float p) // old_tv_lost_signal scanline hash
+{
+    return fract(sinf(y * 127.1f + p * 311.7f) * 43758.5453f);
+}
+
+static vec4 gl_old_tv_lost_signal(const XTransition *e) // by mernking gitlab: Godswork
+{ // License: MIT
+    INIT_END
+    float p = e->progress;
+    float strength = sinf(p * M_PIf);
+    vec2 tv = e->p;
+    vec4 colour_ = mix4(e->a, e->b, p);
+    // horizontal tracking lines (key effect)
+    float lineY = floorf(tv.y * 120);
+    float noise = otv_hash(lineY, p * 20);
+    float line = step(0.92f, noise);
+    // make lines drift during transition
+    float drift = sinf(tv.y * 30 + p * 10) * 0.02f * strength;
+    vec2 dxy = VEC2(drift, 0);
+    vec4 lineColor = mix4(getFromColor(add2(tv, dxy)), getToColor(add2(tv, dxy)), p);
+    // apply tearing only on selected scanlines
+    colour_ = mix4(colour_, lineColor, line * strength);
+    // mild scanline darkening (CRT feel)
+    float scan = sinf(tv.y * 900) * 0.03f;
+    float s = scan * strength;
+    colour_.p0 -= s; colour_.p1 -= s; colour_.p2 -= s;
+    return colour_;
+}
+
 static int parse_xtransition(AVFilterContext *ctx)
 {
     XFadeContext *s = ctx->priv;
@@ -2853,6 +4483,75 @@ static int parse_xtransition(AVFilterContext *ctx)
     else if (!av_strcasecmp(t, "gl_WaterDrop")) k->xtransitionf = gl_WaterDrop;
     else if (!av_strcasecmp(t, "gl_windowblinds")) k->xtransitionf = gl_windowblinds;
     else if (!av_strcasecmp(t, "gl_windowslice")) k->xtransitionf = gl_windowslice;
+    else if (!av_strcasecmp(t, "gl_Fold")) k->xtransitionf = gl_Fold;
+    else if (!av_strcasecmp(t, "gl_Directional")) k->xtransitionf = gl_Directional;
+    else if (!av_strcasecmp(t, "gl_directional_easing")) k->xtransitionf = gl_directional_easing;
+    else if (!av_strcasecmp(t, "gl_directionalwipe")) k->xtransitionf = gl_directionalwipe;
+    else if (!av_strcasecmp(t, "gl_wind")) k->xtransitionf = gl_wind;
+    else if (!av_strcasecmp(t, "gl_x_axis_translation")) k->xtransitionf = gl_x_axis_translation;
+    else if (!av_strcasecmp(t, "gl_TopBottom")) k->xtransitionf = gl_TopBottom;
+    else if (!av_strcasecmp(t, "gl_LeftRight")) k->xtransitionf = gl_LeftRight;
+    else if (!av_strcasecmp(t, "gl_splitSlideInHorizontal")) k->xtransitionf = gl_splitSlideInHorizontal;
+    else if (!av_strcasecmp(t, "gl_splitSlideInVertical")) k->xtransitionf = gl_splitSlideInVertical;
+    else if (!av_strcasecmp(t, "gl_splitSlideInOutHorizontal")) k->xtransitionf = gl_splitSlideInOutHorizontal;
+    else if (!av_strcasecmp(t, "gl_splitSlideInOutVertical")) k->xtransitionf = gl_splitSlideInOutVertical;
+    else if (!av_strcasecmp(t, "gl_splitSlideOutHorizontal")) k->xtransitionf = gl_splitSlideOutHorizontal;
+    else if (!av_strcasecmp(t, "gl_splitSlideOutVertical")) k->xtransitionf = gl_splitSlideOutVertical;
+    else if (!av_strcasecmp(t, "gl_scale_in")) k->xtransitionf = gl_scale_in;
+    else if (!av_strcasecmp(t, "gl_SimpleZoom")) k->xtransitionf = gl_SimpleZoom;
+    else if (!av_strcasecmp(t, "gl_SimpleZoomOut")) k->xtransitionf = gl_SimpleZoomOut;
+    else if (!av_strcasecmp(t, "gl_zoomInOut")) k->xtransitionf = gl_zoomInOut;
+    else if (!av_strcasecmp(t, "gl_ZoomLeftWipe")) k->xtransitionf = gl_ZoomLeftWipe;
+    else if (!av_strcasecmp(t, "gl_ZoomRigthWipe")) k->xtransitionf = gl_ZoomRigthWipe;
+    else if (!av_strcasecmp(t, "gl_ZoomInCircles")) k->xtransitionf = gl_ZoomInCircles;
+    else if (!av_strcasecmp(t, "gl_circle")) k->xtransitionf = gl_circle;
+    else if (!av_strcasecmp(t, "gl_Rectangle")) k->xtransitionf = gl_Rectangle;
+    else if (!av_strcasecmp(t, "gl_Box")) k->xtransitionf = gl_Box;
+    else if (!av_strcasecmp(t, "gl_luma")) k->xtransitionf = gl_luma;
+    else if (!av_strcasecmp(t, "gl_displacement")) k->xtransitionf = gl_displacement;
+    else if (!av_strcasecmp(t, "gl_burn")) k->xtransitionf = gl_burn;
+    else if (!av_strcasecmp(t, "gl_burn0")) k->xtransitionf = gl_burn0;
+    else if (!av_strcasecmp(t, "gl_fadegrayscale")) k->xtransitionf = gl_fadegrayscale;
+    else if (!av_strcasecmp(t, "gl_multiply_blend")) k->xtransitionf = gl_multiply_blend;
+    else if (!av_strcasecmp(t, "gl_ColourDistance")) k->xtransitionf = gl_ColourDistance;
+    else if (!av_strcasecmp(t, "gl_HSVfade")) k->xtransitionf = gl_HSVfade;
+    else if (!av_strcasecmp(t, "gl_Overexposure")) k->xtransitionf = gl_Overexposure;
+    else if (!av_strcasecmp(t, "gl_StaticFade")) k->xtransitionf = gl_StaticFade;
+    else if (!av_strcasecmp(t, "gl_TVStatic")) k->xtransitionf = gl_TVStatic;
+    else if (!av_strcasecmp(t, "gl_BlockDissolve")) k->xtransitionf = gl_BlockDissolve;
+    else if (!av_strcasecmp(t, "gl_undulatingBurnOut")) k->xtransitionf = gl_undulatingBurnOut;
+    else if (!av_strcasecmp(t, "gl_FilmBurn")) k->xtransitionf = gl_FilmBurn;
+    else if (!av_strcasecmp(t, "gl_luminance_melt")) k->xtransitionf = gl_luminance_melt;
+    else if (!av_strcasecmp(t, "gl_coord_from_in")) k->xtransitionf = gl_coord_from_in;
+    else if (!av_strcasecmp(t, "gl_GlitchMemories")) k->xtransitionf = gl_GlitchMemories;
+    else if (!av_strcasecmp(t, "gl_DreamyZoom")) k->xtransitionf = gl_DreamyZoom;
+    else if (!av_strcasecmp(t, "gl_AdvancedMosaic")) k->xtransitionf = gl_AdvancedMosaic;
+    else if (!av_strcasecmp(t, "gl_mosaic_transition")) k->xtransitionf = gl_mosaic_transition;
+    else if (!av_strcasecmp(t, "gl_TilesWave")) k->xtransitionf = gl_TilesWave;
+    else if (!av_strcasecmp(t, "gl_flyeye")) k->xtransitionf = gl_flyeye;
+    else if (!av_strcasecmp(t, "gl_squeeze")) k->xtransitionf = gl_squeeze;
+    else if (!av_strcasecmp(t, "gl_SimpleFlip")) k->xtransitionf = gl_SimpleFlip;
+    else if (!av_strcasecmp(t, "gl_PuzzleRight")) k->xtransitionf = gl_PuzzleRight;
+    else if (!av_strcasecmp(t, "gl_fragment")) k->xtransitionf = gl_fragment;
+    else if (!av_strcasecmp(t, "gl_DefocusBlur")) k->xtransitionf = gl_DefocusBlur;
+    else if (!av_strcasecmp(t, "gl_tangentMotionBlur")) k->xtransitionf = gl_tangentMotionBlur;
+    else if (!av_strcasecmp(t, "gl_GlitchDisplace")) k->xtransitionf = gl_GlitchDisplace;
+    else if (!av_strcasecmp(t, "gl_parametric_glitch")) k->xtransitionf = gl_parametric_glitch;
+    else if (!av_strcasecmp(t, "gl_DoomScreenTransition")) k->xtransitionf = gl_DoomScreenTransition;
+    else if (!av_strcasecmp(t, "gl_Revolve_Left")) k->xtransitionf = gl_Revolve_Left;
+    else if (!av_strcasecmp(t, "gl_Drop_Zone_Flicker")) k->xtransitionf = gl_Drop_Zone_Flicker;
+    else if (!av_strcasecmp(t, "gl_StripDatamoshGlitch")) k->xtransitionf = gl_StripDatamoshGlitch;
+    else if (!av_strcasecmp(t, "gl_BowTieHorizontal")) k->xtransitionf = gl_BowTieHorizontal;
+    else if (!av_strcasecmp(t, "gl_BowTieVertical")) k->xtransitionf = gl_BowTieVertical;
+    else if (!av_strcasecmp(t, "gl_BowTieWithParameter")) k->xtransitionf = gl_BowTieWithParameter;
+    else if (!av_strcasecmp(t, "gl_HorizontalClose")) k->xtransitionf = gl_HorizontalClose;
+    else if (!av_strcasecmp(t, "gl_HorizontalOpen")) k->xtransitionf = gl_HorizontalOpen;
+    else if (!av_strcasecmp(t, "gl_VerticalClose")) k->xtransitionf = gl_VerticalClose;
+    else if (!av_strcasecmp(t, "gl_VerticalOpen")) k->xtransitionf = gl_VerticalOpen;
+    else if (!av_strcasecmp(t, "gl_RectangleCrop")) k->xtransitionf = gl_RectangleCrop;
+    else if (!av_strcasecmp(t, "gl_circleopen")) k->xtransitionf = gl_circleopen;
+    else if (!av_strcasecmp(t, "gl_colorphase")) k->xtransitionf = gl_colorphase;
+    else if (!av_strcasecmp(t, "gl_old_tv_lost_signal")) k->xtransitionf = gl_old_tv_lost_signal;
     else if (!av_strcasecmp(t, "test_none")) k->xtransitionf = test_none;
     else if (!av_strcasecmp(t, "test_blend")) k->xtransitionf = test_blend;
     else if (!av_strcasecmp(t, "test_texture")) k->xtransitionf = test_texture;
