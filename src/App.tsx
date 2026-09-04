@@ -680,6 +680,9 @@ function App() {
   const [defaultTextY, setDefaultTextY] = useState(72)
   const [showTextStyles, setShowTextStyles] = useState(false)
   const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)
+  // Id of a text frame created by "Add text frame" that has not been saved
+  // yet: Cancel/close removes it again, only Done keeps it in the storyline.
+  const [pendingTextFrame, setPendingTextFrame] = useState<number | null>(null)
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([])
   const [draggedAudioId, setDraggedAudioId] = useState<number | null>(null)
   const [showFolderPicker, setShowFolderPicker] = useState(false)
@@ -1008,7 +1011,16 @@ function App() {
   const addTitleFrame = () => {
     const id = Date.now()
     setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration: 4, effect: 'None', transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: 4, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
+    setPendingTextFrame(id)
     setEditingTextFrame(id)
+  }
+  const closeTextFrameEditor = (save: boolean) => {
+    if (!save && editingTextFrame !== null && editingTextFrame === pendingTextFrame) {
+      setMedia(items => items.filter(x => x.id !== editingTextFrame))
+      setSelectedIds(ids => ids.filter(id => id !== editingTextFrame))
+    }
+    setPendingTextFrame(null)
+    setEditingTextFrame(null)
   }
   const dropAudioOn = (targetId: number) => {
     if (draggedAudioId === null || draggedAudioId === targetId) return setDraggedAudioId(null)
@@ -1239,7 +1251,7 @@ function App() {
 
     {editingTrackId != null && (() => { const track = audioTracks.find(x => x.id === editingTrackId); return track ? <SoundtrackEditor track={track} onChange={change => setAudioTracks(items => items.map(x => x.id === track.id ? { ...x, ...change } : x))} onClose={() => setEditingTrackId(null)} /> : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} update={change=>patch(editingTextFrame,change)} onClose={()=>setEditingTextFrame(null)}/>} 
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
         const additions: AudioTrack[] = []
@@ -1519,7 +1531,15 @@ function ColourChangePreview({ change, playing }: { change: NonNullable<ReturnTy
   </>
 }
 
-function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,onClose:()=>void}) {
+function TextFrameEditor({item,update,onSave,onCancel,isNew=false}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,onSave:()=>void,onCancel:()=>void,isNew?:boolean}) {
+  const original = useRef(item)
+  // Existing frames: Cancel restores the values from before the editor opened.
+  // New frames: Cancel removes the frame entirely (handled by the caller).
+  const cancel = () => { if (!isNew) update(original.current); onCancel() }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') cancel() }
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
+  })
   // Title cards keep their own type settings. Do not inherit live project
   // defaults — those apply only to captions drawn on pictures.
   const family = item.fontFamily || 'Montserrat'
@@ -1530,13 +1550,12 @@ function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial
   const underline = item.textUnderline ?? false
   // Keep swatches to real colours: FFmpeg can render these exactly in the MP4.
   const backgrounds=['#30382a','#14213d','#6f4238','#37474f','#5b285f','#163c44']
-  const original = useRef(item)
   const change = frameColourChange(item)
   const sameAsA = !isHex(item.frameBackground2)
   const colourB = item.frameBackground2 || item.frameBackground
   const [bgPlaying, setBgPlaying] = useState(true)
   return <div className="modal-backdrop dark-backdrop"><div className="frame-editor">
-    <div className="preview-top"><div><strong>Text frame editor</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={onClose}><X size={20}/></button></div>
+    <div className="preview-top"><div><strong>{isNew ? 'New text frame' : 'Text frame editor'}</strong><span>DRAG THE TEXT TO POSITION IT</span></div><button onClick={cancel} title={isNew ? 'Discard this text frame' : 'Cancel changes'}><X size={20}/></button></div>
     <div className="frame-editor-body">
       <div className="frame-canvas" style={{background:item.frameBackground}}>
         {change && <ColourChangePreview key={`${change.from}-${change.to}-${change.transition}-${change.time}-${change.start}-${change.hold}`} change={change} playing={bgPlaying} />}
@@ -1562,7 +1581,7 @@ function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial
         <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the sidebar.</p>
       </aside>
     </div>
-    <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn ghost" onClick={()=>{ update(original.current); onClose() }}>Cancel</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div>
+    <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50})}>Reset position</button><button className="btn ghost" onClick={cancel}>{isNew ? 'Discard' : 'Cancel'}</button><button className="btn dark" onClick={onSave}><Check size={15}/> {isNew ? 'Add to storyline' : 'Save'}</button></div>
   </div></div>
 }
 
