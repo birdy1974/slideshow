@@ -22,6 +22,7 @@ from app.renderer import (
     build_filter_graph,
     fill_frame_filter,
     fit_frame_filter,
+    font_file,
     frame_colour_change,
     normalize_rotation,
     rotation_filter,
@@ -631,6 +632,31 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertTrue(filters[2].startswith("hflip,vflip,"), filters[2])
         self.assertNotIn("transpose", filters[3])
         self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
+
+
+class FontFileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.fonts = Path(self.temp.name)
+        for name in ("Montserrat-Regular", "Montserrat-Bold", "Montserrat-Italic", "Montserrat-BoldItalic", "Oswald-Regular", "Oswald-Bold", "Pacifico-Regular"):
+            (self.fonts / f"{name}.ttf").write_bytes(b"ttf")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_exact_style(self) -> None:
+        self.assertTrue(font_file("Montserrat", True, True, self.fonts).endswith("Montserrat-BoldItalic.ttf"))
+        self.assertTrue(font_file("montserrat", False, True, self.fonts).endswith("Montserrat-Italic.ttf"))
+
+    def test_missing_italic_or_bold_falls_back_within_family(self) -> None:
+        self.assertTrue(font_file("Oswald", True, True, self.fonts).endswith("Oswald-Bold.ttf"))
+        self.assertTrue(font_file("Oswald", False, True, self.fonts).endswith("Oswald-Regular.ttf"))
+        self.assertTrue(font_file("Pacifico", True, False, self.fonts).endswith("Pacifico-Regular.ttf"))
+
+    def test_unknown_family_or_missing_dir_uses_dejavu(self) -> None:
+        self.assertIn("DejaVuSans", font_file("Comic Sans", True, False, self.fonts))
+        self.assertIn("DejaVuSans", font_file("DejaVu Sans", False, True, self.fonts))
+        self.assertIn("DejaVuSans", font_file("Montserrat", False, False, self.fonts / "nope"))
 
 
 class FrameColourChangeTest(unittest.TestCase):

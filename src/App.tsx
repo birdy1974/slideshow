@@ -426,7 +426,41 @@ function probeMediaDuration(src: string, kind: 'audio' | 'video' = 'audio'): Pro
   })
 }
 
-const FONT_FAMILIES = ['Montserrat', 'Open Sans', 'Roboto', 'Playfair Display', 'Source Sans 3', 'DejaVu Sans']
+// Bundled fonts (public/fonts, OFL/Apache licensed). Keep in sync with
+// FONT_FILES in backend/app/renderer.py so the render matches the preview.
+const FONT_GROUPS: Record<string, string[]> = {
+  "Sans-serif": [
+    "Montserrat",
+    "Open Sans",
+    "Roboto",
+    "Lato",
+    "Poppins",
+    "Raleway",
+    "Nunito",
+    "Source Sans 3",
+    "Oswald",
+    "DejaVu Sans"
+  ],
+  "Serif": [
+    "Playfair Display",
+    "Merriweather",
+    "Lora",
+    "Cormorant Garamond"
+  ],
+  "Display & script": [
+    "Bebas Neue",
+    "Anton",
+    "Pacifico",
+    "Dancing Script",
+    "Caveat",
+    "Great Vibes"
+  ]
+}
+const FONT_FAMILIES = Object.values(FONT_GROUPS).flat()
+// Families with no italic cut: the browser would synthesise a slant that FFmpeg
+// cannot, so the italic toggle is disabled for them.
+const FONTS_WITHOUT_ITALIC = new Set(["Oswald", "Bebas Neue", "Anton", "Pacifico", "Dancing Script", "Caveat", "Great Vibes"])
+const FONT_SAMPLE = 'The quick brown fox · Zomer 2026 · 0123456789'
 
 function parsePresetNumber(label: string, fallback: number) {
   const match = String(label || '').match(/([\d.]+)/)
@@ -1252,19 +1286,20 @@ function App() {
   </div>
 }
 
-function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontColor, setFontColor, bold, setBold, italic, setItalic, underline, setUnderline }: {
+function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontColor, setFontColor, bold, setBold, italic, setItalic, underline, setUnderline, sample }: {
   fontFamily: string; setFontFamily: (v: string) => void;
   fontSize: number; setFontSize: (v: number) => void;
   fontColor: string; setFontColor: (v: string) => void;
   bold: boolean; setBold: (v: boolean) => void;
   italic: boolean; setItalic: (v: boolean) => void;
   underline: boolean; setUnderline: (v: boolean) => void;
+  sample?: string;
 }) {
   return <div className="type-controls-stack">
-    <div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}>{FONT_FAMILIES.map(f => <option key={f}>{f}</option>)}</Select></div>
+    <div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}>{Object.entries(FONT_GROUPS).map(([group, names]) => <optgroup key={group} label={group}>{names.map(f => <option key={f} value={f}>{f}</option>)}</optgroup>)}</Select><div className="font-sample" style={{ fontFamily: `'${fontFamily}', sans-serif`, fontWeight: bold ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }} title="Live sample in the selected font">{sample || FONT_SAMPLE}</div></div>
     <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={200} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
     <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
-    <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic ? 'active' : ''} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
+    <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
 }
 
@@ -1458,13 +1493,13 @@ function TextFrameEditor({item,update,onClose}:{item:MediaItem,update:(c:Partial
     <div className="frame-editor-body">
       <div className="frame-canvas" style={{background:item.frameBackground}}>
         {change && <ColourChangePreview key={`${change.from}-${change.to}-${change.transition}-${change.time}-${change.start}-${change.hold}`} change={change} playing={bgPlaying} />}
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:family,fontSize:`${Math.min(size,54)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:`'${family}', sans-serif`,fontSize:`${Math.min(size,54)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
           <Move size={14}/><span>{item.text}</span>
         </div>
       </div>
       <aside>
         <div><FieldLabel>Frame text</FieldLabel><textarea value={item.text} onChange={e=>update({text:e.target.value})}/></div>
-        <TypeControls fontFamily={family} setFontFamily={v => update({fontFamily:v})} fontSize={size} setFontSize={v => update({fontSize:v})} fontColor={color} setFontColor={v => update({fontColor:v})} bold={bold} setBold={v => update({textBold:v})} italic={italic} setItalic={v => update({textItalic:v})} underline={underline} setUnderline={v => update({textUnderline:v})} />
+        <TypeControls fontFamily={family} setFontFamily={v => update({fontFamily:v})} fontSize={size} setFontSize={v => update({fontSize:v})} fontColor={color} setFontColor={v => update({fontColor:v})} bold={bold} setBold={v => update({textBold:v})} italic={italic} setItalic={v => update({textItalic:v})} underline={underline} setUnderline={v => update({textUnderline:v})} sample={item.text} />
         <div className="bg-columns">
           <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(item.frameBackground)?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div>
           <div className={sameAsA?'dimmed':''}><FieldLabel>Colour B</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} disabled={sameAsA} className={colourB===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground2:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" disabled={sameAsA} value={isHex(colourB)?colourB:'#30382a'} onChange={e=>update({frameBackground2:e.target.value})}/></div><label className="check-label dark"><input type="checkbox" checked={sameAsA} onChange={e=>update(e.target.checked?{frameBackground2:undefined}:{frameBackground2:backgrounds.find(b=>b!==item.frameBackground)||'#14213d',frameTransition:item.frameTransition||'Fade',frameTransitionTime:item.frameTransitionTime||1,frameTransitionStart:item.frameTransitionStart??Math.max(0,(item.duration-1)/2)})}/><span><Check size={11}/></span>Same as A</label></div>

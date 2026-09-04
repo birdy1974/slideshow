@@ -243,6 +243,141 @@ def fill_frame_filter(width: int, height: int, fps: int) -> str:
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
 
 
+# Bundled fonts (public/fonts in the repo, copied to FONTS_DIR in the image).
+# Keep in sync with FONT_GROUPS in src/App.tsx.
+FONT_FILES: dict[str, dict[str, str]] = {
+    "Montserrat": {
+        "Regular": "Montserrat-Regular.ttf",
+        "Bold": "Montserrat-Bold.ttf",
+        "Italic": "Montserrat-Italic.ttf",
+        "BoldItalic": "Montserrat-BoldItalic.ttf"
+    },
+    "Open Sans": {
+        "Regular": "OpenSans-Regular.ttf",
+        "Bold": "OpenSans-Bold.ttf",
+        "Italic": "OpenSans-Italic.ttf",
+        "BoldItalic": "OpenSans-BoldItalic.ttf"
+    },
+    "Roboto": {
+        "Regular": "Roboto-Regular.ttf",
+        "Bold": "Roboto-Bold.ttf",
+        "Italic": "Roboto-Italic.ttf",
+        "BoldItalic": "Roboto-BoldItalic.ttf"
+    },
+    "Lato": {
+        "Regular": "Lato-Regular.ttf",
+        "Bold": "Lato-Bold.ttf",
+        "Italic": "Lato-Italic.ttf",
+        "BoldItalic": "Lato-BoldItalic.ttf"
+    },
+    "Poppins": {
+        "Regular": "Poppins-Regular.ttf",
+        "Bold": "Poppins-Bold.ttf",
+        "Italic": "Poppins-Italic.ttf",
+        "BoldItalic": "Poppins-BoldItalic.ttf"
+    },
+    "Raleway": {
+        "Regular": "Raleway-Regular.ttf",
+        "Bold": "Raleway-Bold.ttf",
+        "Italic": "Raleway-Italic.ttf",
+        "BoldItalic": "Raleway-BoldItalic.ttf"
+    },
+    "Nunito": {
+        "Regular": "Nunito-Regular.ttf",
+        "Bold": "Nunito-Bold.ttf",
+        "Italic": "Nunito-Italic.ttf",
+        "BoldItalic": "Nunito-BoldItalic.ttf"
+    },
+    "Source Sans 3": {
+        "Regular": "SourceSans3-Regular.ttf",
+        "Bold": "SourceSans3-Bold.ttf",
+        "Italic": "SourceSans3-Italic.ttf",
+        "BoldItalic": "SourceSans3-BoldItalic.ttf"
+    },
+    "Oswald": {
+        "Regular": "Oswald-Regular.ttf",
+        "Bold": "Oswald-Bold.ttf"
+    },
+    "Playfair Display": {
+        "Regular": "PlayfairDisplay-Regular.ttf",
+        "Bold": "PlayfairDisplay-Bold.ttf",
+        "Italic": "PlayfairDisplay-Italic.ttf",
+        "BoldItalic": "PlayfairDisplay-BoldItalic.ttf"
+    },
+    "Merriweather": {
+        "Regular": "Merriweather-Regular.ttf",
+        "Bold": "Merriweather-Bold.ttf",
+        "Italic": "Merriweather-Italic.ttf",
+        "BoldItalic": "Merriweather-BoldItalic.ttf"
+    },
+    "Lora": {
+        "Regular": "Lora-Regular.ttf",
+        "Bold": "Lora-Bold.ttf",
+        "Italic": "Lora-Italic.ttf",
+        "BoldItalic": "Lora-BoldItalic.ttf"
+    },
+    "Cormorant Garamond": {
+        "Regular": "CormorantGaramond-Regular.ttf",
+        "Bold": "CormorantGaramond-Bold.ttf",
+        "Italic": "CormorantGaramond-Italic.ttf",
+        "BoldItalic": "CormorantGaramond-BoldItalic.ttf"
+    },
+    "Bebas Neue": {
+        "Regular": "BebasNeue-Regular.ttf"
+    },
+    "Anton": {
+        "Regular": "Anton-Regular.ttf"
+    },
+    "Pacifico": {
+        "Regular": "Pacifico-Regular.ttf"
+    },
+    "Dancing Script": {
+        "Regular": "DancingScript-Regular.ttf",
+        "Bold": "DancingScript-Bold.ttf"
+    },
+    "Caveat": {
+        "Regular": "Caveat-Regular.ttf",
+        "Bold": "Caveat-Bold.ttf"
+    },
+    "Great Vibes": {
+        "Regular": "GreatVibes-Regular.ttf"
+    }
+}
+DEJAVU_DIR = Path("/usr/share/fonts/truetype/dejavu")
+DEJAVU_FILES = {"Regular": "DejaVuSans.ttf", "Bold": "DejaVuSans-Bold.ttf", "Italic": "DejaVuSans-Oblique.ttf", "BoldItalic": "DejaVuSans-BoldOblique.ttf"}
+
+
+def font_file(family: str, bold: bool, italic: bool, fonts_dir: Path) -> str:
+    """Resolve a family + style to a TTF path FFmpeg drawtext can open.
+
+    Falls back within the family (no italic cut -> upright of same weight),
+    then to DejaVu Sans so a missing file never fails a render. Family names
+    are matched case-insensitively and ignoring spaces, so both "Open Sans"
+    and "OpenSans" work.
+    """
+    style = ("Bold" if bold else "") + ("Italic" if italic else "") or "Regular"
+    order = {
+        "Regular": ["Regular", "Bold"],
+        "Bold": ["Bold", "Regular"],
+        "Italic": ["Italic", "Regular", "BoldItalic", "Bold"],
+        "BoldItalic": ["BoldItalic", "Bold", "Italic", "Regular"],
+    }[style]
+    wanted = re.sub(r"\s+", "", family).lower()
+    for name, styles in FONT_FILES.items():
+        if re.sub(r"\s+", "", name).lower() != wanted:
+            continue
+        for candidate in order:
+            file = styles.get(candidate)
+            if file and (fonts_dir / file).exists():
+                return str(fonts_dir / file)
+        break
+    for candidate in order:
+        path = DEJAVU_DIR / DEJAVU_FILES[candidate]
+        if path.exists():
+            return str(path)
+    return str(DEJAVU_DIR / DEJAVU_FILES["Regular"])
+
+
 def frame_colour_change(item: dict[str, Any]) -> dict[str, Any] | None:
     """Two-colour text frame settings, mirroring the editor's clamping.
 
@@ -684,15 +819,8 @@ class Renderer:
             italic = defaults.get("italic", False)
         size = max(8, int(float(size_pt) * width / 1920))
         colour = str(colour_raw).replace("#", "0x")
-        font_dir = "/usr/share/fonts/truetype/dejavu"
-        if bold and italic:
-            font = f"{font_dir}/DejaVuSans-BoldOblique.ttf"
-        elif italic:
-            font = f"{font_dir}/DejaVuSans-Oblique.ttf"
-        elif bold:
-            font = f"{font_dir}/DejaVuSans-Bold.ttf"
-        else:
-            font = f"{font_dir}/DejaVuSans.ttf"
+        family = str((item.get("fontFamily") if item.get("type") == "title" else defaults.get("fontFamily")) or "Montserrat")
+        font = font_file(family, bool(bold), bool(italic), self.settings.fonts_dir)
         alpha = f"if(lt(t,{start}),0,if(lt(t,{start+fade_in}),(t-{start})/{fade_in},if(lt(t,{end-fade_out}),1,if(lt(t,{end}),({end}-t)/{fade_out},0))))"
         return f"drawtext=fontfile='{font}':text='{ff_escape(text)}':fontsize={size}:fontcolor={colour}:alpha='{alpha}':x=(w-text_w)*{x/100}:y=(h-text_h)*{y/100}:shadowcolor=black@0.55:shadowx=2:shadowy=2:enable='between(t,{start},{end})'"
 
