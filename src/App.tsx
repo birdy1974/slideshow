@@ -1293,7 +1293,7 @@ function App() {
           additions.push({
             id: Date.now() + index, name: file.name, path: file.path, src,
             type: file.kind as 'image' | 'video', duration,
-            effect: isVideo ? 'Original motion' : 'Ken Burns · Zoom in',
+            effect: isVideo ? 'Original motion' : 'None',
             transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS,
             audioSource: isVideo ? 'soundtrack' : undefined,
             text: '', textMode: 'overlay', textStart: 0, textEnd: duration,
