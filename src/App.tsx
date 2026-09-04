@@ -1373,7 +1373,7 @@ function App() {
     {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onApply={(transition, duration) => { patch(media[index].id, { transition, transitionTime: duration }); setTransitionPreviewId(null); notify(`Applied ${transition} transition`) }} /> : null })()}
     {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
-    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)}/>}
+    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
     {showNewProjectConfirm && <ConfirmDialog title="Start a new blank project?" message="This clears the current storyline, soundtracks and settings from the editor. Projects already saved in SQLite are not affected." confirmLabel="New project" onConfirm={startNewProject} onCancel={()=>setShowNewProjectConfirm(false)}/>}
     {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
@@ -1711,10 +1711,71 @@ function FolderPicker({ current, onSelect, onClose }: { current: string, onSelec
 
 // Lists projects persisted in SQLite and loads the chosen one's full config
 // (media, captions, soundtrack, output, timeline) into the editor.
-function ProjectLoader({ onPick, onNew, onClose }: { onPick: (id: number) => void, onNew?: () => void, onClose: () => void }) {
+// Now includes a delete button per entry and a single "Delete all" control.
+function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, onDeleteAll, onNotify }: {
+  onPick: (id: number) => void, onNew?: () => void, onClose: () => void,
+  currentProjectId?: number | null, onDeleted?: (id: number) => void, onDeleteAll?: () => void, onNotify?: (msg: string)=>void
+}) {
   const [projects,setProjects]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
-  useEffect(()=>{setLoading(true);setError('');fetch('/api/projects').then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(setProjects).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[])
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}{projects.map(p=><button className="project-row" key={p.id} onClick={()=>onPick(p.id)}><div><strong>{p.name||`Project #${p.id}`}</strong><span>Project #{p.id} · revision {p.revision}</span></div><small>Updated {new Date(p.updated_at).toLocaleString()}</small><FolderOpen size={17}/></button>)}</div><div className="modal-foot"><span>Loading replaces the current editor contents.</span>{onNew&&<button className="btn ghost" onClick={onNew}><Plus size={15}/> New blank project</button>}<button className="btn ghost" onClick={onClose}>Cancel</button></div></div></div>
+  const [deletingId,setDeletingId]=useState<number|null>(null)
+  const [confirmDeleteId,setConfirmDeleteId]=useState<number|null>(null)
+  const [showDeleteAllConfirm,setShowDeleteAllConfirm]=useState(false)
+  const [deletingAll,setDeletingAll]=useState(false)
+  const refresh=()=>{setLoading(true);setError('');fetch('/api/projects').then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()}).then(setProjects).catch(e=>setError(e.message)).finally(()=>setLoading(false))}
+  useEffect(()=>{refresh()},[])
+  const handleDeleteOne=async(id:number)=>{
+    setDeletingId(id);setError('')
+    try{
+      const res=await fetch(`/api/projects/${id}`,{method:'DELETE'})
+      if(!res.ok) throw new Error(await readApiError(res,'Delete failed'))
+      setProjects(items=>items.filter(p=>p.id!==id))
+      onNotify?.(`Project #${id} deleted`)
+      onDeleted?.(id)
+    }catch(e){setError(e instanceof Error?e.message:'Delete failed')}
+    finally{setDeletingId(null);setConfirmDeleteId(null)}
+  }
+  const handleDeleteAll=async()=>{
+    setDeletingAll(true);setError('')
+    try{
+      const res=await fetch('/api/projects',{method:'DELETE'})
+      if(!res.ok) throw new Error(await readApiError(res,'Delete all failed'))
+      setProjects([])
+      onNotify?.('All saved projects deleted')
+      onDeleteAll?.()
+    }catch(e){setError(e instanceof Error?e.message:'Delete all failed')}
+    finally{setDeletingAll(false);setShowDeleteAllConfirm(false)}
+  }
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}>
+    <div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div>
+      <div className="project-loader-actions">
+        {projects.length>0 && <button type="button" className="btn ghost delete-all-btn" disabled={deletingAll||loading} title="Delete every saved project" onClick={()=>setShowDeleteAllConfirm(true)}><Trash2 size={14}/> Delete all</button>}
+        <button className="icon-button" onClick={onClose}><X size={19}/></button>
+      </div>
+    </div>
+    <div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}
+      {projects.map(p=>{
+        const isDeleting=deletingId===p.id
+        const isCurrent=currentProjectId!=null && p.id===currentProjectId
+        return <div className={`project-entry ${isCurrent?'current':''}`} key={p.id}>
+          <button className="project-row" onClick={()=>onPick(p.id)} title={isCurrent?'Currently loaded — click to reload':`Load ${p.name||`Project #${p.id}`}`}>
+            <div><strong>{p.name||`Project #${p.id}`}{isCurrent&&<span className="current-badge">current</span>}</strong><span>Project #{p.id} · revision {p.revision}</span></div>
+            <small>Updated {new Date(p.updated_at).toLocaleString()}</small>
+            <FolderOpen size={17}/>
+          </button>
+          <button type="button" className="project-delete" disabled={isDeleting} title={`Delete ${p.name||`Project #${p.id}`}`} aria-label={`Delete ${p.name||`Project #${p.id}`}`} onClick={e=>{e.stopPropagation();setConfirmDeleteId(p.id)}}>{isDeleting?<RefreshCw size={14} className="spin"/>:<Trash2 size={15}/>}</button>
+        </div>
+      })}
+    </div>
+    <div className="modal-foot">
+      <span>{projects.length?`${projects.length} saved project${projects.length===1?'':'s'} — click a row to load, trash to delete.`:'Loading replaces the current editor contents.'}</span>
+      {projects.length>0 && <button type="button" className="btn ghost delete-all-btn foot" disabled={deletingAll||loading} onClick={()=>setShowDeleteAllConfirm(true)}>{deletingAll?<RefreshCw size={14} className="spin"/>:<Trash2 size={14}/>} Delete all</button>}
+      {onNew&&<button className="btn ghost" onClick={onNew}><Plus size={15}/> New blank project</button>}
+      <button className="btn ghost" onClick={onClose}>Cancel</button>
+    </div>
+  </div>
+  {confirmDeleteId!=null && <ConfirmDialog title="Delete this project?" message={`Are you sure you want to delete “${projects.find(p=>p.id===confirmDeleteId)?.name||`Project #${confirmDeleteId}`}”? This cannot be undone.`} confirmLabel="Delete" onConfirm={()=>handleDeleteOne(confirmDeleteId)} onCancel={()=>setConfirmDeleteId(null)}/>}
+  {showDeleteAllConfirm && <ConfirmDialog title="Delete all saved projects?" message={`Are you sure you want to delete all ${projects.length} saved project${projects.length===1?'':'s'}? This cannot be undone.`} confirmLabel="Delete all" onConfirm={handleDeleteAll} onCancel={()=>setShowDeleteAllConfirm(false)}/>}
+  </div>
 }
 
 // Small acknowledgement dialog for destructive actions (new project, overwriting

@@ -271,3 +271,20 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .move-to button:disabled{opacity:.45;cursor:not-allowed}
 .timeline-item.just-moved,.compact-card.just-moved{animation:justMoved 1.8s ease-out}
 @keyframes justMoved{0%{box-shadow:0 0 0 3px var(--lime);background:#eef5df}70%{box-shadow:0 0 0 3px var(--lime)}100%{box-shadow:none}}
+
+/* Project loader: per-entry delete + delete all */
+.project-loader-actions{display:flex;align-items:center;gap:8px}
+.delete-all-btn{height:32px;padding:0 10px;font-size:11px;white-space:nowrap}
+.delete-all-btn.foot{margin-left:0}
+.delete-all-btn:hover{color:#9b2c22;border-color:#e3b4ae;background:#fff6f5}
+.project-entry{display:flex;align-items:stretch;gap:8px}
+.project-entry .project-row{flex:1;min-width:0}
+.project-entry.current .project-row{border-color:#84a950;box-shadow:0 0 0 2px #cae6a3}
+.current-badge{margin-left:6px;background:#e9f2d9;color:#587439;font:700 7px Manrope;letter-spacing:.5px;padding:2px 5px;border-radius:3px;vertical-align:middle}
+.project-delete{width:38px;min-width:38px;border:1px solid #dfe0da;background:#fff;border-radius:8px;color:#9b9e96;display:grid;place-items:center;cursor:pointer;transition:.15s}
+.project-delete:hover{color:#9b2c22;background:#fff6f5;border-color:#e3b4ae}
+.project-delete:disabled{opacity:.45;cursor:not-allowed}
+.project-delete .spin{animation:spin 1s linear infinite}
+.project-loader .picker-body.project-list{padding-right:2px}
+@media(max-width:560px){.project-entry{flex-direction:column}.project-delete{width:100%;height:34px}}
+
