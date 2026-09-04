@@ -25,6 +25,7 @@ from app.renderer import (
     normalize_rotation,
     rotation_filter,
     soundtrack_fade_window,
+    track_edit_filter,
     format_ffmpeg_number,
     parse_number,
     xfade_name,
@@ -589,6 +590,29 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertTrue(filters[2].startswith("hflip,vflip,"), filters[2])
         self.assertNotIn("transpose", filters[3])
         self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
+
+
+class TrackEditFilterTest(unittest.TestCase):
+    def test_untouched_track_adds_nothing(self) -> None:
+        self.assertEqual("", track_edit_filter({}))
+        self.assertEqual("", track_edit_filter({"trimStart": 0, "trimEnd": 0, "fadeIn": 0, "fadeOut": 0}))
+
+    def test_trim_and_fades_inside_kept_region(self) -> None:
+        graph = track_edit_filter({"trimStart": 12, "trimEnd": 160, "fadeIn": 2, "fadeOut": 3})
+        self.assertEqual("atrim=start=12:end=160,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=2,afade=t=out:st=145:d=3,", graph)
+
+    def test_end_only_and_start_only(self) -> None:
+        self.assertEqual("atrim=start=0:end=90,asetpts=PTS-STARTPTS,", track_edit_filter({"trimEnd": 90}))
+        self.assertEqual("atrim=start=30,asetpts=PTS-STARTPTS,", track_edit_filter({"trimStart": 30}))
+
+    def test_fade_out_without_out_point_uses_reverse(self) -> None:
+        self.assertEqual("areverse,afade=t=in:st=0:d=4,areverse,", track_edit_filter({"fadeOut": 4}))
+
+    def test_invalid_range_and_overlong_fades_are_clamped(self) -> None:
+        self.assertEqual("atrim=start=50,asetpts=PTS-STARTPTS,", track_edit_filter({"trimStart": 50, "trimEnd": 20}))
+        graph = track_edit_filter({"trimStart": 0, "trimEnd": 4, "fadeIn": 3, "fadeOut": 3})
+        self.assertIn("afade=t=in:st=0:d=3,", graph)
+        self.assertIn("afade=t=out:st=3:d=1,", graph)
 
 
 class SoundtrackFadeWindowTest(unittest.TestCase):

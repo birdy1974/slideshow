@@ -243,6 +243,45 @@ def fill_frame_filter(width: int, height: int, fps: int) -> str:
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
 
 
+def track_edit_filter(track: dict[str, Any]) -> str:
+    """Per-track cut/crop and fade filters, as a comma-terminated prefix.
+
+    The editor stores `trimStart`/`trimEnd` (seconds in the source file) and
+    `fadeIn`/`fadeOut` (seconds, measured inside the kept region). Only the
+    kept region reaches the concat, so the soundtrack length — and the UI's
+    total estimate — reflect the real audio time rather than the file length.
+    Returns "" when the track is untouched.
+    """
+    def _num(key: str) -> float:
+        try:
+            value = float(track.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, value) if value == value else 0.0
+    start, end, fade_in, fade_out = _num("trimStart"), _num("trimEnd"), _num("fadeIn"), _num("fadeOut")
+    if end and end <= start:
+        end = 0.0
+    parts: list[str] = []
+    if start or end:
+        trim = f"atrim=start={format_ffmpeg_number(start)}"
+        if end:
+            trim += f":end={format_ffmpeg_number(end)}"
+        parts += [trim, "asetpts=PTS-STARTPTS"]
+    kept = (end - start) if end else None
+    if kept is not None:
+        fade_in = min(fade_in, kept)
+        fade_out = min(fade_out, max(0.0, kept - fade_in))
+    if fade_in > 0:
+        parts.append(f"afade=t=in:st=0:d={format_ffmpeg_number(fade_in)}")
+    if fade_out > 0:
+        if kept is not None:
+            parts.append(f"afade=t=out:st={format_ffmpeg_number(max(0.0, kept - fade_out))}:d={format_ffmpeg_number(fade_out)}")
+        else:
+            # Unknown length (no OUT point): reverse, fade in, reverse back.
+            parts += ["areverse", f"afade=t=in:st=0:d={format_ffmpeg_number(fade_out)}", "areverse"]
+    return "".join(part + "," for part in parts)
+
+
 def soundtrack_fade_window(soundtrack: dict[str, Any], total_duration: float) -> tuple[float, float]:
     """User-chosen end-of-slideshow fade: (fade seconds, silence seconds).
 
@@ -1031,7 +1070,7 @@ class Renderer:
         output=work/"soundtrack.m4a"
         inputs=[]
         for source in sources: inputs += ["-i",str(source)]
-        normalized=";".join(f"[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]" for i in range(len(sources)))
+        normalized=";".join(f"[{i}:a]{track_edit_filter(tracks[i])}aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]" for i in range(len(sources)))
         concat="".join(f"[a{i}]" for i in range(len(sources)))+f"concat=n={len(sources)}:v=0:a=1[aout]"
         command=[self.settings.ffmpeg_bin,"-hide_banner","-y",*inputs,"-filter_complex",normalized+";"+concat,"-map","[aout]","-vn","-c:a","aac","-b:a","192k",str(output)]
         self._run_ffmpeg(command,cancelled,log_file)

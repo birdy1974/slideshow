@@ -181,3 +181,43 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .fade-settings .check-label small{margin-left:auto;font:700 10px Manrope;color:#587439}
 .fade-settings .range{width:100%}
 .fade-hint{display:flex;align-items:center;gap:4px;font:600 9px Manrope;font-style:normal;color:#b0782e}
+
+/* Soundtrack row edit indicators */
+.trim-badge{display:inline-flex;align-items:center;gap:4px;margin-top:3px;font:700 9px Manrope;font-style:normal;color:#587439;background:#e9f2d9;border-radius:4px;padding:2px 6px;width:max-content}
+.trim-badge i{font-style:normal;color:#9a7a3f;margin-left:4px}
+.icon-button.edited{color:#78a13e}
+/* Soundtrack editor popup */
+.soundtrack-editor{width:min(980px,96vw);background:#1e211d;color:#fff;border:1px solid #41443c;border-radius:13px;overflow:hidden;box-shadow:0 30px 80px #0009;display:flex;flex-direction:column}
+.soundtrack-editor .modal-foot{border-top-color:#3a3d37}.soundtrack-editor .modal-foot>span{color:#aaa}
+.editor-body{padding:6px 20px 14px;display:flex;flex-direction:column;gap:16px}
+.editor-strip-wrap{display:flex;flex-direction:column;gap:6px}
+.ruler{display:flex;justify-content:space-between;font:700 8px Manrope;color:#93988d;letter-spacing:.6px}
+.editor-strip{position:relative;height:150px;background:#111310;border:1px solid #3a3d37;border-radius:8px;overflow:visible;cursor:crosshair;touch-action:none;user-select:none}
+.editor-strip.dragging{cursor:grabbing}
+.strip-bars{position:absolute;inset:8px 0;display:flex;align-items:center;gap:2px;padding:0 2px;pointer-events:none}
+.strip-bars i{flex:1 1 2px;min-width:2px;border-radius:2px}
+.cut-shade{position:absolute;top:0;bottom:0;background:#0b0c0acc;pointer-events:none;border-radius:7px 0 0 7px}
+.cut-shade.left{left:0}.cut-shade.right{right:0;border-radius:0 7px 7px 0}
+.fade-ramp{position:absolute;top:0;bottom:0;pointer-events:none}
+.fade-ramp.in{background:linear-gradient(90deg,#000c,transparent);border-left:1px dashed #d9b35d}
+.fade-ramp.out{background:linear-gradient(270deg,#000c,transparent);border-right:1px dashed #d9b35d}
+.editor-strip .playhead{position:absolute;top:-4px;bottom:-4px;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 4px #000;pointer-events:none}
+.trim-handle{position:absolute;top:-6px;bottom:-6px;width:16px;border:0;border-radius:5px;background:#78a13e;color:#0f1409;display:grid;place-items:center;cursor:ew-resize;padding:0;z-index:3;box-shadow:0 0 0 1px #0008}
+.trim-handle.in{transform:translateX(-100%)}.trim-handle.out{transform:translateX(0)}
+.trim-handle:hover,.editor-strip.dragging .trim-handle{background:#9cc85a}
+.fade-handle{position:absolute;top:-9px;width:14px;height:14px;border-radius:50%;border:2px solid #1e211d;background:#d9b35d;transform:translateX(-50%);cursor:ew-resize;padding:0;z-index:4}
+.fade-handle:hover{background:#f0cf7a}
+.strip-legend{display:flex;gap:18px;font:600 9px Manrope;color:#93988d}
+.strip-legend span{display:flex;align-items:center;gap:5px}
+.swatch{width:10px;height:10px;border-radius:2px;display:inline-block}.swatch.keep{background:#78a13e}.swatch.cut{background:#0b0c0a;border:1px solid #3a3d37}.swatch.ramp{background:#d9b35d}
+.editor-controls{display:flex;flex-direction:column;gap:12px}
+.transport{display:flex;align-items:center;gap:8px}.transport .audio-time{margin-left:auto;color:#aaa;font-size:11px}.transport .audio-time b{color:#fff}
+.editor-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.time-field{display:flex;flex-direction:column;gap:4px;font:700 8px Manrope;letter-spacing:1px;color:#93988d}
+.time-field input,.time-field b{height:34px;border-radius:7px;border:1px solid #41443c;background:#292c27;color:#fff;font:600 13px Manrope;padding:0 10px;display:flex;align-items:center;letter-spacing:0}
+.time-field input:focus{outline:2px solid #78a13e;border-color:transparent}
+.editor-fades{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.editor-fades .field-label{color:#c9ccc3}.editor-fades .field-label span{color:#d9b35d}
+.editor-note{display:flex;align-items:center;gap:7px;color:#92978d;font-size:9px;margin:0}
+.soundtrack-editor .btn.soft{background:#2c3524;color:#dfe6cf;border-color:#41443c}.soundtrack-editor .btn.ghost{color:#c9ccc3;border-color:#41443c}
+@media(max-width:760px){.editor-fields{grid-template-columns:1fr 1fr}}

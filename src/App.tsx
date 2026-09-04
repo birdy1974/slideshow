@@ -3,7 +3,7 @@ import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp,
   Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
-  Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
+  Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
 
 type MediaRoot = 'photos' | 'videos' | 'music'
@@ -288,7 +288,32 @@ function rotationStyle(rotation: number | undefined, base?: React.CSSProperties)
   return { ...base, rotate: `${r}deg` }
 }
 
-type AudioTrack = { id: number; name: string; path: string; duration: string; color: string }
+type AudioTrack = {
+  id: number; name: string; path: string; duration: string; color: string;
+  // Per-track edit (seconds): keep only [trimStart, trimEnd) of the file and
+  // ramp the volume at the kept region's edges. All optional; missing = whole file.
+  trimStart?: number; trimEnd?: number; fadeIn?: number; fadeOut?: number;
+}
+
+// Real audio contribution of a track: the kept region, not the file length.
+function trackSourceSeconds(track: AudioTrack) { return parseClock(track.duration) }
+function trackKeptRange(track: AudioTrack): { start: number; end: number } {
+  const total = trackSourceSeconds(track)
+  const start = Math.max(0, Math.min(Number(track.trimStart) || 0, total || Infinity))
+  const rawEnd = Number(track.trimEnd)
+  const end = total > 0 ? Math.min(total, rawEnd > 0 ? rawEnd : total) : (rawEnd > 0 ? rawEnd : 0)
+  return { start, end: Math.max(start, end) }
+}
+function trackKeptSeconds(track: AudioTrack) { const r = trackKeptRange(track); return Math.max(0, r.end - r.start) }
+function trackIsEdited(track: AudioTrack) {
+  const total = trackSourceSeconds(track); const r = trackKeptRange(track)
+  return r.start > 0.01 || (total > 0 && r.end < total - 0.01) || (Number(track.fadeIn) || 0) > 0 || (Number(track.fadeOut) || 0) > 0
+}
+const formatClockPrecise = (seconds: number) => {
+  const s = Math.max(0, Number(seconds) || 0)
+  const m = Math.floor(s / 60); const rest = s - m * 60
+  return `${m}:${rest < 10 ? '0' : ''}${rest.toFixed(1)}`
+}
 
 const initialMedia: MediaItem[] = []
 
@@ -552,6 +577,7 @@ function App() {
   // Soundtrack fade-out at the end of the last photo: how long the fade takes
   // and how much silence is left before the final frame.
   const [audioFadeDuration, setAudioFadeDuration] = useState(2)
+  const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
   const [audioFadeTail, setAudioFadeTail] = useState(0)
   const [resolution, setResolution] = useState('Full HD · 1080p')
   const [frameRate, setFrameRate] = useState('30 fps')
@@ -611,7 +637,7 @@ function App() {
   const timeline = useMemo(() => timelineModel(media), [media])
   const total = timeline.total
   const audioFadeTooLong = audioFade && audioTracks.length > 0 && total > 0 && audioFadeDuration + audioFadeTail > total
-  const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => sum + parseClock(track.duration), 0), [audioTracks])
+  const audioTotalSeconds = useMemo(() => audioTracks.reduce((sum, track) => sum + trackKeptSeconds(track), 0), [audioTracks])
   const hasOriginalMovieAudio = useMemo(() => media.some(item => item.type === 'video' && item.audioSource === 'original'), [media])
   // The final program has sound even without a music track when a movie uses
   // its embedded audio; use this for output-size and duration reporting.
@@ -1102,7 +1128,7 @@ function App() {
 
           <section className="panel audio-panel" id="section-soundtrack">
             <div className="panel-title compact"><div><span className="step">03</span><div><h2>Soundtracks</h2><p>Add multiple MP3 files and drag to set their play order.</p></div></div><div className="audio-total"><Clock3 size={14}/><span>Total soundtrack time</span><strong>{formatClock(audioTotalSeconds)}</strong></div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><Plus size={14}/> Add MP3</button></div>
-            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span></div>{audioPreview.playingKey===String(track.id) ? <div className="waveform-player"><AudioSeekBar seed={index} color={track.color} current={audioPreview.progress.current} duration={audioPreview.progress.duration} onSeek={audioPreview.seek}/><AudioTimeReadout current={audioPreview.progress.current} duration={audioPreview.progress.duration}/></div> : <div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div>}<button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
+            <div className="audio-list">{audioTracks.map((track,index)=><div className={`audio-track ${draggedAudioId===track.id?'dragging':''}`} key={track.id} draggable onDragStart={()=>setDraggedAudioId(track.id)} onDragEnd={()=>setDraggedAudioId(null)} onDragOver={e=>e.preventDefault()} onDrop={()=>dropAudioOn(track.id)}><div className="audio-order"><GripVertical size={15}/><b>{index+1}</b></div><div className="music-icon" style={{background:`${track.color}33`,color:track.color}}><Music2 size={21}/></div><div className="audio-name"><strong>{track.name}</strong><span>{track.path} · {track.duration} · MP3 320 kbps</span>{trackIsEdited(track) && <em className="trim-badge" title="This track is edited · click the scissors to change"><Scissors size={10}/> {formatClock(trackKeptRange(track).start)}–{formatClock(trackKeptRange(track).end)} · {formatClock(trackKeptSeconds(track))}{(Number(track.fadeIn)||0) > 0 && <i title={`Fade in ${track.fadeIn}s`}>⟋{track.fadeIn}s</i>}{(Number(track.fadeOut)||0) > 0 && <i title={`Fade out ${track.fadeOut}s`}>⟍{track.fadeOut}s</i>}</em>}</div>{audioPreview.playingKey===String(track.id) ? <div className="waveform-player"><AudioSeekBar seed={index} color={track.color} current={audioPreview.progress.current} duration={audioPreview.progress.duration} onSeek={audioPreview.seek}/><AudioTimeReadout current={audioPreview.progress.current} duration={audioPreview.progress.duration}/></div> : <div className="waveform">{Array.from({length: 55}).map((_, i) => <i key={i} style={{height: `${8 + ((i * 17+index*7) % 23)}px`,background:track.color}}/> )}</div>}<button className={`icon-button audio-play ${audioPreview.playingKey===String(track.id)?'playing':''}`} title={audioPreview.playingKey===String(track.id)?'Stop preview':'Play preview'} onClick={()=>audioPreview.toggle(String(track.id),mediaFileUrl('music', mediaItemPath(track)),track.name)}>{audioPreview.playingKey===String(track.id)?<Pause size={15}/>:<Play size={15}/>}</button><button className={`icon-button ${trackIsEdited(track)?'edited':''}`} title="Cut, crop and fade this track" aria-label="Edit track" onClick={()=>{ if (audioPreview.playingKey) audioPreview.toggle(audioPreview.playingKey, '', ''); setEditingTrackId(track.id) }}><Scissors size={15}/></button><button className="icon-button" onClick={()=>setAudioTracks(a=>a.filter(x=>x.id!==track.id))}><X size={16}/></button></div>)}</div>
             <div className="audio-settings"><div><FieldLabel>When audio is shorter than the video</FieldLabel><Select value={audioPolicy} onChange={setAudioPolicy}><option>Loop & trim</option><option>Play once, then silence</option><option>Fit slideshow to audio</option></Select></div><div><FieldLabel>Music volume <span>{audioVolume}%</span></FieldLabel><input className="range" type="range" value={audioVolume} onChange={e=>setAudioVolume(Number(e.target.value))}/></div><div className="fade-settings"><label className="check-label"><input type="checkbox" checked={audioFade} onChange={e=>setAudioFade(e.target.checked)}/><span><Check size={11}/></span>Fade out soundtrack at the end{audioFade && <small>{audioFadeDuration.toFixed(1)}s</small>}</label>{audioFade && <><input className="range" type="range" min={0.5} max={15} step={0.5} value={audioFadeDuration} onChange={e=>setAudioFadeDuration(Number(e.target.value))} title="Fade-out duration"/><FieldLabel>Silence before the final frame <span>{audioFadeTail.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={10} step={0.5} value={audioFadeTail} onChange={e=>setAudioFadeTail(Number(e.target.value))} title="Seconds of silence kept after the fade, before the slideshow ends"/>{audioFadeTooLong && <em className="fade-hint"><AlertTriangle size={11}/> Longer than the slideshow ({formatClock(total)}) · clamped when rendering</em>}</>}</div><button className="btn soft" onClick={()=>setShowAudioBrowser(true)}><FolderOpen size={15}/> Add soundtrack</button></div>
           </section>
         <div className="export-row">
@@ -1120,6 +1146,7 @@ function App() {
       </div>
     </main>}
 
+    {editingTrackId != null && (() => { const track = audioTracks.find(x => x.id === editingTrackId); return track ? <SoundtrackEditor track={track} onChange={change => setAudioTracks(items => items.map(x => x.id === track.id ? { ...x, ...change } : x))} onClose={() => setEditingTrackId(null)} /> : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} update={change=>patch(editingTextFrame,change)} onClose={()=>setEditingTextFrame(null)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
@@ -1216,6 +1243,141 @@ function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontCo
     <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
     <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic ? 'active' : ''} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
+}
+
+// m:ss.s text field that commits on blur/Enter (module-level so it keeps its
+// draft text while the editor re-renders on every playback tick).
+function TimeField({ label, value, onCommit, min, max }: { label: string; value: number; onCommit: (v: number) => void; min: number; max: number }) {
+  const [text, setText] = useState(formatClockPrecise(value))
+  useEffect(() => setText(formatClockPrecise(value)), [value])
+  const commit = () => { const v = parseClock(text); if (Number.isFinite(v) && text.trim()) onCommit(Math.min(max, Math.max(min, v))); else setText(formatClockPrecise(value)) }
+  return <label className="time-field"><span>{label}</span><input value={text} onChange={e => setText(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }} /></label>
+}
+
+// Popup editor for one soundtrack: drag IN/OUT handles on a large waveform to
+// cut/crop, drag the fade corners (or use the sliders) for fade in/out, and
+// preview only the kept region. Everything is stored on the track in seconds;
+// the renderer applies the same trim + afade.
+function SoundtrackEditor({ track, onChange, onClose }: { track: AudioTrack; onChange: (change: Partial<AudioTrack>) => void; onClose: () => void }) {
+  const src = mediaFileUrl('music', mediaItemPath(track))
+  const [fileSeconds, setFileSeconds] = useState(trackSourceSeconds(track))
+  const [playing, setPlaying] = useState(false)
+  const [position, setPosition] = useState(0)
+  const [drag, setDrag] = useState<null | 'in' | 'out' | 'fadeIn' | 'fadeOut' | 'seek'>(null)
+  const playerRef = useRef<HTMLAudioElement | null>(null)
+  const stripRef = useRef<HTMLDivElement | null>(null)
+  const original = useRef<Partial<AudioTrack>>({ trimStart: track.trimStart, trimEnd: track.trimEnd, fadeIn: track.fadeIn, fadeOut: track.fadeOut })
+  const total = fileSeconds
+  const start = Math.max(0, Math.min(Number(track.trimStart) || 0, total))
+  const end = Math.min(total, (Number(track.trimEnd) || 0) > 0 ? Number(track.trimEnd) : total)
+  const kept = Math.max(0, end - start)
+  const fadeIn = Math.min(Number(track.fadeIn) || 0, kept)
+  const fadeOut = Math.min(Number(track.fadeOut) || 0, kept)
+  const MIN_KEEP = 1
+
+  // Audio element for previewing the kept region.
+  useEffect(() => {
+    const player = new Audio(src)
+    playerRef.current = player
+    player.preload = 'metadata'
+    const sync = () => { if (Number.isFinite(player.duration) && player.duration > 0) setFileSeconds(player.duration) }
+    player.onloadedmetadata = sync; player.ondurationchange = sync
+    player.ontimeupdate = () => setPosition(player.currentTime)
+    player.onended = () => setPlaying(false)
+    return () => { player.pause(); playerRef.current = null }
+  }, [src])
+  // Stop at OUT point; apply live gain so the fades are audible in the preview.
+  useEffect(() => {
+    const player = playerRef.current
+    if (!player) return
+    if (position >= end - 0.02 && playing) { player.pause(); setPlaying(false); player.currentTime = start; setPosition(start) }
+    const t = position - start
+    let gain = 1
+    if (fadeIn > 0 && t < fadeIn) gain = Math.max(0, t / fadeIn)
+    if (fadeOut > 0 && (end - position) < fadeOut) gain = Math.min(gain, Math.max(0, (end - position) / fadeOut))
+    player.volume = Math.min(1, Math.max(0, gain))
+  }, [position, start, end, fadeIn, fadeOut, playing])
+  // Persist the file length so the storyline total stays right once known.
+  useEffect(() => { if (total > 0 && Math.abs(parseClock(track.duration) - total) > 0.5) onChange({ duration: formatClock(total) }) }, [total])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const togglePlay = () => {
+    const player = playerRef.current; if (!player) return
+    if (playing) { player.pause(); setPlaying(false); return }
+    if (position < start || position >= end - 0.05) player.currentTime = start
+    player.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
+  }
+  const seekTo = (seconds: number) => { const p = playerRef.current; const v = Math.min(Math.max(seconds, start), Math.max(start, end - 0.05)); if (p) p.currentTime = v; setPosition(v) }
+  const secondsFromEvent = (event: React.PointerEvent | PointerEvent) => {
+    const rect = stripRef.current?.getBoundingClientRect(); if (!rect || !total) return 0
+    return Math.min(total, Math.max(0, (event.clientX - rect.left) / rect.width * total))
+  }
+  const round = (v: number) => Math.round(v * 10) / 10
+  const setIn = (v: number) => onChange({ trimStart: round(Math.min(Math.max(0, v), end - MIN_KEEP)) })
+  const setOut = (v: number) => onChange({ trimEnd: round(Math.max(Math.min(total, v), start + MIN_KEEP)) })
+  const setFadeIn = (v: number) => onChange({ fadeIn: round(Math.min(Math.max(0, v), Math.max(0, kept - fadeOut))) })
+  const setFadeOut = (v: number) => onChange({ fadeOut: round(Math.min(Math.max(0, v), Math.max(0, kept - fadeIn))) })
+  const onStripDown = (kind: NonNullable<typeof drag>) => (e: React.PointerEvent) => {
+    e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setDrag(kind)
+    applyDrag(kind, secondsFromEvent(e))
+  }
+  const applyDrag = (kind: NonNullable<typeof drag>, seconds: number) => {
+    if (kind === 'in') setIn(seconds)
+    else if (kind === 'out') setOut(seconds)
+    else if (kind === 'fadeIn') setFadeIn(seconds - start)
+    else if (kind === 'fadeOut') setFadeOut(end - seconds)
+    else seekTo(seconds)
+  }
+  useEffect(() => {
+    if (!drag) return
+    const move = (e: PointerEvent) => applyDrag(drag, secondsFromEvent(e))
+    const up = () => setDrag(null)
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up)
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
+  })
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); else if (e.key === ' ' && (e.target as HTMLElement)?.tagName !== 'INPUT') { e.preventDefault(); togglePlay() } }
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
+  })
+  const pct = (v: number) => total > 0 ? `${Math.min(100, Math.max(0, v / total * 100))}%` : '0%'
+  const bars = 120
+  const cancel = () => { onChange(original.current); onClose() }
+  const reset = () => onChange({ trimStart: 0, trimEnd: total, fadeIn: 0, fadeOut: 0 })
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={cancel}><div className="soundtrack-editor" onMouseDown={e => e.stopPropagation()}>
+    <div className="preview-top"><div><strong>{track.name}</strong><span>SOUNDTRACK EDITOR · CUT, CROP &amp; FADE</span></div><button type="button" onClick={cancel} aria-label="Close editor"><X size={20}/></button></div>
+    <div className="editor-body">
+      <div className="editor-strip-wrap">
+        <div className="ruler"><span>0:00</span><span>{formatClock(total / 4)}</span><span>{formatClock(total / 2)}</span><span>{formatClock(total * 3 / 4)}</span><span>{formatClock(total)}</span></div>
+        <div ref={stripRef} className={`editor-strip ${drag ? 'dragging' : ''}`} onPointerDown={onStripDown('seek')}>
+          <div className="strip-bars">{Array.from({ length: bars }).map((_, i) => { const at = (i + 0.5) / bars * total; const inKeep = at >= start && at <= end; return <i key={i} style={{ height: `${18 + ((i * 29 + track.id * 7) % 61)}%`, background: track.color, opacity: inKeep ? (at <= position ? 1 : 0.7) : 0.18 }} /> })}</div>
+          <div className="cut-shade left" style={{ width: pct(start) }} />
+          <div className="cut-shade right" style={{ left: pct(end) }} />
+          {fadeIn > 0 && <div className="fade-ramp in" style={{ left: pct(start), width: pct(fadeIn) }} />}
+          {fadeOut > 0 && <div className="fade-ramp out" style={{ left: pct(end - fadeOut), width: pct(fadeOut) }} />}
+          <div className="playhead" style={{ left: pct(position) }} />
+          <button type="button" className="trim-handle in" style={{ left: pct(start) }} title={`IN · ${formatClockPrecise(start)} · drag to set the start`} onPointerDown={onStripDown('in')}><ChevronRight size={12}/></button>
+          <button type="button" className="trim-handle out" style={{ left: pct(end) }} title={`OUT · ${formatClockPrecise(end)} · drag to set the end`} onPointerDown={onStripDown('out')}><ChevronLeft size={12}/></button>
+          <button type="button" className="fade-handle in" style={{ left: pct(start + fadeIn) }} title={`Fade in ${fadeIn.toFixed(1)}s · drag to change`} onPointerDown={onStripDown('fadeIn')} />
+          <button type="button" className="fade-handle out" style={{ left: pct(end - fadeOut) }} title={`Fade out ${fadeOut.toFixed(1)}s · drag to change`} onPointerDown={onStripDown('fadeOut')} />
+        </div>
+        <div className="strip-legend"><span><i className="swatch keep" /> kept · {formatClockPrecise(kept)}</span><span><i className="swatch cut" /> cut · {formatClockPrecise(Math.max(0, total - kept))}</span><span><i className="swatch ramp" /> fade ramps</span></div>
+      </div>
+      <div className="editor-controls">
+        <div className="transport"><button type="button" className={`btn ${playing ? 'dark' : 'soft'}`} onClick={togglePlay} disabled={!total}>{playing ? <Pause size={15}/> : <Play size={15}/>} {playing ? 'Pause' : 'Play kept region'}</button><button type="button" className="btn ghost" onClick={() => seekTo(start)} title="Jump to IN"><ChevronLeft size={14}/> IN</button><button type="button" className="btn ghost" onClick={() => seekTo(Math.max(start, end - 5))} title="Jump to 5 s before OUT">OUT <ChevronRight size={14}/></button><AudioTimeReadout current={Math.max(0, position - start)} duration={kept} /></div>
+        <div className="editor-fields">
+          <TimeField label="Start (IN)" value={start} min={0} max={end - MIN_KEEP} onCommit={setIn} />
+          <TimeField label="End (OUT)" value={end} min={start + MIN_KEEP} max={total} onCommit={setOut} />
+          <div className="time-field static"><span>Kept length</span><b>{formatClockPrecise(kept)}</b></div>
+          <div className="time-field static"><span>File length</span><b>{formatClockPrecise(total)}</b></div>
+        </div>
+        <div className="editor-fades">
+          <div><FieldLabel>Fade in <span>{fadeIn.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={10} step={0.1} value={fadeIn} onChange={e => setFadeIn(Number(e.target.value))} /></div>
+          <div><FieldLabel>Fade out <span>{fadeOut.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={10} step={0.1} value={fadeOut} onChange={e => setFadeOut(Number(e.target.value))} /></div>
+        </div>
+        <p className="editor-note"><Info size={13}/> Drag the green handles to cut the start and end; drag the small round handles to lengthen the fade ramps. Only the kept region counts toward the soundtrack length and is rendered.</p>
+      </div>
+    </div>
+    <div className="modal-foot"><span>Kept {formatClockPrecise(kept)} of {formatClockPrecise(total)}</span><button className="btn ghost" onClick={reset}>Reset</button><button className="btn ghost" onClick={cancel}>Cancel</button><button className="btn dark" onClick={onClose}><Check size={15}/> Done</button></div>
+  </div></div>
 }
 
 function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,onClose}: any) {
