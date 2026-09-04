@@ -94,6 +94,12 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .overview-clip img,.overview-clip video{opacity:.85;cursor:zoom-in}
 .media-lightbox{width:min(960px,96vw);max-height:calc(100vh - 40px);background:#1e211d;color:#fff;border:1px solid #41443c;border-radius:13px;overflow:hidden;box-shadow:0 30px 80px #0009;display:flex;flex-direction:column}
 .lightbox-media{display:block;width:100%;max-height:calc(100vh - 120px);object-fit:contain;background:#000}
+.lightbox-stage{display:grid;place-items:center;background:#000;height:min(calc(100vh - 120px),640px);overflow:hidden}
+.lightbox-photo{width:auto;max-width:100%;max-height:100%;transition:rotate .2s ease}
+.lightbox-photo.turned{max-width:min(calc(100vh - 120px),640px);max-height:min(960px,96vw)}
+.lightbox-rotate{display:flex;align-items:center;gap:6px;padding-right:6px;border-right:1px solid #41443c}
+.lightbox-rotate button{transition:.15s}.lightbox-rotate button:hover{color:var(--lime)}
+.lightbox-rotate b{font:700 10px Manrope;color:var(--lime);min-width:26px;text-align:center}
 .lightbox-audio{display:block;width:calc(100% - 32px);margin:24px 16px 28px}
 
 /* Empty/unreadable media file fallbacks (0-byte or missing files) */

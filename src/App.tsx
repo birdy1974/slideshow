@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp,
   Clock3, Cpu, Download, Film, FolderOpen, GripVertical, Image as ImageIcon,
-  ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, Save,
+  ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
 
@@ -114,35 +114,41 @@ function itemThumbUrl(item?: MediaItem | null) {
 
 type LightboxTarget = { title: string; src: string; kind: 'image' | 'video' | 'audio' }
 
-function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, position }: LightboxTarget & {
+function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, position, rotation, onRotate }: LightboxTarget & {
   onClose: () => void;
   // Storyline bindings: when present, the lightbox can walk the storyline
   // (prev/next), show the current position, and delete the shown item.
   onPrev?: () => void; onNext?: () => void; onDelete?: () => void; position?: string;
+  // Photo orientation: current quarter-turn rotation and a handler receiving
+  // +90 (clockwise) or -90 (counter-clockwise). Only offered for photos.
+  rotation?: number; onRotate?: (delta: 90 | -90) => void;
 }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
   // Keyboard: ← / → walk the storyline, Escape closes. Only wired when the
   // lightbox is bound to storyline items (browser previews pass no handlers).
   useEffect(() => {
-    if (!onPrev && !onNext && !onDelete) return
+    if (!onPrev && !onNext && !onDelete && !onRotate) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'ArrowLeft') onPrev?.()
       else if (event.key === 'ArrowRight') onNext?.()
       else if (event.key === 'Escape') onClose()
+      else if ((event.key === 'r' || event.key === 'R') && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); onRotate?.(event.shiftKey ? -90 : 90) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onPrev, onNext, onDelete, onClose])
+  }, [onPrev, onNext, onDelete, onRotate, onClose])
+  const turn = normalizeRotation(rotation)
+  const canRotate = kind === 'image' && !!onRotate
   return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}>
     {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←)" aria-label="Previous media" onMouseDown={e => e.stopPropagation()} onClick={onPrev}><ChevronLeft size={26}/></button>}
     {onNext && <button type="button" className="lightbox-nav next" title="Next media (→)" aria-label="Next media" onMouseDown={e => e.stopPropagation()} onClick={onNext}><ChevronRight size={26}/></button>}
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
-      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
+      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
         : kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
-        : <img className="lightbox-media" src={src} alt={title} onError={() => setFailed(true)} />}
+        : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${turn === 90 || turn === 270 ? 'turned' : ''}`} style={rotationStyle(turn)} src={src} alt={title} onError={() => setFailed(true)} /></div>}
     </div>
   </div>
 }
@@ -161,7 +167,7 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
   if (failed) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
   const common = { src, className, onClick, onPointerDown, onError: () => setFailed(true), style } as const
   if (item.type === 'video') return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} />
-  return <img {...common} alt={item.name} />
+  return <img {...common} style={rotationStyle(item.rotation, style)} alt={item.name} />
 }
 
 // Thumbnail inside the media picker, with a fallback when the file is empty
@@ -211,6 +217,22 @@ type MediaItem = {
   // Videos can replace the soundtrack with their embedded audio.
   audioSource?: 'soundtrack' | 'original';
   textBold?: boolean; textItalic?: boolean; textUnderline?: boolean;
+  // Photo orientation fix in whole quarter turns (0, 90, 180, 270, clockwise).
+  // Applied in every thumbnail/lightbox and by the FFmpeg renderer.
+  rotation?: number;
+}
+
+type Rotation = 0 | 90 | 180 | 270
+function normalizeRotation(value: unknown): Rotation {
+  const n = Math.round(Number(value) || 0)
+  return ((((n % 360) + 360) % 360) as Rotation)
+}
+function rotationStyle(rotation: number | undefined, base?: React.CSSProperties): React.CSSProperties | undefined {
+  const r = normalizeRotation(rotation)
+  if (!r) return base
+  // The standalone `rotate` property composes with existing transforms and
+  // CSS animations (Ken Burns style slow-zoom) instead of overriding them.
+  return { ...base, rotate: `${r}deg` }
 }
 
 type AudioTrack = { id: number; name: string; path: string; duration: string; color: string }
@@ -561,6 +583,10 @@ function App() {
   const previewItems = useMemo(() => media.filter(x => x.type !== 'title'), [media])
   const previewIndex = storyPreviewId == null ? -1 : previewItems.findIndex(x => x.id === storyPreviewId)
   const previewedItem = previewIndex >= 0 ? previewItems[previewIndex] : null
+  const rotatePreviewedItem = (delta: 90 | -90) => {
+    if (!previewedItem || previewedItem.type !== 'image') return
+    patch(previewedItem.id, { rotation: normalizeRotation((previewedItem.rotation || 0) + delta) })
+  }
   const deletePreviewedItem = () => {
     if (!previewedItem) return
     // After deleting, continue with the item that follows (or the one before
@@ -1111,7 +1137,7 @@ function App() {
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onClose={() => setStoryPreviewId(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -1323,7 +1349,7 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
   const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video key={currentItem.id} className={playing ? 'slow-zoom' : ''} src={currentUrl} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} src={currentUrl} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem?.text || ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video key={currentItem.id} className={playing ? 'slow-zoom' : ''} src={currentUrl} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={rotationStyle(currentItem?.rotation)} src={currentUrl} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem?.text || ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () => void }) {

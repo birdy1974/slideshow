@@ -22,6 +22,8 @@ from app.renderer import (
     build_filter_graph,
     fill_frame_filter,
     fit_frame_filter,
+    normalize_rotation,
+    rotation_filter,
     format_ffmpeg_number,
     parse_number,
     xfade_name,
@@ -570,6 +572,38 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertIn("x='iw/2-(iw/zoom/2)'", filters[0], "zoompan defaults to the top-left corner")
         self.assertIn("y='ih/2-(ih/zoom/2)'", filters[0])
         self.assertIn(f"scale={int(1920 / KEN_BURNS_MAX_ZOOM) // 2 * 2}:", filters[0])
+
+
+    def test_photo_rotation_is_applied_before_fitting(self) -> None:
+        filters = self._segment_filters([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5, "rotation": 90},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5, "rotation": 270},
+            {"id": 3, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5, "rotation": 180},
+            {"id": 4, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5},
+            {"id": 5, "type": "video", "path": "/videos/a.mp4", "duration": 2, "effect": "Original motion", "transition": "Fade", "transitionTime": 0.5, "rotation": 90},
+        ])
+        self.assertTrue(filters[0].startswith("transpose=1,"), filters[0])
+        self.assertTrue(filters[1].startswith("transpose=2,"), filters[1])
+        self.assertLess(filters[1].index("transpose=2"), filters[1].index("zoompan="), "rotate before Ken Burns zoom")
+        self.assertTrue(filters[2].startswith("hflip,vflip,"), filters[2])
+        self.assertNotIn("transpose", filters[3])
+        self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
+
+
+class PhotoRotationHelpersTest(unittest.TestCase):
+    def test_normalize_rotation(self) -> None:
+        self.assertEqual(0, normalize_rotation(None))
+        self.assertEqual(0, normalize_rotation("garbage"))
+        self.assertEqual(90, normalize_rotation(90))
+        self.assertEqual(270, normalize_rotation(-90))
+        self.assertEqual(180, normalize_rotation(540))
+        self.assertEqual(0, normalize_rotation(360))
+
+    def test_rotation_filter(self) -> None:
+        self.assertEqual("", rotation_filter(0))
+        self.assertEqual("transpose=1", rotation_filter(90))
+        self.assertEqual("transpose=2", rotation_filter(-90))
+        self.assertEqual("hflip,vflip", rotation_filter(180))
 
 
 class VideoPlaysToEndTest(unittest.TestCase):

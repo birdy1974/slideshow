@@ -243,6 +243,25 @@ def fill_frame_filter(width: int, height: int, fps: int) -> str:
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
 
 
+def normalize_rotation(value: Any) -> int:
+    """Clamp a stored photo rotation to one of 0/90/180/270 degrees clockwise."""
+    try:
+        degrees = int(round(float(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+    return ((degrees % 360) + 360) % 360 // 90 * 90
+
+
+def rotation_filter(rotation: Any) -> str:
+    """FFmpeg filter that applies the user's quarter-turn photo orientation.
+
+    `transpose=1` is a lossless 90° clockwise turn and `transpose=2` a 90°
+    counter-clockwise one; a half turn is done with flips so no resampling
+    happens. Returns an empty string when there is nothing to rotate.
+    """
+    return {90: "transpose=1", 180: "hflip,vflip", 270: "transpose=2"}.get(normalize_rotation(rotation), "")
+
+
 def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1.0) -> str:
     """Show the *whole* picture, letterboxed over a blurred copy of itself.
 
@@ -714,6 +733,13 @@ class Renderer:
                     # are filled by freezing the first/last frame via tpad.
                     command += ["-i", str(source)]
             filters = [base_filter]
+            if kind_name == "image":
+                # Honour the orientation chosen in the photo preview popup
+                # before fitting, so the blurred backdrop and Ken Burns zoom
+                # see the picture the way the user sees it in the editor.
+                turn = rotation_filter(item.get("rotation"))
+                if turn:
+                    filters.insert(0, turn)
             if ken_burns:
                 delta = "0.0008" if "Zoom in" in effect else "-0.0008" if "Zoom out" in effect else "0.0003"
                 start_zoom = "1" if delta.startswith("0") else format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)
