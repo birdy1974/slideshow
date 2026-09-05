@@ -33,8 +33,22 @@ class DatabaseRoundTripTest(unittest.TestCase):
             "soundtrack": {"policy": "Loop & trim", "volume": 72, "fadeOut": True, "tracks": [{"id": 2, "name": "song.mp3", "path": "/music/set", "duration": "3:20", "gain": -2}]},
             "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps · High", "encoder": "Auto · Quick Sync", "path": "/output", "filename": "movie"},
             "timeline": {"rows": "3", "zoom": 1.8},
+            "defaults": {"slideSeconds": 6.5, "transitionSeconds": 2},
             "unknownFutureSection": {"must": "survive"},
         }
+
+    def test_editor_defaults_round_trip(self) -> None:
+        """The "Slide default" / "Transition default" bulk-bar values are part of
+        the project snapshot, so reopening a project restores them; projects
+        saved before the section existed simply come back without it."""
+        saved = self.db.save_project(self.payload())
+        loaded = self.db.get_project(saved["id"])
+        self.assertEqual({"slideSeconds": 6.5, "transitionSeconds": 2}, loaded["defaults"])
+
+        legacy = self.payload()
+        del legacy["defaults"]
+        legacy_loaded = self.db.get_project(self.db.save_project(legacy)["id"])
+        self.assertNotIn("defaults", legacy_loaded)
 
     def test_create_and_update_are_lossless(self) -> None:
         payload = self.payload()

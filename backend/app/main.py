@@ -40,6 +40,9 @@ class ProjectPayload(BaseModel):
     soundtrack: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
     timeline: dict[str, Any] = Field(default_factory=dict)
+    # Project-wide editor defaults: ``slideSeconds`` (hold of every new photo /
+    # text frame) and ``transitionSeconds`` (length of every new transition).
+    defaults: dict[str, Any] = Field(default_factory=dict)
 
 
 class JobRequest(BaseModel):

@@ -361,8 +361,31 @@ const MIN_TEXT_SECONDS = 0.1
 // Default duration of every new transition (and fallback for legacy items
 // that were saved before transitionTime existed). Mirrored by the renderer.
 const DEFAULT_TRANSITION_SECONDS = 5
+// Default hold time of every new photo and text frame. The "Slide default"
+// control in the bulk bar changes it per project and can push it onto every
+// existing slide in one go. Videos are never touched by it: their hold is
+// their native runtime (the renderer never cuts a movie short).
+const DEFAULT_SLIDE_SECONDS = 5
+const MAX_DEFAULT_SLIDE_SECONDS = 600
+const MAX_DEFAULT_TRANSITION_SECONDS = 30
 const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max))
-const safeDuration = (value: number) => Math.max(MIN_CLIP_SECONDS, Number.isFinite(value) ? value : 5)
+const safeDuration = (value: number) => Math.max(MIN_CLIP_SECONDS, Number.isFinite(value) ? value : DEFAULT_SLIDE_SECONDS)
+// Sanitise the project-wide defaults (typed by the user or read from a saved
+// project) so a bad value can never produce a zero-length clip or transition.
+const clampSlideDefault = (value: unknown, fallback = DEFAULT_SLIDE_SECONDS) => { const n = Number(value); return Number.isFinite(n) && n > 0 ? clampNumber(n, MIN_CLIP_SECONDS, MAX_DEFAULT_SLIDE_SECONDS) : fallback }
+const clampTransitionDefault = (value: unknown, fallback = DEFAULT_TRANSITION_SECONDS) => { const n = Number(value); return Number.isFinite(n) && n > 0 ? clampNumber(n, 0.1, MAX_DEFAULT_TRANSITION_SECONDS) : fallback }
+// Change a clip's hold time while keeping its caption timing valid. A caption
+// that ran until the end of the clip keeps doing so (that is the default
+// timing of every caption); any other caption window is clamped inside the
+// new length.
+function resizeClip(item: MediaItem, seconds: number): MediaItem {
+  const duration = safeDuration(seconds)
+  const previous = safeDuration(item.duration)
+  const ranToEnd = !Number.isFinite(item.textEnd) || item.textEnd >= previous - 1e-6
+  const textEnd = ranToEnd ? duration : clampNumber(item.textEnd, MIN_TEXT_SECONDS, duration)
+  const textStart = clampNumber(Number.isFinite(item.textStart) ? item.textStart : 0, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
+  return { ...item, duration, textStart, textEnd }
+}
 function timelineModel(items: MediaItem[]) {
   const durations = items.map(item => safeDuration(item.duration))
   const starts: number[] = [0]
@@ -785,6 +808,8 @@ function App() {
   const [isPlaying, setPlaying] = useState(false)
   const [toast, setToast] = useState('')
   const [globalDuration, setGlobalDuration] = useState(DEFAULT_TRANSITION_SECONDS)
+  // Project-wide default hold time for photos/text frames (see DEFAULT_SLIDE_SECONDS).
+  const [globalSlideDuration, setGlobalSlideDuration] = useState(DEFAULT_SLIDE_SECONDS)
   const [audioPolicy, setAudioPolicy] = useState('Loop & trim')
   const [audioVolume, setAudioVolume] = useState(78)
   const [audioFade, setAudioFade] = useState(true)
@@ -959,6 +984,9 @@ function App() {
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path);setOutputFilename(saved.output.filename)}
     if(saved.timeline){setTimelineRows(saved.timeline.rows);setTimelineZoom(saved.timeline.zoom)}
+    // Projects saved before the defaults existed simply keep the built-in values.
+    setGlobalSlideDuration(clampSlideDefault(saved.defaults?.slideSeconds))
+    setGlobalDuration(clampTransitionDefault(saved.defaults?.transitionSeconds))
   }
   useEffect(()=>{
     const restore=async()=>{try{
@@ -978,6 +1006,8 @@ function App() {
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
     output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename:outputFilename },
     timeline: { rows:timelineRows, zoom:timelineZoom },
+    // Project-wide defaults for new slides/transitions (the two bulk-bar steppers).
+    defaults: { slideSeconds: clampSlideDefault(globalSlideDuration), transitionSeconds: clampTransitionDefault(globalDuration) },
   })
   const persistSnapshot = async (snapshot:any, silent=false, createNew=false):Promise<number> => {
     localStorage.setItem('slideshow.project.mock',JSON.stringify(snapshot))
@@ -1007,6 +1037,7 @@ function App() {
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: 'slideshow' },
     timeline: { rows: 'auto', zoom: 1 },
+    defaults: { slideSeconds: DEFAULT_SLIDE_SECONDS, transitionSeconds: DEFAULT_TRANSITION_SECONDS },
   })
   // Wipe the editor back to a completely blank project. The blank project is
   // persisted right away so a refresh does not resurrect the previous one.
@@ -1021,6 +1052,7 @@ function App() {
     setOutputPath('/output'); setOutputFilename('slideshow')
     setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72)
     setTimelineRows('auto'); setTimelineZoom(1)
+    setGlobalSlideDuration(DEFAULT_SLIDE_SECONDS); setGlobalDuration(DEFAULT_TRANSITION_SECONDS)
     setSelectedIds([]); setSelectedTransitions([]); setSelectedTextTransitions([])
     setDetailTextEditor(null); setEditingTextFrame(null)
     setShowNewProjectConfirm(false); setShowProjectLoader(false)
@@ -1060,11 +1092,7 @@ function App() {
     const index = items.findIndex(item => item.id === id)
     if (index < 0 || !Number.isFinite(value)) return items
     const next = items.map(item => ({ ...item }))
-    const duration = safeDuration(value)
-    const item = next[index]
-    const textEnd = clampNumber(Number.isFinite(item.textEnd) ? item.textEnd : duration, MIN_TEXT_SECONDS, duration)
-    const textStart = clampNumber(item.textStart, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
-    next[index] = { ...item, duration, textStart, textEnd }
+    next[index] = resizeClip(next[index], value)
     if (index > 0) next[index - 1] = { ...next[index - 1], transitionTime: clampTransitionFor(next, index - 1, next[index - 1].transitionTime ?? DEFAULT_TRANSITION_SECONDS) }
     if (index < next.length - 1) next[index] = { ...next[index], transitionTime: clampTransitionFor(next, index, next[index].transitionTime ?? DEFAULT_TRANSITION_SECONDS) }
     return next
@@ -1235,7 +1263,9 @@ function App() {
   }
   const addTitleFrame = () => {
     const id = Date.now()
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration: 4, effect: 'None', transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: 4, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
+    const duration = clampSlideDefault(globalSlideDuration)
+    const transitionTime = clampTransitionDefault(globalDuration)
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
     setPendingTextFrame(id)
     setEditingTextFrame(id)
   }
@@ -1306,11 +1336,22 @@ function App() {
     }
   }))
   const applyDuration = () => {
-    const value = clampNumber(Number(globalDuration) || DEFAULT_TRANSITION_SECONDS, 0.1, 30)
+    const value = clampTransitionDefault(globalDuration)
     // Only the clips that actually lead into another clip carry a transition;
     // the final clip is deliberately left untouched (it has no "next").
     setMedia(items => items.map((item, index) => index < items.length - 1 ? { ...item, transitionTime: clampTransitionFor(items, index, value) } : item))
     notify(`Applied ${value.toFixed(1)}s to all transitions`)
+  }
+  // Push the slide default onto every photo and text frame in one go. Videos
+  // are skipped on purpose: their hold is their native runtime, and the
+  // renderer would only pad a longer value with a frozen last frame.
+  const applySlideDuration = () => {
+    const value = clampSlideDefault(globalSlideDuration)
+    const slides = media.filter(item => item.type !== 'video').length
+    const videos = media.length - slides
+    if (!slides) { notify(videos ? 'No photos or text frames to update · videos keep their own length' : 'No slides in the storyline yet'); return }
+    setMedia(items => items.map(item => item.type === 'video' ? item : resizeClip(item, value)))
+    notify(`Applied ${value.toFixed(1)}s to ${slides} slide${slides === 1 ? '' : 's'}${videos ? ` · ${videos} video${videos === 1 ? '' : 's'} kept their own length` : ''}`)
   }
   const waitForJob = async (jobId:string) => {
     for(;;){
@@ -1439,7 +1480,7 @@ function App() {
 
             <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Assign a random transition from: ${randomScopeLabels[randomScope]}`} onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
 
-            <div className="bulk-bar" id="section-transitions"><span>TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={30} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration}>Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Randomize every clip using: ${randomScopeLabels[randomScope]}`} onClick={() => { randomize(); notify(`Effects and transitions randomized · ${randomScopeLabels[randomScope]}`) }}><Shuffle size={14}/> Randomize all</button></div>
+            <div className="bulk-bar" id="section-transitions"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Randomize every clip using: ${randomScopeLabels[randomScope]}`} onClick={() => { randomize(); notify(`Effects and transitions randomized · ${randomScopeLabels[randomScope]}`) }}><Shuffle size={14}/> Randomize all</button></div>
             <div className="media-view-bar"><span className="view-label">VIEW</span><div className="mode-toggle"><button className={!compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(false)} title="Show the full detail list"><List size={14}/> List</button><button className={compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(true)} title="Show a compact thumbnail grid with quick multi-selection"><LayoutGrid size={14}/> Compact</button></div>{compactMediaView && <div className="zoom-controls compact-zoom"><button onClick={() => setCompactZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out — smaller thumbnails"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={1.6} step={0.1} value={compactZoom} aria-label="Compact thumbnail zoom" onChange={e => setCompactZoom(Number(e.target.value))}/><span>{Math.round(compactZoom * 100)}%</span><button onClick={() => setCompactZoom(z => Math.min(1.6, +(z + .2).toFixed(1)))} title="Zoom in — bigger thumbnails"><ZoomIn size={14}/></button></div>}<span className="view-hint">Select frames with the check marks · Shift-click for a range · “Select all” grabs every frame in one go · drag to reorder · click a picture to view it</span></div>
             {compactMediaView && <div className="compact-actions"><button className="btn soft" disabled={!media.length} onClick={() => setSelectedIds(media.map(x => x.id))} title="Select every frame in one go"><Check size={14}/> Select all</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>Clear selection</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={14}/> Delete selected</button><span className="compact-count">{selectedIds.length} of {media.length} frame{media.length === 1 ? '' : 's'} selected</span></div>}
             {!compactMediaView && <div className="timeline-head"><span>MEDIA</span><span>SLIDE / CLIP</span><span>EFFECT</span><span>TRANSITION TO NEXT</span><span>AUDIO</span><span></span></div>}
@@ -1505,8 +1546,10 @@ function App() {
     }}/>}
     {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} onAdd={(files:any[]) => {
       // Probe each video's native length so the timeline hold covers the
-      // complete movie before the transition to the next picture. Images keep
-      // the 5 s default; a failed probe falls back to 10 s.
+      // complete movie before the transition to the next picture. Images use
+      // the project's slide default; a failed probe falls back to 10 s.
+      const slideSeconds = clampSlideDefault(globalSlideDuration)
+      const transitionSeconds = clampTransitionDefault(globalDuration)
       void (async () => {
         const additions: MediaItem[] = []
         for (let index = 0; index < files.length; index++) {
@@ -1517,7 +1560,7 @@ function App() {
           // file's real mount (/photos or /videos), never its kind.
           const root = mediaRootFromPath(file.path, isVideo ? 'videos' : 'photos')
           const src = mediaFileUrl(root, file.path)
-          let duration = isVideo ? 10 : 5
+          let duration = isVideo ? 10 : slideSeconds
           if (isVideo) {
             try {
               duration = await new Promise<number>((resolve) => {
@@ -1540,7 +1583,7 @@ function App() {
             id: Date.now() + index, name: file.name, path: file.path, src,
             type: file.kind as 'image' | 'video', duration,
             effect: isVideo ? 'Original motion' : 'None',
-            transition: 'Fade', transitionTime: DEFAULT_TRANSITION_SECONDS,
+            transition: 'Fade', transitionTime: transitionSeconds,
             audioSource: isVideo ? 'soundtrack' : undefined,
             text: '', textMode: 'overlay', textStart: 0, textEnd: duration,
             textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5,

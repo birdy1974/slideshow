@@ -1,6 +1,5 @@
 2026-09-05
 - add cut and crop function for movies (same functionality as for the soundtracks)
-- add possibility to enter a default time for all slides (put it net to "transition default")
 - show transition symbol also in the detailed slide list (same as storyline)
 - in detailed slide list make box for effect smaller (fit to largest text)
 - advise on better gui for the selection of the transition in the detailed slide list as the list is now too long
@@ -24,6 +23,7 @@
 ---= DONE =---
 
 2026-09-05
+- add possibility to enter a default time for all slides (put it net to "transition default") · "Slide default" stepper + "Apply to all" in the bulk bar; used for every new photo/text frame, saved with the project; videos keep their native length
 - add favicon
 - add enable/disable function for text on picture. advise on gui options for storyline and list with photos (see docs/text-on-picture-toggle.md)
 
