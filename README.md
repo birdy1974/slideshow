@@ -19,6 +19,7 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - Output overwrite protection: rendering asks for acknowledgement before replacing an existing MP4
 - Shared timeline math between UI and renderer, so the estimated total always matches the rendered length
 - Background jobs, live progress, downloadable output, persistent diagnostics, and render history
+- Generation estimates: the header shows a live badge (progress, FFmpeg stage and a countdown) while a job runs, and the Ready-to-render pane predicts how long the render will take, how big the MP4 will be, and how long the slideshow runs. The time-to-generate figure starts as a resolution/encoder guess and becomes a measurement after the first render — see [docs/render-estimates.md](docs/render-estimates.md)
 - Atomic, lossless SQLite save/load with normalized tables and a canonical full-project snapshot
 - Production Docker image containing FFmpeg, fonts, Intel media drivers, frontend, API, and renderer
 

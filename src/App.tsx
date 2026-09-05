@@ -4,9 +4,14 @@ import {
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
+  Timer, HardDrive,
 } from 'lucide-react'
 import { FieldLabel, Select, TimeField } from './ui'
 import { formatClock, formatClockPrecise, parseClock } from './time'
+import {
+  clearRenderRates, estimateRenderSeconds, formatEstimate, loadRenderRates, nextEtaSample, remainingSeconds, saveRenderRate,
+} from './renderEstimate'
+import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { TransitionGallery } from './TransitionGallery'
@@ -651,6 +656,20 @@ function App() {
   const [previewing, setPreviewing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  // Live render feedback: which stage FFmpeg is in, when the backend started it
+  // (its own clock, so a refresh does not reset the countdown) and the smoothed
+  // progress rate the countdown is derived from.
+  const [jobStage, setJobStage] = useState('')
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null)
+  const [etaSample, setEtaSample] = useState<EtaSample | null>(null)
+  const [etaTick, setEtaTick] = useState(0)
+  const [renderRates, setRenderRates] = useState<Partial<Record<JobKind, RenderRate>>>(() => loadRenderRates())
+  // What the job looked like when it was started, plus the backend's start
+  // stamp.  These live in refs, not state: the handler that records the
+  // measurement runs long after the click, and a closure over state would still
+  // hold the values from the render that started the job (all of them empty).
+  const jobBaseline = useRef<{ timelineSeconds: number; itemCount: number; resolution: string; encoder: string } | null>(null)
+  const jobStartedRef = useRef<number | null>(null)
   const [randomOrder, setRandomOrder] = useState(false)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [selectedTransitions, setSelectedTransitions] = useState<number[]>([])
@@ -1041,6 +1060,7 @@ function App() {
     try {
       // Delete all projects from database
       const response = await fetch('/api/projects', { method: 'DELETE' })
+      setRenderRates(clearRenderRates())
       if (response.ok) {
         // Also clean up temporary files
         const cleanupResponse = await fetch('/api/cleanup', { method: 'POST' })
@@ -1177,6 +1197,14 @@ function App() {
     setMedia(items => items.map(item => item.type === 'video' ? item : resizeClip(item, value)))
     notify(`Applied ${value.toFixed(1)}s to ${slides} slide${slides === 1 ? '' : 's'}${videos ? ` · ${videos} video${videos === 1 ? '' : 's'} kept their own length` : ''}`)
   }
+  // Progress only arrives once a second; tick in between so the countdown in the
+  // header keeps moving instead of freezing between polls.
+  useEffect(() => {
+    if (!rendering && !previewing) return
+    const id = window.setInterval(() => setEtaTick(tick => tick + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [rendering, previewing])
+
   const waitForJob = async (jobId:string) => {
     for(;;){
       await new Promise(resolve=>setTimeout(resolve,1000))
@@ -1190,7 +1218,15 @@ function App() {
       // 503 = transient SQLite lock; the render is fine, just retry.
       if (response.status === 503 || response.status === 429) continue
       if (!response.ok) throw new Error('Could not read render status')
-      const job=await response.json();setProgress(Math.round(job.progress||0))
+      const job=await response.json()
+      const now=Date.now()
+      setProgress(Math.round(job.progress||0))
+      setJobStage(typeof job.stage==='string'?job.stage:'')
+      const started=job.started_at?Date.parse(job.started_at):NaN
+      const startedMs=Number.isFinite(started)?started:null
+      if(startedMs)jobStartedRef.current=startedMs
+      setJobStartedAt(startedMs)
+      setEtaSample(previous => nextEtaSample(previous, Number(job.progress)||0, now))
       if(job.status==='complete')return job
       if(job.status==='cancelled')return { ...job, cancelled: true }
       if(job.status==='failed')throw new Error(job.error_message||'Job failed')
@@ -1201,13 +1237,36 @@ function App() {
     try{
       const completed=await waitForJob(jobId)
       if(completed.cancelled){notify(`${kind==='preview'?'Preview':'Render'} stopped`);return}
+      rememberRenderRate(kind)
       if(kind==='preview'){setPreviewUrl(`${completed.fileUrl}?v=${Date.now()}`);setShowPreview(true);notify('Real FFmpeg preview is ready')}
       else notify(`MP4 render complete · ${outputFilename}.mp4`)
     }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`)}
-    finally{kind==='preview'?setPreviewing(false):setRendering(false);setActiveJobId(id => id === jobId ? null : id)}
+    finally{
+      kind==='preview'?setPreviewing(false):setRendering(false)
+      setActiveJobId(id => id === jobId ? null : id)
+      setEtaSample(null); setJobStage(''); setJobStartedAt(null); jobBaseline.current=null; jobStartedRef.current=null
+    }
+  }
+  // Store how long this machine needed, so the next estimate is a measurement
+  // rather than a guess.  Cancelled runs are not representative and are skipped.
+  const rememberRenderRate = (kind:'preview'|'render') => {
+    const baseline=jobBaseline.current, started=jobStartedRef.current
+    if(!baseline||!started)return
+    const wallSeconds=(Date.now()-started)/1000
+    const timelineSeconds=Math.max(1, baseline.timelineSeconds)
+    if(wallSeconds<5)return
+    const judge:JobKind=kind
+    setRenderRates(saveRenderRate(judge, {
+      secondsPerOutputSecond: Math.min(60, Math.max(0.02, wallSeconds/timelineSeconds)),
+      resolution: baseline.resolution, encoder: baseline.encoder, kind: judge,
+      wallSeconds, timelineSeconds, at: Date.now(),
+    }))
   }
   const startJob = async (kind:'preview'|'render', overwrite=false) => {
-    kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1)
+    kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1);setEtaSample(null);setJobStage('');setJobStartedAt(null)
+    // Provisional until the backend's own started_at arrives with the first poll.
+    jobStartedRef.current=Date.now()
+    jobBaseline.current={ timelineSeconds: total, itemCount: media.length, resolution, encoder }
     try{
       const id=await persistProject(true)
       const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,overwrite})})
@@ -1256,6 +1315,30 @@ function App() {
     }, 40)
   }
 
+  // --- generation estimates -------------------------------------------------
+  const jobRunning = rendering || previewing
+  // etaTick is in the dependency list on purpose: the countdown re-reads the
+  // clock once a second, even when the backend sends no new progress.
+  const liveRemaining = useMemo(
+    () => remainingSeconds(etaSample, progress, Date.now(), jobStartedAt),
+    [etaSample, progress, jobStartedAt, etaTick])
+  const predictedRender = media.length
+    ? estimateRenderSeconds({ timelineSeconds: total, itemCount: media.length, resolution, encoder, kind: 'render', rates: renderRates })
+    : null
+  const predictedPreview = media.length
+    ? estimateRenderSeconds({ timelineSeconds: total, itemCount: media.length, resolution, encoder, kind: 'preview', rates: renderRates })
+    : null
+  const estimatedBytes = estimateOutputBytes(total, bitrate, soundProgramSeconds > 0)
+  // A countdown that has run out but whose job has not finished yet means the
+  // last stage is taking longer than predicted, not that it is done.
+  const countdownLabel = liveRemaining === null ? 'Estimating…' : liveRemaining <= 0 ? 'Finishing up…' : `${formatEstimate(liveRemaining)} left`
+  const liveEstimateLabel = liveRemaining === null ? 'Estimating…' : liveRemaining <= 0 ? 'almost done' : formatEstimate(liveRemaining)
+  const estimateBasis = jobRunning
+    ? 'measured while it runs'
+    : renderRates.render
+      ? 'measured on this machine'
+      : 'first run · measured afterwards'
+
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><Film size={21} /></div><div><strong>slideshow</strong><span>PHOTO & VIDEO STUDIO</span></div></div>
@@ -1280,7 +1363,7 @@ function App() {
           <input value={projectName} onChange={e=>setProjectName(e.target.value)} aria-label="Project name"/>
           <p>Assemble your media, shape the motion, and export a finished story.</p>
         </div>
-        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button><button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
       </section>
 
       <div className="workspace">
@@ -1342,7 +1425,7 @@ function App() {
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
-          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
+          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync?'':'warning'}>{capabilities.quickSync?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':'Quick Sync unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
         </div>
         </div>
       </div>
@@ -1429,7 +1512,7 @@ function App() {
     {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
     {showNewProjectConfirm && <ConfirmDialog title="Start a new blank project?" message="This clears the current storyline, soundtracks and settings from the editor. Projects already saved in SQLite are not affected." confirmLabel="New project" onConfirm={startNewProject} onCancel={()=>setShowNewProjectConfirm(false)}/>}
     {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
-    {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
+    {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? The measured render speed is forgotten too, so the next estimate falls back to a guess. This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {showCleanTempConfirm && <ConfirmDialog title="Clean temporary files?" message={`This deletes every intermediate render segment, soundtrack cache and proxy preview (the work and preview folders), and clears the render history. Rendered MP4 files in ${outputPath || '/output'} and your saved projects are kept. This cannot be undone.`} confirmLabel="Clean temp files" onConfirm={cleanTempFiles} onCancel={()=>setShowCleanTempConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
