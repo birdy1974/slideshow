@@ -1213,6 +1213,10 @@ class Renderer:
         text = str(item.get("text", "")).strip()
         if not text:
             return None
+        # Per-slide opt-out: captions can be disabled without deleting the text.
+        # Title frames are the text itself, so the flag never applies to them.
+        if item.get("type") != "title" and item.get("textEnabled") is False:
+            return None
         start, end = float(item.get("textStart", 0)), float(item.get("textEnd", item.get("duration", 5)))
         fade_in = max(.01, float(item.get("textEnterDuration", .5))); fade_out = max(.01, float(item.get("textExitDuration", .5)))
         x, y = float(item.get("textX", 50)), float(item.get("textY", 72))

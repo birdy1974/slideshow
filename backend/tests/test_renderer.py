@@ -1132,5 +1132,35 @@ class TestGLRegistry(unittest.TestCase):
             self.assertIn(f'av_strcasecmp(t, "{tid}")', header, f"{tid}: no dispatch entry")
 
 
+class TextOnPictureToggleTests(unittest.TestCase):
+    """A slide can hide its caption without deleting the text; the flag must
+    reach the FFmpeg drawtext filter, and never affect standalone title frames."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.renderer = Renderer(Database(Path(self.temp.name) / "test.db"), Settings())
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _item(self, **overrides):
+        item = {"id": 1, "type": "image", "text": "Hello", "duration": 5}
+        item.update(overrides)
+        return item
+
+    def test_caption_drawn_by_default(self) -> None:
+        result = self.renderer._text_filter(self._item(), {}, 1920, 1080)
+        self.assertIsNotNone(result)
+        self.assertIn("drawtext", result)
+
+    def test_disabled_caption_is_not_drawn(self) -> None:
+        self.assertIsNone(self.renderer._text_filter(self._item(textEnabled=False), {}, 1920, 1080))
+
+    def test_title_frame_ignores_the_flag(self) -> None:
+        result = self.renderer._text_filter(self._item(type="title", textEnabled=False), {}, 1920, 1080)
+        self.assertIsNotNone(result)
+        self.assertIn("drawtext", result)
+
+
 if __name__ == "__main__":
     unittest.main()
