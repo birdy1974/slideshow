@@ -21,6 +21,15 @@ Every place that used to render a flat 191-entry `<select>` now renders a
 | Frame background colour-change editor | select → chip |
 | Transition preview modal | tabs + select + text list → single chip |
 
+Two doors lead into the same catalogue:
+
+- **The chip picker** — one per transition setting (see the table below).
+- **The standalone gallery** — a full-screen window for *browsing* rather than
+  picking, opened with **Browse all 191** in the transitions bar or **Open full
+  gallery** in any picker's footer. It has a large stage: hover a tile to see
+  it move, click one to park it there and study it. There is deliberately no
+  "apply" — choosing a transition for a slide stays with the chips.
+
 The browser popover is `position: fixed` and rendered through a portal on
 `document.body`, because `.panel` uses `overflow: hidden` and would otherwise
 clip it. It contains:
@@ -30,8 +39,8 @@ clip it. It contains:
   Clicking a tab clears the search so it can never dead-end on an empty grid.
 - **Category rail** — the 16 catalogue groups, with counts.
 - **Tile grid** — one tile per transition, with a looping preview on hover.
-- **Footer** — filtered count, cache status, autoplay toggle, and a
-  “Render all *n* missing” button.
+- **Footer** — filtered count, cache status, autoplay toggle, a link to the
+  full gallery, and a “Render all *n* missing” button.
 
 Keyboard: `↓` from the chip opens it, the search field takes focus, `↑ ↓ ← →`
 move the active tile, `Enter`/`Space` picks it, `Escape` closes. Recents and

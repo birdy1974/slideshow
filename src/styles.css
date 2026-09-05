@@ -504,3 +504,53 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
   .movie-editor .editor-fields{grid-template-columns:1fr 1fr}
   .transport-clock{margin-left:0}
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Standalone transition gallery — a full-screen window for browsing every
+   example. Shares the picker's cached clips and tiles (nothing is rendered
+   twice) but adds a large stage for the transition you want to study.
+   ───────────────────────────────────────────────────────────────────────────── */
+.transition-gallery{width:min(1180px,96vw);max-height:92vh;background:#f8f8f5;border-radius:13px;overflow:hidden;box-shadow:0 30px 80px #0009;display:flex;flex-direction:column}
+.gallery-body{display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px;padding:14px 18px 10px;border-bottom:1px solid #e4e4df}
+.gallery-side{display:flex;flex-direction:column;gap:10px;min-height:0}
+.gallery-search{display:flex;align-items:center;gap:7px;height:31px;border:1px solid #d7d8d1;background:#fff;border-radius:6px;padding:0 8px}
+.gallery-search svg{color:#9a9d95;flex:0 0 13px}
+.gallery-search input{flex:1;min-width:0;border:0;outline:0;font-size:12px;background:none}
+.gallery-search button{border:0;background:none;color:#9a9d95;display:grid;place-items:center;padding:0}
+.gallery-tabs{display:flex;flex-wrap:wrap;gap:5px}
+.gallery-tabs button{height:25px;border:1px solid #dedfd9;background:#fff;border-radius:20px;padding:0 10px;font:600 10px Manrope;color:#5f635b}
+.gallery-tabs button.active{background:#22251f;border-color:#22251f;color:#fff}
+.browser-groups.compact{max-height:190px;overflow-y:auto;border:1px solid #e7e7e2;border-radius:7px;background:#f6f6f2;padding:5px}
+.gallery-detail{display:flex;flex-direction:column;gap:2px;padding:9px 10px;background:#eef1e7;border:1px solid #dde3d1;border-radius:7px}
+.gallery-detail strong{font:800 13px Manrope;color:#2c3128;letter-spacing:-.2px}
+.gallery-detail span{font-size:10px;color:#6b7360}
+.gallery-detail small{font-size:9px;color:#8a917f}
+.gallery-warn{font:700 9px Manrope;font-style:normal;color:#8a5a1f;background:#fdf1dd;border-radius:3px;padding:2px 5px;width:max-content;margin-top:3px}
+.gallery-stage{position:relative;background:#181a17;border-radius:9px;overflow:hidden;min-height:220px;display:grid;place-items:center}
+.gallery-stage video{width:100%;height:100%;max-height:40vh;object-fit:contain;background:#080908}
+.gallery-stage .quick-transition{position:absolute;inset:0}
+.gallery-stage .quick-transition>span{position:absolute;inset:0;display:grid;place-items:center;font:800 46px Manrope;color:#ffffffcc}
+.gallery-stage .quick-transition>span:last-child{animation-duration:var(--transition-speed,1s);animation-iteration-count:infinite;animation-timing-function:ease-in-out;animation-play-state:running}
+.gallery-stage .quick-transition.fade>span:last-child{animation-name:transitionFade}
+.gallery-stage .quick-transition.from-left>span:last-child{animation-name:transitionLeft}
+.gallery-stage .quick-transition.from-right>span:last-child{animation-name:transitionRight}
+.gallery-stage .quick-transition.from-up>span:last-child{animation-name:transitionUp}
+.gallery-stage .quick-transition.from-down>span:last-child{animation-name:transitionDown}
+.gallery-grid{overflow-y:auto;padding:12px 18px 16px;min-height:0}
+.gallery-grid section{margin:0 0 6px}
+.gallery-grid section>strong{display:block;font:700 8px Manrope;letter-spacing:1px;color:#8b8e86;text-transform:uppercase;margin:4px 0 6px 2px}
+.gallery-foot{display:flex;align-items:center;gap:12px;padding:9px 18px;border-top:1px solid #e4e4df;background:#f2f2ee;flex-shrink:0}
+.gallery-foot em{display:inline-flex;align-items:center;gap:5px;font-size:9px;color:#8b8e86;font-style:normal}
+.gallery-foot .browser-cache{margin-left:auto}
+.gallery-foot .btn{height:29px;padding:0 12px;font-size:11px}
+.browser-gallery{margin-left:auto;display:inline-flex;align-items:center;gap:5px;border:0;background:none;color:#5d6b41;font:700 10px Manrope;text-decoration:underline;text-underline-offset:2px}
+.browser-gallery:hover{color:#3e5224}
+.gallery-button{display:inline-flex;align-items:center;gap:6px;border:0;background:none;color:#53633c;font:700 10px Manrope;padding:5px;white-space:nowrap}
+.gallery-button:hover{text-decoration:underline}
+@media(max-width:760px){
+  .gallery-body{grid-template-columns:1fr}
+  .browser-groups.compact{max-height:120px}
+  .gallery-stage{min-height:170px}
+  .gallery-foot{flex-wrap:wrap}
+  .gallery-foot .browser-cache{margin-left:0}
+}

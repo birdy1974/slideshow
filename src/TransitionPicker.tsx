@@ -7,7 +7,7 @@
 // rendered in a portal so panel overflow can never clip it.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Loader2, RefreshCw, Search, Star, X } from 'lucide-react'
+import { ChevronDown, LayoutGrid, Loader2, RefreshCw, Search, Star, X } from 'lucide-react'
 import {
   EASING_DEFAULT, isGLTransition, loadFavouriteTransitions, loadRecentTransitions,
   rememberTransition, toggleFavouriteTransition, totalTransitionCount, transitionGroups,
@@ -74,7 +74,7 @@ export function usePreviewStatus(enabled: boolean) {
 // One tile in the grid
 // ---------------------------------------------------------------------------
 
-function TransitionTile({
+export function TransitionTile({
   label, active, state, previewAllowed, playing, favourite, onSelect, onToggleFavourite, onFocusTile, tileRef,
 }: {
   label: string
@@ -170,12 +170,14 @@ for (const [group, names] of Object.entries(transitionGroups)) for (const name o
 
 type Scope = 'all' | 'xfade' | 'gl' | 'favourites' | 'recent'
 
-export function TransitionChip({ value, onChange, ariaLabel, title, className }: {
+export function TransitionChip({ value, onChange, ariaLabel, title, className, onOpenGallery }: {
   value: string
   onChange: (label: string) => void
   ariaLabel?: string
   title?: string
   className?: string
+  // Optional door into the standalone gallery (browse without picking).
+  onOpenGallery?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -436,6 +438,9 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className }:
           <button type="button" className="browser-build" onClick={() => void buildAllPreviews()}>
             <RefreshCw size={11} /> Render all {status.pending} missing
           </button>}
+        {onOpenGallery && <button type="button" className="browser-gallery" onClick={() => { setOpen(false); onOpenGallery() }}>
+          <LayoutGrid size={11} /> Open full gallery
+        </button>}
       </footer>
     </div>, document.body)}
   </>
