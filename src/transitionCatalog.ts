@@ -52,10 +52,99 @@ export const easingGroups: Record<string, string[]> = {
 export const easings = Object.values(easingGroups).flat()
 export const EASING_DEFAULT = 'linear'
 
-/** Cheap glyph hint so a row can show what a transition does without loading anything. */
+// ---------------------------------------------------------------------------
+// Symbols
+//
+// A cheap glyph hint, so a timeline marker or a chip can suggest what a
+// transition does without loading a single frame.
+//
+// The native xfade names are read literally (a direction, a shape, a
+// dissolve). Every GL transition used to collapse to the same ✦, which made the
+// timeline useless for telling two of them apart — 133 identical markers. They
+// now go through the same kind of name-derived lookup: the most specific rule
+// that matches the label wins, and anything no rule recognises falls back to
+// the glyph of its group, so a GL wipe never reads like a GL glitch.
+// ---------------------------------------------------------------------------
+
+/** First match wins, so the more specific phrases have to come first. */
+const GL_SYMBOL_RULES: [needle: string, glyph: string][] = [
+  // signatures nobody else should claim
+  ['butterfly', '❋'], ['cannabis', '☘'], ['leaf', '☘'], ['kaleidoscope', '✳'], ['power kaleido', '✴'],
+  ['polar function', '✳'], ['crazy parametric', '✳'], ['flower', '❀'], ['heart', '♥'],
+  ['star wipe', '★'], ['polka dots', '∴'], ['water drop', '≋'], ['ripple', '≋'],
+  ['old tv', '▤'], ['tv static', '▓'], ['doom screen', '▓'],
+  // wipes & geometry — 'window' before 'wind', or Wind would swallow both
+  ['window blinds', '▥'], ['window slice', '▥'], ['stripe wipe', '▤'], ['static wipe', '▤'], ['stage curtains', '▯'],
+  ['bow tie horizontal', '⇔'], ['bow tie vertical', '⇕'], ['bow tie', '⋈'], ['directional warp', '∿'], ['directional', '⇢'],
+  ['circle open', '○'], ['circle reveal', '◉'], ['circle', '◉'],
+  ['double diamond', '◈'], ['diamond', '◇'], ['corner', '◣'],
+  ['rectangle', '▭'], ['edge transition', '◧'],
+  ['horizontal open', '⇔'], ['horizontal close', '⇔'],
+  ['vertical open', '⇕'], ['vertical close', '⇕'],
+  ['fan in', '◣'], ['fan out', '◢'], ['fan up', '▲'],
+  ['angular', '∠'], ['bars', '▥'], ['box', '▢'], ['wind', '≋'],
+  // slides & reveals
+  ['chessboard', '▩'], ['left-right split', '⇆'], ['top-bottom split', '⇅'],
+  ['split slide in-out · horizontal', '⇆'], ['split slide in-out · vertical', '⇅'],
+  ['split slide in · horizontal', '⇤'], ['split slide in · vertical', '⇡'],
+  ['split slide out · horizontal', '⇥'], ['split slide out · vertical', '⇣'],
+  ['squeeze zoom', '⊗'], ['swap', '⇄'], ['x-axis translation', '↔'],
+  ['slides', '⇉'], ['bounce', '↕'],
+  // zoom & spin
+  ['cross zoom', '⊗'], ['dreamy', '❉'], ['exponential swish', '↝'], ['morph', '◍'],
+  ['pinwheel', '⊛'], ['revolve', '↻'], ['rotate', '↻'], ['swirl', '↺'],
+  ['scale in', '⊂'], ['simple zoom out', '⊖'], ['tangent motion blur', '▓'],
+  ['zoom left wipe', '←'], ['zoom right wipe', '→'], ['zoom in circles', '◎'], ['zoom', '⊕'],
+  // 3d, curls & folds
+  ['cube', '▣'], ['doorway', '⊓'], ['grid flip', '▦'],
+  ['inverted page curl', '◠'], ['book curl', '◡'], ['page curl', '◟'],
+  ['book flip', '▤'], ['fold', '▧'], ['rolls', '≡'], ['simple flip', '⇄'], ['stereo viewer', '◫'],
+  // tiles & blocks
+  ['advanced mosaic', '▩'], ['fly eye', '❋'], ['fragment', '◲'], ['hexagonalize', '⌬'],
+  ['lissajous', '∿'], ['mosaic', '▦'], ['puzzle', '⊞'], ['squares wire', '⊟'], ['tiles wave', '≋'],
+  // dissolve & noise
+  ['block dissolve', '▩'], ['cross out', '✕'], ['defocus blur', '▓'], ['displacement', '≁'],
+  ['linear blur', '▒'], ['luma mask', '◐'], ['perlin', '∿'],
+  ['random noise', '▚'], ['random squares', '▩'],
+  // glitch & static
+  ['cross warp', '⊗'], ['crosshatch', '▨'], ['drop zone', '▚'], ['glitch displace', '⊟'],
+  ['glitch memories', '▤'], ['parametric glitch', '▚'], ['static fade', '░'], ['strip datamosh', '▥'],
+  // colour & burn — 'film burn' and 'burn noise' before plain 'burn'
+  ['blend', '◐'], ['burn noise', '▴'], ['film burn', '▲'], ['burn', '△'],
+  ['colour distance', '◑'], ['colour phase', '◒'], ['coordinate morph', '⊗'],
+  ['fade color', '◔'], ['fade grayscale', '◍'], ['hsv fade', '◕'],
+  ['luminance melt', '◖'], ['multiply blend', '⊠'], ['overexposure', '◌'], ['undulating burn', '▵'],
+]
+
+/** Last resort per group, so an unmatched GL name still reflects its family. */
+const GL_GROUP_SYMBOLS: Record<string, string> = {
+  'GL · Wipes & geometry': '⇢',
+  'GL · Slides & reveals': '⇉',
+  'GL · Zoom & spin': '⊕',
+  'GL · 3D, curls & folds': '▤',
+  'GL · Tiles & blocks': '▦',
+  'GL · Kaleido & fun': '✳',
+  'GL · Dissolve & noise': '░',
+  'GL · Glitch & static': '▚',
+  'GL · Colour & burn': '◐',
+}
+
+function glSymbol(label: string, group: string): string {
+  const name = String(label || '').replace(/^gl\s*·\s*/i, '').trim().toLowerCase()
+  for (const [needle, glyph] of GL_SYMBOL_RULES) if (name.includes(needle)) return glyph
+  return GL_GROUP_SYMBOLS[group] || '✦'
+}
+
+/** Label → glyph for every GL transition, resolved once at module load. */
+export const glSymbols: Record<string, string> = {}
+for (const e of glEntries) glSymbols[e.label] = glSymbol(e.label, e.group)
+
 export function transitionSymbol(name: string) {
+  const known = glSymbols[name]
+  if (known) return known
+  // A raw ffmpeg id (`gl_cube`) rather than a UI label: the same rules apply.
+  if (/^gl_/i.test(name || '')) return glSymbol(name.replace(/^gl_/i, '').replace(/_/g, ' '), '')
   const n = (name || '').toLowerCase()
-  if (n.startsWith('gl')) return '✦'
   if (n.includes('left')) return '←'
   if (n.includes('right')) return '→'
   if (n.includes('up')) return '↑'

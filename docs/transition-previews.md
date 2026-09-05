@@ -94,6 +94,21 @@ sample is the transition alone. The renderer drops the hold of both clips
 that opens and closes on the crossfade instead of sitting between two static
 pictures.
 
+### Symbols
+
+Every transition carries a glyph (`transitionSymbol`), shown on the timeline
+markers, on the chip and on each gallery tile. Native xfade names are read
+literally — a direction becomes an arrow, a dissolve becomes `░`.
+
+The 133 GL transitions used to collapse to a single `✦`, which made the timeline
+useless for telling two of them apart. They now run through the same kind of
+name-derived lookup (`GL_SYMBOL_RULES` in `src/transitionCatalog.ts`): the most
+specific phrase wins — *water drop* → `≋`, *cube* → `▣`, *film burn* → `▲` — and
+anything no rule recognises falls back to its group's glyph, so a GL wipe can
+never read like a GL glitch. That gives 80 distinct glyphs across the catalogue.
+Closely related variants still share one, exactly as *Wipe left* and *Slide
+left* both read `←`.
+
 ### Progressive enhancement
 
 The picker never waits on the backend:

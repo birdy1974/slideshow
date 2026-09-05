@@ -157,7 +157,7 @@ export function TransitionTile({
         <Star size={11} fill={favourite ? 'currentColor' : 'none'} />
       </button>
     </span>
-    <span className="tile-name">{label.replace(/^GL · /, '')}</span>
+    <span className="tile-name"><i className="tile-symbol" aria-hidden>{transitionSymbol(label)}</i>{label.replace(/^GL · /, '')}</span>
   </div>
 }
 
