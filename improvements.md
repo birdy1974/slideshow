@@ -1,11 +1,14 @@
-2026-09-04
-- in SAVED IN SQLITE popup, provide a button per entry to delete that entry, also 1 button to delete all.
-- advise if we can use gt transitions (https://github.com/scriptituk/xfade-easing#ported-glsl-transitions and https://gl-transitions.com/) to add more transitions. first give options how to implement and what are the different options. goal is to split the final transitions in 2 main groups: 1- based on xfade (these are the current transitions, no change) and 2- GL transitions (these new transitions). I like to have as many transitions as possible (for both groups), so also check if we already have all xfade transitions (give an overview, before implementing the new ones).
-
+2026-09-05
+- cut function for movies
+- 
 
 
 
 ---= DONE =---
+
+2026-09-04
+- in SAVED IN SQLITE popup, provide a button per entry to delete that entry, also 1 button to delete all.
+- advise if we can use gt transitions (https://github.com/scriptituk/xfade-easing#ported-glsl-transitions and https://gl-transitions.com/) to add more transitions. first give options how to implement and what are the different options. goal is to split the final transitions in 2 main groups: 1- based on xfade (these are the current transitions, no change) and 2- GL transitions (these new transitions). I like to have as many transitions as possible (for both groups), so also check if we already have all xfade transitions (give an overview, before implementing the new ones).
 
 2026-09-03
 - in photo preview popup window provide functionality to rotate the photo +90 and -90 degrees. this new orientation should also be used in final slideshow result
