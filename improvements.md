@@ -1,5 +1,24 @@
 2026-09-05
-- cut function for movies
+- add cut and crop function for movies (same functionality as for the soundtracks)
+- add favicon
+- add enable/disable function for text on picture. advise on gui options for storyline and list with photos
+- add possibility to enter a default time for all slides (put it net to "transition default")
+- show transition symbol also in the detailed slide list (same as storyline)
+- in detailed slide list make box for effect smaller (fit to largest text)
+- advise on better gui for the selection of the transition in the detailed slide list as the list is now too long
+- make new popup window to show small examples of all possible transitions. remember / save the examples so you only need to generate them 1 time. give options for gui
+- move the complete pane with "PHOTO SELECTION - All photos" and "TRANSITION DEFAULT" just above the storyline (instead of below the storyline)
+- include "random text transition" button in "PHOTO SELECTION - All photos" pane
+- in project header near the "load project", "clear all", "save project" buttons give also indication if generation is ongoing (including progress and estimated time to finish)
+- in generation and output pane put "estimated time to generate", estimated file size, ESTIMATED TOTAL SLIDESHOW TIME
+- Transition preview popup do not show the "quick preview", only the "ACCURATE FFMPEG · 360P", and only show the transition (so if transition duration is 5 sec, the example clip should be 5 seconds)
+- also give different symbols for the GL transitions.
+- for the time ruler indicate the time in hour:minutes:seconds (h:mm:ss) instead of only seconds.
+- on the picture preview popup move the next / previous buttons inside the picture and make the active area bigger (complete right side of picture: go to next; left side of the picture: go to previous)
+- on the picture preview popup add options to edit / change the pictures by adding effect and filters (https://www.photofilters.com/), for example: make picture black and white;
+- on the picture preview popup add options to cut and crop parts of the picture
+- in output pane the filename should be the same as the project name on the top (and visa versa)
+- "load project" and "save project" button should call up browse popup so user can select path and filename where to save/load
 - 
 
 
