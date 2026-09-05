@@ -18,6 +18,7 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - 480p, 720p, 1080p, and 4K output presets with CPU/x264 and Intel Quick Sync selection
 - Output overwrite protection: rendering asks for acknowledgement before replacing an existing MP4
 - Shared timeline math between UI and renderer, so the estimated total always matches the rendered length
+- Transition previews rendered from your own two clips at 360p: the sample is the transition alone, so it runs for exactly the duration you set (a 5-second transition gives a 5-second clip)
 - Background jobs, live progress, downloadable output, persistent diagnostics, and render history
 - Generation estimates: the header shows a live badge (progress, FFmpeg stage and a countdown) while a job runs, and the Ready-to-render pane predicts how long the render will take, how big the MP4 will be, and how long the slideshow runs. The time-to-generate figure starts as a resolution/encoder guess and becomes a measurement after the first render — see [docs/render-estimates.md](docs/render-estimates.md)
 - Atomic, lossless SQLite save/load with normalized tables and a canonical full-project snapshot

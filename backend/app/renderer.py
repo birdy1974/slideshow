@@ -1327,12 +1327,21 @@ class Renderer:
         # Per item: the IN/OUT window of a trimmed movie, else None.
         video_windows: list[dict[str, float] | None] = []
         for item in media:
+            if item.get("previewTrim"):
+                # The two-clip transition preview is the transition and nothing
+                # else: no hold on either side, so the sample opens and closes
+                # with the crossfade and lasts exactly as long as it does.  The
+                # segments still carry the full transition as their xfade
+                # handle, which is where the outgoing and incoming pictures are
+                # seen.  No probing: the caller has already cut the sources.
+                durations.append(0.0)
+                native_video_durations.append(None)
+                video_windows.append(None)
+                continue
             hold = max(.2, float(item.get("duration", 5)))
             native: float | None = None
             window: dict[str, float] | None = None
-            if item.get("type") == "video" and not item.get("previewTrim"):
-                # `previewTrim` marks the short two-clip transition preview;
-                # its handles are cut by the caller, so no probing is needed.
+            if item.get("type") == "video":
                 probed: float | None = None
                 try:
                     probed = self._probe_duration(source_path(self.settings, item))
@@ -1554,8 +1563,12 @@ class Renderer:
                 "-t", format_ffmpeg_number(hold), str(hold_part),
             ]
             progress(55 + 25 * (index + 1) / len(media), f"Preparing timeline item {index + 1} of {len(media)}")
-            run_compose(hold_command, allow_qsv_fallback=True)
-            timeline_parts.append(hold_part)
+            # A zero-length hold (the transition-only preview) must not be
+            # rendered or listed at all: concatenating a 0-second clip leaves
+            # the join with nothing to start from.
+            if hold > 0.0005:
+                run_compose(hold_command, allow_qsv_fallback=True)
+                timeline_parts.append(hold_part)
 
             if index >= len(transitions):
                 continue

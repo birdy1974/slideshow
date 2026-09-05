@@ -402,8 +402,11 @@ def transition_preview_file(slug: str) -> FileResponse:
 def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     """Render an authoritative two-clip transition sample at 360p.
 
-    The clips are deliberately trimmed to short handles, which keeps this
-    interactive even when either source is a long movie or camera AVI.
+    The sample is the transition alone: the renderer drops the hold of every
+    `previewTrim` item, so the clip is exactly as long as the requested
+    duration and starts and ends on the crossfade — no static picture on
+    either side.  The sources are still cut to short handles, which keeps
+    this interactive even when either one is a long movie or camera AVI.
     """
     import threading
     import uuid

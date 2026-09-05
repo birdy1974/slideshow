@@ -85,9 +85,14 @@ example frames — and stored on the config volume.
 | `POST` | `/api/transition-previews/build` | start a background pass over every missing clip |
 | `DELETE` | `/api/transition-previews` | drop the cache so it can be rebuilt |
 
-`POST /api/transitions/preview` (the accurate preview inside the modal) is
-unchanged: it still renders the *real* outgoing/incoming media with the exact
-duration, easing, reverse and GL parameters of that one transition.
+`POST /api/transitions/preview` (the preview inside the modal) is a separate,
+on-demand render: it uses the *real* outgoing/incoming media with the exact
+duration, easing, reverse and GL parameters of that one transition. The modal
+shows nothing but this clip — there is no CSS approximation behind it — and the
+sample is the transition alone. The renderer drops the hold of both clips
+(they carry `previewTrim`), so a 5-second transition yields a 5-second clip
+that opens and closes on the crossfade instead of sitting between two static
+pictures.
 
 ### Progressive enhancement
 

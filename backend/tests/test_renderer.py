@@ -749,6 +749,111 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
 
 
+class TransitionPreviewTrimTest(unittest.TestCase):
+    """The popup sample is the transition itself — no hold on either side."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos", output_dir=base / "out", music_dir=base / "music")
+        for directory in (self.settings.photos_dir, self.settings.videos_dir, self.settings.work_dir, self.settings.preview_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        (self.settings.videos_dir / "a.mp4").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "fit.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _render(self, media: list[dict]) -> list[list[str]]:
+        """Run a preview render and return every FFmpeg command it issued."""
+        # Mirrors POST /api/transitions/preview: two clips, one transition.
+        project = {
+            "id": "transition",
+            "project": {"name": "Transition preview", "randomOrder": False},
+            "media": media,
+            "soundtrack": {"tracks": [], "policy": "Play once, then silence"},
+            "output": {"encoder": "CPU · x264"},
+        }
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"x")
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=30.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "preview", work, threading.Event(), lambda p, s: None)
+        return commands
+
+    @staticmethod
+    def _out_t(command: list[str]) -> str:
+        """The -t that caps the output (the one after -an for segments)."""
+        return command[command.index("-t", command.index("-an")) + 1]
+
+    @staticmethod
+    def _preview_pair(transition_time: float) -> list[dict]:
+        return [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": max(1.0, transition_time),
+             "effect": "None", "transition": "Fade", "transitionTime": transition_time, "previewTrim": True},
+            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": max(1.0, transition_time),
+             "effect": "None", "transition": "Fade", "transitionTime": 1, "previewTrim": True},
+        ]
+
+    def test_sample_is_exactly_as_long_as_the_transition(self) -> None:
+        commands = self._render(self._preview_pair(5.0))
+        segments = [c for c in commands if "segment-" in c[-1]]
+        self.assertEqual(2, len(segments))
+        for command in segments:
+            self.assertEqual("5", self._out_t(command), "each segment is one transition long")
+        # The joined timeline and the finished MP4 are both capped at 5 s.
+        timeline = next(c for c in commands if "concat" in c)
+        self.assertEqual("5", timeline[timeline.index("-t") + 1])
+        final = commands[-1]
+        self.assertEqual("5", final[final.index("-t") + 1])
+
+    def test_crossfade_starts_at_zero(self) -> None:
+        commands = self._render(self._preview_pair(3.0))
+        graphs = [c[c.index("-filter_complex") + 1] for c in commands if "-filter_complex" in c]
+        graph = next(g for g in graphs if "xfade" in g)
+        self.assertIn("duration=3", graph)
+        self.assertIn("offset=0", graph, "the crossfade must open the clip, not follow a hold")
+        self.assertNotIn("trim=start=0:end=0", " ".join(graphs), "no empty hold may be rendered")
+
+    def test_no_hold_before_or_after_the_transition(self) -> None:
+        """Regression guard: a 5 s transition used to sit between two 5 s holds."""
+        commands = self._render(self._preview_pair(5.0))
+        final = commands[-1]
+        self.assertEqual("5", final[final.index("-t") + 1])
+        # Without previewTrim the same two clips run hold + transition + hold.
+        plain = [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 5},
+            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ]
+        self.assertEqual("15", self._render(plain)[-1][self._render(plain)[-1].index("-t") + 1])
+
+    def test_short_transition_stays_short(self) -> None:
+        commands = self._render(self._preview_pair(0.5))
+        final = commands[-1]
+        self.assertEqual("0.5", final[final.index("-t") + 1])
+
+    def test_movie_sources_are_capped_to_the_transition_too(self) -> None:
+        pair = self._preview_pair(2.0)
+        pair[1]["type"] = "video"
+        pair[1]["path"] = "/videos/a.mp4"
+        commands = self._render(pair)
+        segments = [c for c in commands if "segment-" in c[-1]]
+        for command in segments:
+            self.assertEqual("2", self._out_t(command))
+        final = commands[-1]
+        self.assertEqual("2", final[final.index("-t") + 1])
+
+
 class FontFileTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()

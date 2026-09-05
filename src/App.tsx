@@ -1918,7 +1918,7 @@ function ConfirmDialog({ title, message, confirmLabel, onConfirm, onCancel }: { 
   </div></div>
 }
 
-function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpenGallery }: { outgoing: MediaItem; incoming: MediaItem; onClose: () => void; onApply: (patch: Partial<MediaItem>) => void; onOpenGallery?: () => void }) {
+export function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpenGallery }: { outgoing: MediaItem; incoming: MediaItem; onClose: () => void; onApply: (patch: Partial<MediaItem>) => void; onOpenGallery?: () => void }) {
   const [choice, setChoice] = useState(outgoing.transition)
   const [duration, setDuration] = useState(outgoing.transitionTime ?? DEFAULT_TRANSITION_SECONDS)
   const [params, setParams] = useState<Record<string,string|number>>((outgoing.transitionParams as Record<string,string|number>)||{})
@@ -1946,12 +1946,16 @@ function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpenGallery
     }, 500)
     return () => { window.clearTimeout(timer); controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [choice, duration, params, easing, reverse, outgoing, incoming])
-  const quickClass = /left/i.test(choice) ? 'from-left' : /right/i.test(choice) ? 'from-right' : /up/i.test(choice) ? 'from-up' : /down/i.test(choice) ? 'from-down' : 'fade'
   return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="transition-preview-modal wide" onMouseDown={e=>e.stopPropagation()}>
     <div className="preview-top"><div><strong>Transition preview</strong><span>{outgoing.name} → {incoming.name}</span></div><button onClick={onClose}><X size={20}/></button></div>
     <div className="transition-preview-body"><div className="transition-preview-stage">
-      {accurateUrl ? <video key={`${accurateUrl}-${loopKey}`} src={accurateUrl} controls autoPlay loop /> : <div key={`${choice}-${duration}-${loopKey}`} className={`quick-transition ${quickClass}`} style={{'--transition-speed':`${duration}s`} as React.CSSProperties}><div><MediaThumb item={outgoing}/></div><div><MediaThumb item={incoming}/></div></div>}
-      <span className="preview-quality">{accurateUrl ? 'ACCURATE FFMPEG · 360P' : rendering ? 'QUICK PREVIEW · RENDERING 360P…' : 'QUICK PREVIEW'}</span>
+      {/* Only the real FFmpeg clip is shown: a CSS approximation would suggest
+          timings and easing the render does not have. While it is being built
+          the stage stays empty rather than animating something misleading. */}
+      {accurateUrl
+        ? <video key={`${accurateUrl}-${loopKey}`} src={accurateUrl} controls autoPlay loop />
+        : <div className="preview-waiting"><RefreshCw className="spin" size={22}/><span>{rendering ? 'Rendering the transition at 360p…' : 'Preparing…'}</span></div>}
+      <span className="preview-quality">{accurateUrl ? 'ACCURATE FFMPEG · 360P' : 'RENDERING ACCURATE FFMPEG · 360P…'}</span>
       {error && <div className="transition-preview-error"><AlertTriangle size={15}/>{error}</div>}
       <button className="btn ghost replay-transition" onClick={()=>setLoopKey(x=>x+1)}><Play size={13}/> Replay</button>
     </div><aside>
@@ -1961,7 +1965,7 @@ function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpenGallery
       <label>Easing</label><EasingSelect value={easing} onChange={setEasing}/>
       <label className="check-label"><input type="checkbox" checked={Boolean(reverse)} onChange={e=>setReverse(e.target.checked?1:0)}/><span><Check size={11}/></span> Reverse</label>
     </aside></div>
-    <div className="modal-foot"><span>Uses /api/transitions/preview — accurate 360p FFmpeg render with your params, easing and reverse.</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>onApply({transition: choice, transitionTime: duration, transitionParams: params, transitionEasing: easing, transitionReverse: reverse})}>Apply transition</button></div>
+    <div className="modal-foot"><span>Uses /api/transitions/preview — accurate 360p FFmpeg render with your params, easing and reverse. The sample is the transition alone, so it runs for exactly the duration you set.</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>onApply({transition: choice, transitionTime: duration, transitionParams: params, transitionEasing: easing, transitionReverse: reverse})}>Apply transition</button></div>
   </div></div>
 }
 
