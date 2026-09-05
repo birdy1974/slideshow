@@ -8,6 +8,7 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - Mixed photos, videos, generated text frames, drag ordering, multi-selection, and multi-line timelines
 - One-click "New project" that starts a completely blank project without touching saved ones
 - FFmpeg xfade catalogue (58 native transitions) plus 133 GL transitions (gl-transitions.com, ported to the custom ffmpeg via `ffmpeg-patch/`), per-transition parameters/labels/groups kept in one shared `registry/transitions.json` consumed by both backend and frontend, per-transition timing, random/bulk assignment, and GLSL-to-dissolve portability fallback
+- A searchable transition browser (chip + popover) replacing the 191-entry dropdown: category rail, favourites and recents, and looping previews rendered once per transition and cached under `/config` — see [docs/transition-previews.md](docs/transition-previews.md)
 - Ken Burns controls with selected-item and random bulk assignment
 - Timed captions, appear/disappear transitions, draggable title placement, 20 bundled open-licence fonts (sans, serif, display & script — see `public/fonts/README.md`), and frame backgrounds
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming

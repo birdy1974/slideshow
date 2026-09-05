@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from contextlib import asynccontextmanager
@@ -22,12 +23,14 @@ from .config import settings
 from .database import Database
 from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, mounted_path, safe_path, source_path
 from .renderer import OutputExistsError, Renderer
+from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
 db = Database(settings.database_path)
 renderer = Renderer(db, settings)
+transition_previews = TransitionPreviewCache(settings, renderer)
 
 
 class ProjectPayload(BaseModel):
@@ -347,6 +350,52 @@ def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str =
         filename=target.name,
         content_disposition_type="inline",
     )
+
+
+@app.get("/api/transition-previews/status")
+def transition_preview_status() -> dict[str, Any]:
+    """Which catalogue entries already have a cached example clip.
+
+    The picker calls this once when it opens so it can show placeholders for
+    clips that are still missing instead of firing 191 requests at once.
+    """
+    return transition_previews.status()
+
+
+@app.post("/api/transition-previews/build")
+def transition_preview_build() -> dict[str, Any]:
+    """Start (or report on) a background pass that renders every missing clip."""
+    return transition_previews.build_all()
+
+
+@app.delete("/api/transition-previews")
+def transition_preview_clear() -> dict[str, Any]:
+    """Drop every cached clip so the catalogue can be re-rendered."""
+    transition_previews.clear()
+    return transition_previews.status()
+
+
+@app.get("/api/transition-previews/{slug}")
+def transition_preview_file(slug: str) -> FileResponse:
+    """Cached example clip for a transition label, rendered on first request.
+
+    ``slug`` is the slugs of the friendly UI label (``GL · Angular`` ->
+    ``gl-angular``); a trailing ``.mp4`` is accepted and ignored.
+    """
+    name = slug[:-4] if slug.lower().endswith(".mp4") else slug
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", name or ""):
+        raise HTTPException(404, "Unknown transition preview")
+    entry = next((x for x in transition_previews.catalogue() if x["slug"] == name), None)
+    if not entry:
+        raise HTTPException(404, "Unknown transition preview")
+    try:
+        path = transition_previews.ensure(entry["label"], entry["params"])
+    except PreviewUnavailable as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - a failed probe must not 500 the picker
+        log.exception("Could not build a preview for %s", entry["label"])
+        raise HTTPException(500, f"Could not render preview: {exc}") from exc
+    return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline")
 
 
 @app.post("/api/transitions/preview")

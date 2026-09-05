@@ -5,7 +5,11 @@ import {
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
-import glRegistryData from '../registry/transitions.json'
+import { FieldLabel, Select } from './ui'
+import { TransitionChip } from './TransitionPicker'
+import { EasingSelect, GLParamControls, RandomScopeSelect, pickRandomTransition, randomScopeLabels } from './transitionControls'
+import type { RandomScope } from './transitionControls'
+import { EASING_DEFAULT, getGLParams, isGLTransition, transitionSymbol } from './transitionCatalog'
 
 type MediaRoot = 'photos' | 'videos' | 'music'
 
@@ -529,150 +533,7 @@ function dragOnStage(event: React.PointerEvent<HTMLElement>, onMove: (x: number,
   window.addEventListener('pointerup', stop)
 }
 
-// 1) Native xfade catalogue (FFmpeg built-in) — 58 transitions, unchanged from ayosec/FFmpeg docs
-const nativeTransitionGroups: Record<string, string[]> = {
-  'Fades & blends': ['Fade', 'Fade black', 'Fade white', 'Fade grays', 'Fade fast', 'Fade slow', 'Dissolve', 'Distance', 'Pixelize', 'H blur'],
-  'Wipes': ['Wipe left', 'Wipe right', 'Wipe up', 'Wipe down', 'Wipe top-left', 'Wipe top-right', 'Wipe bottom-left', 'Wipe bottom-right'],
-  'Slides & smooth': ['Slide left', 'Slide right', 'Slide up', 'Slide down', 'Smooth left', 'Smooth right', 'Smooth up', 'Smooth down'],
-  'Shapes': ['Circle crop', 'Rectangle crop', 'Circle open', 'Circle close', 'Vertical open', 'Vertical close', 'Horizontal open', 'Horizontal close', 'Radial'],
-  'Slices': ['Diagonal top-left', 'Diagonal top-right', 'Diagonal bottom-left', 'Diagonal bottom-right', 'Horizontal left slice', 'Horizontal right slice', 'Vertical up slice', 'Vertical down slice'],
-  'Squeeze, wind & zoom': ['Squeeze horizontal', 'Squeeze vertical', 'Zoom in', 'Horizontal left wind', 'Horizontal right wind', 'Vertical up wind', 'Vertical down wind'],
-  'Cover & reveal': ['Cover left', 'Cover right', 'Cover up', 'Cover down', 'Reveal left', 'Reveal right', 'Reveal up', 'Reveal down'],
-}
-// 2) GL Transitions — ported GLSL from https://github.com/scriptituk/xfade-easing#ported-glsl-transitions and https://gl-transitions.com/ (64)
-// Custom FFmpeg (xfade-easing) exposes them as gl_* C implementations with easing/reverse support.
-// GL transitions (gl-transitions.com catalogue) and their parameters come from the
-// shared registry — the exact same JSON the backend reads — so the pickers and
-// ffmpeg can never drift. Entry order defines the visual group order; labels are
-// what saved projects store.
-interface GLParamDef { name: string; default: string; min?: string; max?: string; step?: string; hint?: string }
-interface GLEntry { id: string; label: string; group: string; author?: string; params: GLParamDef[] }
-const glEntries = (glRegistryData as { gl: GLEntry[] }).gl
-const glTransitionGroups: Record<string, string[]> = {}
-const glParams: Record<string, GLParamDef[]> = {}
-for (const e of glEntries) {
-  (glTransitionGroups[e.group] = glTransitionGroups[e.group] || []).push(e.label)
-  glParams[e.label] = e.params || []
-}
-// Keep legacy key for code that still imports transitionGroups (combines both for global search / random)
-const transitionGroups: Record<string, string[]> = { ...nativeTransitionGroups, ...glTransitionGroups }
-const transitions = Object.values(transitionGroups).flat()
-const nativeTransitions = Object.values(nativeTransitionGroups).flat()
-const glTransitions = Object.values(glTransitionGroups).flat();
-
-// Easing catalogue for the custom xfade-easing build (native-like + CSS + extra)
-const easingGroups: Record<string,string[]> = {
-  'Linear': ['linear'],
-  'Standard (in/out/in-out)': ['quadratic','quadratic-in','quadratic-out','quadratic-in-out','cubic','cubic-in','cubic-out','cubic-in-out','quartic','quartic-in','quartic-out','quartic-in-out','quintic','quintic-in','quintic-out','quintic-in-out','sinusoidal','sinusoidal-in','sinusoidal-out','sinusoidal-in-out','exponential','exponential-in','exponential-out','exponential-in-out','circular','circular-in','circular-out','circular-in-out'],
-  'Elastic / Back / Bounce': ['elastic','elastic-in','elastic-out','elastic-in-out','back','back-in','back-out','back-in-out','bounce','bounce-in','bounce-out','bounce-in-out','squareroot','cuberoot','flipelastic','flipback'],
-  'CSS': ['ease','ease-in','ease-out','ease-in-out','cubic-bezier(0.42,0,0.58,1)','cubic-bezier(0.25,0.1,0.25,1)','step-start','step-end'],
-};
-const easings = Object.values(easingGroups).flat()
-const EASING_DEFAULT = 'linear'
 const effects = ['None', 'Ken Burns · Zoom in', 'Ken Burns · Zoom out', 'Ken Burns · Pan left', 'Ken Burns · Pan right', 'Original motion']
-
-function TransitionOptions() {
-  return <>
-    {Object.entries(nativeTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}
-    {Object.entries(glTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}
-  </>
-}
-function NativeTransitionOptions() {
-  return <>{Object.entries(nativeTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}</>
-}
-function GLTransitionOptions() {
-  return <>{Object.entries(glTransitionGroups).map(([group, options]) => <optgroup label={group} key={group}>{options.map(x => <option key={x}>{x}</option>)}</optgroup>)}</>
-}
-function CombinedTransitionOptions() {
-  return <TransitionOptions/>
-}
-
-function transitionSymbol(name: string) {
-  const n = name.toLowerCase()
-  if (n.startsWith('gl')) return '✦'
-  if (n.includes('left')) return '←'
-  if (n.includes('right')) return '→'
-  if (n.includes('up')) return '↑'
-  if (n.includes('down')) return '↓'
-  if (n.includes('circle') || n.includes('radial')) return '◉'
-  if (n.includes('zoom')) return '⊕'
-  if (n.includes('dissolve') || n.includes('pixel')) return '░'
-  if (n.includes('fade')) return '◐'
-  return '◇'
-}
-function isGLTransition(name: string) {
-  return name.startsWith('GL ·') || name.startsWith('gl_')
-}
-
-// Which catalogue a "Random" action is allowed to draw from.
-// 'xfade' = native FFmpeg xfade only, 'gl' = ported GL transitions only,
-// 'both' = the whole combined catalogue.
-type RandomScope = 'xfade' | 'gl' | 'both'
-const randomScopeLabels: Record<RandomScope, string> = {
-  xfade: `Random xfade (${nativeTransitions.length})`,
-  gl: `Random GL (${glTransitions.length})`,
-  both: `Random both (${transitions.length})`,
-}
-function randomPoolFor(scope: RandomScope): string[] {
-  return scope === 'xfade' ? nativeTransitions : scope === 'gl' ? glTransitions : transitions
-}
-function pickRandomTransition(scope: RandomScope): string {
-  const pool = randomPoolFor(scope)
-  return pool[Math.floor(Math.random() * pool.length)]
-}
-function RandomScopeSelect({ value, onChange }: { value: RandomScope; onChange: (v: RandomScope) => void }) {
-  return <Select ariaLabel="Random transition source" value={value} onChange={v => onChange(v as RandomScope)}>
-    {(Object.keys(randomScopeLabels) as RandomScope[]).map(k => <option key={k} value={k}>{randomScopeLabels[k]}</option>)}
-  </Select>
-}
-function getGLParams(name: string): GLParamDef[] {
-  return glParams[name] || []
-}
-
-function GLParamControls({ transition, params, onChange }: { transition: string; params: Record<string,string|number>; onChange: (next: Record<string,string|number>)=>void }) {
-  const defs = getGLParams(transition)
-  if (!defs.length) return <small className="gl-no-params">No extra parameters — uses defaults.</small>
-  return <div className="gl-params">
-    {defs.map(def => {
-      const raw = params[def.name]
-      const value = raw !== undefined ? String(raw) : def.default
-      const isColor = /^0x/i.test(def.default) || /color/i.test(def.name)
-      // numeric slider range heuristic: 0..max based on default
-      const numDefault = Number(def.default)
-      const isNumeric = Number.isFinite(numDefault) && !isColor
-      // registry entries may carry explicit slider limits; otherwise derive from the default
-      const min = isNumeric ? (def.min !== undefined ? Number(def.min) : Math.min(0, numDefault)) : 0
-      const max = isNumeric ? (def.max !== undefined ? Number(def.max)
-        : (numDefault <= 1 ? 1 : numDefault < 5 ? 5 : numDefault < 20 ? 20 : numDefault <= 100 ? 120 : 360)) : 10
-      const step = isNumeric ? (def.step !== undefined ? Number(def.step) : (max - min <= 1 ? 0.01 : max - min <= 20 ? 0.1 : 1)) : 0.1
-      return <label key={def.name} className="gl-param">
-        <span title={def.hint || def.name}>{def.name}<em>{value}</em></span>
-        {isColor ? <div className="color-control compact"><input type="color" value={String(value).startsWith('#')?String(value):'#30382a'} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}}/><input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/></div>
-        : isNumeric ? <div className="gl-slider"><input type="range" min={min} max={max} step={step} value={Number(value) || 0} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}}/><input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/></div>
-        : <input type="text" value={String(value)} onChange={e=>{ const next={...params, [def.name]: e.target.value }; onChange(next)}} placeholder={def.default}/>}
-      </label>
-    })}
-  </div>
-}
-
-function EasingSelect({ value, onChange }: { value: string; onChange: (v:string)=>void }) {
-  const v = value && value.trim() ? value : EASING_DEFAULT
-  return <Select value={v} onChange={onChange}>{Object.entries(easingGroups).map(([g, opts])=> <optgroup label={g} key={g}>{opts.map(o=> <option key={o} value={o}>{o}</option>)}</optgroup>)}</Select>
-}
-
-function TransitionPicker({ value, params, easing, reverse, onChange }: { value: string; params?: Record<string,string|number>; easing?: string; reverse?: number; onChange: (next:{transition?:string, transitionParams?:Record<string,string|number>, transitionEasing?:string, transitionReverse?:number})=>void }) {
-  const isGL = isGLTransition(value)
-  return <div className="transition-picker">
-    <div className="picker-tabs"><button className={!isGL?'active':''} onClick={()=>onChange({transition: nativeTransitions[0]})}>XFade</button><button className={isGL?'active':''} onClick={()=>onChange({transition: glTransitions[0]})}>GL Transitions</button></div>
-    {!isGL ? <Select value={value} onChange={v=>onChange({transition:v})}><NativeTransitionOptions/></Select>
-    : <Select value={value} onChange={v=>onChange({transition:v})}><GLTransitionOptions/></Select>}
-    {isGL && <GLParamControls transition={value} params={params||{}} onChange={next=>onChange({transitionParams: next})}/>}
-    <div className="transition-meta">
-      <label>Easing <EasingSelect value={easing||EASING_DEFAULT} onChange={v=>onChange({transitionEasing:v})}/></label>
-      <label className="check-label"><input type="checkbox" checked={Boolean(reverse)} onChange={e=>onChange({transitionReverse: e.target.checked?1:0})}/><span><Check size={11}/></span> Reverse</label>
-    </div>
-  </div>
-}
 
 function TransitionCell({ item, onPatch }: { item: MediaItem; onPatch: (patch: Partial<MediaItem>)=>void }) {
   const [open, setOpen] = useState(false)
@@ -683,8 +544,9 @@ function TransitionCell({ item, onPatch }: { item: MediaItem; onPatch: (patch: P
   // ensure transitionTime clamped
   const max = 3600
   return <div className="transition-cell">
-    <i className={`transition-symbol ${isGL ? 'gl' : ''}`} title={`${item.transition}${item.transitionEasing && item.transitionEasing!==EASING_DEFAULT ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''}`}>{transitionSymbol(item.transition)}</i>
-    <Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => {
+    <TransitionChip ariaLabel={`${item.name} transition`} className="cell-chip"
+      title={`${item.transition}${item.transitionEasing && item.transitionEasing!==EASING_DEFAULT ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · click to browse all transitions`}
+      value={item.transition} onChange={v => {
       // when switching type, clear params if moving to native, keep but reset to defaults if to GL?
       if (isGLTransition(v)) {
         const defs = getGLParams(v)
@@ -695,7 +557,7 @@ function TransitionCell({ item, onPatch }: { item: MediaItem; onPatch: (patch: P
       } else {
         onPatch({ transition: v })
       }
-    }}><TransitionOptions/></Select>
+    }} />
     <NumberStepper value={item.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} max={max} step={0.1} suffix="s" ariaLabel={`${item.name} transition time`} onChange={v => onPatch({ transitionTime: v })} />
     {(isGL || easing !== EASING_DEFAULT || reverse) && <button type="button" className={`icon-button small ${open?'active':''}`} title={isGL ? 'Edit GL parameters, easing and reverse' : 'Edit easing and reverse'} onClick={()=>setOpen(o=>!o)}><Settings2 size={13}/></button>}
     {open && <div className="transition-popover">
@@ -743,15 +605,6 @@ function TimelineTextBox({ item, update, selected, onSelect }: { item: MediaItem
     <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Disappear: ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>onSelect('exit')}>{transitionSymbol(item.textExit)}</button>
   </div>
 }
-
-function FieldLabel({ children, hint }: { children: React.ReactNode, hint?: string }) {
-  return <label className="field-label">{children}{hint && <span>{hint}</span>}</label>
-}
-
-function Select({ value, onChange, children, ariaLabel }: { value: string, onChange?: (v: string) => void, children: React.ReactNode, ariaLabel?: string }) {
-  return <div className="select-wrap"><select aria-label={ariaLabel} value={value} onChange={e => onChange?.(e.target.value)}>{children}</select><ChevronDown size={14} /></div>
-}
-
 // Rounds a number to at most 3 decimals for display, returning '' for NaN.
 const round3 = (n: number) => (Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : '')
 
@@ -1476,10 +1329,10 @@ function App() {
               return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
-            {selectedTransitions.length > 0 && (()=>{ const first = media.find(x => x.id === selectedTransitions[0]); const isGL = first && isGLTransition(first.transition); return <div className="timeline-inspector with-gl"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><Select value={first?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v, transitionParams: isGLTransition(v) ? (item.transitionParams||{}) : undefined} : item))}><TransitionOptions/></Select><NumberStepper value={first?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} />{isGL && first && <GLParamControls transition={first.transition} params={(first.transitionParams as Record<string,string|number>)||{}} onChange={next=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionParams: next}:item))}/>} <div className="transition-meta"><EasingSelect value={first?.transitionEasing||EASING_DEFAULT} onChange={v=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionEasing:v}:item))}/><label className="check-label"><input type="checkbox" checked={Boolean(first?.transitionReverse)} onChange={e=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionReverse: e.target.checked?1:0}:item))}/><span><Check size={11}/></span> Reverse</label></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>})()}
-            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><Select value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)}><TransitionOptions/></Select><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTransitions.length > 0 && (()=>{ const first = media.find(x => x.id === selectedTransitions[0]); const isGL = first && isGLTransition(first.transition); return <div className="timeline-inspector with-gl"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><TransitionChip value={first?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v, transitionParams: isGLTransition(v) ? (item.transitionParams||{}) : undefined} : item))} /><NumberStepper value={first?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} />{isGL && first && <GLParamControls transition={first.transition} params={(first.transitionParams as Record<string,string|number>)||{}} onChange={next=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionParams: next}:item))}/>} <div className="transition-meta"><EasingSelect value={first?.transitionEasing||EASING_DEFAULT} onChange={v=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionEasing:v}:item))}/><label className="check-label"><input type="checkbox" checked={Boolean(first?.transitionReverse)} onChange={e=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionReverse: e.target.checked?1:0}:item))}/><span><Check size={11}/></span> Reverse</label></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>})()}
+            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><TransitionChip value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)} /><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
 
-            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><Select value={bulkTransition} onChange={setBulkTransition}><TransitionOptions/></Select><button onClick={() => applyBulkTransition(false)}>Apply effect</button><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Assign a random transition from: ${randomScopeLabels[randomScope]}`} onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
+            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} /><button onClick={() => applyBulkTransition(false)}>Apply effect</button><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Assign a random transition from: ${randomScopeLabels[randomScope]}`} onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
 
             <div className="bulk-bar" id="section-transitions"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Randomize every clip using: ${randomScopeLabels[randomScope]}`} onClick={() => { randomize(); notify(`Effects and transitions randomized · ${randomScopeLabels[randomScope]}`) }}><Shuffle size={14}/> Randomize all</button></div>
             <div className="media-view-bar"><span className="view-label">VIEW</span><div className="mode-toggle"><button className={!compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(false)} title="Show the full detail list"><List size={14}/> List</button><button className={compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(true)} title="Show a compact thumbnail grid with quick multi-selection"><LayoutGrid size={14}/> Compact</button></div>{compactMediaView && <div className="zoom-controls compact-zoom"><button onClick={() => setCompactZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out — smaller thumbnails"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={1.6} step={0.1} value={compactZoom} aria-label="Compact thumbnail zoom" onChange={e => setCompactZoom(Number(e.target.value))}/><span>{Math.round(compactZoom * 100)}%</span><button onClick={() => setCompactZoom(z => Math.min(1.6, +(z + .2).toFixed(1)))} title="Zoom in — bigger thumbnails"><ZoomIn size={14}/></button></div>}<span className="view-hint">Select frames with the check marks · Shift-click for a range · “Select all” grabs every frame in one go · drag to reorder · click a picture to view it</span></div>
@@ -1491,7 +1344,7 @@ function App() {
                 return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                   <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
-                  <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className={`item-text-edit ${item.textEnabled === false ? 'off' : ''}`}>{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}<button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><Select value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})}><TransitionOptions/></Select><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
+                  <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className={`item-text-edit ${item.textEnabled === false ? 'off' : ''}`}>{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}<button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TransitionChip value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                   <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
                   {index < media.length - 1 ? <TransitionCell item={item} onPatch={patch_ => patch(item.id, patch_)} /> : <div className="end-card"><Check size={13}/> End of story</div>}
@@ -1862,7 +1715,7 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false}:{item:MediaIt
         </div>
         {change && <div className="bg-transition">
           <div className="ab-chip"><i style={{background:change.from}}/><ChevronRight size={12}/><i style={{background:change.to}}/><span>{change.transition} · starts {change.start.toFixed(1)}s · {change.time.toFixed(1)}s</span><button type="button" className={`icon-button ${bgPlaying?'playing':''}`} title={bgPlaying?'Pause preview':'Play the colour change'} onClick={()=>setBgPlaying(p=>!p)}>{bgPlaying?<Pause size={13}/>:<Play size={13}/>}</button></div>
-          <div><FieldLabel>Transition A → B</FieldLabel><Select value={change.transition} onChange={v=>update({frameTransition:v})}>{Object.entries(transitionGroups).map(([group,names])=><optgroup key={group} label={group}>{names.map(name=><option key={name}>{name}</option>)}</optgroup>)}</Select></div>
+          <div><FieldLabel>Transition A → B</FieldLabel><TransitionChip value={change.transition} onChange={v=>update({frameTransition:v})}/></div>
           <div><FieldLabel>Start at <span>{change.start.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={Math.max(0,item.duration-change.time)} step={0.1} value={change.start} onChange={e=>update({frameTransitionStart:Number(e.target.value)})}/></div>
           <div><FieldLabel>Duration <span>{change.time.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0.2} max={item.duration} step={0.1} value={change.time} onChange={e=>{const t=Number(e.target.value);update({frameTransitionTime:t,frameTransitionStart:Math.min(change.start,Math.max(0,item.duration-t))})}}/></div>
           <div className="bg-timeline" title="Frame timeline: A · transition · B"><i style={{background:change.from,flex:change.start}}/><i className="mix" style={{background:`linear-gradient(90deg,${change.from},${change.to})`,flex:change.time}}/><i style={{background:change.to,flex:Math.max(0,change.hold-change.start-change.time)}}/></div>
@@ -2021,13 +1874,12 @@ function TransitionPreview({ outgoing, incoming, onClose, onApply }: { outgoing:
   const [params, setParams] = useState<Record<string,string|number>>((outgoing.transitionParams as Record<string,string|number>)||{})
   const [easing, setEasing] = useState(outgoing.transitionEasing || EASING_DEFAULT)
   const [reverse, setReverse] = useState(outgoing.transitionReverse || 0)
-  const [tab, setTab] = useState<'xfade'|'gl'>(isGLTransition(choice)?'gl':'xfade')
   const [accurateUrl, setAccurateUrl] = useState<string | null>(null)
   const [rendering, setRendering] = useState(false)
   const [error, setError] = useState('')
   const [loopKey, setLoopKey] = useState(0)
   // when choice changes, sync tab and reset params if needed
-  useEffect(()=>{ setTab(isGLTransition(choice)?'gl':'xfade'); if(isGLTransition(choice)){ const defs=getGLParams(choice); const next:Record<string,string>={}; for(const d of defs) next[d.name]= String(params[d.name] ?? d.default); if(Object.keys(next).length) setParams(next)} }, [choice]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{ if(isGLTransition(choice)){ const defs=getGLParams(choice); const next:Record<string,string>={}; for(const d of defs) next[d.name]= String(params[d.name] ?? d.default); if(Object.keys(next).length) setParams(next)} }, [choice]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const controller = new AbortController()
     let objectUrl = ''
@@ -2053,13 +1905,11 @@ function TransitionPreview({ outgoing, incoming, onClose, onApply }: { outgoing:
       {error && <div className="transition-preview-error"><AlertTriangle size={15}/>{error}</div>}
       <button className="btn ghost replay-transition" onClick={()=>setLoopKey(x=>x+1)}><Play size={13}/> Replay</button>
     </div><aside>
-      <div className="picker-tabs"><button className={tab==='xfade'?'active':''} onClick={()=>{setTab('xfade'); if(isGLTransition(choice)) setChoice(nativeTransitions[0])}}>XFade ({nativeTransitions.length})</button><button className={tab==='gl'?'active':''} onClick={()=>{setTab('gl'); if(!isGLTransition(choice)) setChoice(glTransitions[0])}}>GL Transitions ({glTransitions.length})</button></div>
-      {tab==='xfade' ? <Select value={choice} onChange={setChoice}><NativeTransitionOptions/></Select> : <Select value={choice} onChange={setChoice}><GLTransitionOptions/></Select>}
+      <TransitionChip value={choice} onChange={setChoice} />
       {isGLTransition(choice) && <div className="gl-preview-params"><FieldLabel>GL parameters — {choice}</FieldLabel><GLParamControls transition={choice} params={params} onChange={setParams}/></div>}
       <label>Duration</label><NumberStepper value={duration} min={MIN_TRANSITION_SECONDS} max={10} step={.1} suffix="s" ariaLabel="Preview transition duration" onChange={setDuration}/>
       <label>Easing</label><EasingSelect value={easing} onChange={setEasing}/>
       <label className="check-label"><input type="checkbox" checked={Boolean(reverse)} onChange={e=>setReverse(e.target.checked?1:0)}/><span><Check size={11}/></span> Reverse</label>
-      <div className="transition-choice-list">{(tab==='xfade'?Object.entries(nativeTransitionGroups):Object.entries(glTransitionGroups)).map(([group, names])=><section key={group}><strong>{group}</strong>{names.map(name=><button className={choice===name?'active':''} onClick={()=>setChoice(name)} key={name}><i>{transitionSymbol(name)}</i>{name}</button>)}</section>)}</div>
     </aside></div>
     <div className="modal-foot"><span>Uses /api/transitions/preview — accurate 360p FFmpeg render with your params, easing and reverse.</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={()=>onApply({transition: choice, transitionTime: duration, transitionParams: params, transitionEasing: easing, transitionReverse: reverse})}>Apply transition</button></div>
   </div></div>

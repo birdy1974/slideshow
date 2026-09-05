@@ -353,3 +353,126 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .item-text-edit .text-toggle:hover{background:#d3e2bc}
 .item-text-edit .text-toggle.off{background:#fff9eb;border-color:#eee0b5;color:#b9791f}
 .item-text-edit.off>input{opacity:.6;text-decoration:line-through}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Transition picker: a compact chip that opens a searchable, previewing browser.
+
+   The 191-entry <select> it replaces could not be searched, grouped or previewed
+   and was repeated in six places. The chip keeps rows narrow; the browser is
+   rendered in a portal (position: fixed) so no panel's `overflow` can clip it.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.transition-chip{width:100%;height:33px;min-width:0;border:1px solid #d9dad4;background:#fff;border-radius:6px;display:flex;align-items:center;gap:7px;padding:0 8px;text-align:left;color:#2c2f29;transition:border-color .15s,box-shadow .15s}
+.transition-chip:hover{border-color:#bfc3b8}
+.transition-chip.open,.transition-chip:focus-visible{border-color:#8ba05c;box-shadow:0 0 0 3px #c9ed6d40;outline:0}
+.transition-chip .chip-symbol{width:19px;height:19px;flex:0 0 19px;border-radius:4px;background:#dfe7d3;color:#4e6531;display:grid;place-items:center;font:700 11px Manrope;font-style:normal}
+.transition-chip.gl .chip-symbol{background:#e7e1fb;color:#5c47a8}
+.transition-chip .chip-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600}
+.transition-chip .chip-kind{font:800 7px Manrope;letter-spacing:.6px;color:#5c47a8;background:#efeafd;border-radius:3px;padding:2px 4px;font-style:normal;flex:0 0 auto}
+.transition-chip>svg{flex:0 0 13px;color:#8d9189}
+
+.transition-browser{position:fixed;z-index:60;display:flex;flex-direction:column;background:#fbfbf9;border:1px solid #c9cbc3;border-radius:11px;box-shadow:0 18px 48px #1c1f1833,0 2px 6px #1c1f181a;overflow:hidden}
+.transition-browser>header{display:flex;align-items:center;gap:8px;padding:10px 11px;border-bottom:1px solid #e7e7e2;background:#f5f5f1}
+.browser-search{flex:1;display:flex;align-items:center;gap:7px;height:31px;border:1px solid #d7d8d1;background:#fff;border-radius:6px;padding:0 8px}
+.browser-search svg{color:#9a9d95;flex:0 0 13px}
+.browser-search input{flex:1;min-width:0;border:0;outline:0;font-size:12px;background:none}
+.browser-search button{border:0;background:none;color:#9a9d95;display:grid;place-items:center;padding:0}
+.browser-close{width:27px;height:27px;border:0;background:none;color:#7d8178;display:grid;place-items:center;border-radius:5px}
+.browser-close:hover{background:#e8e9e3}
+
+.browser-tabs{display:flex;align-items:center;gap:5px;padding:8px 11px;border-bottom:1px solid #e7e7e2;background:#fbfbf9}
+.browser-tabs button{height:26px;border:1px solid #dedfd9;background:#fff;border-radius:20px;padding:0 11px;display:inline-flex;align-items:center;gap:5px;font:600 10px Manrope;color:#5f635b}
+.browser-tabs button b{font:800 9px Manrope;color:#9a9d95}
+.browser-tabs button:hover{border-color:#c3c6bd}
+.browser-tabs button.active{background:#22251f;border-color:#22251f;color:#fff}
+.browser-tabs button.active b{color:#c9ed6d}
+.browser-tabs>i{flex:1}
+
+.browser-body{flex:1;min-height:0;display:grid;grid-template-columns:150px minmax(0,1fr)}
+.browser-groups{border-right:1px solid #e7e7e2;overflow-y:auto;padding:7px 7px 10px;background:#f6f6f2}
+.browser-groups button{width:100%;border:0;background:none;text-align:left;padding:5px 7px;border-radius:5px;font-size:10px;font-weight:600;color:#5f635b;display:flex;align-items:center;gap:6px}
+.browser-groups button b{margin-left:auto;font:800 8px Manrope;color:#a8aca3}
+.browser-groups button:hover{background:#eceee6}
+.browser-groups button.active{background:#dfe9ca;color:#3e5224}
+
+.browser-grid-wrap{min-width:0;overflow:hidden}
+.browser-grid{height:100%;overflow-y:auto;padding:10px 12px 16px}
+.browser-grid section{margin:0 0 4px}
+.browser-grid section>strong{display:block;font:700 8px Manrope;letter-spacing:1px;color:#8b8e86;text-transform:uppercase;margin:6px 0 6px 2px}
+.tile-row{display:flex;flex-wrap:wrap;gap:8px}
+.browser-empty{margin:26px 4px;color:#90938b;font-size:12px;text-align:center}
+.grid-tail{height:6px}
+
+.transition-tile{width:104px;cursor:pointer;border-radius:7px;padding:0;border:2px solid transparent;background:none;outline:0}
+.transition-tile:focus-visible{border-color:#8ba05c}
+.transition-tile .tile-stage{position:relative;display:block;width:100%;aspect-ratio:16/9;border-radius:6px;overflow:hidden;background:#20231f;border:1px solid #d7d8d1}
+.transition-tile video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.transition-tile .tile-name{display:block;margin-top:4px;font-size:9px;font-weight:600;color:#5f635b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;line-height:1.25}
+.transition-tile.gl .tile-name{color:#5c47a8}
+.transition-tile:hover .tile-stage{border-color:#9aa173}
+.transition-tile.active .tile-stage{border-color:#22251f;box-shadow:0 0 0 2px #c9ed6d}
+.transition-tile.active .tile-name{color:#22251f;font-weight:800}
+
+/* CSS approximation, shown until the cached FFmpeg clip is available (and for
+   transitions this FFmpeg build has to fall back on). Paused until hover so a
+   grid of 191 tiles does not animate at once. */
+.transition-tile .quick-transition{position:absolute;inset:0;background:none}
+.transition-tile .quick-transition>span{position:absolute;inset:0;display:grid;place-items:center;font:800 12px Manrope;color:#ffffffcc}
+.transition-tile .tile-frame.a{background:#2E5E4E}
+.transition-tile .tile-frame.b{background:#B4552D}
+.transition-tile .tile-frame.a:after{content:'A'}
+.transition-tile .tile-frame.b:after{content:'B'}
+.transition-tile .quick-transition>span:last-child{animation-play-state:paused}
+.transition-tile:hover .quick-transition>span:last-child,
+.transition-tile.active .quick-transition>span:last-child{animation-play-state:running}
+.tile-loading,.tile-flag{position:absolute;z-index:2;display:grid;place-items:center}
+.tile-loading{inset:0;color:#ffffffcc;background:#20231f66}
+.tile-flag{bottom:3px;left:3px;padding:1px 4px;border-radius:3px;background:#5b4a1fe6;color:#ffe6b0;font:700 7px Manrope;letter-spacing:.4px}
+.tile-star{position:absolute;top:2px;right:2px;z-index:3;width:19px;height:19px;border:0;border-radius:4px;background:#00000059;color:#ffffffb0;display:grid;place-items:center;opacity:0;transition:opacity .12s}
+.transition-tile:hover .tile-star,.tile-star.on{opacity:1}
+.tile-star:hover{background:#000000a6;color:#ffd35c}
+.tile-star.on{color:#ffd35c}
+
+.transition-browser>footer{display:flex;align-items:center;gap:10px;padding:8px 11px;border-top:1px solid #e7e7e2;background:#f5f5f1}
+.browser-count{font:700 9px Manrope;color:#6f736a}
+.browser-cache{margin-left:auto;font-size:9px;color:#90938b;display:inline-flex;align-items:center;gap:5px}
+.browser-build{border:1px solid #ccd3bd;background:#eef3e4;color:#4c6330;border-radius:5px;height:25px;padding:0 9px;display:inline-flex;align-items:center;gap:5px;font:700 10px Manrope}
+.browser-build:hover{background:#e3ecd5}
+.transition-browser .check-label.tiny{font-size:9px}
+.transition-browser .check-label.tiny span{width:12px;height:12px;border-radius:3px}
+.transition-browser .check-label.tiny input:checked+span{background:#728f42}
+
+@media(max-width:760px){
+  .browser-body{grid-template-columns:1fr}
+  .browser-groups{display:none}
+  .transition-browser{left:8px!important;right:8px;width:auto!important}
+  .transition-tile{width:88px}
+}
+
+/* ── where the 191-entry <select> used to sit, now a chip ─────────────────── */
+/* detailed slide list row: the chip takes the symbol's old column too */
+.transition-cell{grid-template-columns:minmax(120px,1fr) 90px 34px}
+.transition-cell .transition-chip{grid-column:1}
+.transition-cell .number-stepper{grid-column:2}
+.transition-cell .icon-button.small{grid-column:3}
+/* text appear/disappear popover inside the same row */
+.detail-transition-popover .transition-chip{height:28px}
+/* multi-select inspector + bulk bar */
+.timeline-inspector .transition-chip{width:190px;height:29px}
+.bulk-tools .transition-chip{width:150px}
+/* frame background colour-change editor (dark panel) */
+.bg-transition .transition-chip{background:#20231f;border-color:#494e45;color:#eee}
+.bg-transition .transition-chip .chip-name{color:#eee}
+.bg-transition .transition-chip>svg{color:#9aa08f}
+.bg-transition .transition-chip:hover{border-color:#6b7263}
+/* preview modal sidebar */
+.transition-preview-body aside>.transition-chip{margin-bottom:16px;width:100%}
+@media(max-width:760px){
+  .timeline-inspector .transition-chip,.bulk-tools .transition-chip{width:100%}
+}
+.transition-tile .quick-transition>span:last-child{animation-duration:var(--transition-speed,1s);animation-iteration-count:infinite;animation-timing-function:ease-in-out}
+.transition-tile .quick-transition.fade>span:last-child{animation-name:transitionFade}
+.transition-tile .quick-transition.from-left>span:last-child{animation-name:transitionLeft}
+.transition-tile .quick-transition.from-right>span:last-child{animation-name:transitionRight}
+.transition-tile .quick-transition.from-up>span:last-child{animation-name:transitionUp}
+.transition-tile .quick-transition.from-down>span:last-child{animation-name:transitionDown}
