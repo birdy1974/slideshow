@@ -331,3 +331,17 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .bulk-bar .random-scope-label{font:800 8px Manrope;letter-spacing:1.1px;color:#7d8178}
 .bulk-bar .select-wrap{height:29px;width:170px;flex:0 0 auto}
 .bulk-tools .select-wrap[aria-hidden]{width:150px}
+
+/* --- Enable/disable text on picture --- */
+/* Storyline clip badge, next to the select checkbox (top-left corner). */
+.clip-text-toggle{position:absolute;z-index:5;left:22px;top:4px;width:16px;height:16px;border:0;border-radius:4px;background:#1d211bcc;color:#dfe7d3;display:grid;place-items:center;padding:0}
+.clip-text-toggle:hover{background:#78a13e;color:#fff}
+.clip-text-toggle.off{background:#b9791f;color:#fff}
+.clip-text-toggle.off:hover{background:#a2650f}
+/* Storyline text lane: hidden captions render dashed + struck through. */
+.timed-text.off input{border-style:dashed;background:#f4f4ef;color:#9a9d95;text-decoration:line-through}
+/* Detailed slide list: eye toggle at the start of the caption controls. */
+.item-text-edit .text-toggle{width:25px;min-width:25px;height:25px;border:1px solid #ccd1c5;background:#e7ecdf;color:#526838;border-radius:4px;display:grid;place-items:center;padding:0}
+.item-text-edit .text-toggle:hover{background:#d3e2bc}
+.item-text-edit .text-toggle.off{background:#fff9eb;border-color:#eee0b5;color:#b9791f}
+.item-text-edit.off>input{opacity:.6;text-decoration:line-through}

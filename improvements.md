@@ -1,6 +1,5 @@
 2026-09-05
 - add cut and crop function for movies (same functionality as for the soundtracks)
-- add enable/disable function for text on picture. advise on gui options for storyline and list with photos
 - add possibility to enter a default time for all slides (put it net to "transition default")
 - show transition symbol also in the detailed slide list (same as storyline)
 - in detailed slide list make box for effect smaller (fit to largest text)
@@ -26,6 +25,7 @@
 
 2026-09-05
 - add favicon
+- add enable/disable function for text on picture. advise on gui options for storyline and list with photos (see docs/text-on-picture-toggle.md)
 
 2026-09-04
 - in SAVED IN SQLITE popup, provide a button per entry to delete that entry, also 1 button to delete all.
