@@ -683,6 +683,7 @@ function TransitionCell({ item, onPatch }: { item: MediaItem; onPatch: (patch: P
   // ensure transitionTime clamped
   const max = 3600
   return <div className="transition-cell">
+    <i className={`transition-symbol ${isGL ? 'gl' : ''}`} title={`${item.transition}${item.transitionEasing && item.transitionEasing!==EASING_DEFAULT ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''}`}>{transitionSymbol(item.transition)}</i>
     <Select ariaLabel={`${item.name} transition`} value={item.transition} onChange={v => {
       // when switching type, clear params if moving to native, keep but reset to defaults if to GL?
       if (isGLTransition(v)) {
