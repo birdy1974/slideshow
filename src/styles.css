@@ -327,6 +327,12 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .timeline-inspector.with-gl .transition-meta{width:100%}
 
 
+/* Slide default · Transition default: a plain divider between the two groups
+   (the `i` divider pushes the random tools to the right, this one does not). */
+.bulk-bar>span{white-space:nowrap;flex-shrink:0}
+.bulk-bar>button{white-space:nowrap;flex-shrink:0}
+.bulk-bar .bulk-divider{display:block;width:1px;height:20px;background:#d6d7d1;margin:0 4px;flex-shrink:0}
+
 /* Random transition source picker (xfade / GL / both) */
 .bulk-bar .random-scope-label{font:800 8px Manrope;letter-spacing:1.1px;color:#7d8178}
 .bulk-bar .select-wrap{height:29px;width:170px;flex:0 0 auto}
