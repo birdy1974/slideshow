@@ -755,6 +755,31 @@ def rotation_filter(rotation: Any) -> str:
     return {90: "transpose=1", 180: "hflip,vflip", 270: "transpose=2"}.get(normalize_rotation(rotation), "")
 
 
+def video_trim_window(item: dict[str, Any], native: float | None = None) -> dict[str, float] | None:
+    """The sub-clip a movie contributes: ``{"start", "end", "kept", "native"}``.
+
+    Movies normally play end-to-end, but the editor can select a shorter
+    section (IN/OUT) so a long recording contributes only the interesting
+    part. Everything is in source-file seconds.
+
+    Returns ``None`` when the item is not a video, when its length is unknown,
+    or when no trim is set — every project saved before this feature existed
+    takes that path and keeps rendering the whole movie.
+    """
+    if item.get("type") != "video" or not native or native <= 0:
+        return None
+    start = max(0.0, min(float(item.get("trimStart") or 0.0), native))
+    raw_end = float(item.get("trimEnd") or 0.0)
+    end = native if raw_end <= 0 else min(raw_end, native)
+    # A degenerate window (OUT before IN, or a zero-length keep) would produce
+    # an empty segment, so fall back to the whole movie.
+    if end - start <= 0.01:
+        return None
+    if start <= 0.001 and end >= native - 0.001:
+        return None
+    return {"start": start, "end": end, "kept": end - start, "native": native}
+
+
 def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1.0) -> str:
     """Show the *whole* picture, letterboxed over a blurred copy of itself.
 
@@ -1292,24 +1317,44 @@ class Renderer:
                 media = scaled
         segments: list[Path] = []
         transitions = self.effective_transitions(media)
-        # Resolve hold durations. Videos always play through to the end of the
-        # source file — the configured duration is only a floor, never a ceiling
-        # that would cut the movie short before the next transition.
+        # Resolve hold durations. Videos normally play through to the end of
+        # the source file — the configured duration is only a floor, never a
+        # ceiling that would cut the movie short before the next transition.
+        # A trimmed movie is the exception: its "end" is the OUT point, so the
+        # hold follows the kept section instead of the whole file.
         durations: list[float] = []
         native_video_durations: list[float | None] = []
+        # Per item: the IN/OUT window of a trimmed movie, else None.
+        video_windows: list[dict[str, float] | None] = []
         for item in media:
+            if item.get("previewTrim"):
+                # The two-clip transition preview is the transition and nothing
+                # else: no hold on either side, so the sample opens and closes
+                # with the crossfade and lasts exactly as long as it does.  The
+                # segments still carry the full transition as their xfade
+                # handle, which is where the outgoing and incoming pictures are
+                # seen.  No probing: the caller has already cut the sources.
+                durations.append(0.0)
+                native_video_durations.append(None)
+                video_windows.append(None)
+                continue
             hold = max(.2, float(item.get("duration", 5)))
             native: float | None = None
-            if item.get("type") == "video" and not item.get("previewTrim"):
+            window: dict[str, float] | None = None
+            if item.get("type") == "video":
+                probed: float | None = None
                 try:
-                    native = self._probe_duration(source_path(self.settings, item))
+                    probed = self._probe_duration(source_path(self.settings, item))
                 except Exception as exc:
                     log.warning("Could not probe video duration for %s: %s", item.get("name"), exc)
-                    native = None
-                if native is not None and native > 0:
+                    probed = None
+                if probed is not None and probed > 0:
+                    window = video_trim_window(item, probed)
+                    native = window["kept"] if window else probed
                     hold = max(hold, native)
             durations.append(hold)
             native_video_durations.append(native)
+            video_windows.append(window)
         # Give xfade incoming/outgoing handles while preserving every configured
         # clip hold in full.  These handles make transition time additive.
         segment_durations = [
@@ -1361,12 +1406,28 @@ class Renderer:
                 if kind_name == "image":
                     command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(source)]
                 else:
-                    # Play the movie once end-to-end. Never stream_loop a video:
+                    # Play the movie once through. Never stream_loop a video:
                     # looping would restart the clip mid-hold or during the
                     # transition handle, cutting the story short visually.
                     # Transition handles and any hold beyond the native length
                     # are filled by freezing the first/last frame via tpad.
+                    # A trimmed movie contributes only its IN/OUT section:
+                    # -ss before -i is a fast input seek (frame-accurate since
+                    # FFmpeg 2.1 because the decoder still walks to the exact
+                    # PTS), and -t caps how much is read after it.
+                    window = video_windows[index]
+                    if item.get("previewTrim"):
+                        seek = max(0.0, float(item.get("trimStart") or 0.0))
+                        limit: float | None = None
+                    elif window:
+                        seek, limit = window["start"], window["kept"]
+                    else:
+                        seek, limit = 0.0, None
+                    if seek > 0.001:
+                        command += ["-ss", format_ffmpeg_number(seek)]
                     command += ["-i", str(source)]
+                    if limit is not None and limit > 0.001:
+                        command += ["-t", format_ffmpeg_number(limit)]
             filters = [base_filter]
             if kind_name == "image":
                 # Honour the orientation chosen in the photo preview popup
@@ -1502,8 +1563,12 @@ class Renderer:
                 "-t", format_ffmpeg_number(hold), str(hold_part),
             ]
             progress(55 + 25 * (index + 1) / len(media), f"Preparing timeline item {index + 1} of {len(media)}")
-            run_compose(hold_command, allow_qsv_fallback=True)
-            timeline_parts.append(hold_part)
+            # A zero-length hold (the transition-only preview) must not be
+            # rendered or listed at all: concatenating a 0-second clip leaves
+            # the join with nothing to start from.
+            if hold > 0.0005:
+                run_compose(hold_command, allow_qsv_fallback=True)
+                timeline_parts.append(hold_part)
 
             if index >= len(transitions):
                 continue
@@ -1616,6 +1681,14 @@ class Renderer:
             mix_labels = ["[bed]"]
             for movie_index, item in original_movies:
                 source = source_path(self.settings, item)
+                # The movie's own sound follows the same IN/OUT section as the
+                # picture, otherwise the sub-clip would play the wrong audio.
+                window = video_windows[movie_index]
+                if window:
+                    audio_args += ["-ss", format_ffmpeg_number(window["start"])]
+                    audio_length = window["kept"]
+                else:
+                    audio_length = durations[movie_index]
                 audio_args += ["-i", str(source)]
                 movie_audio_index = audio_index
                 audio_index += 1
@@ -1623,7 +1696,7 @@ class Renderer:
                 duration = durations[movie_index]
                 fade_in = transitions[movie_index - 1] if movie_index else 0.0
                 fade_out = transitions[movie_index] if movie_index < len(transitions) else 0.0
-                original_filter = f"atrim=duration={format_ffmpeg_number(duration)},asetpts=PTS-STARTPTS"
+                original_filter = f"atrim=duration={format_ffmpeg_number(audio_length)},asetpts=PTS-STARTPTS"
                 if fade_in > 0.0005:
                     original_filter += f",afade=t=in:st=0:d={format_ffmpeg_number(fade_in)}"
                 if fade_out > 0.0005:

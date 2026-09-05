@@ -6,8 +6,10 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 
 - Safe server-side browsing inside read-only `/photos`, `/videos`, and `/music` mounts
 - Mixed photos, videos, generated text frames, drag ordering, multi-selection, and multi-line timelines
+- Movie trimming: open a movie from the storyline and drag IN/OUT handles to use only the section you want — the clip on the timeline becomes exactly that long, and the movie's own audio follows the same cut
 - One-click "New project" that starts a completely blank project without touching saved ones
 - FFmpeg xfade catalogue (58 native transitions) plus 133 GL transitions (gl-transitions.com, ported to the custom ffmpeg via `ffmpeg-patch/`), per-transition parameters/labels/groups kept in one shared `registry/transitions.json` consumed by both backend and frontend, per-transition timing, random/bulk assignment, and GLSL-to-dissolve portability fallback
+- A searchable transition browser replacing the 191-entry dropdown: a chip in every transition setting plus a full-screen gallery (Browse all 191) with looping examples rendered once per transition and cached under `/config` — see [docs/transition-previews.md](docs/transition-previews.md)
 - Ken Burns controls with selected-item and random bulk assignment
 - Timed captions, appear/disappear transitions, draggable title placement, 20 bundled open-licence fonts (sans, serif, display & script — see `public/fonts/README.md`), and frame backgrounds
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming
@@ -16,7 +18,9 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - 480p, 720p, 1080p, and 4K output presets with CPU/x264 and Intel Quick Sync selection
 - Output overwrite protection: rendering asks for acknowledgement before replacing an existing MP4
 - Shared timeline math between UI and renderer, so the estimated total always matches the rendered length
+- Transition previews rendered from your own two clips at 360p: the sample is the transition alone, so it runs for exactly the duration you set (a 5-second transition gives a 5-second clip)
 - Background jobs, live progress, downloadable output, persistent diagnostics, and render history
+- Generation estimates: the header shows a live badge (progress, FFmpeg stage and a countdown) while a job runs, and the Ready-to-render pane predicts how long the render will take, how big the MP4 will be, and how long the slideshow runs. The time-to-generate figure starts as a resolution/encoder guess and becomes a measurement after the first render — see [docs/render-estimates.md](docs/render-estimates.md)
 - Atomic, lossless SQLite save/load with normalized tables and a canonical full-project snapshot
 - Production Docker image containing FFmpeg, fonts, Intel media drivers, frontend, API, and renderer
 

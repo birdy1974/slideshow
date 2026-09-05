@@ -23,6 +23,7 @@ from app.renderer import (
     build_filter_graph,
     build_xfade_filter,
     quote_xfade_value,
+    video_trim_window,
     fill_frame_filter,
     fit_frame_filter,
     loudnorm_filter,
@@ -748,6 +749,111 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
 
 
+class TransitionPreviewTrimTest(unittest.TestCase):
+    """The popup sample is the transition itself — no hold on either side."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos", output_dir=base / "out", music_dir=base / "music")
+        for directory in (self.settings.photos_dir, self.settings.videos_dir, self.settings.work_dir, self.settings.preview_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        (self.settings.videos_dir / "a.mp4").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "fit.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _render(self, media: list[dict]) -> list[list[str]]:
+        """Run a preview render and return every FFmpeg command it issued."""
+        # Mirrors POST /api/transitions/preview: two clips, one transition.
+        project = {
+            "id": "transition",
+            "project": {"name": "Transition preview", "randomOrder": False},
+            "media": media,
+            "soundtrack": {"tracks": [], "policy": "Play once, then silence"},
+            "output": {"encoder": "CPU · x264"},
+        }
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"x")
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=30.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "preview", work, threading.Event(), lambda p, s: None)
+        return commands
+
+    @staticmethod
+    def _out_t(command: list[str]) -> str:
+        """The -t that caps the output (the one after -an for segments)."""
+        return command[command.index("-t", command.index("-an")) + 1]
+
+    @staticmethod
+    def _preview_pair(transition_time: float) -> list[dict]:
+        return [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": max(1.0, transition_time),
+             "effect": "None", "transition": "Fade", "transitionTime": transition_time, "previewTrim": True},
+            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": max(1.0, transition_time),
+             "effect": "None", "transition": "Fade", "transitionTime": 1, "previewTrim": True},
+        ]
+
+    def test_sample_is_exactly_as_long_as_the_transition(self) -> None:
+        commands = self._render(self._preview_pair(5.0))
+        segments = [c for c in commands if "segment-" in c[-1]]
+        self.assertEqual(2, len(segments))
+        for command in segments:
+            self.assertEqual("5", self._out_t(command), "each segment is one transition long")
+        # The joined timeline and the finished MP4 are both capped at 5 s.
+        timeline = next(c for c in commands if "concat" in c)
+        self.assertEqual("5", timeline[timeline.index("-t") + 1])
+        final = commands[-1]
+        self.assertEqual("5", final[final.index("-t") + 1])
+
+    def test_crossfade_starts_at_zero(self) -> None:
+        commands = self._render(self._preview_pair(3.0))
+        graphs = [c[c.index("-filter_complex") + 1] for c in commands if "-filter_complex" in c]
+        graph = next(g for g in graphs if "xfade" in g)
+        self.assertIn("duration=3", graph)
+        self.assertIn("offset=0", graph, "the crossfade must open the clip, not follow a hold")
+        self.assertNotIn("trim=start=0:end=0", " ".join(graphs), "no empty hold may be rendered")
+
+    def test_no_hold_before_or_after_the_transition(self) -> None:
+        """Regression guard: a 5 s transition used to sit between two 5 s holds."""
+        commands = self._render(self._preview_pair(5.0))
+        final = commands[-1]
+        self.assertEqual("5", final[final.index("-t") + 1])
+        # Without previewTrim the same two clips run hold + transition + hold.
+        plain = [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 5},
+            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ]
+        self.assertEqual("15", self._render(plain)[-1][self._render(plain)[-1].index("-t") + 1])
+
+    def test_short_transition_stays_short(self) -> None:
+        commands = self._render(self._preview_pair(0.5))
+        final = commands[-1]
+        self.assertEqual("0.5", final[final.index("-t") + 1])
+
+    def test_movie_sources_are_capped_to_the_transition_too(self) -> None:
+        pair = self._preview_pair(2.0)
+        pair[1]["type"] = "video"
+        pair[1]["path"] = "/videos/a.mp4"
+        commands = self._render(pair)
+        segments = [c for c in commands if "segment-" in c[-1]]
+        for command in segments:
+            self.assertEqual("2", self._out_t(command))
+        final = commands[-1]
+        self.assertEqual("2", final[final.index("-t") + 1])
+
+
 class FontFileTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -1164,3 +1270,135 @@ class TextOnPictureToggleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MovieTrimTest(unittest.TestCase):
+    """A movie can contribute only a selected section (IN/OUT) of the file.
+
+    Untrimmed movies keep the historical behaviour — the whole file plays and
+    the configured duration can only extend the hold, never cut the movie
+    short. A trim changes both: FFmpeg seeks to IN and reads only the kept
+    section, and that section becomes the movie's length on the timeline.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos", output_dir=base / "out", music_dir=base / "music")
+        for directory in (self.settings.photos_dir, self.settings.videos_dir, self.settings.work_dir, self.settings.preview_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.videos_dir / "clip.mp4").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "trim.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.renderer.pool.shutdown(wait=False)
+        self.temp.cleanup()
+
+    # ------------------------------------------------------------ pure helper
+
+    def test_whole_file_when_nothing_is_set(self) -> None:
+        self.assertIsNone(video_trim_window({"type": "video"}))
+        self.assertIsNone(video_trim_window({"type": "video", "trimStart": 0, "trimEnd": 0}, 120))
+        self.assertIsNone(video_trim_window({"type": "video", "trimStart": 0, "trimEnd": 120}, 120))
+
+    def test_not_a_video_or_unknown_length(self) -> None:
+        self.assertIsNone(video_trim_window({"type": "image", "trimStart": 5}, 120))
+        self.assertIsNone(video_trim_window({"type": "video", "trimStart": 5}, 0))
+        self.assertIsNone(video_trim_window({"type": "video", "trimStart": 5}, None))
+
+    def test_in_and_out_points(self) -> None:
+        window = video_trim_window({"type": "video", "trimStart": 30, "trimEnd": 50}, 120)
+        self.assertEqual({"start": 30.0, "end": 50.0, "kept": 20.0, "native": 120.0}, window)
+
+    def test_open_ended_trims_and_clamping(self) -> None:
+        # Only OUT set: starts at zero.
+        self.assertEqual(0.0, video_trim_window({"type": "video", "trimEnd": 20}, 120)["start"])
+        # Only IN set: runs to the end of the file.
+        self.assertEqual(90.0, video_trim_window({"type": "video", "trimStart": 30}, 120)["kept"])
+        # A trim past the end of the file is clamped, not rejected.
+        self.assertEqual(120.0, video_trim_window({"type": "video", "trimStart": 30, "trimEnd": 999}, 120)["end"])
+
+    def test_degenerate_windows_fall_back_to_the_whole_movie(self) -> None:
+        self.assertIsNone(video_trim_window({"type": "video", "trimStart": 50, "trimEnd": 30}, 120))
+        self.assertIsNone(video_trim_window({"type": "video", "trimStart": 40, "trimEnd": 40.005}, 120))
+
+    # ---------------------------------------------------------------- ffmpeg
+
+    def _render_commands(self, media: list[dict], probe: float = 120.0) -> list[list[str]]:
+        project = {"id": 1, "media": media, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"segment")
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=probe):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        return commands
+
+    def _movie(self, **extra) -> dict:
+        item = {"id": 1, "type": "video", "path": "/videos/clip.mp4", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1}
+        item.update(extra)
+        return item
+
+    def _segment(self, media: list[dict], probe: float = 120.0) -> list[str]:
+        """The FFmpeg command that builds the first clip's segment."""
+        return next(c for c in self._render_commands(media, probe) if "segment-" in str(c[-1]))
+
+    @staticmethod
+    def _output_t(command: list[str]) -> str:
+        """The output -t (the clip's length), which sits after -an.
+
+        A trimmed movie also has an input-side -t that caps how much is read
+        from the IN point, so the first -t is not necessarily the length.
+        """
+        return command[command.index("-an") + 2]
+
+    def test_untrimmed_movie_is_untouched(self) -> None:
+        command = self._segment([self._movie()])
+        self.assertNotIn("-ss", command)
+        # The whole 120 s file plays, because the hold can only extend it.
+        self.assertEqual("120", self._output_t(command))
+
+    def test_trimmed_movie_seeks_to_in_and_reads_the_kept_section(self) -> None:
+        command = self._segment([self._movie(trimStart=30, trimEnd=50)])
+        source = str(self.settings.videos_dir / "clip.mp4")
+        self.assertEqual(["-ss", "30", "-i"], command[command.index(source) - 3:command.index(source)])
+        # -t right after the input caps how much is read from IN onwards.
+        self.assertEqual("-t", command[command.index(source) + 1])
+        self.assertEqual("20", command[command.index(source) + 2])
+
+    def test_the_clip_becomes_as_long_as_the_kept_section(self) -> None:
+        # The configured duration (5 s) is shorter than the kept section, so
+        # the movie plays for 20 s — not the full 120 s file.
+        segment = self._segment([self._movie(trimStart=30, trimEnd=50)])
+        self.assertEqual("20", self._output_t(segment))
+
+    def test_a_longer_hold_still_freezes_the_last_frame(self) -> None:
+        # Asking for 60 s of hold keeps 60 s (20 s of movie + a frozen frame),
+        # which is how an untrimmed movie behaves today.
+        segment = self._segment([self._movie(duration=60, trimStart=30, trimEnd=50)])
+        self.assertEqual("60", self._output_t(segment))
+        # ...and the freeze is done by padding the last frame, as it is today.
+        self.assertIn("stop_duration=40", " ".join(segment))
+
+    def test_original_movie_audio_follows_the_same_section(self) -> None:
+        commands = self._render_commands([self._movie(audioSource="original", trimStart=30, trimEnd=50)])
+        mux = next(c for c in commands if "amix" in " ".join(c))
+        joined = " ".join(mux)
+        source = str(self.settings.videos_dir / "clip.mp4")
+        # One -ss for the audio copy of the movie (the other input is the
+        # silent timeline and an anullsrc bed).
+        self.assertIn("-ss 30", joined)
+        self.assertIn("atrim=duration=20", joined)
+        # The picture's own segment still uses the trimmed source.
+        self.assertIn(source, joined)
+
+    def test_soundtrack_only_project_has_no_audio_seek(self) -> None:
+        commands = self._render_commands([self._movie(trimStart=30, trimEnd=50)])
+        self.assertFalse(any("atrim" in " ".join(c) for c in commands))
