@@ -5,7 +5,10 @@ import {
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
 } from 'lucide-react'
-import { FieldLabel, Select } from './ui'
+import { FieldLabel, Select, TimeField } from './ui'
+import { formatClock, formatClockPrecise, parseClock } from './time'
+import type { MediaItem } from './mediaItem'
+import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { TransitionChip } from './TransitionPicker'
 import { EasingSelect, GLParamControls, RandomScopeSelect, pickRandomTransition, randomScopeLabels } from './transitionControls'
 import type { RandomScope } from './transitionControls'
@@ -119,14 +122,20 @@ function itemThumbUrl(item?: MediaItem | null) {
 
 type LightboxTarget = { title: string; src: string; kind: 'image' | 'video' | 'audio' }
 
-function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, position, rotation, onRotate }: LightboxTarget & {
+function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, onEdit, position, rotation, onRotate, suspended }: LightboxTarget & {
   onClose: () => void;
   // Storyline bindings: when present, the lightbox can walk the storyline
   // (prev/next), show the current position, and delete the shown item.
   onPrev?: () => void; onNext?: () => void; onDelete?: () => void; position?: string;
+  // Movies only: opens the cut/crop editor, which is stacked on top of this
+  // lightbox and returns here when it closes.
+  onEdit?: () => void;
   // Photo orientation: current quarter-turn rotation and a handler receiving
   // +90 (clockwise) or -90 (counter-clockwise). Only offered for photos.
   rotation?: number; onRotate?: (delta: 90 | -90) => void;
+  // True while a stacked editor is open: keyboard shortcuts and the backdrop
+  // click belong to that editor, not to this lightbox.
+  suspended?: boolean;
 }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
@@ -134,6 +143,7 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, po
   // lightbox is bound to storyline items (browser previews pass no handlers).
   useEffect(() => {
     if (!onPrev && !onNext && !onDelete && !onRotate) return
+    if (suspended) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'ArrowLeft') onPrev?.()
       else if (event.key === 'ArrowRight') onNext?.()
@@ -142,14 +152,16 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, po
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onPrev, onNext, onDelete, onRotate, onClose])
+  }, [onPrev, onNext, onDelete, onRotate, onClose, suspended])
   const turn = normalizeRotation(rotation)
   const canRotate = kind === 'image' && !!onRotate
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}>
+  const canEditMovie = kind === 'video' && !!onEdit
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={suspended ? undefined : onClose}>
     {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←)" aria-label="Previous media" onMouseDown={e => e.stopPropagation()} onClick={onPrev}><ChevronLeft size={26}/></button>}
     {onNext && <button type="button" className="lightbox-nav next" title="Next media (→)" aria-label="Next media" onMouseDown={e => e.stopPropagation()} onClick={onNext}><ChevronRight size={26}/></button>}
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
-      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
+      <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{canEditMovie && <button type="button" className="lightbox-edit" title="Cut this movie — choose which section to use" onClick={onEdit}><Scissors size={17}/> Cut</button>}
+        {canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
         : kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
@@ -264,32 +276,6 @@ function AudioTimeReadout({ current, duration }: { current: number; duration: nu
   return <span className="audio-time"><b>{formatClock(current)}</b> / <em>-{formatClock(duration - current)}</em> / {formatClock(duration)}</span>
 }
 
-type MediaItem = {
-  id: number; name: string; path: string; src: string; type: 'image' | 'video' | 'title';
-  duration: number; effect: string; transition: string; transitionTime: number;
-  // Extended transition config for custom ffmpeg (xfade-easing): per-clip GL params, easing and reverse
-  transitionParams?: Record<string, string | number>;
-  transitionEasing?: string;
-  transitionReverse?: number;
-  text: string; textMode: 'overlay' | 'frame';
-  // Per-slide opt-out: when false the caption is kept but not drawn on the picture.
-  textEnabled?: boolean;
-  textStart: number; textEnd: number; textEnter: string; textExit: string;
-  textEnterDuration: number; textExitDuration: number;
-  textX: number; textY: number; frameBackground: string;
-  fontFamily?: string; fontSize?: number; fontColor?: string;
-  // Videos can replace the soundtrack with their embedded audio.
-  audioSource?: 'soundtrack' | 'original';
-  textBold?: boolean; textItalic?: boolean; textUnderline?: boolean;
-  // Photo orientation fix in whole quarter turns (0, 90, 180, 270, clockwise).
-  // Applied in every thumbnail/lightbox and by the FFmpeg renderer.
-  rotation?: number;
-  // Text frames: optional second background colour reached via an xfade
-  // transition that starts `frameTransitionStart` seconds into the frame and
-  // lasts `frameTransitionTime` seconds. The caption stays fixed on top.
-  frameBackground2?: string; frameTransition?: string; frameTransitionTime?: number; frameTransitionStart?: number;
-}
-
 const isHex = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)
 // Effective two-colour settings for a text frame (null when single colour).
 function frameColourChange(item: MediaItem) {
@@ -345,12 +331,6 @@ function trackIsEdited(track: AudioTrack) {
   const total = trackSourceSeconds(track); const r = trackKeptRange(track)
   return r.start > 0.01 || (total > 0 && r.end < total - 0.01) || (Number(track.fadeIn) || 0) > 0 || (Number(track.fadeOut) || 0) > 0
 }
-const formatClockPrecise = (seconds: number) => {
-  const s = Math.max(0, Number(seconds) || 0)
-  const m = Math.floor(s / 60); const rest = s - m * 60
-  return `${m}:${rest < 10 ? '0' : ''}${rest.toFixed(1)}`
-}
-
 const initialMedia: MediaItem[] = []
 
 // --- Shared timing rules ---------------------------------------------------
@@ -405,11 +385,6 @@ function timelineModel(items: MediaItem[]) {
 const clampLufs = (value: unknown) => { const n = Number(value); return Number.isFinite(n) ? Math.min(-8, Math.max(-24, Math.round(n))) : -14 }
 const clampFade = (value: unknown, fallback: number) => { const n = Number(value); return Number.isFinite(n) ? Math.min(30, Math.max(0, Math.round(n * 2) / 2)) : fallback }
 
-const formatClock = (seconds: number) => {
-  const total = Math.max(0, Math.floor(Number(seconds) || 0))
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
-}
-
 // Split the storyline into overall-timeline rows. Videos always land on rows
 // of their own so a long movie can never squeeze the caption boxes of the
 // photos around it. Rows stay consecutive slices of the storyline (runs of
@@ -437,18 +412,6 @@ function buildTimelineLines(items: MediaItem[], targetRows: number) {
   }
   flush()
   return lines
-}
-
-function parseClock(value: string | number | undefined): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, value)
-  const raw = String(value || '').trim()
-  if (!raw || raw === 'unknown') return 0
-  if (/^\d+(\.\d+)?$/.test(raw)) return Number(raw)
-  const parts = raw.split(':').map(Number)
-  if (parts.some(n => !Number.isFinite(n))) return 0
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
-  if (parts.length === 2) return parts[0] * 60 + parts[1]
-  return 0
 }
 
 function probeMediaDuration(src: string, kind: 'audio' | 'video' = 'audio'): Promise<number> {
@@ -728,6 +691,8 @@ function App() {
   // URL) so the popup can walk the storyline with prev/next and delete the
   // shown item directly, always reflecting the live media list.
   const [storyPreviewId, setStoryPreviewId] = useState<number | null>(null)
+  // Movie cut/crop editor, stacked on top of the media lightbox.
+  const [editingMovieId, setEditingMovieId] = useState<number | null>(null)
   const openMediaLightbox = (item: MediaItem) => {
     if (item.type === 'title') return
     if (!itemThumbUrl(item)) return
@@ -1344,7 +1309,7 @@ function App() {
                 return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                   <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
-                  <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}</small><div className={`item-text-edit ${item.textEnabled === false ? 'off' : ''}`}>{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}<button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TransitionChip value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
+                  <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}{item.type === 'video' && movieIsTrimmed(item) && <em className="trim-badge" title={`Using ${movieKeptLabel(item)} of the original movie`}><Scissors size={10}/> {movieKeptLabel(item)}</em>}</small><div className={`item-text-edit ${item.textEnabled === false ? 'off' : ''}`}>{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}<button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TransitionChip value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                   <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
                   {index < media.length - 1 ? <TransitionCell item={item} onPatch={patch_ => patch(item.id, patch_)} /> : <div className="end-card"><Check size={13}/> End of story</div>}
@@ -1379,6 +1344,9 @@ function App() {
     </main>}
 
     {editingTrackId != null && (() => { const track = audioTracks.find(x => x.id === editingTrackId); return track ? <SoundtrackEditor track={track} onChange={change => setAudioTracks(items => items.map(x => x.id === track.id ? { ...x, ...change } : x))} onClose={() => setEditingTrackId(null)} /> : null })()}
+    {editingMovieId != null && (() => { const movie = media.find(x => x.id === editingMovieId); return movie && movie.type === 'video'
+      ? <MovieEditor item={movie} src={itemThumbUrl(movie) || ''} onChange={change => patch(movie.id, change)} onClose={() => setEditingMovieId(null)} />
+      : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
@@ -1459,7 +1427,7 @@ function App() {
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {showCleanTempConfirm && <ConfirmDialog title="Clean temporary files?" message={`This deletes every intermediate render segment, soundtrack cache and proxy preview (the work and preview folders), and clears the render history. Rendered MP4 files in ${outputPath || '/output'} and your saved projects are kept. This cannot be undone.`} confirmLabel="Clean temp files" onConfirm={cleanTempFiles} onCancel={()=>setShowCleanTempConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} suspended={editingMovieId != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -1507,13 +1475,6 @@ function PositionBadge({ index, count, onMove, className = '' }: { index: number
 
 // m:ss.s text field that commits on blur/Enter (module-level so it keeps its
 // draft text while the editor re-renders on every playback tick).
-function TimeField({ label, value, onCommit, min, max }: { label: string; value: number; onCommit: (v: number) => void; min: number; max: number }) {
-  const [text, setText] = useState(formatClockPrecise(value))
-  useEffect(() => setText(formatClockPrecise(value)), [value])
-  const commit = () => { const v = parseClock(text); if (Number.isFinite(v) && text.trim()) onCommit(Math.min(max, Math.max(min, v))); else setText(formatClockPrecise(value)) }
-  return <label className="time-field"><span>{label}</span><input value={text} onChange={e => setText(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }} /></label>
-}
-
 // Popup editor for one soundtrack: drag IN/OUT handles on a large waveform to
 // cut/crop, drag the fade corners (or use the sliders) for fade in/out, and
 // preview only the kept region. Everything is stored on the track in seconds;

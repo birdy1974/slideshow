@@ -24,6 +24,8 @@ One ordered row per photo, video, or generated title frame.
 - clip duration
 - Ken Burns effect
 - outgoing media transition and transition duration
+- optional movie trim (`trimStart` / `trimEnd` in source-file seconds, carried
+  in `item_json`; missing or zero means the whole recording)
 - caption text and overlay/frame mode
 - caption start and end times
 - caption appear/disappear effects and their durations

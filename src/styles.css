@@ -476,3 +476,31 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .transition-tile .quick-transition.from-right>span:last-child{animation-name:transitionRight}
 .transition-tile .quick-transition.from-up>span:last-child{animation-name:transitionUp}
 .transition-tile .quick-transition.from-down>span:last-child{animation-name:transitionDown}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Movie cut/crop editor — opened from the media lightbox for videos, stacked
+   above it. Shares the soundtrack editor's strip/handles/fields; the only
+   difference is a video stage instead of a waveform and no fade ramps.
+   ───────────────────────────────────────────────────────────────────────────── */
+.movie-backdrop{z-index:60}
+.movie-editor{width:min(1020px,96vw)}
+.movie-stage{position:relative;height:min(44vh,330px);background:#0b0c0a;border:1px solid #3a3d37;border-radius:8px;overflow:hidden;display:grid;place-items:center}
+.movie-stage video{max-width:100%;max-height:100%;background:#000}
+.movie-stage-note{position:absolute;font:600 10px Manrope;color:#8d9285;letter-spacing:.4px}
+/* Synthetic filmstrip: same role as the soundtrack's waveform bars — a stable
+   pattern that makes the cut region readable without decoding frames. */
+.filmstrip{position:absolute;inset:9px 0;display:flex;align-items:center;gap:3px;padding:0 4px;pointer-events:none}
+.filmstrip i{flex:1 1 0;min-width:3px;height:100%;border-radius:2px;box-shadow:inset 0 0 0 1px #ffffff0a}
+.movie-editor .editor-strip{height:118px}
+.transport-clock{margin-left:auto;font:700 10px Manrope;color:#c9ed6d;font-style:normal}
+/* Read-only value field (Kept length / File length) */
+.time-field.static b{margin-top:2px;font:700 13px Manrope;color:#e7eadf;letter-spacing:0}
+.time-field.static input{display:none}
+/* Scissors button in the lightbox header — movies only */
+.lightbox-edit{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border:1px solid #4c5048;background:#2c3524;color:#dfe6cf;border-radius:6px;font:700 10px Manrope;white-space:nowrap}
+.lightbox-edit:hover{background:#3a4a2c;border-color:#6d7a5c}
+@media(max-width:760px){
+  .movie-stage{height:min(30vh,200px)}
+  .movie-editor .editor-fields{grid-template-columns:1fr 1fr}
+  .transport-clock{margin-left:0}
+}
