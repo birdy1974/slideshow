@@ -714,3 +714,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .video-stage>video{width:100%;height:100%;object-fit:contain;background:#000}
 /* Detailed list: the crop chip sits on the other side of the filter chip. */
 .thumb-look+.thumb-look{left:auto;right:3px}
+
+/* --- Project name ⇄ output filename: one name, two fields --------------- */
+/* The wrapping div already carries the panel's 18 px side margins. */
+.filename-link{margin-top:6px}

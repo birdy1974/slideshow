@@ -20,6 +20,7 @@ import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilt
 import { cropLabel, cropSummary, hasCrop, type CropRect } from './pictureCrop'
 import { useCroppedSource } from './usePictureCrop'
 import { usePictureLook } from './usePictureLook'
+import { FILENAME_FALLBACK, isGeneratedFilename, safeFilename } from './projectName'
 import { TransitionGallery } from './TransitionGallery'
 import { totalTransitionCount } from './transitionCatalog'
 import { TransitionChip } from './TransitionPicker'
@@ -685,9 +686,14 @@ function NumberStepper({ value, onChange, min, max, step = 0.1, suffix = '', ari
   </div>
 }
 
+// A fresh editor starts with this demo name; "New project" wipes to BLANK_NAME.
+// The output filename is always `safeFilename()` of whichever name is showing.
+const STARTER_NAME = 'Portugal summer'
+const BLANK_NAME = 'Untitled'
+
 function App() {
   const [media, setMedia] = useState(initialMedia)
-  const [projectName, setProjectName] = useState('Portugal summer')
+  const [projectName, setProjectName] = useState(STARTER_NAME)
   const [projectId, setProjectId] = useState<number|null>(null)
   const [backendOnline, setBackendOnline] = useState(false)
   const [capabilities, setCapabilities] = useState({ffmpeg:false,quickSync:false,cpuEncoding:false})
@@ -718,7 +724,7 @@ function App() {
   const [bitrate, setBitrate] = useState('8 Mbps · High')
   const [encoder, setEncoder] = useState('Auto · Quick Sync')
   const [outputPath, setOutputPath] = useState('/output')
-  const [outputFilename, setOutputFilename] = useState('Portugal-summer')
+  const [outputFilename, setOutputFilename] = useState(safeFilename(STARTER_NAME))
   const [rendering, setRendering] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -899,7 +905,14 @@ function App() {
     }
     if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72)}
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
-    if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path);setOutputFilename(saved.output.filename)}
+    if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path)
+      // A project saved before the two fields were linked usually still carries
+      // the generated filename ('slideshow', 'movie', 'Portugal-summer'); that
+      // one now inherits the project name. A filename the user chose themselves
+      // is kept — the Output pane says so, and the first edit links them again.
+      const savedName = String(saved.project?.name ?? '')
+      const savedFilename = String(saved.output.filename ?? '')
+      setOutputFilename(isGeneratedFilename(savedFilename) ? safeFilename(savedName) || FILENAME_FALLBACK : savedFilename)}
     if(saved.timeline){setTimelineRows(saved.timeline.rows);setTimelineZoom(saved.timeline.zoom)}
     // Projects saved before the defaults existed simply keep the built-in values.
     setGlobalSlideDuration(clampSlideDefault(saved.defaults?.slideSeconds))
@@ -917,11 +930,26 @@ function App() {
 
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), message.includes('\n') ? 12000 : 3500) }
   const audioPreview = useAudioPreview(message => notify(message))
+  /**
+   * The project name and the output filename are one name. Typing in the header
+   * renames the file too (through `safeFilename`, which only touches characters
+   * a filename cannot hold); typing in the Output pane renames the project.
+   */
+  const renameProject = (value: string) => { setProjectName(value); setOutputFilename(safeFilename(value)) }
+  // The filename field keeps what you type while you type it — sanitising on
+  // every keystroke would swallow a colon mid-word — and settles on blur.
+  const renameOutputFile = (value: string) => { setOutputFilename(value); setProjectName(value) }
+  const commitOutputFile = () => { const clean = safeFilename(outputFilename); setOutputFilename(clean); setProjectName(clean) }
+  // True only for a project loaded from before the two fields were linked.
+  const nameAndFileDiffer = safeFilename(projectName) !== safeFilename(outputFilename)
+
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
     textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY },
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
-    output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename:outputFilename },
+    // Sanitised here as well as on blur, so a render started straight after
+    // typing can never be handed a name the filesystem would reject.
+    output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename: safeFilename(outputFilename) || FILENAME_FALLBACK },
     timeline: { rows:timelineRows, zoom:timelineZoom },
     // Project-wide defaults for new slides/transitions (the two bulk-bar steppers).
     defaults: { slideSeconds: clampSlideDefault(globalSlideDuration), transitionSeconds: clampTransitionDefault(globalDuration) },
@@ -949,10 +977,10 @@ function App() {
   }
   const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
   const blankProjectSnapshot = () => ({
-    schemaVersion: 1, project: { name: 'Untitled', randomOrder: false }, media: [],
+    schemaVersion: 1, project: { name: BLANK_NAME, randomOrder: false }, media: [],
     textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72 },
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
-    output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: 'slideshow' },
+    output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: safeFilename(BLANK_NAME) },
     timeline: { rows: 'auto', zoom: 1 },
     defaults: { slideSeconds: DEFAULT_SLIDE_SECONDS, transitionSeconds: DEFAULT_TRANSITION_SECONDS },
   })
@@ -960,13 +988,13 @@ function App() {
   // persisted right away so a refresh does not resurrect the previous one.
   const startNewProject = () => {
     setProjectId(null)
-    setProjectName('Untitled')
+    setProjectName(BLANK_NAME)
     setMedia([])
     setRandomOrder(false)
     setAudioTracks([])
     setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0); setAudioNormalize(true); setAudioNormalizeTarget(-14)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
-    setOutputPath('/output'); setOutputFilename('slideshow')
+    setOutputPath('/output'); setOutputFilename(safeFilename(BLANK_NAME))
     setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72)
     setTimelineRows('auto'); setTimelineZoom(1)
     setGlobalSlideDuration(DEFAULT_SLIDE_SECONDS); setGlobalDuration(DEFAULT_TRANSITION_SECONDS)
@@ -1461,7 +1489,7 @@ function App() {
           <div className="eyebrow-line">
             <div className="eyebrow">PROJECT / {(projectName || 'UNTITLED').toUpperCase()}</div>
           </div>
-          <input value={projectName} onChange={e=>setProjectName(e.target.value)} aria-label="Project name"/>
+          <input value={projectName} onChange={e=>renameProject(e.target.value)} aria-label="Project name" title="Project name — the filename in the Output pane follows it"/>
           <p>Assemble your media, shape the motion, and export a finished story.</p>
         </div>
         <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
@@ -1522,7 +1550,7 @@ function App() {
             <div className="form-grid two"><div><FieldLabel>Resolution</FieldLabel><Select value={resolution} onChange={setResolution}><option>4K UHD · 2160p</option><option>Full HD · 1080p</option><option>HD · 720p</option><option>SD · 480p</option></Select></div><div><FieldLabel>Frame rate</FieldLabel><Select value={frameRate} onChange={setFrameRate}><option>24 fps</option><option>25 fps</option><option>30 fps</option><option>50 fps</option><option>60 fps</option></Select></div></div>
             <div className="form-grid two"><div><FieldLabel>Video bitrate</FieldLabel><Select value={bitrate} onChange={setBitrate}><option>4 Mbps · Standard</option><option>8 Mbps · High</option><option>12 Mbps · Very high</option><option>20 Mbps · Maximum</option></Select></div><div><FieldLabel>Encoder</FieldLabel><Select value={encoder} onChange={setEncoder}><option>Auto · Quick Sync</option><option>Intel Quick Sync</option><option>CPU · x264</option></Select></div></div>
             <div><FieldLabel>Output folder</FieldLabel><div className="path-field"><FolderOpen size={15}/><input value={outputPath} onChange={e=>setOutputPath(e.target.value)}/><button onClick={()=>setShowFolderPicker(true)} title="Browse the mounted /output volume">Browse</button></div></div>
-            <div><FieldLabel>Filename</FieldLabel><div className="filename"><input value={outputFilename} onChange={e=>setOutputFilename(e.target.value)}/><span>.mp4</span></div></div>
+            <div><FieldLabel hint="same as the project name">Filename</FieldLabel><div className="filename"><input value={outputFilename} onChange={e=>renameOutputFile(e.target.value)} onBlur={commitOutputFile} onKeyDown={e=>{ if(e.key==='Enter'){e.preventDefault();(e.target as HTMLInputElement).blur()} }} aria-label="Output filename" title="Editing this renames the project at the top as well"/><span>.mp4</span></div>{nameAndFileDiffer && <em className="fade-hint filename-link"><AlertTriangle size={11}/> This project was saved with its own filename — edit either field and the two are linked again</em>}</div>
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
