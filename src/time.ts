@@ -1,5 +1,6 @@
 // Clock helpers shared by the timeline, the soundtrack editor and the movie
-// editor. `m:ss` for labels, `m:ss.s` wherever a trim point needs precision.
+// editor. `m:ss` for labels, `m:ss.s` wherever a trim point needs precision
+// and `h:mm:ss` for the timeline rulers.
 
 export const formatClockPrecise = (seconds: number) => {
   const s = Math.max(0, Number(seconds) || 0)
@@ -10,6 +11,15 @@ export const formatClockPrecise = (seconds: number) => {
 export const formatClock = (seconds: number) => {
   const total = Math.max(0, Math.floor(Number(seconds) || 0))
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+// `h:mm:ss` — the time ruler format. Hours are always printed (even `0:`) so
+// every tick of a ruler has the same shape and long slideshows stay readable.
+export const formatTimecode = (seconds: number) => {
+  const total = Math.max(0, Math.round(Number(seconds) || 0))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  return `${hours}:${String(minutes).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }
 
 export function parseClock(value: string | number | undefined): number {

@@ -4,16 +4,25 @@ import {
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
-  Timer, HardDrive,
+  Timer, HardDrive, Crop as CropIcon, FileJson,
 } from 'lucide-react'
 import { FieldLabel, Select, TimeField } from './ui'
-import { formatClock, formatClockPrecise, parseClock } from './time'
+import { formatClock, formatClockPrecise, formatTimecode, parseClock } from './time'
 import {
   clearRenderRates, estimateRenderSeconds, formatEstimate, loadRenderRates, nextEtaSample, remainingSeconds, saveRenderRate,
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
+import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
+import { CropSpriteVideo } from './PictureCropEditor'
+import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilterStyle, type Lookish } from './pictureFilters'
+import { cropLabel, cropSummary, hasCrop, type CropRect } from './pictureCrop'
+import { useCroppedSource } from './usePictureCrop'
+import { usePictureLook } from './usePictureLook'
+import { FILENAME_FALLBACK, isGeneratedFilename, safeFilename } from './projectName'
+import { ProjectFileBrowser, ProjectFilePanel } from './ProjectFileBrowser'
+import type { ProjectFileInfo, ProjectRoot } from './projectFiles'
 import { TransitionGallery } from './TransitionGallery'
 import { totalTransitionCount } from './transitionCatalog'
 import { TransitionChip } from './TransitionPicker'
@@ -53,6 +62,24 @@ function mediaRelativePath(root: MediaRoot, serverPath: string) {
 
 function mediaFileUrl(root: MediaRoot, serverPath: string) {
   return `/api/media/file?root=${root}&path=${encodeMediaRelative(mediaRelativePath(root, serverPath))}`
+}
+
+/**
+ * Ask FFmpeg to measure the black bars of a file (the crop editor's
+ * "Black bars" tool). The rectangle comes back in fractions of the *turned*
+ * picture, which is the space the editor works in.
+ */
+async function serverCropDetect(root: 'photos' | 'videos', serverPath: string, rotation: number, seconds: number) {
+  const url = `/api/media/cropdetect?root=${root}&path=${encodeMediaRelative(mediaRelativePath(root, serverPath))}`
+    + `&rotation=${Math.round(rotation)}&seconds=${seconds}`
+  const response = await fetch(url)
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error((data && (data.detail || data.message)) || `The backend could not measure this file (${response.status})`)
+  }
+  const rect = data?.rect
+  if (!rect || typeof rect !== 'object') throw new Error('FFmpeg returned no crop for this file')
+  return { rect: rect as CropRect, bars: !!data?.bars }
 }
 
 async function serverVideoDuration(root: 'photos' | 'videos', serverPath: string) {
@@ -129,7 +156,7 @@ function itemThumbUrl(item?: MediaItem | null) {
 
 type LightboxTarget = { title: string; src: string; kind: 'image' | 'video' | 'audio' }
 
-function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, onEdit, position, rotation, onRotate, suspended }: LightboxTarget & {
+function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, onEdit, position, rotation, onRotate, suspended, lookItem, onLook, onCrop }: LightboxTarget & {
   onClose: () => void;
   // Storyline bindings: when present, the lightbox can walk the storyline
   // (prev/next), show the current position, and delete the shown item.
@@ -143,9 +170,20 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   // True while a stacked editor is open: keyboard shortcuts and the backdrop
   // click belong to that editor, not to this lightbox.
   suspended?: boolean;
+  // Picture look and cut/crop: the item being shown, so the lightbox wears the
+  // same CSS filter and the same crop FFmpeg will apply, plus the two buttons
+  // that open the stacked "Edit picture" popup (audio has no picture).
+  lookItem?: Lookish | MediaItem | null; onLook?: () => void; onCrop?: () => void;
 }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
+  const isVideo = kind === 'video'
+  // Crop first, look on top — the renderer's order. A cropped *photo* is shown
+  // from one canvas copy; a cropped *movie* keeps playing its own file through a
+  // CSS sprite (CropSpriteVideo), because a JPEG copy would freeze it — so no
+  // copy is built for movies here.
+  const cropped = useCroppedSource(src, isVideo ? null : lookItem, 'stage', false)
+  const lookView = usePictureLook(cropped.ready ? cropped.src : src, lookItem, false, !isVideo, cropped.rotationApplied)
   // Keyboard: ← / → walk the storyline, Escape closes. Only wired when the
   // lightbox is bound to storyline items (browser previews pass no handlers).
   useEffect(() => {
@@ -163,16 +201,31 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   const turn = normalizeRotation(rotation)
   const canRotate = kind === 'image' && !!onRotate
   const canEditMovie = kind === 'video' && !!onEdit
+  const canLook = kind !== 'audio' && !!onLook
+  const canCrop = kind !== 'audio' && !!onCrop
+  const turnedByProxy = cropped.rotationApplied || lookView.rotationBaked
+  const cropNote = hasCrop(lookItem) ? cropSummary(lookItem) : '' 
+  // Storyline navigation lives inside the picture: the whole left half steps
+  // back, the whole right half steps forward. Movies keep their centre and
+  // their control bar clickable, and audio has no picture to click on.
+  const navLayer = kind !== 'audio' && (onPrev || onNext) ? <div className={`lightbox-nav-layer${kind === 'video' ? ' movie' : ''}`}>
+    {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←) · the whole left half of the picture" aria-label="Previous media" onClick={onPrev}><span className="nav-disc"><ChevronLeft size={26}/></span></button>}
+    {onNext && <button type="button" className="lightbox-nav next" title="Next media (→) · the whole right half of the picture" aria-label="Next media" onClick={onNext}><span className="nav-disc"><ChevronRight size={26}/></span></button>}
+  </div> : null
   return <div className="modal-backdrop dark-backdrop" onMouseDown={suspended ? undefined : onClose}>
-    {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←)" aria-label="Previous media" onMouseDown={e => e.stopPropagation()} onClick={onPrev}><ChevronLeft size={26}/></button>}
-    {onNext && <button type="button" className="lightbox-nav next" title="Next media (→)" aria-label="Next media" onMouseDown={e => e.stopPropagation()} onClick={onNext}><ChevronRight size={26}/></button>}
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{canEditMovie && <button type="button" className="lightbox-edit" title="Cut this movie — choose which section to use" onClick={onEdit}><Scissors size={17}/> Cut</button>}
+        {canLook && <button type="button" className={`lightbox-edit look-button ${hasLook(lookItem) ? 'on' : ''}`} title={hasLook(lookItem) ? `Picture look: ${lookSummary(lookItem)} — click to change` : 'Filters & effects for this picture'} onClick={onLook}><Sparkles size={17}/> {lookSummary(lookItem) || 'Filters'}</button>}
+        {canCrop && <button type="button" className={`lightbox-edit look-button ${hasCrop(lookItem) ? 'on' : ''}`} title={cropNote ? `Cut & crop: ${cropNote} — click to change` : 'Cut and crop parts of this picture'} onClick={onCrop}><CropIcon size={17}/> {cropNote ? cropLabel(lookItem) : 'Crop'}</button>}
         {canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
+      <div className="lightbox-body">
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
-        : kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay onError={() => setFailed(true)} />
+        : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={src} style={lookView.style} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
-        : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${turn === 90 || turn === 270 ? 'turned' : ''}`} style={rotationStyle(turn)} src={src} alt={title} onError={() => setFailed(true)} /></div>}
+        : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${!turnedByProxy && (turn === 90 || turn === 270) ? 'turned' : ''}`} style={{ ...(turnedByProxy ? undefined : rotationStyle(turn)), ...lookView.style }} src={lookView.src} alt={title} onError={() => setFailed(true)} /></div>}
+      {lookView.vignette && <i className="look-vignette" style={lookView.vignette}/>}
+      {navLayer}
+      </div>
     </div>
   </div>
 }
@@ -186,12 +239,21 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
 }) {
   const [failed, setFailed] = useState(false)
   const src = itemThumbUrl(item)
+  // A cropped clip is shown from one small canvas copy — the only way a bare
+  // <img>/<video> can display a sub-rectangle — so every thumbnail surface
+  // (storyline, compact grid, detailed list, filmstrip, media browser) shows
+  // the crop without a single extra CSS rule.
+  const cropped = useCroppedSource(src, item, 'thumb', item.type === 'video')
   useEffect(() => setFailed(false), [src])
   if (!src) return null
   if (failed) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
-  const common = { src, className, onClick, onPointerDown, onError: () => setFailed(true), style } as const
-  if (item.type === 'video') return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} />
-  return <img {...common} style={rotationStyle(item.rotation, style)} alt={item.name} />
+  // Every thumbnail wears the item's picture look and crop, so the storyline
+  // shows the same picture the render will produce.
+  const common = { src: cropped.ready ? cropped.src : src, className, onClick, onPointerDown, onError: () => setFailed(true) } as const
+  const look = { ...style, ...pictureFilterStyle(item) }
+  if (item.type === 'video' && !cropped.ready) return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} style={look} />
+  // The copy already carries the quarter turn; only the bare file needs CSS to turn it.
+  return <img {...common} style={cropped.rotationApplied ? look : rotationStyle(item.rotation, look)} alt={item.name} />
 }
 
 // Thumbnail inside the media picker, with a fallback when the file is empty
@@ -541,8 +603,16 @@ function TransitionCell({ item, onPatch, onOpenGallery }: { item: MediaItem; onP
   </div>
 }
 
+// Ruler underneath every storyline row. Timestamps are printed as h:mm:ss so
+// a long slideshow reads like a timecode instead of a bare number of seconds.
 function TimelineRuler({ start, duration, zoom, audioLength }: { start:number, duration:number, zoom:number, audioLength?: string }) {
-  return <div className="line-time-ruler">{[0,.25,.5,.75,1].map(f=><span key={f} style={{left:`${f*100}%`}}><i/>{Math.round(start+duration*f)}s</span>)}<b>{Math.floor((start+duration)/60)}:{String(Math.round((start+duration)%60)).padStart(2,'0')}</b><em>{Math.round(zoom*100)}%</em>{audioLength && <span className="audio-length-indicator"><Music2 size={10}/> {audioLength}</span>}</div>
+  const end = start + duration
+  return <div className="line-time-ruler">{[0,.25,.5,.75,1].map(f=>{
+    const at = start + duration * f
+    // The row end time is printed by the badge on the right, so the last tick
+    // only draws its mark instead of repeating the same timecode.
+    return <span key={f} style={{left:`${f*100}%`}} title={f === 1 ? undefined : `${formatTimecode(at)} · ${Math.round(at)} s from the start`}><i/>{f === 1 ? '' : formatTimecode(at)}</span>
+  })}<b title={`This row ends at ${formatTimecode(end)}`}>{formatTimecode(end)}</b><em title="Timeline zoom">{Math.round(zoom*100)}%</em>{audioLength && <span className="audio-length-indicator" title="Total soundtrack time"><Music2 size={10}/> {audioLength}</span>}</div>
 }
 
 function TimelineTextBox({ item, update, selected, onSelect }: { item: MediaItem, update: (change: Partial<MediaItem>) => void, selected: string[], onSelect: (edge:'enter'|'exit')=>void }) {
@@ -618,9 +688,14 @@ function NumberStepper({ value, onChange, min, max, step = 0.1, suffix = '', ari
   </div>
 }
 
+// A fresh editor starts with this demo name; "New project" wipes to BLANK_NAME.
+// The output filename is always `safeFilename()` of whichever name is showing.
+const STARTER_NAME = 'Portugal summer'
+const BLANK_NAME = 'Untitled'
+
 function App() {
   const [media, setMedia] = useState(initialMedia)
-  const [projectName, setProjectName] = useState('Portugal summer')
+  const [projectName, setProjectName] = useState(STARTER_NAME)
   const [projectId, setProjectId] = useState<number|null>(null)
   const [backendOnline, setBackendOnline] = useState(false)
   const [capabilities, setCapabilities] = useState({ffmpeg:false,quickSync:false,cpuEncoding:false})
@@ -651,7 +726,7 @@ function App() {
   const [bitrate, setBitrate] = useState('8 Mbps · High')
   const [encoder, setEncoder] = useState('Auto · Quick Sync')
   const [outputPath, setOutputPath] = useState('/output')
-  const [outputFilename, setOutputFilename] = useState('Portugal-summer')
+  const [outputFilename, setOutputFilename] = useState(safeFilename(STARTER_NAME))
   const [rendering, setRendering] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -677,6 +752,8 @@ function App() {
   const [selectedTextTransitions, setSelectedTextTransitions] = useState<string[]>([])
   const [detailTextEditor, setDetailTextEditor] = useState<{id:number,edge:'enter'|'exit'}|null>(null)
   const [bulkEffect, setBulkEffect] = useState('Ken Burns · Zoom in')
+  // Bulk picture look ('none' = back to the original).
+  const [bulkFilter, setBulkFilter] = useState('none')
   const [bulkTransition, setBulkTransition] = useState('Dissolve')
   const [randomScope, setRandomScope] = useState<RandomScope>('both')
   const [timelineZoom, setTimelineZoom] = useState(1)
@@ -706,6 +783,11 @@ function App() {
   const [draggedAudioId, setDraggedAudioId] = useState<number | null>(null)
   const [showFolderPicker, setShowFolderPicker] = useState(false)
   const [showProjectLoader, setShowProjectLoader] = useState(false)
+  // "Save project" opens a browse popup: pick the volume, the folder and the
+  // filename. The last destination is remembered so saving twice in a row does
+  // not mean walking the tree again.
+  const [showProjectFileSave, setShowProjectFileSave] = useState(false)
+  const [projectFileFolder, setProjectFileFolder] = useState<{ root: ProjectRoot, folder: string }>({ root: 'output', folder: '' })
   const [showNewProjectConfirm, setShowNewProjectConfirm] = useState(false)
   const [overwritePath, setOverwritePath] = useState<string | null>(null)
   // Storyline preview lightbox: it tracks the previewed item id (not a frozen
@@ -714,6 +796,12 @@ function App() {
   const [storyPreviewId, setStoryPreviewId] = useState<number | null>(null)
   // Movie cut/crop editor, stacked on top of the media lightbox.
   const [editingMovieId, setEditingMovieId] = useState<number | null>(null)
+  // Which clip's "Edit picture" (filters) popup is open, if any.
+  const [lookItemId, setLookItemId] = useState<number | null>(null)
+  // The "Edit picture" popup has two tabs; the lightbox button you pressed
+  // decides which one opens.
+  const [lookTab, setLookTab] = useState<'filters' | 'crop'>('filters')
+  const openLookEditor = (item: MediaItem, tab: 'filters' | 'crop' = 'filters') => { setLookTab(tab); setLookItemId(item.id) }
   // Standalone transition gallery (browse every example without picking one).
   const [showTransitionGallery, setShowTransitionGallery] = useState(false)
   const openMediaLightbox = (item: MediaItem) => {
@@ -824,7 +912,14 @@ function App() {
     }
     if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72)}
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
-    if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path);setOutputFilename(saved.output.filename)}
+    if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path)
+      // A project saved before the two fields were linked usually still carries
+      // the generated filename ('slideshow', 'movie', 'Portugal-summer'); that
+      // one now inherits the project name. A filename the user chose themselves
+      // is kept — the Output pane says so, and the first edit links them again.
+      const savedName = String(saved.project?.name ?? '')
+      const savedFilename = String(saved.output.filename ?? '')
+      setOutputFilename(isGeneratedFilename(savedFilename) ? safeFilename(savedName) || FILENAME_FALLBACK : savedFilename)}
     if(saved.timeline){setTimelineRows(saved.timeline.rows);setTimelineZoom(saved.timeline.zoom)}
     // Projects saved before the defaults existed simply keep the built-in values.
     setGlobalSlideDuration(clampSlideDefault(saved.defaults?.slideSeconds))
@@ -842,11 +937,26 @@ function App() {
 
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), message.includes('\n') ? 12000 : 3500) }
   const audioPreview = useAudioPreview(message => notify(message))
+  /**
+   * The project name and the output filename are one name. Typing in the header
+   * renames the file too (through `safeFilename`, which only touches characters
+   * a filename cannot hold); typing in the Output pane renames the project.
+   */
+  const renameProject = (value: string) => { setProjectName(value); setOutputFilename(safeFilename(value)) }
+  // The filename field keeps what you type while you type it — sanitising on
+  // every keystroke would swallow a colon mid-word — and settles on blur.
+  const renameOutputFile = (value: string) => { setOutputFilename(value); setProjectName(value) }
+  const commitOutputFile = () => { const clean = safeFilename(outputFilename); setOutputFilename(clean); setProjectName(clean) }
+  // True only for a project loaded from before the two fields were linked.
+  const nameAndFileDiffer = safeFilename(projectName) !== safeFilename(outputFilename)
+
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
     textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY },
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
-    output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename:outputFilename },
+    // Sanitised here as well as on blur, so a render started straight after
+    // typing can never be handed a name the filesystem would reject.
+    output: { resolution, frameRate, bitrate, encoder, path:outputPath, filename: safeFilename(outputFilename) || FILENAME_FALLBACK },
     timeline: { rows:timelineRows, zoom:timelineZoom },
     // Project-wide defaults for new slides/transitions (the two bulk-bar steppers).
     defaults: { slideSeconds: clampSlideDefault(globalSlideDuration), transitionSeconds: clampTransitionDefault(globalDuration) },
@@ -874,10 +984,10 @@ function App() {
   }
   const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
   const blankProjectSnapshot = () => ({
-    schemaVersion: 1, project: { name: 'Untitled', randomOrder: false }, media: [],
+    schemaVersion: 1, project: { name: BLANK_NAME, randomOrder: false }, media: [],
     textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72 },
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
-    output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: 'slideshow' },
+    output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: safeFilename(BLANK_NAME) },
     timeline: { rows: 'auto', zoom: 1 },
     defaults: { slideSeconds: DEFAULT_SLIDE_SECONDS, transitionSeconds: DEFAULT_TRANSITION_SECONDS },
   })
@@ -885,13 +995,13 @@ function App() {
   // persisted right away so a refresh does not resurrect the previous one.
   const startNewProject = () => {
     setProjectId(null)
-    setProjectName('Untitled')
+    setProjectName(BLANK_NAME)
     setMedia([])
     setRandomOrder(false)
     setAudioTracks([])
     setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0); setAudioNormalize(true); setAudioNormalizeTarget(-14)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
-    setOutputPath('/output'); setOutputFilename('slideshow')
+    setOutputPath('/output'); setOutputFilename(safeFilename(BLANK_NAME))
     setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72)
     setTimelineRows('auto'); setTimelineZoom(1)
     setGlobalSlideDuration(DEFAULT_SLIDE_SECONDS); setGlobalDuration(DEFAULT_TRANSITION_SECONDS)
@@ -908,6 +1018,26 @@ function App() {
   const saveProject = async () => {
     try{await persistProject()}catch(error){setBackendOnline(false);notify(`SQLite save failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
+  /**
+   * Load a project from a file on one of the mounts. The snapshot goes through
+   * the same code path a SQLite row uses, and is then stored as a *fresh* row —
+   * the file is a copy, not the project the editor is working on, so a refresh
+   * keeps what you just opened instead of dropping back to the previous one.
+   */
+  const loadProjectFile = async (file: ProjectFileInfo) => {
+    setShowProjectLoader(false)
+    applySavedProject(file.project as any)
+    setProjectId(null)
+    const label = file.projectName || file.name
+    try {
+      const id = await persistSnapshot(file.project, true, true)
+      setBackendOnline(true)
+      notify(`Project “${label}” loaded from ${file.path} · stored as project #${id}`)
+    } catch {
+      notify(`Project “${label}” loaded from ${file.path} — SQLite is offline, so save it once the backend is back`)
+    }
+  }
+
   const loadProject = async (id:number) => {
     try{
       const response=await fetch(`/api/projects/${id}`)
@@ -919,6 +1049,20 @@ function App() {
       notify(`Project “${saved.project?.name||`#${id}`}” loaded · revision ${saved.revision}`)
     }catch(error){notify(`Load failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
+  /**
+   * "Remove black bars" for the crop editor: the backend runs FFmpeg's
+   * cropdetect on the real file and returns the kept rectangle in fractions of
+   * the turned picture. Files that only exist in the browser (data/blob URLs)
+   * have no server path, so the tool is hidden there.
+   */
+  const detectBars = async (target: MediaItem) => {
+    const full = mediaItemPath(target)
+    if (!full || /^(https?:|data:|blob:)/.test(full)) return null
+    const root = mediaRootFromPath(full, target.type === 'video' ? 'videos' : 'photos')
+    if (root === 'music') return null
+    return serverCropDetect(root, full, normalizeRotation(target.rotation), target.type === 'video' ? 4 : 1)
+  }
+
   const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
   // Transition time is extra timeline time, so it is not limited by either
   // neighbouring clip.  Keep only a practical upper bound and xfade's minimum.
@@ -1153,6 +1297,15 @@ function App() {
     setMedia(items => items.map(item => ids.includes(item.id) && item.type === 'image' ? { ...item, effect: bulkEffect } : item))
     notify(`${bulkEffect} applied to ${ids.length} photo${ids.length === 1 ? '' : 's'}`)
   }
+  // Same selection rules as the Ken Burns apply: the clips you selected, or
+  // every photo and movie when nothing is selected. Text frames are generated,
+  // so they never take a filter. A fresh preset resets intensity and sliders.
+  const applyBulkFilter = () => {
+    const ids = selectedIds.length ? selectedIds : media.filter(x => x.type !== 'title').map(x => x.id)
+    if (!ids.length) { notify('Nothing to filter · add media or select clips first'); return }
+    setMedia(items => items.map(item => ids.includes(item.id) && item.type !== 'title' ? { ...item, filter: bulkFilter, filterAmount: 1, filterAdjust: {} } : item))
+    notify(`${lookLabel({ filter: bulkFilter })} applied to ${ids.length} clip${ids.length === 1 ? '' : 's'}`)
+  }
   const randomizeBulkEffect = () => {
     const ids = selectedIds.length ? selectedIds : media.filter(x=>x.type==='image').map(x=>x.id)
     const kenBurns = effects.filter(x=>x.startsWith('Ken Burns'))
@@ -1340,6 +1493,9 @@ function App() {
       : 'first run · measured afterwards'
 
   return <div className="app-shell">
+    {/* SVG feColorMatrix definitions the CSS filters point at for warmth; they
+        must be mounted app-wide because thumbnails reference them too. */}
+    <PictureLookDefs/>
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><Film size={21} /></div><div><strong>slideshow</strong><span>PHOTO & VIDEO STUDIO</span></div></div>
       <nav>
@@ -1360,17 +1516,17 @@ function App() {
           <div className="eyebrow-line">
             <div className="eyebrow">PROJECT / {(projectName || 'UNTITLED').toUpperCase()}</div>
           </div>
-          <input value={projectName} onChange={e=>setProjectName(e.target.value)} aria-label="Project name"/>
+          <input value={projectName} onChange={e=>renameProject(e.target.value)} aria-label="Project name" title="Project name — the filename in the Output pane follows it"/>
           <p>Assemble your media, shape the motion, and export a finished story.</p>
         </div>
-        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a project — from the SQLite list or from a project file on any mounted volume':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={()=>setShowProjectFileSave(true)} title="Choose the folder and filename to save this project to — it is stored in SQLite as well"><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
       </section>
 
       <div className="workspace">
         <div className="left-column">
           <section className="panel timeline-panel" id="section-storyline">
             <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><label className="switch-label"><input type="checkbox" checked={randomOrder} onChange={e => setRandomOrder(e.target.checked)}/><span className="switch"/>Random order</label><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={15}/> New project</button></div></div>
-            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><button className="random-button text-trans-random" onClick={randomizeTextTransitions} title="Randomize how the text flies in and out on these photos · every photo when nothing is selected"><Shuffle size={13}/> Text transitions</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} onOpenGallery={() => setShowTransitionGallery(true)} /><button onClick={() => applyBulkTransition(false)}>Apply effect</button><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Assign a random transition from: ${randomScopeLabels[randomScope]}`} onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
+            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect}>Apply Ken Burns</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><button className="random-button text-trans-random" onClick={randomizeTextTransitions} title="Randomize how the text flies in and out on these photos · every photo when nothing is selected"><Shuffle size={13}/> Text transitions</button><Select value={bulkFilter} onChange={setBulkFilter} ariaLabel="Picture filter">{LOOK_GROUPS.map(group => <optgroup key={group} label={group}>{LOOK_PRESETS.filter(preset => preset.group === group).map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</optgroup>)}</Select><button onClick={applyBulkFilter} title="Apply this filter to the selection — or to every photo and movie when nothing is selected"><Sparkles size={12}/> Apply filter</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} onOpenGallery={() => setShowTransitionGallery(true)} /><button onClick={() => applyBulkTransition(false)}>Apply effect</button><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Assign a random transition from: ${randomScopeLabels[randomScope]}`} onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button></div>
 
             <div className="bulk-bar" id="section-transitions"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Randomize every clip using: ${randomScopeLabels[randomScope]}`} onClick={() => { randomize(); notify(`Effects and transitions randomized · ${randomScopeLabels[randomScope]}`) }}><Shuffle size={14}/> Randomize all</button><i/><button className="gallery-button" title={`Open a full-screen gallery with a small example of every transition`} onClick={() => setShowTransitionGallery(true)}><LayoutGrid size={14}/> Browse all {totalTransitionCount}</button></div>
             {randomOrder && <div className="notice amber"><Shuffle size={16}/><span><strong>Random order enabled.</strong> A new order will be chosen at render time. The arrangement below remains unchanged.</span></div>}
@@ -1382,7 +1538,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatClock(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && (()=>{ const first = media.find(x => x.id === selectedTransitions[0]); const isGL = first && isGLTransition(first.transition); return <div className="timeline-inspector with-gl"><span>{selectedTransitions.length} transition{selectedTransitions.length > 1 ? 's' : ''} selected</span><TransitionChip value={first?.transition || 'Fade'} onChange={v => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? {...item, transition:v, transitionParams: isGLTransition(v) ? (item.transitionParams||{}) : undefined} : item))} onOpenGallery={() => setShowTransitionGallery(true)} /><NumberStepper value={first?.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Selected transition time" onChange={updateSelectedTransitionTimes} />{isGL && first && <GLParamControls transition={first.transition} params={(first.transitionParams as Record<string,string|number>)||{}} onChange={next=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionParams: next}:item))}/>} <div className="transition-meta"><EasingSelect value={first?.transitionEasing||EASING_DEFAULT} onChange={v=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionEasing:v}:item))}/><label className="check-label"><input type="checkbox" checked={Boolean(first?.transitionReverse)} onChange={e=>setMedia(items=>items.map(item=>selectedTransitions.includes(item.id)?{...item, transitionReverse: e.target.checked?1:0}:item))}/><span><Check size={11}/></span> Reverse</label></div><button onClick={() => setSelectedTransitions([])}><X size={13}/> Clear</button></div>})()}
@@ -1396,7 +1552,7 @@ function App() {
                 const thumb = itemThumbUrl(item)
                 return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
-                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
+                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
                   <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}{item.type === 'video' && movieIsTrimmed(item) && <em className="trim-badge" title={`Using ${movieKeptLabel(item)} of the original movie`}><Scissors size={10}/> {movieKeptLabel(item)}</em>}</small><div className={`item-text-edit ${item.textEnabled === false ? 'off' : ''}`}>{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}<button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TransitionChip value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                   <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
@@ -1421,7 +1577,7 @@ function App() {
             <div className="form-grid two"><div><FieldLabel>Resolution</FieldLabel><Select value={resolution} onChange={setResolution}><option>4K UHD · 2160p</option><option>Full HD · 1080p</option><option>HD · 720p</option><option>SD · 480p</option></Select></div><div><FieldLabel>Frame rate</FieldLabel><Select value={frameRate} onChange={setFrameRate}><option>24 fps</option><option>25 fps</option><option>30 fps</option><option>50 fps</option><option>60 fps</option></Select></div></div>
             <div className="form-grid two"><div><FieldLabel>Video bitrate</FieldLabel><Select value={bitrate} onChange={setBitrate}><option>4 Mbps · Standard</option><option>8 Mbps · High</option><option>12 Mbps · Very high</option><option>20 Mbps · Maximum</option></Select></div><div><FieldLabel>Encoder</FieldLabel><Select value={encoder} onChange={setEncoder}><option>Auto · Quick Sync</option><option>Intel Quick Sync</option><option>CPU · x264</option></Select></div></div>
             <div><FieldLabel>Output folder</FieldLabel><div className="path-field"><FolderOpen size={15}/><input value={outputPath} onChange={e=>setOutputPath(e.target.value)}/><button onClick={()=>setShowFolderPicker(true)} title="Browse the mounted /output volume">Browse</button></div></div>
-            <div><FieldLabel>Filename</FieldLabel><div className="filename"><input value={outputFilename} onChange={e=>setOutputFilename(e.target.value)}/><span>.mp4</span></div></div>
+            <div><FieldLabel hint="same as the project name">Filename</FieldLabel><div className="filename"><input value={outputFilename} onChange={e=>renameOutputFile(e.target.value)} onBlur={commitOutputFile} onKeyDown={e=>{ if(e.key==='Enter'){e.preventDefault();(e.target as HTMLInputElement).blur()} }} aria-label="Output filename" title="Editing this renames the project at the top as well"/><span>.mp4</span></div>{nameAndFileDiffer && <em className="fade-hint filename-link"><AlertTriangle size={11}/> This project was saved with its own filename — edit either field and the two are linked again</em>}</div>
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
@@ -1435,6 +1591,9 @@ function App() {
     {showTransitionGallery && <TransitionGallery onClose={() => setShowTransitionGallery(false)} />}
     {editingMovieId != null && (() => { const movie = media.find(x => x.id === editingMovieId); return movie && movie.type === 'video'
       ? <MovieEditor item={movie} src={itemThumbUrl(movie) || ''} onChange={change => patch(movie.id, change)} onClose={() => setEditingMovieId(null)} />
+      : null })()}
+    {lookItemId != null && (() => { const target = media.find(x => x.id === lookItemId); return target && target.type !== 'title'
+      ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
@@ -1508,15 +1667,32 @@ function App() {
     }}/>} 
     {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onOpenGallery={() => setShowTransitionGallery(true)} onApply={(patchData) => { patch(media[index].id, patchData); setTransitionPreviewId(null); notify(`Applied ${patchData.transition} transition`) }} /> : null })()}
     {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
+    {showProjectFileSave && <ProjectFileBrowser
+      projectName={projectName}
+      snapshot={projectSnapshot}
+      initialRoot={projectFileFolder.root}
+      initialFolder={projectFileFolder.folder}
+      sqliteLabel={projectId ? `Also kept as project #${projectId} in SQLite.` : 'Also stored in SQLite as a new project.'}
+      onSqliteOnly={() => { setShowProjectFileSave(false); void saveProject() }}
+      onSaved={file => {
+        setShowProjectFileSave(false)
+        setProjectFileFolder({ root: file.root, folder: file.folder.replace(/^\/(photos|videos|music|output)\/?/, '') })
+        // The file and the database row are both "the save": write the file
+        // first, then persist, and say honestly which of the two worked.
+        void persistProject(true)
+          .then(() => notify(`Project saved to ${file.path}${file.overwritten ? ' (replaced)' : ''} · and to SQLite`))
+          .catch(() => notify(`Project saved to ${file.path} — the SQLite save failed, so save again once the backend is back`))
+      }}
+      onClose={() => setShowProjectFileSave(false)} />}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
-    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
+    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onLoadFile={file=>void loadProjectFile(file)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
     {showNewProjectConfirm && <ConfirmDialog title="Start a new blank project?" message="This clears the current storyline, soundtracks and settings from the editor. Projects already saved in SQLite are not affected." confirmLabel="New project" onConfirm={startNewProject} onCancel={()=>setShowNewProjectConfirm(false)}/>}
     {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? The measured render speed is forgotten too, so the next estimate falls back to a guess. This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {showCleanTempConfirm && <ConfirmDialog title="Clean temporary files?" message={`This deletes every intermediate render segment, soundtrack cache and proxy preview (the work and preview folders), and clears the render history. Rendered MP4 files in ${outputPath || '/output'} and your saved projects are kept. This cannot be undone.`} confirmLabel="Clean temp files" onConfirm={cleanTempFiles} onCancel={()=>setShowCleanTempConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} suspended={editingMovieId != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} lookItem={previewedItem} onLook={() => openLookEditor(previewedItem, 'filters')} onCrop={() => openLookEditor(previewedItem, 'crop')} suspended={editingMovieId != null || lookItemId != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -1841,11 +2017,14 @@ function FolderPicker({ current, onSelect, onClose }: { current: string, onSelec
 // Lists projects persisted in SQLite and loads the chosen one's full config
 // (media, captions, soundtrack, output, timeline) into the editor.
 // Now includes a delete button per entry and a single "Delete all" control.
-function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, onDeleteAll, onNotify }: {
+function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, onDeleteAll, onNotify, onLoadFile }: {
   onPick: (id: number) => void, onNew?: () => void, onClose: () => void,
-  currentProjectId?: number | null, onDeleted?: (id: number) => void, onDeleteAll?: () => void, onNotify?: (msg: string)=>void
+  currentProjectId?: number | null, onDeleted?: (id: number) => void, onDeleteAll?: () => void, onNotify?: (msg: string)=>void,
+  // Second tab: open a project file from any mounted volume.
+  onLoadFile?: (file: ProjectFileInfo) => void
 }) {
   const [projects,setProjects]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  const [tab,setTab]=useState<'sqlite'|'files'>('sqlite')
   const [deletingId,setDeletingId]=useState<number|null>(null)
   const [confirmDeleteId,setConfirmDeleteId]=useState<number|null>(null)
   const [showDeleteAllConfirm,setShowDeleteAllConfirm]=useState(false)
@@ -1875,13 +2054,24 @@ function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, on
     finally{setDeletingAll(false);setShowDeleteAllConfirm(false)}
   }
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}>
-    <div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div>
+    <div className="modal-head"><div><span className="eyebrow">{tab==='sqlite'?'SAVED IN SQLITE':'PROJECT FILES ON THE MOUNTED VOLUMES'}</span><h2>Load project</h2></div>
       <div className="project-loader-actions">
-        {projects.length>0 && <button type="button" className="btn ghost delete-all-btn" disabled={deletingAll||loading} title="Delete every saved project" onClick={()=>setShowDeleteAllConfirm(true)}><Trash2 size={14}/> Delete all</button>}
+        {tab==='sqlite' && projects.length>0 && <button type="button" className="btn ghost delete-all-btn" disabled={deletingAll||loading} title="Delete every saved project" onClick={()=>setShowDeleteAllConfirm(true)}><Trash2 size={14}/> Delete all</button>}
         <button className="icon-button" onClick={onClose}><X size={19}/></button>
       </div>
     </div>
-    <div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}
+    <div className="picker-tabs" role="tablist">
+      <button type="button" role="tab" aria-selected={tab==='sqlite'} className={tab==='sqlite'?'active':''} onClick={()=>setTab('sqlite')}><FolderOpen size={13}/> Saved in SQLite</button>
+      <button type="button" role="tab" aria-selected={tab==='files'} className={tab==='files'?'active':''} onClick={()=>setTab('files')} title="Browse /output and the read-only media mounts for a .slideshow.json project file"><FileJson size={13}/> Browse files</button>
+    </div>
+    {tab==='files'
+      ? <><ProjectFilePanel mode="load" onLoaded={file=>onLoadFile?.(file)}/>
+          <div className="modal-foot">
+            <span>Click a project file to open it — loading replaces the current editor contents.</span>
+            {onNew&&<button className="btn ghost" onClick={onNew}><Plus size={15}/> New blank project</button>}
+            <button className="btn ghost" onClick={onClose}>Cancel</button>
+          </div></>
+      : <><div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}
       {projects.map(p=>{
         const isDeleting=deletingId===p.id
         const isCurrent=currentProjectId!=null && p.id===currentProjectId
@@ -1900,7 +2090,7 @@ function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, on
       {projects.length>0 && <button type="button" className="btn ghost delete-all-btn foot" disabled={deletingAll||loading} onClick={()=>setShowDeleteAllConfirm(true)}>{deletingAll?<RefreshCw size={14} className="spin"/>:<Trash2 size={14}/>} Delete all</button>}
       {onNew&&<button className="btn ghost" onClick={onNew}><Plus size={15}/> New blank project</button>}
       <button className="btn ghost" onClick={onClose}>Cancel</button>
-    </div>
+    </div></>}
   </div>
   {confirmDeleteId!=null && <ConfirmDialog title="Delete this project?" message={`Are you sure you want to delete “${projects.find(p=>p.id===confirmDeleteId)?.name||`Project #${confirmDeleteId}`}”? This cannot be undone.`} confirmLabel="Delete" onConfirm={()=>handleDeleteOne(confirmDeleteId)} onCancel={()=>setConfirmDeleteId(null)}/>}
   {showDeleteAllConfirm && <ConfirmDialog title="Delete all saved projects?" message={`Are you sure you want to delete all ${projects.length} saved project${projects.length===1?'':'s'}? This cannot be undone.`} confirmLabel="Delete all" onConfirm={handleDeleteAll} onCancel={()=>setShowDeleteAllConfirm(false)}/>}
@@ -1990,14 +2180,20 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
     return () => clearTimeout(timer)
   }, [playing, current, media])
   useEffect(() => setStageFailed(false), [current])
+  const currentItem = media[current]
+  const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
+  // The simulated stage wears each clip's cut/crop and picture look, in the
+  // renderer's order; the real FFmpeg proxy below already has both baked in.
+  const stageIsVideo = currentItem?.type === 'video'
+  const stageCrop = useCroppedSource(currentUrl, stageIsVideo ? null : currentItem, 'stage', false)
+  const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
+  const stageTurned = stageCrop.rotationApplied || stageLook.rotationBaked
 
   if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview</strong><span>REAL PROXY RENDER · 854 × 480</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> This file is streamed through the backend project API from the mounted preview volume.<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
-  const currentItem = media[current]
-  const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video key={currentItem.id} className={playing ? 'slow-zoom' : ''} src={currentUrl} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={rotationStyle(currentItem?.rotation)} src={currentUrl} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : (currentItem?.text || '')}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : (currentItem?.text || '')}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () => void }) {

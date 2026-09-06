@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
@@ -28,6 +29,9 @@ class DatabaseRoundTripTest(unittest.TestCase):
                 "text": "Caption", "textMode": "overlay", "textStart": 1.0, "textEnd": 6.0,
                 "textEnter": "Slide up", "textExit": "Dissolve", "textEnterDuration": .4, "textExitDuration": .7,
                 "textX": 37, "textY": 82, "frameBackground": "#123456", "futureItemSetting": {"x": 1},
+                # Picture look (filters/effects): three plain values on the item,
+                # so the read-only photo mounts are never touched.
+                "filter": "duotone", "filterAmount": 0.75, "filterAdjust": {"warmth": 2, "vignette": 0.3},
             }],
             "textDefaults": {"fontFamily": "Roboto", "fontSize": 54, "fontColor": "#ffeeaa", "bold": True, "italic": True, "underline": False},
             "soundtrack": {"policy": "Loop & trim", "volume": 72, "fadeOut": True, "tracks": [{"id": 2, "name": "song.mp3", "path": "/music/set", "duration": "3:20", "gain": -2}]},
@@ -70,6 +74,14 @@ class DatabaseRoundTripTest(unittest.TestCase):
             media = conn.execute("SELECT * FROM media_items WHERE project_id=?", (project_id,)).fetchone()
             self.assertEqual("Ken Burns · Pan left", media["effect"])
             self.assertEqual("Slide up", media["text_enter"])
+            # The picture look has no dedicated column; it travels in item_json
+            # (and in payload_json), which is why adding a filter needs no
+            # migration.
+            stored = json.loads(media["item_json"])
+            self.assertEqual("duotone", stored["filter"])
+            self.assertEqual(0.75, stored["filterAmount"])
+            self.assertEqual({"warmth": 2, "vignette": 0.3}, stored["filterAdjust"])
+            self.assertEqual("duotone", updated["media"][0]["filter"])
             audio = conn.execute("SELECT * FROM audio_tracks WHERE project_id=?", (project_id,)).fetchone()
             self.assertEqual("song.mp3", audio["name"])
 

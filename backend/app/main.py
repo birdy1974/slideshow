@@ -22,6 +22,7 @@ import mimetypes
 from .config import settings
 from .database import Database
 from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, mounted_path, safe_path, source_path
+from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
 
@@ -166,6 +167,54 @@ def delete_all_projects() -> dict[str, bool]:
     return {"deleted": True}
 
 
+class ProjectFileSave(BaseModel):
+    """Where to put a project file, and the snapshot to put in it."""
+    root: Literal["photos", "videos", "music", "output"] = "output"
+    folder: str = ""
+    filename: str = ""
+    overwrite: bool = False
+    project: ProjectPayload
+
+
+@app.get("/api/project-files")
+def read_project_file(root: str = Query(pattern="^(photos|videos|music|output)$"), path: str = "") -> dict[str, Any]:
+    """Read one saved project file.
+
+    Any mount may be *read* — a project kept next to the photos opens fine —
+    and the snapshot comes back exactly as it was written, so the editor can
+    hand it to the same code path that loads a SQLite row.
+    """
+    try: return project_file_info(settings, root, path)
+    except UnsafePath as exc: raise HTTPException(400, f"Invalid project path: {exc}") from exc
+    except FileNotFoundError as exc: raise HTTPException(404, f"Project file not found: {exc}") from exc
+    except PermissionError as exc: raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/project-files", status_code=201)
+def save_project_file(payload: ProjectFileSave) -> dict[str, Any]:
+    """Save the project as a file on a writable mount (`/output`).
+
+    The database row is written by the caller (`PUT/POST /api/projects`) — a
+    project file is an extra portable copy, not a replacement for SQLite. The
+    write is atomic, the filename cannot escape its folder, and an existing file
+    is only replaced when `overwrite` is set (otherwise 409 `project_exists`,
+    the same shape the render uses for an existing MP4).
+    """
+    snapshot = payload.project.model_dump(mode="json")
+    validate_mount_references(snapshot)
+    try:
+        return write_project_file(settings, payload.root, payload.folder, payload.filename, snapshot, payload.overwrite)
+    except UnsafePath as exc: raise HTTPException(400, f"Invalid destination: {exc}") from exc
+    except ReadOnlyMountError as exc: raise HTTPException(403, str(exc)) from exc
+    except ProjectFileExistsError as exc:
+        raise HTTPException(409, detail={"code": "project_exists", "path": exc.ui_path}) from exc
+    except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc: raise HTTPException(403, str(exc)) from exc
+    except OSError as exc: raise HTTPException(500, f"Could not write the project file: {exc}") from exc
+    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+
+
 @app.post("/api/cleanup")
 def cleanup_temporary_files() -> dict[str, Any]:
     """Clear all temporary files (work dir, preview dir) and jobs."""
@@ -263,8 +312,15 @@ def clear_output_directory(path: str = Query(default="/output")) -> dict[str, An
 
 
 @app.get("/api/media/browse")
-def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), path: str = "", folders: bool = False) -> dict[str, Any]:
-    try: return browse(settings, root, path, folders_only=folders)
+def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), path: str = "", folders: bool = False,
+                 projects: bool = False) -> dict[str, Any]:
+    """List one folder of a mount.
+
+    `folders=true` is the output-destination picker, `projects=true` the project
+    picker (folders plus saved `.json` projects — the only mode that lists files
+    on the output root).
+    """
+    try: return browse(settings, root, path, folders_only=folders, project_files=projects)
     except UnsafePath as exc: raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc: raise HTTPException(404, f"Folder not found: {exc}") from exc
     except PermissionError as exc: raise HTTPException(403, str(exc)) from exc
@@ -319,6 +375,43 @@ def media_loudness(root: str = Query(pattern="^(music|videos|photos)$"), path: s
     if not stats or abs(stats["input_i"]) > 1e6:
         raise HTTPException(422, "Could not measure loudness (silent or unreadable audio)")
     return {"integrated": round(stats["input_i"], 1), "truePeak": round(stats["input_tp"], 1), "range": round(stats["input_lra"], 1)}
+
+
+@app.get("/api/media/cropdetect")
+def media_cropdetect(
+    root: str = Query(pattern="^(photos|videos)$"),
+    path: str = "",
+    rotation: int = Query(default=0),
+    seconds: float = Query(default=4.0, ge=0.5, le=30.0),
+) -> dict[str, Any]:
+    """One-click "remove the black bars": let FFmpeg propose a crop rectangle.
+
+    `cropdetect` scans the first frames for near-black borders — letterboxed
+    movies, scanned photos with a dark edge, a slide filmed off a projector.
+    The rectangle comes back as fractions of the picture **after** the item's
+    quarter turn (`rotation` is applied before detecting, so width and height
+    swap for 90/270), which is the same space the crop editor works in: the
+    proposal can be dropped straight into `item.crop.rect`.
+
+    Nothing is written: this only measures. The editor still decides.
+    """
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in IMAGE_EXTENSIONS | VIDEO_EXTENSIONS:
+        raise HTTPException(415, "File is not a supported picture or movie")
+    if target.stat().st_size == 0: raise HTTPException(422, "File is empty (0 bytes)")
+    from .picture_crop import cropdetect_command, parse_cropdetect
+    command = cropdetect_command(settings.ffmpeg_bin, str(target), rotation, seconds)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=settings.ffprobe_timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(503, f"Could not scan this file for bars: {exc}") from exc
+    detected = parse_cropdetect(result.stderr or "", rotation)
+    if detected is None:
+        # cropdetect stays silent when every frame is dark or nothing decodes.
+        raise HTTPException(422, "FFmpeg could not measure this file — set the crop by hand")
+    return detected
 
 
 @app.get("/api/media/file")

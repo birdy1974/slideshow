@@ -29,4 +29,22 @@ export type MediaItem = {
   // means "from the start" / "to the end", which is what every project saved
   // before movie trimming existed stores. The renderer honours the same pair.
   trimStart?: number; trimEnd?: number;
+  // Picture look (filters/effects chosen in the preview popup): a preset id
+  // from registry/picture-filters.json, its intensity (0..1) and the manual
+  // sliders stacked on top. Like `rotation` this never touches the source file
+  // — src/pictureFilters.ts turns it into CSS for the editor and
+  // backend/app/picture_filters.py turns the same numbers into FFmpeg filters.
+  filter?: string; filterAmount?: number; filterAdjust?: Record<string, number>;
+  // Cut & crop from the same popup: `rect` is the kept rectangle in fractions of
+  // the turned picture (x/y top-left, w/h size), `degrees` straightens it
+  // (−15..15, zoomed so no corner shows), `lasso` is a polygon — in fractions of
+  // the cropped view — whose inside is replaced by a blurred copy, and `feather`
+  // softens that edge. src/pictureCrop.ts turns these into canvas/CSS and
+  // backend/app/picture_crop.py into FFmpeg filters; absent means "whole file".
+  crop?: {
+    rect?: { x: number; y: number; w: number; h: number } | null;
+    degrees?: number | null;
+    lasso?: [number, number][] | null;
+    feather?: number | null;
+  } | null;
 }

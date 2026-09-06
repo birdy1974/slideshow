@@ -23,6 +23,8 @@ from typing import Any, Callable
 from .config import Settings
 from .database import Database, utcnow
 from .media import UnsafePath, mounted_path, source_path
+from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
+from .picture_filters import picture_look
 
 log = logging.getLogger(__name__)
 
@@ -1428,14 +1430,19 @@ class Renderer:
                     command += ["-i", str(source)]
                     if limit is not None and limit > 0.001:
                         command += ["-t", format_ffmpeg_number(limit)]
-            filters = [base_filter]
+            # Everything that reshapes the picture itself (the quarter turn from
+            # the preview popup, then straightening and the crop rectangle) runs
+            # before the frame fit, so the blurred letterbox backdrop and the
+            # Ken Burns zoom see the picture exactly the way the editor shows it.
+            prefix: list[str] = []
             if kind_name == "image":
-                # Honour the orientation chosen in the photo preview popup
-                # before fitting, so the blurred backdrop and Ken Burns zoom
-                # see the picture the way the user sees it in the editor.
                 turn = rotation_filter(item.get("rotation"))
                 if turn:
-                    filters.insert(0, turn)
+                    prefix.append(turn)
+            crop = normalize_crop(item) if kind_name != "title" else None
+            if crop:
+                prefix += crop_filters(crop)
+            filters = prefix + [base_filter]
             if ken_burns:
                 delta = "0.0008" if "Zoom in" in effect else "-0.0008" if "Zoom out" in effect else "0.0003"
                 start_zoom = "1" if delta.startswith("0") else format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)
@@ -1470,11 +1477,33 @@ class Renderer:
                         f"tpad=start_mode=clone:start_duration={format_ffmpeg_number(lead_in)}"
                         f":stop_mode=clone:stop_duration={format_ffmpeg_number(lead_out)}"
                     )
+            # Picture looks (filters/effects chosen in the preview popup). They
+            # run after zoompan, so they process output-sized frames instead of
+            # 24 MP sources, and before drawtext, so captions keep their own
+            # colour. The blurred letterbox backdrop is already part of the
+            # frame at this point, which is why it picks the same look up —
+            # exactly what the browser preview shows.
+            if kind_name != "title":
+                look = picture_look(item, width, height)
+                if look:
+                    filters.append(look)
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
             colour_change = frame_colour_change(item) if kind_name == "title" else None
-            if colour_change is not None:
+            # A lasso cut-out needs the mask as a second input, which -vf cannot
+            # express: the hole is filled by compositing a blurred copy of the
+            # same picture through the mask (see picture_crop.lasso_graph).
+            cut_out = lasso_plan(crop)
+            if cut_out is not None:
+                mask_path = work / f"mask-{index:04d}.pgm"
+                mask_path.write_bytes(lasso_mask_pgm(cut_out["points"]))
+                command += lasso_inputs(mask_path, fps, duration)
+                command += [
+                    "-filter_complex", lasso_graph(cut_out, 1, prefix, filters[len(prefix):]),
+                    "-map", "[v]",
+                ]
+            elif colour_change is not None:
                 # The visible hold starts after the incoming xfade handle, so the
                 # user's "start at" is shifted by lead_in inside this segment.
                 offset = lead_in + colour_change["start"]
