@@ -10,7 +10,6 @@
 - in generation and output pane put "estimated time to generate", estimated file size, ESTIMATED TOTAL SLIDESHOW TIME
 - Transition preview popup do not show the "quick preview", only the "ACCURATE FFMPEG · 360P", and only show the transition (so if transition duration is 5 sec, the example clip should be 5 seconds)
 - also give different symbols for the GL transitions.
-- for the time ruler indicate the time in hour:minutes:seconds (h:mm:ss) instead of only seconds.
 - on the picture preview popup move the next / previous buttons inside the picture and make the active area bigger (complete right side of picture: go to next; left side of the picture: go to previous)
 - on the picture preview popup add options to edit / change the pictures by adding effect and filters (https://www.photofilters.com/), for example: make picture black and white;
 - on the picture preview popup add options to cut and crop parts of the picture
@@ -21,6 +20,9 @@
 
 
 ---= DONE =---
+
+2026-09-06
+- for the time ruler indicate the time in hour:minutes:seconds (h:mm:ss) instead of only seconds · new `formatTimecode()` in `src/time.ts`; the ruler below every storyline row now prints its ticks, the row-end badge and the soundtrack length as h:mm:ss (hovering a tick still shows the exact number of seconds). The zoom badge moved just below the middle tick so the longer timecodes are never covered, and the last tick only draws its mark because the badge next to it already shows that time.
 
 2026-09-05
 - add possibility to enter a default time for all slides (put it net to "transition default") · "Slide default" stepper + "Apply to all" in the bulk bar; used for every new photo/text frame, saved with the project; videos keep their native length
