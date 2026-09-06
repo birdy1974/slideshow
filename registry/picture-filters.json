@@ -1,0 +1,309 @@
+{
+  "version": 1,
+  "comment": "Single source of truth for the picture look catalogue (filters/effects). Consumed by backend/app/picture_filters.py and src/pictureFilters.ts, exactly like registry/transitions.json is shared by the renderer and the transition pickers. `id` is what gets stored on a media item \u2014 NEVER rename an id (saved projects store it); labels may be prettified. Every parameter below has BOTH a CSS implementation (browser preview) and an FFmpeg implementation (render), built from the same numbers, so the editor and the MP4 agree. See docs/picture-filters.md for the mapping table and the known approximations (vignette, softness, sharpen, pixelate).",
+  "identity": {
+    "brightness": 1.0,
+    "contrast": 1.0,
+    "saturation": 1.0,
+    "grayscale": 0.0,
+    "sepia": 0.0,
+    "hueRotate": 0.0,
+    "warmth": 0.0,
+    "vignette": 0.0,
+    "softness": 0.0,
+    "sharpen": 0.0,
+    "pixelate": 0.0,
+    "invert": 0.0
+  },
+  "ranges": {
+    "amount": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "identity": 1
+    },
+    "brightness": {
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "identity": 1
+    },
+    "contrast": {
+      "min": 0.5,
+      "max": 1.8,
+      "step": 0.01,
+      "identity": 1
+    },
+    "saturation": {
+      "min": 0,
+      "max": 2.5,
+      "step": 0.01,
+      "identity": 1
+    },
+    "warmth": {
+      "min": -3,
+      "max": 3,
+      "step": 0.25,
+      "identity": 0
+    },
+    "vignette": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "identity": 0
+    },
+    "softness": {
+      "min": 0,
+      "max": 4,
+      "step": 0.1,
+      "identity": 0
+    },
+    "grayscale": {
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "identity": 0
+    },
+    "sepia": {
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "identity": 0
+    },
+    "hueRotate": {
+      "min": -180,
+      "max": 180,
+      "step": 1,
+      "identity": 0
+    },
+    "sharpen": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "identity": 0
+    },
+    "pixelate": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "identity": 0
+    },
+    "invert": {
+      "min": 0,
+      "max": 1,
+      "step": 1,
+      "identity": 0
+    }
+  },
+  "presets": [
+    {
+      "id": "none",
+      "label": "Original",
+      "group": "Basic",
+      "params": {}
+    },
+    {
+      "id": "mono",
+      "label": "Mono",
+      "group": "Black & white",
+      "hint": "Plain black and white",
+      "params": {
+        "grayscale": 1
+      }
+    },
+    {
+      "id": "noir",
+      "label": "Noir",
+      "group": "Black & white",
+      "hint": "Hard black and white with dark corners",
+      "params": {
+        "grayscale": 1,
+        "contrast": 1.4,
+        "brightness": 0.93,
+        "vignette": 0.55
+      }
+    },
+    {
+      "id": "silver",
+      "label": "Silver",
+      "group": "Black & white",
+      "hint": "Soft, bright black and white",
+      "params": {
+        "grayscale": 1,
+        "brightness": 1.07,
+        "contrast": 0.94
+      }
+    },
+    {
+      "id": "vivid",
+      "label": "Vivid",
+      "group": "Colour",
+      "hint": "Punchy colour, a little more contrast",
+      "params": {
+        "saturation": 1.5,
+        "contrast": 1.1
+      }
+    },
+    {
+      "id": "faded",
+      "label": "Faded",
+      "group": "Colour",
+      "hint": "Washed-out, lifted blacks",
+      "params": {
+        "saturation": 0.72,
+        "contrast": 0.84,
+        "brightness": 1.1
+      }
+    },
+    {
+      "id": "warm",
+      "label": "Warm",
+      "group": "Colour",
+      "hint": "Golden white balance",
+      "params": {
+        "warmth": 2,
+        "saturation": 1.08
+      }
+    },
+    {
+      "id": "cool",
+      "label": "Cool",
+      "group": "Colour",
+      "hint": "Blue white balance",
+      "params": {
+        "warmth": -2,
+        "saturation": 1.05
+      }
+    },
+    {
+      "id": "sepia",
+      "label": "Sepia",
+      "group": "Retro & film",
+      "hint": "Classic brown print",
+      "params": {
+        "sepia": 0.9
+      }
+    },
+    {
+      "id": "vintage",
+      "label": "Vintage",
+      "group": "Retro & film",
+      "hint": "Aged print, soft contrast",
+      "params": {
+        "sepia": 0.35,
+        "saturation": 0.82,
+        "contrast": 0.93,
+        "brightness": 1.06,
+        "vignette": 0.3
+      }
+    },
+    {
+      "id": "polaroid",
+      "label": "Polaroid",
+      "group": "Retro & film",
+      "hint": "Lifted, warm, soft corners",
+      "params": {
+        "sepia": 0.15,
+        "brightness": 1.1,
+        "contrast": 0.88,
+        "saturation": 1.05,
+        "vignette": 0.22
+      }
+    },
+    {
+      "id": "sunset",
+      "label": "Sunset",
+      "group": "Retro & film",
+      "hint": "Golden hour rescue",
+      "params": {
+        "warmth": 3,
+        "saturation": 1.35,
+        "brightness": 1.03,
+        "vignette": 0.2
+      }
+    },
+    {
+      "id": "cinema",
+      "label": "Cinema",
+      "group": "Retro & film",
+      "hint": "Contrasty teal-and-orange grade",
+      "params": {
+        "warmth": 1,
+        "contrast": 1.14,
+        "saturation": 1.12,
+        "brightness": 0.97,
+        "vignette": 0.25
+      }
+    },
+    {
+      "id": "duotone",
+      "label": "Duotone",
+      "group": "Retro & film",
+      "hint": "Two-colour graphic print",
+      "params": {
+        "grayscale": 1,
+        "sepia": 1,
+        "hueRotate": 165,
+        "saturation": 2
+      }
+    },
+    {
+      "id": "infrared",
+      "label": "Infrared",
+      "group": "Retro & film",
+      "hint": "Surreal shifted colours",
+      "params": {
+        "hueRotate": 180,
+        "saturation": 1.7,
+        "contrast": 1.1
+      }
+    },
+    {
+      "id": "dream",
+      "label": "Soft focus",
+      "group": "Effects",
+      "hint": "Gaussian softness \u2014 the most expensive preset to render",
+      "params": {
+        "softness": 1.6,
+        "brightness": 1.05,
+        "saturation": 1.12
+      }
+    },
+    {
+      "id": "vignette",
+      "label": "Vignette",
+      "group": "Effects",
+      "hint": "Dark corners only",
+      "params": {
+        "vignette": 0.8
+      }
+    },
+    {
+      "id": "sharpen",
+      "label": "Sharpen",
+      "group": "Effects",
+      "hint": "Render-time unsharp mask; the preview approximates it with contrast",
+      "params": {
+        "sharpen": 0.8
+      }
+    },
+    {
+      "id": "pixelate",
+      "label": "Pixelate",
+      "group": "Effects",
+      "hint": "Chunky blocks, 1/120 of the frame width",
+      "params": {
+        "pixelate": 1
+      }
+    },
+    {
+      "id": "negative",
+      "label": "Negative",
+      "group": "Effects",
+      "hint": "Inverted colours",
+      "params": {
+        "invert": 1
+      }
+    }
+  ]
+}

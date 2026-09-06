@@ -23,6 +23,7 @@ from typing import Any, Callable
 from .config import Settings
 from .database import Database, utcnow
 from .media import UnsafePath, mounted_path, source_path
+from .picture_filters import picture_look
 
 log = logging.getLogger(__name__)
 
@@ -1470,6 +1471,16 @@ class Renderer:
                         f"tpad=start_mode=clone:start_duration={format_ffmpeg_number(lead_in)}"
                         f":stop_mode=clone:stop_duration={format_ffmpeg_number(lead_out)}"
                     )
+            # Picture looks (filters/effects chosen in the preview popup). They
+            # run after zoompan, so they process output-sized frames instead of
+            # 24 MP sources, and before drawtext, so captions keep their own
+            # colour. The blurred letterbox backdrop is already part of the
+            # frame at this point, which is why it picks the same look up —
+            # exactly what the browser preview shows.
+            if kind_name != "title":
+                look = picture_look(item, width, height)
+                if look:
+                    filters.append(look)
             text_filter = self._text_filter(item, defaults, width, height)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]

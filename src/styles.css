@@ -590,3 +590,43 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .estimate-row strong{font:700 13px Manrope;color:#2f332b;white-space:nowrap}
 .estimate-row small{font-size:8px;color:#9a9d95;line-height:1.35}
 @media(max-width:760px){.estimate-row{grid-template-columns:1fr}.job-status{max-width:none;width:100%;justify-content:flex-start}}
+
+/* --- Picture looks: filters & effects (docs/picture-filters.md) --- */
+/* SVG feColorMatrix defs the CSS filters point at for warmth. Never display:none:
+   an unresolvable filter reference makes browsers hide the element completely. */
+.look-defs{position:absolute;width:0;height:0;overflow:hidden;pointer-events:none}
+.look-backdrop{z-index:60}
+.look-editor{width:min(1180px,96vw);max-height:calc(100vh - 40px)}
+.look-body{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:16px;align-items:start;padding:14px 20px}
+.look-stage{position:relative;height:min(58vh,520px);min-height:200px;background:#0b0c0a;border:1px solid #3a3d37;border-radius:8px;overflow:hidden;display:grid;place-items:center}
+.look-stage img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+.look-stage video.look-video{max-width:100%;max-height:100%;display:block;background:#000}
+.look-compare-toggle{position:absolute;right:10px;top:10px;z-index:4;border:1px solid #ffffff38;background:#1d211bd6;color:#e8ebe3;border-radius:5px;padding:3px 8px;font:700 9px Manrope;letter-spacing:.6px;cursor:pointer}
+.look-compare-toggle:hover{background:#2c3524;color:#fff;border-color:#7d9a55}
+.look-vignette{position:absolute;inset:0;z-index:2;pointer-events:none;background:radial-gradient(ellipse at 50% 50%,transparent 42%,#000 100%)}
+.look-compare{position:absolute;left:12px;top:10px;z-index:3;pointer-events:none;background:#1d211bd6;border:1px solid #ffffff38;color:#e8ebe3;border-radius:5px;padding:3px 8px;font:700 9px Manrope;letter-spacing:.8px;font-style:normal}
+.look-hint{position:absolute;right:10px;bottom:8px;z-index:3;pointer-events:none;color:#8d9285;font-size:9px;background:#131510aa;padding:3px 7px;border-radius:5px}
+.look-hint b{color:#cfd4c6}
+.look-panel{display:flex;flex-direction:column;gap:12px;min-width:0;max-height:min(58vh,520px);overflow-y:auto;padding-right:4px}
+.look-group>strong{display:block;font:800 8px Manrope;letter-spacing:1.1px;color:#9aa08f;margin-bottom:6px}
+.look-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.look-chip{border:1px solid #3a3d37;background:#22261f;border-radius:7px;padding:4px;display:flex;flex-direction:column;gap:4px;cursor:pointer;transition:.15s;min-width:0}
+.look-chip:hover{border-color:#6d7a5c;background:#2c3524}
+.look-chip.active{border-color:var(--lime);box-shadow:0 0 0 2px #c9ed6d33}
+.look-chip-thumb{position:relative;display:block;aspect-ratio:4/3;border-radius:4px;overflow:hidden;background:#0b0c0a}
+.look-chip-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.look-chip-name{font:700 8px Manrope;color:#c6cbbc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.look-chip.active .look-chip-name{color:#fff}
+.look-adjust{border-top:1px solid #3a3d37;padding-top:10px;display:flex;flex-direction:column;gap:6px}
+.look-adjust>strong{display:flex;align-items:center;gap:6px;font:800 8px Manrope;letter-spacing:1.1px;color:#9aa08f;margin-bottom:2px}
+.look-adjust>strong small{font-weight:600;letter-spacing:0;color:#7d8371}
+.look-slider{display:grid;grid-template-columns:74px minmax(0,1fr) 46px;align-items:center;gap:8px;font-size:9px;color:#b6bbac}
+.look-slider .range{width:100%;height:22px;accent-color:#8fb45a}
+.look-slider b{font:700 9px Manrope;color:#dfe6cf;text-align:right}
+.look-note{grid-column:1/-1;display:flex;align-items:flex-start;gap:7px;color:#8d9285;font-size:9px;margin:2px 0 0;line-height:1.5}
+/* Lightbox header button + detailed-list chip that open the editor */
+.look-button.on{background:#3a4a2c;border-color:#7d9a55;color:#eaf3d8}
+.thumb-look{position:absolute;left:3px;bottom:3px;z-index:3;display:flex;align-items:center;gap:2px;max-width:calc(100% - 6px);border:0;border-radius:4px;padding:2px 4px;background:#1c1f1bd9;color:#d7dbcd;font:700 7px Manrope;cursor:pointer}
+.thumb-look>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb-look:hover{background:#2c3524;color:#fff}
+.thumb-look.on{background:#4a6230;color:#eaf3d8}

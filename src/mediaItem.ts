@@ -29,4 +29,10 @@ export type MediaItem = {
   // means "from the start" / "to the end", which is what every project saved
   // before movie trimming existed stores. The renderer honours the same pair.
   trimStart?: number; trimEnd?: number;
+  // Picture look (filters/effects chosen in the preview popup): a preset id
+  // from registry/picture-filters.json, its intensity (0..1) and the manual
+  // sliders stacked on top. Like `rotation` this never touches the source file
+  // — src/pictureFilters.ts turns it into CSS for the editor and
+  // backend/app/picture_filters.py turns the same numbers into FFmpeg filters.
+  filter?: string; filterAmount?: number; filterAdjust?: Record<string, number>;
 }
