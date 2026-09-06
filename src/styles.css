@@ -630,3 +630,87 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .thumb-look>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .thumb-look:hover{background:#2c3524;color:#fff}
 .thumb-look.on{background:#4a6230;color:#eaf3d8}
+
+/* --- Cut & crop: second tab of the "Edit picture" popup ------------------
+   The stage box is sized in JS to the exact aspect of the turned picture, so
+   every percentage in the overlay is a fraction of the picture itself. */
+.editor-tabs{display:flex;align-items:center;gap:6px;margin:0 auto;padding:3px;border:1px solid #3a3d37;border-radius:8px;background:#1a1d17}
+.editor-tabs button{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:6px;padding:5px 11px;background:transparent;color:#9aa08f;font:700 10px Manrope;letter-spacing:.2px;cursor:pointer;transition:.15s;white-space:nowrap}
+.editor-tabs button:hover{color:#e8ebe3;background:#2c3524}
+.editor-tabs button.active{background:#4a6230;color:#f2f7e6;box-shadow:inset 0 0 0 1px #7d9a55}
+.crop-body{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:16px;align-items:start;padding:14px 20px}
+.crop-stage{position:relative;height:min(58vh,520px);min-height:200px;background:#0b0c0a;border:1px solid #3a3d37;border-radius:8px;overflow:hidden;display:grid;place-items:center;padding:10px}
+.crop-box{position:relative;overflow:hidden;border-radius:4px;background:#000;touch-action:none;box-shadow:0 0 0 1px #ffffff14}
+.crop-media{display:block;max-width:none;max-height:none;background:#000;pointer-events:none;user-select:none}
+/* The blurred hole fill: a second copy of the picture clipped to the polygon.
+   The clip sits on an unturned wrapper so it is not affected by the rotation. */
+.crop-hole{position:absolute;inset:0;z-index:2;overflow:hidden;pointer-events:none}
+.crop-hole img{display:block}
+.crop-frame{position:absolute;z-index:3;cursor:move;touch-action:none;box-shadow:0 0 0 9999px #00000099;border:1px solid #e9f5cf;outline:1px solid #00000066;outline-offset:-1px}
+.crop-frame:active{cursor:grabbing}
+.crop-handle{position:absolute;width:12px;height:12px;border:1px solid #14170f;border-radius:2px;background:#e9f5cf;box-shadow:0 0 0 1px #ffffff55;touch-action:none}
+.crop-handle:hover{background:#fff}
+.crop-handle.h-nw{left:-6px;top:-6px;cursor:nwse-resize}
+.crop-handle.h-n{left:50%;top:-6px;transform:translateX(-50%);cursor:ns-resize}
+.crop-handle.h-ne{right:-6px;top:-6px;cursor:nesw-resize}
+.crop-handle.h-e{right:-6px;top:50%;transform:translateY(-50%);cursor:ew-resize}
+.crop-handle.h-se{right:-6px;bottom:-6px;cursor:nwse-resize}
+.crop-handle.h-s{left:50%;bottom:-6px;transform:translateX(-50%);cursor:ns-resize}
+.crop-handle.h-sw{left:-6px;bottom:-6px;cursor:nesw-resize}
+.crop-handle.h-w{left:-6px;top:50%;transform:translateY(-50%);cursor:ew-resize}
+.crop-grid{position:absolute;inset:0;pointer-events:none}
+.crop-grid i{position:absolute;background:#ffffff2e}
+.crop-grid i:nth-child(1),.crop-grid i:nth-child(2){left:0;right:0;height:1px}
+.crop-grid i:nth-child(3),.crop-grid i:nth-child(4){top:0;bottom:0;width:1px}
+.crop-grid i:nth-child(1){top:33.333%}
+.crop-grid i:nth-child(2){top:66.666%}
+.crop-grid i:nth-child(3){left:33.333%}
+.crop-grid i:nth-child(4){left:66.666%}
+.crop-lasso{position:absolute;inset:0;pointer-events:none}
+.crop-lasso svg{position:absolute;inset:0;width:100%;height:100%}
+.crop-lasso polygon{fill:#0b0c0a8c;stroke:#c9ed6d;stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.lasso-point{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border:1px solid #14170f;border-radius:50%;background:#c9ed6d;pointer-events:auto;cursor:grab;touch-action:none}
+.lasso-point:hover,.lasso-point:active{background:#fff}
+.lasso-point.first{background:#fff;border-color:#4a6230}
+.crop-hint{position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:5;pointer-events:none;background:#1d211bd6;border:1px solid #ffffff38;color:#e8ebe3;border-radius:5px;padding:4px 9px;font:600 9px Manrope;font-style:normal;letter-spacing:.2px;white-space:nowrap}
+.crop-hint.bottom{top:auto;bottom:10px;color:#b9bfb0}
+.crop-panel{display:flex;flex-direction:column;gap:11px;min-width:0;max-height:min(58vh,520px);overflow-y:auto;padding-right:4px}
+.crop-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.crop-tool{display:flex;align-items:center;gap:6px;border:1px solid #3a3d37;border-radius:7px;padding:7px 8px;background:#22261f;color:#c6cbbc;font:700 9px Manrope;letter-spacing:.2px;cursor:pointer;transition:.15s;text-align:left}
+.crop-tool:hover{border-color:#6d7a5c;background:#2c3524;color:#fff}
+.crop-tool.active{border-color:var(--lime);background:#3a4a2c;color:#f2f7e6;box-shadow:0 0 0 2px #c9ed6d26}
+.crop-block{border-top:1px solid #3a3d37;padding-top:10px;display:flex;flex-direction:column;gap:8px}
+.crop-block>strong{display:flex;align-items:baseline;gap:7px;font:800 8px Manrope;letter-spacing:1.1px;color:#9aa08f}
+.crop-block>strong small{font-weight:600;letter-spacing:0;color:#7d8371;text-transform:none}
+.crop-aspects{display:flex;flex-wrap:wrap;gap:5px}
+.crop-aspect{border:1px solid #3a3d37;border-radius:5px;padding:4px 7px;background:#22261f;color:#c6cbbc;font:700 9px Manrope;cursor:pointer;transition:.15s}
+.crop-aspect:hover:not(:disabled){border-color:#6d7a5c;background:#2c3524;color:#fff}
+.crop-aspect.active{border-color:var(--lime);background:#3a4a2c;color:#f2f7e6}
+.crop-aspect:disabled{opacity:.4;cursor:not-allowed}
+.crop-readout{display:flex;align-items:baseline;gap:6px;font:600 9px Manrope;color:#8d9285;flex-wrap:wrap}
+.crop-readout>span:first-child{font:800 8px Manrope;letter-spacing:1px;color:#9aa08f;text-transform:uppercase}
+.crop-readout b{font:700 10px Manrope;color:#dfe6cf}
+.crop-row{display:flex;flex-wrap:wrap;gap:6px}
+.crop-mini{display:inline-flex;align-items:center;gap:5px;border:1px solid #3a3d37;border-radius:5px;padding:5px 9px;background:#22261f;color:#c6cbbc;font:700 9px Manrope;cursor:pointer;transition:.15s}
+.crop-mini:hover:not(:disabled){border-color:#6d7a5c;background:#2c3524;color:#fff}
+.crop-mini:disabled{opacity:.42;cursor:not-allowed}
+.crop-explain{color:#8d9285;font-size:9px;line-height:1.55;margin:0}
+.crop-explain b{color:#cfd4c6}
+.crop-note{color:#9aa08f;font-size:9px;line-height:1.5;margin:0;background:#1a1d17;border:1px solid #33372f;border-radius:5px;padding:5px 7px}
+.crop-note.warn{color:#e6c07a;border-color:#5a4a2a;background:#221d12}
+.crop-result-frame{position:relative;width:100%;aspect-ratio:16/9;border:1px solid #3a3d37;border-radius:6px;overflow:hidden;background:#0b0c0a}
+.crop-result-frame .back{position:absolute;inset:-6%;width:112%;height:112%;object-fit:cover;filter:blur(14px) brightness(.7) saturate(1.2)}
+.crop-result-frame .front{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+/* A playing movie wearing its crop: the window is the crop rectangle, sized in
+   JS, and the video inside is oversized and offset so it lines up exactly. */
+.crop-window{position:relative;display:block;overflow:hidden;max-width:100%;max-height:100%;background:#000}
+.crop-window video{display:block}
+/* The lightbox body is a flex column, so auto margins are what centres a box
+   that is sized in pixels rather than stretched. */
+.lightbox-body>.crop-window{margin:auto}
+/* The Preview stage is a fixed 16:9 box: the window is centred in it, and a
+   movie that is not cropped simply fits the stage like the photos do. */
+.video-stage{display:grid;place-items:center}
+.video-stage>video{width:100%;height:100%;object-fit:contain;background:#000}
+/* Detailed list: the crop chip sits on the other side of the filter chip. */
+.thumb-look+.thumb-look{left:auto;right:3px}

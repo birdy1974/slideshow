@@ -35,4 +35,16 @@ export type MediaItem = {
   // — src/pictureFilters.ts turns it into CSS for the editor and
   // backend/app/picture_filters.py turns the same numbers into FFmpeg filters.
   filter?: string; filterAmount?: number; filterAdjust?: Record<string, number>;
+  // Cut & crop from the same popup: `rect` is the kept rectangle in fractions of
+  // the turned picture (x/y top-left, w/h size), `degrees` straightens it
+  // (−15..15, zoomed so no corner shows), `lasso` is a polygon — in fractions of
+  // the cropped view — whose inside is replaced by a blurred copy, and `feather`
+  // softens that edge. src/pictureCrop.ts turns these into canvas/CSS and
+  // backend/app/picture_crop.py into FFmpeg filters; absent means "whole file".
+  crop?: {
+    rect?: { x: number; y: number; w: number; h: number } | null;
+    degrees?: number | null;
+    lasso?: [number, number][] | null;
+    feather?: number | null;
+  } | null;
 }

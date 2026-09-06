@@ -321,6 +321,43 @@ def media_loudness(root: str = Query(pattern="^(music|videos|photos)$"), path: s
     return {"integrated": round(stats["input_i"], 1), "truePeak": round(stats["input_tp"], 1), "range": round(stats["input_lra"], 1)}
 
 
+@app.get("/api/media/cropdetect")
+def media_cropdetect(
+    root: str = Query(pattern="^(photos|videos)$"),
+    path: str = "",
+    rotation: int = Query(default=0),
+    seconds: float = Query(default=4.0, ge=0.5, le=30.0),
+) -> dict[str, Any]:
+    """One-click "remove the black bars": let FFmpeg propose a crop rectangle.
+
+    `cropdetect` scans the first frames for near-black borders — letterboxed
+    movies, scanned photos with a dark edge, a slide filmed off a projector.
+    The rectangle comes back as fractions of the picture **after** the item's
+    quarter turn (`rotation` is applied before detecting, so width and height
+    swap for 90/270), which is the same space the crop editor works in: the
+    proposal can be dropped straight into `item.crop.rect`.
+
+    Nothing is written: this only measures. The editor still decides.
+    """
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in IMAGE_EXTENSIONS | VIDEO_EXTENSIONS:
+        raise HTTPException(415, "File is not a supported picture or movie")
+    if target.stat().st_size == 0: raise HTTPException(422, "File is empty (0 bytes)")
+    from .picture_crop import cropdetect_command, parse_cropdetect
+    command = cropdetect_command(settings.ffmpeg_bin, str(target), rotation, seconds)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=settings.ffprobe_timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(503, f"Could not scan this file for bars: {exc}") from exc
+    detected = parse_cropdetect(result.stderr or "", rotation)
+    if detected is None:
+        # cropdetect stays silent when every frame is dark or nothing decodes.
+        raise HTTPException(422, "FFmpeg could not measure this file — set the crop by hand")
+    return detected
+
+
 @app.get("/api/media/file")
 def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str = "") -> FileResponse:
     """Stream a media file from a read-only mount for thumbnails, lightbox, and MP3 preview.

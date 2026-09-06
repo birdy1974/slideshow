@@ -1,5 +1,8 @@
-// "Edit picture" popup: filters/effects for one photo or movie, stacked on top
-// of the media lightbox exactly like the movie Cut/Crop editor is.
+// "Edit picture" popup for one photo or movie, stacked on top of the media
+// lightbox exactly like the movie Cut/Crop editor is. Two tabs share one
+// container: **Filters & effects** (this file) and **Cut & crop**
+// (PictureCropEditor.tsx), so both edits preview on the same picture and both
+// live in the same numbers-on-the-item model.
 //
 // Everything here is non-destructive. The source files on the read-only
 // /photos and /videos mounts are never touched: the chosen look is stored as a
@@ -8,14 +11,17 @@
 // numbers into FFmpeg filters (backend/app/picture_filters.py), so the MP4
 // looks like the preview.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Info, RotateCcw, Sparkles, Wand2, X } from 'lucide-react'
+import { Crop as CropIcon, Info, RotateCcw, Sparkles, Wand2, X } from 'lucide-react'
 import type { MediaItem } from './mediaItem'
 import {
   ADJUST_CONTROLS, LOOK_GROUPS, LOOK_PRESETS, LOOK_RANGES, PIXELATE_DIVISOR,
   WARMTH_STEPS, cssFilter, hasLook, lookLabel, resolveLook, vignetteOverlayStyle,
   warmthFilterId, warmthMatrixValues, type LookAdjust, type LookAdjustKey, type LookPreset,
 } from './pictureFilters'
+import { cropLabel, hasCrop, normalizeRotation, type CropRect } from './pictureCrop'
+import { useCroppedSource } from './usePictureCrop'
 import { useLookProxies } from './usePictureLook'
+import { CropSpriteVideo, PictureCropPanel } from './PictureCropEditor'
 
 const round = (value: number, digits = 2) => Number(value.toFixed(digits))
 
@@ -68,15 +74,31 @@ function LookChip({ preset, proxy, pixelProxy, active, onPick }: {
   </button>
 }
 
-export function PictureLookEditor({ item, src, onChange, onClose }: {
+export function PictureLookEditor({ item, src, onChange, onClose, initialTab = 'filters', detectBars }: {
   item: MediaItem
   src: string
   onChange: (patch: Partial<MediaItem>) => void
   onClose: () => void
+  /** Which tab the popup opens on (the lightbox has a button for each). */
+  initialTab?: 'filters' | 'crop'
+  /** Backend call that measures black bars; absent when it cannot work. */
+  detectBars?: (item: MediaItem) => Promise<{ rect: CropRect; bars: boolean } | null>
 }) {
-  // Cancel puts back exactly what the item had when the editor opened.
-  const original = useRef({ filter: item.filter, filterAmount: item.filterAmount, filterAdjust: item.filterAdjust })
+  const [tab, setTab] = useState<'filters' | 'crop'>(initialTab)
+  // Cancel puts back exactly what the item had when the popup opened — both tabs.
+  const original = useRef({ filter: item.filter, filterAmount: item.filterAmount, filterAdjust: item.filterAdjust, crop: item.crop })
   const [compare, setCompare] = useState(false)
+
+  const isMovie = item.type === 'video'
+  const turn = normalizeRotation(item.rotation)
+  const turnStyle = turn ? { rotate: `${turn}deg` } : {}
+
+  // The crop happens first (that is the renderer's order too), so the filter
+  // chips and stage work on a cropped copy. A movie's *stage* keeps playing the
+  // real file through a CSS sprite; the copy only feeds its chips.
+  const cropped = useCroppedSource(src, item, isMovie ? 'result' : 'stage', isMovie)
+  const baseSrc = cropped.ready ? cropped.src : src
+  const baked = cropped.rotationApplied
 
   const params = useMemo(() => resolveLook(item), [item.filter, item.filterAmount, item.filterAdjust])  // eslint-disable-line react-hooks/exhaustive-deps
   const filter = cssFilter(params)
@@ -84,18 +106,18 @@ export function PictureLookEditor({ item, src, onChange, onClose }: {
   const pixelated = params.pixelate > 0.001
   const active = hasLook(item)
 
-  // One downscaled copy of this picture feeds every preset chip (20 chips on a
+  // One downscaled copy of this clip feeds every preset chip (20 chips on a
   // 24 MP JPEG would be wasted decode work), plus the 120 px copy that
-  // nearest-neighbour upscaling turns into the Pixelate preview.
-  const isMovie = item.type === 'video'
-  const { chip: proxy, pixel: pixelProxy } = useLookProxies(src, 320, PIXELATE_DIVISOR, isMovie)
+  // nearest-neighbour upscaling turns into the Pixelate preview. The quarter
+  // turn is baked in unless the crop copy already carried it.
+  const { chip: proxy, pixel: pixelProxy } = useLookProxies(baseSrc, 320, PIXELATE_DIVISOR, isMovie, baked ? 0 : turn)
 
   // Hold Space to compare with the original (the same shortcut
   // photofilters.com uses). Sliders keep working while it is held. Movies keep
   // Space for their own player — they get the compare button instead.
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      if (isMovie || event.code !== 'Space' || event.repeat) return
+      if (tab !== 'filters' || isMovie || event.code !== 'Space' || event.repeat) return
       const target = event.target as HTMLElement | null
       // Space still belongs to whatever has focus: a slider, a text field or a
       // preset chip (buttons activate on Space) must not trigger the compare.
@@ -136,31 +158,48 @@ export function PictureLookEditor({ item, src, onChange, onClose }: {
   }
 
   const cancel = () => { onChange(original.current); onClose() }
-  const reset = () => onChange({ filter: 'none', filterAmount: 1, filterAdjust: {} })
+  const resetTab = () => {
+    if (tab === 'crop') onChange({ crop: undefined })
+    else onChange({ filter: 'none', filterAmount: 1, filterAdjust: {} })
+  }
 
-  const shown: { filter?: string; imageRendering?: 'pixelated' } = compare
-    ? {}
-    : { filter: filter || undefined, ...(pixelated ? { imageRendering: 'pixelated' as const } : {}) }
-  // A movie stage always plays the real file: swapping in a JPEG proxy would
-  // replace the recording with one still frame.
-  const stageSrc = pixelated && !compare && !isMovie ? (pixelProxy || proxy || src) : src
+  const lookStyle = compare ? {} : {
+    ...(filter ? { filter } : {}),
+    ...(pixelated ? { imageRendering: 'pixelated' as const } : {}),
+  }
+  // Pictures: prefer the blocky proxy for Pixelate, else the cropped copy, else
+  // the file itself (which then still needs its quarter turn from CSS).
+  const stageSrc = pixelated && !compare && !isMovie ? (pixelProxy || proxy || baseSrc) : baseSrc
+  const stageStyle = { ...(stageSrc === src && !baked ? turnStyle : {}), ...lookStyle }
 
   return <div className="modal-backdrop dark-backdrop look-backdrop" onMouseDown={cancel}>
     <div className="soundtrack-editor look-editor" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top">
-        <div><strong>{item.name}</strong><span>{isMovie ? 'MOVIE' : 'PICTURE'} EDITOR · FILTERS & ADJUSTMENTS</span></div>
+        <div><strong>{item.name}</strong><span>{isMovie ? 'MOVIE' : 'PICTURE'} EDITOR</span></div>
+        <div className="editor-tabs" role="tablist">
+          <button type="button" role="tab" aria-selected={tab === 'filters'} className={tab === 'filters' ? 'active' : ''}
+            onClick={() => setTab('filters')}><Sparkles size={13}/> Filters &amp; effects</button>
+          <button type="button" role="tab" aria-selected={tab === 'crop'} className={tab === 'crop' ? 'active' : ''}
+            onClick={() => setTab('crop')}><CropIcon size={13}/> Cut &amp; crop</button>
+        </div>
         <div className="lightbox-actions">
-          <em className="lightbox-position">{active ? lookLabel(item) : 'Original'}</em>
-          <button type="button" onClick={reset} title="Back to the untouched original" aria-label="Reset look"><RotateCcw size={17} /></button>
+          <em className="lightbox-position">{tab === 'crop' ? (hasCrop(item) ? cropLabel(item) : 'Whole picture') : (active ? lookLabel(item) : 'Original')}</em>
+          <button type="button" onClick={resetTab} title={tab === 'crop' ? 'Use the whole picture again' : 'Back to the untouched original'}
+            aria-label={tab === 'crop' ? 'Reset crop' : 'Reset look'} disabled={tab === 'crop' ? !hasCrop(item) : !active}><RotateCcw size={17} /></button>
           <button type="button" onClick={cancel} aria-label="Close editor"><X size={20} /></button>
         </div>
       </div>
 
+      {tab === 'crop'
+        ? <PictureCropPanel item={item} src={src} onChange={onChange} onCancel={cancel} onClose={onClose} onReset={() => onChange({ crop: undefined })} detectBars={detectBars} />
+        : <>
       <div className="editor-body look-body">
         <div className="look-stage">
           {isMovie
-            ? <video className="look-video" src={src} style={shown.filter ? { filter: shown.filter } : undefined} controls muted playsInline preload="metadata" />
-            : <img src={stageSrc} alt={item.name} style={shown} draggable={false} />}
+            // A movie keeps playing its real file, so its crop is a CSS sprite.
+            ? <CropSpriteVideo item={item} className="look-video" src={src} style={lookStyle.filter ? { filter: lookStyle.filter } : undefined}
+                controls muted playsInline preload="metadata" />
+            : <img src={stageSrc} alt={item.name} style={stageStyle} draggable={false} />}
           {!compare && vignette && <i className="look-vignette" style={vignette} />}
           {compare && <em className="look-compare">ORIGINAL</em>}
           <button type="button" className="look-compare-toggle" onClick={() => setCompare(value => !value)}
@@ -177,7 +216,7 @@ export function PictureLookEditor({ item, src, onChange, onClose }: {
                   <LookChip
                     key={preset.id}
                     preset={preset}
-                    proxy={proxy || src}
+                    proxy={proxy || baseSrc}
                     pixelProxy={pixelProxy}
                     active={(item.filter || 'none') === preset.id}
                     onPick={() => pick(preset.id)}
@@ -216,10 +255,11 @@ export function PictureLookEditor({ item, src, onChange, onClose }: {
 
       <div className="modal-foot">
         <span><Sparkles size={12} /> {active ? `${lookLabel(item)} — applied to this ${isMovie ? 'movie' : 'picture'} only` : 'No filter — the original file is used as it is'}</span>
-        <button className="btn ghost" onClick={reset} disabled={!active}>Reset</button>
+        <button className="btn ghost" onClick={resetTab} disabled={!active}>Reset</button>
         <button className="btn ghost" onClick={cancel}>Cancel</button>
         <button className="btn dark" onClick={onClose}>Done</button>
       </div>
+        </>}
     </div>
   </div>
 }

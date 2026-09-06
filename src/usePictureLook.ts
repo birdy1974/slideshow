@@ -12,6 +12,7 @@ import {
   cssFilter, hasLook, pixelateProxyWidth, resolveLook, vignetteOverlayStyle,
   type Lookish,
 } from './pictureFilters'
+import { normalizeRotation } from './pictureCrop'
 
 /** Anything `drawImage` accepts and that reports its own pixel size. */
 type Paintable = HTMLImageElement | HTMLVideoElement
@@ -22,16 +23,28 @@ function intrinsicSize(source: Paintable): { width: number; height: number } {
     : { width: source.naturalWidth, height: source.naturalHeight }
 }
 
-/** Draw `source` into a canvas `width` px wide and return it as a JPEG data URL. */
-function scaledDataUrl(source: Paintable, width: number): string {
+/**
+ * Draw `source` into a canvas `width` px wide and return it as a JPEG data URL.
+ * A quarter turn is baked in here rather than left to CSS: the copies feed
+ * preset chips (whose 4:3 box cannot be turned) and the Pixelate proxy, and a
+ * turned copy means every consumer shows the picture the way the render does.
+ */
+function scaledDataUrl(source: Paintable, width: number, turn = 0): string {
   const { width: natural, height } = intrinsicSize(source)
   if (!natural || !height) return ''
+  const turned = turn === 90 || turn === 270
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(width))
-  canvas.height = Math.max(1, Math.round(width * height / natural))
+  const long = Math.max(1, Math.round(width))
+  const short = Math.max(1, Math.round(width * height / natural))
+  canvas.width = turned ? short : long
+  canvas.height = turned ? long : short
   const context = canvas.getContext('2d')
   if (!context) return ''
-  context.drawImage(source, 0, 0, canvas.width, canvas.height)
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  context.translate(canvas.width / 2, canvas.height / 2)
+  if (turn) context.rotate(turn * Math.PI / 180)
+  context.drawImage(source, -long / 2, -short / 2, long, short)
   return canvas.toDataURL('image/jpeg', 0.85)
 }
 
@@ -47,7 +60,7 @@ function scaledDataUrl(source: Paintable, width: number): string {
  * empty box. `preload="metadata"` plus the seek keeps it to a range request —
  * the file is never downloaded twice.
  */
-export function useLookProxies(src: string, chipWidth = 320, pixelWidth: number | null = null, isVideo = false) {
+export function useLookProxies(src: string, chipWidth = 320, pixelWidth: number | null = null, isVideo = false, turn = 0) {
   const [chip, setChip] = useState('')
   const [pixel, setPixel] = useState('')
   useEffect(() => {
@@ -57,8 +70,8 @@ export function useLookProxies(src: string, chipWidth = 320, pixelWidth: number 
     const grab = (source: Paintable) => {
       if (cancelled) return
       try {
-        if (chipWidth > 0) setChip(scaledDataUrl(source, chipWidth))
-        if (pixelWidth) setPixel(scaledDataUrl(source, pixelWidth))
+        if (chipWidth > 0) setChip(scaledDataUrl(source, chipWidth, turn))
+        if (pixelWidth) setPixel(scaledDataUrl(source, pixelWidth, turn))
       } catch { /* tainted canvas — the caller falls back to `src` */ }
     }
     // Anonymous so a same-origin `/api/media/file` clip keeps working if the
@@ -83,7 +96,7 @@ export function useLookProxies(src: string, chipWidth = 320, pixelWidth: number 
     image.crossOrigin = 'anonymous'
     image.src = src
     return () => { cancelled = true }
-  }, [src, chipWidth, pixelWidth, isVideo])
+  }, [src, chipWidth, pixelWidth, isVideo, turn])
   return { chip, pixel }
 }
 
@@ -93,12 +106,15 @@ export function useLookProxies(src: string, chipWidth = 320, pixelWidth: number 
  * `suspended` (the editor's "hold Space to compare") drops the look entirely
  * and reports it, so the caller can badge the original.
  */
-export function usePictureLook(src: string, item?: Lookish | null, suspended = false, allowPixelProxy = true) {
+export function usePictureLook(src: string, item?: Lookish | null, suspended = false, allowPixelProxy = true, alreadyTurned = false) {
   // Movies never swap their src: a JPEG proxy would replace the recording with
   // a single frame, so a pixelated movie keeps its colour look in the preview
   // and only the render shows the blocks.
   const pixelWidth = !suspended && allowPixelProxy ? pixelateProxyWidth(item) : null
-  const { pixel } = useLookProxies(src, 0, pixelWidth)
+  // `alreadyTurned` is set when src is itself a canvas copy that already carries
+  // the quarter turn (a cropped clip), so the turn is not applied twice.
+  const turn = alreadyTurned ? 0 : normalizeRotation(item?.rotation)
+  const { pixel } = useLookProxies(src, 0, pixelWidth, false, turn)
   const [style, vignette] = (() => {
     if (suspended || !hasLook(item)) return [{ filter: undefined } as { filter?: string; imageRendering?: 'pixelated' }, undefined]
     const params = resolveLook(item)
@@ -115,5 +131,8 @@ export function usePictureLook(src: string, item?: Lookish | null, suspended = f
     style,
     vignette,
     compare: suspended,
+    // True when the returned src already carries the item's quarter turn, so the
+    // caller must not rotate it again.
+    rotationBaked: !!(pixelWidth && pixel && turn),
   }
 }

@@ -38,7 +38,11 @@ export type LookPreset = { id: string; label: string; group: string; hint?: stri
 export type LookRange = { min: number; max: number; step: number; identity: number }
 // Anything that carries a look — a MediaItem, or the loose object a bulk
 // control keeps before it is applied.
-export type Lookish = { filter?: string; filterAmount?: number; filterAdjust?: LookAdjust | Record<string, number> }
+export type Lookish = {
+  filter?: string; filterAmount?: number; filterAdjust?: LookAdjust | Record<string, number>
+  /** Only read for the quarter turn a canvas copy has to bake in. */
+  rotation?: number | null
+}
 
 const data = registry as { identity: LookParams; ranges: Record<string, LookRange>; presets: LookPreset[] }
 

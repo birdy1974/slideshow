@@ -4,7 +4,7 @@ import {
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
-  Timer, HardDrive,
+  Timer, HardDrive, Crop as CropIcon,
 } from 'lucide-react'
 import { FieldLabel, Select, TimeField } from './ui'
 import { formatClock, formatClockPrecise, formatTimecode, parseClock } from './time'
@@ -15,7 +15,10 @@ import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
+import { CropSpriteVideo } from './PictureCropEditor'
 import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilterStyle, type Lookish } from './pictureFilters'
+import { cropLabel, cropSummary, hasCrop, type CropRect } from './pictureCrop'
+import { useCroppedSource } from './usePictureCrop'
 import { usePictureLook } from './usePictureLook'
 import { TransitionGallery } from './TransitionGallery'
 import { totalTransitionCount } from './transitionCatalog'
@@ -56,6 +59,24 @@ function mediaRelativePath(root: MediaRoot, serverPath: string) {
 
 function mediaFileUrl(root: MediaRoot, serverPath: string) {
   return `/api/media/file?root=${root}&path=${encodeMediaRelative(mediaRelativePath(root, serverPath))}`
+}
+
+/**
+ * Ask FFmpeg to measure the black bars of a file (the crop editor's
+ * "Black bars" tool). The rectangle comes back in fractions of the *turned*
+ * picture, which is the space the editor works in.
+ */
+async function serverCropDetect(root: 'photos' | 'videos', serverPath: string, rotation: number, seconds: number) {
+  const url = `/api/media/cropdetect?root=${root}&path=${encodeMediaRelative(mediaRelativePath(root, serverPath))}`
+    + `&rotation=${Math.round(rotation)}&seconds=${seconds}`
+  const response = await fetch(url)
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error((data && (data.detail || data.message)) || `The backend could not measure this file (${response.status})`)
+  }
+  const rect = data?.rect
+  if (!rect || typeof rect !== 'object') throw new Error('FFmpeg returned no crop for this file')
+  return { rect: rect as CropRect, bars: !!data?.bars }
 }
 
 async function serverVideoDuration(root: 'photos' | 'videos', serverPath: string) {
@@ -132,7 +153,7 @@ function itemThumbUrl(item?: MediaItem | null) {
 
 type LightboxTarget = { title: string; src: string; kind: 'image' | 'video' | 'audio' }
 
-function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, onEdit, position, rotation, onRotate, suspended, lookItem, onLook }: LightboxTarget & {
+function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, onEdit, position, rotation, onRotate, suspended, lookItem, onLook, onCrop }: LightboxTarget & {
   onClose: () => void;
   // Storyline bindings: when present, the lightbox can walk the storyline
   // (prev/next), show the current position, and delete the shown item.
@@ -146,14 +167,20 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   // True while a stacked editor is open: keyboard shortcuts and the backdrop
   // click belong to that editor, not to this lightbox.
   suspended?: boolean;
-  // Picture look: the item being shown, so the lightbox wears the same CSS
-  // filter FFmpeg will apply, plus the button that opens the stacked
-  // "Edit picture" popup (photos and movies; audio has no picture).
-  lookItem?: Lookish | null; onLook?: () => void;
+  // Picture look and cut/crop: the item being shown, so the lightbox wears the
+  // same CSS filter and the same crop FFmpeg will apply, plus the two buttons
+  // that open the stacked "Edit picture" popup (audio has no picture).
+  lookItem?: Lookish | MediaItem | null; onLook?: () => void; onCrop?: () => void;
 }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
-  const lookView = usePictureLook(src, lookItem, false, kind !== 'video')
+  const isVideo = kind === 'video'
+  // Crop first, look on top — the renderer's order. A cropped *photo* is shown
+  // from one canvas copy; a cropped *movie* keeps playing its own file through a
+  // CSS sprite (CropSpriteVideo), because a JPEG copy would freeze it — so no
+  // copy is built for movies here.
+  const cropped = useCroppedSource(src, isVideo ? null : lookItem, 'stage', false)
+  const lookView = usePictureLook(cropped.ready ? cropped.src : src, lookItem, false, !isVideo, cropped.rotationApplied)
   // Keyboard: ← / → walk the storyline, Escape closes. Only wired when the
   // lightbox is bound to storyline items (browser previews pass no handlers).
   useEffect(() => {
@@ -172,6 +199,9 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   const canRotate = kind === 'image' && !!onRotate
   const canEditMovie = kind === 'video' && !!onEdit
   const canLook = kind !== 'audio' && !!onLook
+  const canCrop = kind !== 'audio' && !!onCrop
+  const turnedByProxy = cropped.rotationApplied || lookView.rotationBaked
+  const cropNote = hasCrop(lookItem) ? cropSummary(lookItem) : '' 
   // Storyline navigation lives inside the picture: the whole left half steps
   // back, the whole right half steps forward. Movies keep their centre and
   // their control bar clickable, and audio has no picture to click on.
@@ -183,12 +213,13 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{canEditMovie && <button type="button" className="lightbox-edit" title="Cut this movie — choose which section to use" onClick={onEdit}><Scissors size={17}/> Cut</button>}
         {canLook && <button type="button" className={`lightbox-edit look-button ${hasLook(lookItem) ? 'on' : ''}`} title={hasLook(lookItem) ? `Picture look: ${lookSummary(lookItem)} — click to change` : 'Filters & effects for this picture'} onClick={onLook}><Sparkles size={17}/> {lookSummary(lookItem) || 'Filters'}</button>}
+        {canCrop && <button type="button" className={`lightbox-edit look-button ${hasCrop(lookItem) ? 'on' : ''}`} title={cropNote ? `Cut & crop: ${cropNote} — click to change` : 'Cut and crop parts of this picture'} onClick={onCrop}><CropIcon size={17}/> {cropNote ? cropLabel(lookItem) : 'Crop'}</button>}
         {canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
       <div className="lightbox-body">
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
-        : kind === 'video' ? <video className="lightbox-media" src={src} style={lookView.style} controls autoPlay onError={() => setFailed(true)} />
+        : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={src} style={lookView.style} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
-        : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${turn === 90 || turn === 270 ? 'turned' : ''}`} style={{ ...rotationStyle(turn), ...lookView.style }} src={lookView.src} alt={title} onError={() => setFailed(true)} /></div>}
+        : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${!turnedByProxy && (turn === 90 || turn === 270) ? 'turned' : ''}`} style={{ ...(turnedByProxy ? undefined : rotationStyle(turn)), ...lookView.style }} src={lookView.src} alt={title} onError={() => setFailed(true)} /></div>}
       {lookView.vignette && <i className="look-vignette" style={lookView.vignette}/>}
       {navLayer}
       </div>
@@ -205,14 +236,21 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
 }) {
   const [failed, setFailed] = useState(false)
   const src = itemThumbUrl(item)
+  // A cropped clip is shown from one small canvas copy — the only way a bare
+  // <img>/<video> can display a sub-rectangle — so every thumbnail surface
+  // (storyline, compact grid, detailed list, filmstrip, media browser) shows
+  // the crop without a single extra CSS rule.
+  const cropped = useCroppedSource(src, item, 'thumb', item.type === 'video')
   useEffect(() => setFailed(false), [src])
   if (!src) return null
   if (failed) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
-  // Every thumbnail wears the item's picture look, so the storyline shows the
-  // same colours the render will produce.
-  const common = { src, className, onClick, onPointerDown, onError: () => setFailed(true), style: { ...style, ...pictureFilterStyle(item) } } as const
-  if (item.type === 'video') return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} />
-  return <img {...common} style={rotationStyle(item.rotation, style)} alt={item.name} />
+  // Every thumbnail wears the item's picture look and crop, so the storyline
+  // shows the same picture the render will produce.
+  const common = { src: cropped.ready ? cropped.src : src, className, onClick, onPointerDown, onError: () => setFailed(true) } as const
+  const look = { ...style, ...pictureFilterStyle(item) }
+  if (item.type === 'video' && !cropped.ready) return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} style={look} />
+  // The copy already carries the quarter turn; only the bare file needs CSS to turn it.
+  return <img {...common} style={cropped.rotationApplied ? look : rotationStyle(item.rotation, look)} alt={item.name} />
 }
 
 // Thumbnail inside the media picker, with a fallback when the file is empty
@@ -747,6 +785,10 @@ function App() {
   const [editingMovieId, setEditingMovieId] = useState<number | null>(null)
   // Which clip's "Edit picture" (filters) popup is open, if any.
   const [lookItemId, setLookItemId] = useState<number | null>(null)
+  // The "Edit picture" popup has two tabs; the lightbox button you pressed
+  // decides which one opens.
+  const [lookTab, setLookTab] = useState<'filters' | 'crop'>('filters')
+  const openLookEditor = (item: MediaItem, tab: 'filters' | 'crop' = 'filters') => { setLookTab(tab); setLookItemId(item.id) }
   // Standalone transition gallery (browse every example without picking one).
   const [showTransitionGallery, setShowTransitionGallery] = useState(false)
   const openMediaLightbox = (item: MediaItem) => {
@@ -952,6 +994,20 @@ function App() {
       notify(`Project “${saved.project?.name||`#${id}`}” loaded · revision ${saved.revision}`)
     }catch(error){notify(`Load failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
+  /**
+   * "Remove black bars" for the crop editor: the backend runs FFmpeg's
+   * cropdetect on the real file and returns the kept rectangle in fractions of
+   * the turned picture. Files that only exist in the browser (data/blob URLs)
+   * have no server path, so the tool is hidden there.
+   */
+  const detectBars = async (target: MediaItem) => {
+    const full = mediaItemPath(target)
+    if (!full || /^(https?:|data:|blob:)/.test(full)) return null
+    const root = mediaRootFromPath(full, target.type === 'video' ? 'videos' : 'photos')
+    if (root === 'music') return null
+    return serverCropDetect(root, full, normalizeRotation(target.rotation), target.type === 'video' ? 4 : 1)
+  }
+
   const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
   // Transition time is extra timeline time, so it is not limited by either
   // neighbouring clip.  Keep only a practical upper bound and xfade's minimum.
@@ -1441,7 +1497,7 @@ function App() {
                 const thumb = itemThumbUrl(item)
                 return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
-                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); setLookItemId(item.id) }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
+                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { if (item.type !== 'title') { e.stopPropagation(); openMediaLightbox(item) } }} title={item.type !== 'title' ? 'View' : undefined}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
                   <div className="media-info"><strong>{item.name}</strong><span>{item.path}</span><small>{item.type === 'image' ? '6000 × 4000 · JPG' : item.type === 'video' ? '1920 × 1080 · H.264' : 'Generated text frame'}{item.type === 'video' && movieIsTrimmed(item) && <em className="trim-badge" title={`Using ${movieKeptLabel(item)} of the original movie`}><Scissors size={10}/> {movieKeptLabel(item)}</em>}</small><div className={`item-text-edit ${item.textEnabled === false ? 'off' : ''}`}>{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}<button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select>{item.type==='title'&&<button className="edit-frame-button" onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TransitionChip value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}</div>
                   <div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   <Select ariaLabel={`${item.name} effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select>
@@ -1482,7 +1538,7 @@ function App() {
       ? <MovieEditor item={movie} src={itemThumbUrl(movie) || ''} onChange={change => patch(movie.id, change)} onClose={() => setEditingMovieId(null)} />
       : null })()}
     {lookItemId != null && (() => { const target = media.find(x => x.id === lookItemId); return target && target.type !== 'title'
-      ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
+      ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
@@ -1564,7 +1620,7 @@ function App() {
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {showCleanTempConfirm && <ConfirmDialog title="Clean temporary files?" message={`This deletes every intermediate render segment, soundtrack cache and proxy preview (the work and preview folders), and clears the render history. Rendered MP4 files in ${outputPath || '/output'} and your saved projects are kept. This cannot be undone.`} confirmLabel="Clean temp files" onConfirm={cleanTempFiles} onCancel={()=>setShowCleanTempConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} lookItem={previewedItem} onLook={() => setLookItemId(previewedItem.id)} suspended={editingMovieId != null || lookItemId != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : 'image'} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} lookItem={previewedItem} onLook={() => openLookEditor(previewedItem, 'filters')} onCrop={() => openLookEditor(previewedItem, 'crop')} suspended={editingMovieId != null || lookItemId != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
 }
@@ -2040,15 +2096,18 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
   useEffect(() => setStageFailed(false), [current])
   const currentItem = media[current]
   const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
-  // The simulated stage wears each clip's picture look; the real FFmpeg proxy
-  // below already has it baked in by the renderer.
-  const stageLook = usePictureLook(currentUrl, currentItem, false, currentItem?.type !== 'video')
+  // The simulated stage wears each clip's cut/crop and picture look, in the
+  // renderer's order; the real FFmpeg proxy below already has both baked in.
+  const stageIsVideo = currentItem?.type === 'video'
+  const stageCrop = useCroppedSource(currentUrl, stageIsVideo ? null : currentItem, 'stage', false)
+  const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
+  const stageTurned = stageCrop.rotationApplied || stageLook.rotationBaked
 
   if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview</strong><span>REAL PROXY RENDER · 854 × 480</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> This file is streamed through the backend project API from the mounted preview volume.<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <video key={currentItem.id} className={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...rotationStyle(currentItem?.rotation), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : (currentItem?.text || '')}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : (currentItem?.text || '')}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () => void }) {
