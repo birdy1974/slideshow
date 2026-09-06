@@ -12,6 +12,14 @@ from .config import Settings
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
+# Saved project files (`holiday.slideshow.json`). Listed by the project picker
+# and read/written by app.project_files; never treated as media.
+PROJECT_EXTENSIONS = {".json"}
+
+
+def is_project_file(path: Path) -> bool:
+    """True for a file the project picker should list."""
+    return path.suffix.lower() in PROJECT_EXTENSIONS
 
 
 class UnsafePath(ValueError):
@@ -95,10 +103,17 @@ def _dir_accessible(path: Path) -> bool:
         return False
 
 
-def browse(settings: Settings, root_name: str, relative: str = "", folders_only: bool = False) -> dict[str, Any]:
+def browse(settings: Settings, root_name: str, relative: str = "", folders_only: bool = False,
+           project_files: bool = False) -> dict[str, Any]:
+    """List one folder of a mount.
+
+    `folders_only` is the output-destination picker; `project_files` is the
+    project picker, which needs folders *and* saved `.json` projects in one list
+    (and is the only mode that may list files on the output root).
+    """
     if root_name not in settings.media_roots:
         raise UnsafePath("Unknown or non-browsable media root")
-    if root_name == "output" and not folders_only:
+    if root_name == "output" and not (folders_only or project_files):
         raise UnsafePath("The output root is only browsable when picking a destination folder")
     root = settings.media_roots[root_name]
     folder = safe_path(root, relative)
@@ -123,12 +138,16 @@ def browse(settings: Settings, root_name: str, relative: str = "", folders_only:
         if folders_only:
             if not is_directory:
                 continue
+        elif project_files:
+            if not is_directory and not is_project_file(child):
+                continue
         elif not is_directory and child.suffix.lower() not in accepted:
             continue
         kind = "directory"
         if is_file:
             ext = child.suffix.lower()
-            kind = "image" if ext in IMAGE_EXTENSIONS else "video" if ext in VIDEO_EXTENSIONS else "audio"
+            kind = "project" if project_files and is_project_file(child) \
+                else "image" if ext in IMAGE_EXTENSIONS else "video" if ext in VIDEO_EXTENSIONS else "audio"
         rel = child.relative_to(root).as_posix()
         accessible = _dir_accessible(child) if is_directory else True
         entries.append({

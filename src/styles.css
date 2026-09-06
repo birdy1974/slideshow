@@ -718,3 +718,27 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* --- Project name ⇄ output filename: one name, two fields --------------- */
 /* The wrapping div already carries the panel's 18 px side margins. */
 .filename-link{margin-top:6px}
+
+/* --- Project files: save / load a project as a file on a mounted volume ---
+   Reuses the media-browser chrome (.browser-modal, .picker-body, .file-grid,
+   .breadcrumbs) so both pickers feel like the same tool. */
+.picker-tabs{display:flex;gap:6px;padding:0 18px 12px}
+.picker-tabs button{display:inline-flex;align-items:center;gap:6px;border:1px solid #dfe0da;border-radius:7px;padding:7px 12px;background:#fff;color:#6d7068;font:700 10px Manrope;cursor:pointer;transition:.15s}
+.picker-tabs button:hover{border-color:#84a950;color:#3c4037}
+.picker-tabs button.active{background:#657f3c;border-color:#657f3c;color:#fff}
+.picker-body.project-files{gap:10px}
+.pf-roots{display:flex;flex-wrap:wrap;gap:6px}
+.pf-root{display:inline-flex;align-items:center;gap:5px;border:1px solid #dfe0da;border-radius:6px;padding:5px 9px;background:#fff;color:#6d7068;font:700 9px Manrope;cursor:pointer;transition:.15s}
+.pf-root em{font-style:normal;font-weight:600;color:#a3a79c;letter-spacing:.2px}
+.pf-root:hover:not(:disabled){border-color:#84a950;color:#3c4037}
+.pf-root.active{background:#eaf2dc;border-color:#84a950;color:#41522a}
+.pf-root.active em{color:#7d8a68}
+.pf-root:disabled{opacity:.45;cursor:not-allowed}
+.file-card.project-file .server-file-icon.project{background:linear-gradient(135deg,#e6efdc,#cfe0b6);color:#4d6633}
+.file-card.project-file.busy{opacity:.6}
+.pf-name{border-top:1px solid #e3e3de;padding-top:12px;display:flex;flex-direction:column;gap:6px}
+.pf-dest{display:flex;align-items:center;gap:5px;font:600 9px Manrope;font-style:normal;color:#7d8371;word-break:break-all}
+.pf-readonly{display:flex;align-items:center;gap:5px;font:600 9px Manrope;font-style:normal;color:#b0782e}
+.notice.red{background:#fdf1ef;border-color:#eec9c2;color:#8c4a3d}
+.project-loader .picker-body.project-files{max-height:56vh}
+.project-files .file-grid{max-height:38vh;overflow-y:auto}

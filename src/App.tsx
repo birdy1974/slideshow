@@ -4,7 +4,7 @@ import {
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
-  Timer, HardDrive, Crop as CropIcon,
+  Timer, HardDrive, Crop as CropIcon, FileJson,
 } from 'lucide-react'
 import { FieldLabel, Select, TimeField } from './ui'
 import { formatClock, formatClockPrecise, formatTimecode, parseClock } from './time'
@@ -21,6 +21,8 @@ import { cropLabel, cropSummary, hasCrop, type CropRect } from './pictureCrop'
 import { useCroppedSource } from './usePictureCrop'
 import { usePictureLook } from './usePictureLook'
 import { FILENAME_FALLBACK, isGeneratedFilename, safeFilename } from './projectName'
+import { ProjectFileBrowser, ProjectFilePanel } from './ProjectFileBrowser'
+import type { ProjectFileInfo, ProjectRoot } from './projectFiles'
 import { TransitionGallery } from './TransitionGallery'
 import { totalTransitionCount } from './transitionCatalog'
 import { TransitionChip } from './TransitionPicker'
@@ -781,6 +783,11 @@ function App() {
   const [draggedAudioId, setDraggedAudioId] = useState<number | null>(null)
   const [showFolderPicker, setShowFolderPicker] = useState(false)
   const [showProjectLoader, setShowProjectLoader] = useState(false)
+  // "Save project" opens a browse popup: pick the volume, the folder and the
+  // filename. The last destination is remembered so saving twice in a row does
+  // not mean walking the tree again.
+  const [showProjectFileSave, setShowProjectFileSave] = useState(false)
+  const [projectFileFolder, setProjectFileFolder] = useState<{ root: ProjectRoot, folder: string }>({ root: 'output', folder: '' })
   const [showNewProjectConfirm, setShowNewProjectConfirm] = useState(false)
   const [overwritePath, setOverwritePath] = useState<string | null>(null)
   // Storyline preview lightbox: it tracks the previewed item id (not a frozen
@@ -1011,6 +1018,26 @@ function App() {
   const saveProject = async () => {
     try{await persistProject()}catch(error){setBackendOnline(false);notify(`SQLite save failed: ${error instanceof Error?error.message:'Unknown error'}`)}
   }
+  /**
+   * Load a project from a file on one of the mounts. The snapshot goes through
+   * the same code path a SQLite row uses, and is then stored as a *fresh* row —
+   * the file is a copy, not the project the editor is working on, so a refresh
+   * keeps what you just opened instead of dropping back to the previous one.
+   */
+  const loadProjectFile = async (file: ProjectFileInfo) => {
+    setShowProjectLoader(false)
+    applySavedProject(file.project as any)
+    setProjectId(null)
+    const label = file.projectName || file.name
+    try {
+      const id = await persistSnapshot(file.project, true, true)
+      setBackendOnline(true)
+      notify(`Project “${label}” loaded from ${file.path} · stored as project #${id}`)
+    } catch {
+      notify(`Project “${label}” loaded from ${file.path} — SQLite is offline, so save it once the backend is back`)
+    }
+  }
+
   const loadProject = async (id:number) => {
     try{
       const response=await fetch(`/api/projects/${id}`)
@@ -1492,7 +1519,7 @@ function App() {
           <input value={projectName} onChange={e=>renameProject(e.target.value)} aria-label="Project name" title="Project name — the filename in the Output pane follows it"/>
           <p>Assemble your media, shape the motion, and export a finished story.</p>
         </div>
-        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a saved project from SQLite':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={saveProject}><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a project — from the SQLite list or from a project file on any mounted volume':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={()=>setShowProjectFileSave(true)} title="Choose the folder and filename to save this project to — it is stored in SQLite as well"><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
       </section>
 
       <div className="workspace">
@@ -1640,8 +1667,25 @@ function App() {
     }}/>} 
     {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onOpenGallery={() => setShowTransitionGallery(true)} onApply={(patchData) => { patch(media[index].id, patchData); setTransitionPreviewId(null); notify(`Applied ${patchData.transition} transition`) }} /> : null })()}
     {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
+    {showProjectFileSave && <ProjectFileBrowser
+      projectName={projectName}
+      snapshot={projectSnapshot}
+      initialRoot={projectFileFolder.root}
+      initialFolder={projectFileFolder.folder}
+      sqliteLabel={projectId ? `Also kept as project #${projectId} in SQLite.` : 'Also stored in SQLite as a new project.'}
+      onSqliteOnly={() => { setShowProjectFileSave(false); void saveProject() }}
+      onSaved={file => {
+        setShowProjectFileSave(false)
+        setProjectFileFolder({ root: file.root, folder: file.folder.replace(/^\/(photos|videos|music|output)\/?/, '') })
+        // The file and the database row are both "the save": write the file
+        // first, then persist, and say honestly which of the two worked.
+        void persistProject(true)
+          .then(() => notify(`Project saved to ${file.path}${file.overwritten ? ' (replaced)' : ''} · and to SQLite`))
+          .catch(() => notify(`Project saved to ${file.path} — the SQLite save failed, so save again once the backend is back`))
+      }}
+      onClose={() => setShowProjectFileSave(false)} />}
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
-    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
+    {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onLoadFile={file=>void loadProjectFile(file)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
     {showNewProjectConfirm && <ConfirmDialog title="Start a new blank project?" message="This clears the current storyline, soundtracks and settings from the editor. Projects already saved in SQLite are not affected." confirmLabel="New project" onConfirm={startNewProject} onCancel={()=>setShowNewProjectConfirm(false)}/>}
     {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? The measured render speed is forgotten too, so the next estimate falls back to a guess. This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
@@ -1973,11 +2017,14 @@ function FolderPicker({ current, onSelect, onClose }: { current: string, onSelec
 // Lists projects persisted in SQLite and loads the chosen one's full config
 // (media, captions, soundtrack, output, timeline) into the editor.
 // Now includes a delete button per entry and a single "Delete all" control.
-function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, onDeleteAll, onNotify }: {
+function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, onDeleteAll, onNotify, onLoadFile }: {
   onPick: (id: number) => void, onNew?: () => void, onClose: () => void,
-  currentProjectId?: number | null, onDeleted?: (id: number) => void, onDeleteAll?: () => void, onNotify?: (msg: string)=>void
+  currentProjectId?: number | null, onDeleted?: (id: number) => void, onDeleteAll?: () => void, onNotify?: (msg: string)=>void,
+  // Second tab: open a project file from any mounted volume.
+  onLoadFile?: (file: ProjectFileInfo) => void
 }) {
   const [projects,setProjects]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
+  const [tab,setTab]=useState<'sqlite'|'files'>('sqlite')
   const [deletingId,setDeletingId]=useState<number|null>(null)
   const [confirmDeleteId,setConfirmDeleteId]=useState<number|null>(null)
   const [showDeleteAllConfirm,setShowDeleteAllConfirm]=useState(false)
@@ -2007,13 +2054,24 @@ function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, on
     finally{setDeletingAll(false);setShowDeleteAllConfirm(false)}
   }
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal project-loader" onMouseDown={e=>e.stopPropagation()}>
-    <div className="modal-head"><div><span className="eyebrow">SAVED IN SQLITE</span><h2>Load project</h2></div>
+    <div className="modal-head"><div><span className="eyebrow">{tab==='sqlite'?'SAVED IN SQLITE':'PROJECT FILES ON THE MOUNTED VOLUMES'}</span><h2>Load project</h2></div>
       <div className="project-loader-actions">
-        {projects.length>0 && <button type="button" className="btn ghost delete-all-btn" disabled={deletingAll||loading} title="Delete every saved project" onClick={()=>setShowDeleteAllConfirm(true)}><Trash2 size={14}/> Delete all</button>}
+        {tab==='sqlite' && projects.length>0 && <button type="button" className="btn ghost delete-all-btn" disabled={deletingAll||loading} title="Delete every saved project" onClick={()=>setShowDeleteAllConfirm(true)}><Trash2 size={14}/> Delete all</button>}
         <button className="icon-button" onClick={onClose}><X size={19}/></button>
       </div>
     </div>
-    <div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}
+    <div className="picker-tabs" role="tablist">
+      <button type="button" role="tab" aria-selected={tab==='sqlite'} className={tab==='sqlite'?'active':''} onClick={()=>setTab('sqlite')}><FolderOpen size={13}/> Saved in SQLite</button>
+      <button type="button" role="tab" aria-selected={tab==='files'} className={tab==='files'?'active':''} onClick={()=>setTab('files')} title="Browse /output and the read-only media mounts for a .slideshow.json project file"><FileJson size={13}/> Browse files</button>
+    </div>
+    {tab==='files'
+      ? <><ProjectFilePanel mode="load" onLoaded={file=>onLoadFile?.(file)}/>
+          <div className="modal-foot">
+            <span>Click a project file to open it — loading replaces the current editor contents.</span>
+            {onNew&&<button className="btn ghost" onClick={onNew}><Plus size={15}/> New blank project</button>}
+            <button className="btn ghost" onClick={onClose}>Cancel</button>
+          </div></>
+      : <><div className="picker-body project-list">{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading saved projects…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{!loading&&!error&&projects.length===0&&<div className="browser-info"><Info size={15}/> No saved projects yet. Use “Save project” to store the current editor contents.</div>}
       {projects.map(p=>{
         const isDeleting=deletingId===p.id
         const isCurrent=currentProjectId!=null && p.id===currentProjectId
@@ -2032,7 +2090,7 @@ function ProjectLoader({ onPick, onNew, onClose, currentProjectId, onDeleted, on
       {projects.length>0 && <button type="button" className="btn ghost delete-all-btn foot" disabled={deletingAll||loading} onClick={()=>setShowDeleteAllConfirm(true)}>{deletingAll?<RefreshCw size={14} className="spin"/>:<Trash2 size={14}/>} Delete all</button>}
       {onNew&&<button className="btn ghost" onClick={onNew}><Plus size={15}/> New blank project</button>}
       <button className="btn ghost" onClick={onClose}>Cancel</button>
-    </div>
+    </div></>}
   </div>
   {confirmDeleteId!=null && <ConfirmDialog title="Delete this project?" message={`Are you sure you want to delete “${projects.find(p=>p.id===confirmDeleteId)?.name||`Project #${confirmDeleteId}`}”? This cannot be undone.`} confirmLabel="Delete" onConfirm={()=>handleDeleteOne(confirmDeleteId)} onCancel={()=>setConfirmDeleteId(null)}/>}
   {showDeleteAllConfirm && <ConfirmDialog title="Delete all saved projects?" message={`Are you sure you want to delete all ${projects.length} saved project${projects.length===1?'':'s'}? This cannot be undone.`} confirmLabel="Delete all" onConfirm={handleDeleteAll} onCancel={()=>setShowDeleteAllConfirm(false)}/>}
