@@ -10,7 +10,6 @@
 - in generation and output pane put "estimated time to generate", estimated file size, ESTIMATED TOTAL SLIDESHOW TIME
 - Transition preview popup do not show the "quick preview", only the "ACCURATE FFMPEG · 360P", and only show the transition (so if transition duration is 5 sec, the example clip should be 5 seconds)
 - also give different symbols for the GL transitions.
-- on the picture preview popup move the next / previous buttons inside the picture and make the active area bigger (complete right side of picture: go to next; left side of the picture: go to previous)
 - on the picture preview popup add options to edit / change the pictures by adding effect and filters (https://www.photofilters.com/), for example: make picture black and white;
 - on the picture preview popup add options to cut and crop parts of the picture
 - in output pane the filename should be the same as the project name on the top (and visa versa)
@@ -22,6 +21,7 @@
 ---= DONE =---
 
 2026-09-06
+- on the picture preview popup move the next / previous buttons inside the picture and make the active area bigger (complete right side of picture: go to next; left side of the picture: go to previous) · the arrows now sit on the picture itself and each half of it is one big button: left half = previous, right half = next (hovering darkens that half so you can see what you are about to click). Movies keep their middle column and the bottom 56 px free, so the native video controls and click-to-pause keep working; audio previews have no picture and no overlay. The ← / → keys, the position badge, rotate / cut / delete in the header are unchanged.
 - for the time ruler indicate the time in hour:minutes:seconds (h:mm:ss) instead of only seconds · new `formatTimecode()` in `src/time.ts`; the ruler below every storyline row now prints its ticks, the row-end badge and the soundtrack length as h:mm:ss (hovering a tick still shows the exact number of seconds). The zoom badge moved just below the middle tick so the longer timecodes are never covered, and the last tick only draws its mark because the badge next to it already shows that time.
 
 2026-09-05

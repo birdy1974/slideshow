@@ -100,6 +100,9 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .clip-zoom:hover{background:#78a13e}
 .overview-clip img,.overview-clip video{opacity:.85;cursor:zoom-in}
 .media-lightbox{width:min(960px,96vw);max-height:calc(100vh - 40px);background:#1e211d;color:#fff;border:1px solid #41443c;border-radius:13px;overflow:hidden;box-shadow:0 30px 80px #0009;display:flex;flex-direction:column}
+/* Media area below the header; also the positioning context for the
+   in-picture prev/next halves. */
+.lightbox-body{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
 .lightbox-media{display:block;width:100%;max-height:calc(100vh - 120px);object-fit:contain;background:#000}
 .lightbox-stage{display:grid;place-items:center;background:#000;height:min(calc(100vh - 120px),640px);overflow:hidden}
 .lightbox-photo{width:auto;max-width:100%;max-height:100%;transition:rotate .2s ease}
@@ -142,9 +145,20 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 #section-storyline,#section-transitions,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}.zoom-slider{width:88px;height:4px;margin:0 2px;accent-color:#728f42;cursor:pointer}.zoom-controls.compact-zoom .zoom-slider{width:72px}.topbar nav button.jump{font-size:12px;padding:0 12px}
 
 /* --- Storyline lightbox: prev/next walk, position badge, direct delete --- */
-.lightbox-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:46px;height:46px;border-radius:50%;border:1px solid #ffffff38;background:#1d211bd6;color:#e8ebe3;display:grid;place-items:center;cursor:pointer;transition:.15s}
-.lightbox-nav:hover{background:#2c3524;border-color:var(--lime);color:#fff}
-.lightbox-nav.prev{left:3vw}.lightbox-nav.next{right:3vw}
+/* Prev/next live inside the picture now: each half of the media area is one
+   big button (left half = previous, right half = next) and the round arrow is
+   only its visible handle. Movies keep their middle column and the bottom 56px
+   free, so the native video controls and click-to-pause still work. */
+.lightbox-nav-layer{position:absolute;inset:0;z-index:3;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);pointer-events:none}
+.lightbox-nav-layer.movie{bottom:56px;grid-template-columns:minmax(0,2fr) minmax(0,1.2fr) minmax(0,2fr)}
+.lightbox-nav{pointer-events:auto;grid-column:1;width:100%;height:100%;padding:0 0 0 18px;border:0;background:transparent;display:flex;align-items:center;justify-content:flex-start;cursor:pointer;transition:background .15s}
+.lightbox-nav.next{grid-column:2;justify-content:flex-end;padding:0 18px 0 0}
+.lightbox-nav-layer.movie .lightbox-nav.next{grid-column:3}
+.lightbox-nav .nav-disc{flex:none;width:46px;height:46px;border-radius:50%;border:1px solid #ffffff38;background:#1d211bd6;color:#e8ebe3;display:grid;place-items:center;opacity:.8;transition:.15s}
+.lightbox-nav.prev:hover{background:linear-gradient(90deg,#0c0e0a66,transparent 62%)}
+.lightbox-nav.next:hover{background:linear-gradient(270deg,#0c0e0a66,transparent 62%)}
+.lightbox-nav:hover .nav-disc,.lightbox-nav:focus-visible .nav-disc{background:#2c3524;border-color:var(--lime);color:#fff;opacity:1;transform:scale(1.07)}
+.lightbox-nav:focus-visible{outline:none}
 .preview-top .lightbox-actions{flex-direction:row;align-items:center;gap:14px}
 .lightbox-position{font:700 10px Manrope;font-style:normal;color:#93988d;letter-spacing:.4px}
 .lightbox-delete{transition:.15s}

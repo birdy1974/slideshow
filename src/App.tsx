@@ -163,16 +163,24 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   const turn = normalizeRotation(rotation)
   const canRotate = kind === 'image' && !!onRotate
   const canEditMovie = kind === 'video' && !!onEdit
+  // Storyline navigation lives inside the picture: the whole left half steps
+  // back, the whole right half steps forward. Movies keep their centre and
+  // their control bar clickable, and audio has no picture to click on.
+  const navLayer = kind !== 'audio' && (onPrev || onNext) ? <div className={`lightbox-nav-layer${kind === 'video' ? ' movie' : ''}`}>
+    {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←) · the whole left half of the picture" aria-label="Previous media" onClick={onPrev}><span className="nav-disc"><ChevronLeft size={26}/></span></button>}
+    {onNext && <button type="button" className="lightbox-nav next" title="Next media (→) · the whole right half of the picture" aria-label="Next media" onClick={onNext}><span className="nav-disc"><ChevronRight size={26}/></span></button>}
+  </div> : null
   return <div className="modal-backdrop dark-backdrop" onMouseDown={suspended ? undefined : onClose}>
-    {onPrev && <button type="button" className="lightbox-nav prev" title="Previous media (←)" aria-label="Previous media" onMouseDown={e => e.stopPropagation()} onClick={onPrev}><ChevronLeft size={26}/></button>}
-    {onNext && <button type="button" className="lightbox-nav next" title="Next media (→)" aria-label="Next media" onMouseDown={e => e.stopPropagation()} onClick={onNext}><ChevronRight size={26}/></button>}
     <div className="media-lightbox" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top"><div><strong>{title}</strong><span>{kind === 'video' ? 'VIDEO' : kind === 'audio' ? 'AUDIO' : 'PHOTO'}</span></div><div className="lightbox-actions">{position && <em className="lightbox-position">{position}</em>}{canEditMovie && <button type="button" className="lightbox-edit" title="Cut this movie — choose which section to use" onClick={onEdit}><Scissors size={17}/> Cut</button>}
         {canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
+      <div className="lightbox-body">
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
         : kind === 'video' ? <video className="lightbox-media" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
         : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${turn === 90 || turn === 270 ? 'turned' : ''}`} style={rotationStyle(turn)} src={src} alt={title} onError={() => setFailed(true)} /></div>}
+      {navLayer}
+      </div>
     </div>
   </div>
 }
