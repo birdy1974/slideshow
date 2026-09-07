@@ -1,17 +1,21 @@
-2026-09-05
-- add cut and crop function for movies (same functionality as for the soundtracks)
-- show transition symbol also in the detailed slide list (same as storyline)
-- in detailed slide list make box for effect smaller (fit to largest text)
-- advise on better gui for the selection of the transition in the detailed slide list as the list is now too long
-- make new popup window to show small examples of all possible transitions. remember / save the examples so you only need to generate them 1 time. give options for gui
-- move the complete pane with "PHOTO SELECTION - All photos" and "TRANSITION DEFAULT" just above the storyline (instead of below the storyline)
-- include "random text transition" button in "PHOTO SELECTION - All photos" pane
-- in project header near the "load project", "clear all", "save project" buttons give also indication if generation is ongoing (including progress and estimated time to finish)
-- in generation and output pane put "estimated time to generate", estimated file size, ESTIMATED TOTAL SLIDESHOW TIME
-- Transition preview popup do not show the "quick preview", only the "ACCURATE FFMPEG · 360P", and only show the transition (so if transition duration is 5 sec, the example clip should be 5 seconds)
-- also give different symbols for the GL transitions.
+2026-09-07
+- it should be possible to edit existing text frames. give options how to implement this and access from gui
+- give options how to add dynamic text effects for the text in the text frames. for example https://reactbits.dev/
+- browse all effects does not show the examples of the transitions message "Preview could not be rendered", "0/191 cached"
+- give option if it is possible to use local file from device that is using the gui as well. 
+- is it possible to show a movie strip example / movie time line in the movie editor pop-up
+- let the user decide if the parameters of the gl transitions also need to be randomized when user wants to randomized all transitions
+- next to "Randomize all" transitions also provide new option to randomized transitions between selected slides "randomized selected"
+- add option to select/deselect all slides in 1 click. make option available in "overall time line" en in "detailed slide list"
+- if text on slide is disable, completely hide all the setting for the text on slide (at the moment only the text inside the text box is crossed out). hide the text box and the text transition in the storyline and in the detailed list
+- make default setting for men burns effect "none"
+- is it possible also to show the detailed settings of the selected to transition in the detailed slide list?
+- in the picture editor - cut and drop popup window I do not see the original picture on the left, also check if cut and drop functionality is working, as I cannot drag a rectangle. the filter do work.
+- confirm if ffmpeg hardware transcoding on synology nas ds918+ is working as gui shows "Quick Sync unavailable · CPU fallback"
+- make compact detailed slide list zoom to go 500% (now 180%)
+- in compact view add symbol on slide to open preview popup (in bottom right corner), and add drag and drop functionality (if you click on the middle of the slide) to change the order/location of the slide
+- give options to better use the available size of the detailed slide row to show all information
 - 
-
 
 
 ---= DONE =---
@@ -28,6 +32,17 @@
 - add possibility to enter a default time for all slides (put it net to "transition default") · "Slide default" stepper + "Apply to all" in the bulk bar; used for every new photo/text frame, saved with the project; videos keep their native length
 - add favicon
 - add enable/disable function for text on picture. advise on gui options for storyline and list with photos (see docs/text-on-picture-toggle.md)
+- add cut and crop function for movies (same functionality as for the soundtracks)
+- show transition symbol also in the detailed slide list (same as storyline)
+- in detailed slide list make box for effect smaller (fit to largest text)
+- advise on better gui for the selection of the transition in the detailed slide list as the list is now too long
+- make new popup window to show small examples of all possible transitions. remember / save the examples so you only need to generate them 1 time. give options for gui
+- move the complete pane with "PHOTO SELECTION - All photos" and "TRANSITION DEFAULT" just above the storyline (instead of below the storyline)
+- include "random text transition" button in "PHOTO SELECTION - All photos" pane
+- in project header near the "load project", "clear all", "save project" buttons give also indication if generation is ongoing (including progress and estimated time to finish)
+- in generation and output pane put "estimated time to generate", estimated file size, ESTIMATED TOTAL SLIDESHOW TIME
+- Transition preview popup do not show the "quick preview", only the "ACCURATE FFMPEG · 360P", and only show the transition (so if transition duration is 5 sec, the example clip should be 5 seconds)
+- also give different symbols for the GL transitions.
 
 2026-09-04
 - in SAVED IN SQLITE popup, provide a button per entry to delete that entry, also 1 button to delete all.
