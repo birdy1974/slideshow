@@ -763,3 +763,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* Story preview popup: a text frame renders as the frame itself. */
 .lightbox-stage.title-frame-stage{position:relative}
 .title-frame-caption{position:absolute;transform:translate(-50%,-50%);max-width:92%;white-space:pre-wrap;text-align:center;line-height:1.15;text-shadow:0 2px 8px #0008;z-index:1}
+
+/* --- Transition preview failure surfacing (see docs/transition-preview-fix.md) --- */
+.tile-flag.failed{background:#f8d7d4e6;color:#9b2c22;cursor:help}
+.browser-cache.failed{color:#b34f3c}
+.gallery-warn.failed{background:#f8d7d4;color:#9b2c22;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

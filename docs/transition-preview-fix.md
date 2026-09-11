@@ -1,6 +1,6 @@
 # "Browse all effects" shows no examples — root cause & fix
 
-Date: 2026-09-11 · Status: **root cause proven, fix ready to apply**
+Date: 2026-09-11 · Status: **implemented** (fix + CACHE_VERSION bump + stub guard + GUI error surfacing)
 
 Symptom from improvements.md: the transition gallery shows *"Preview could not be
 rendered"* on the tiles and *"0/191 cached"* in the footer — not a single example
@@ -61,39 +61,42 @@ Two traps in the current code:
    "instantly" without rendering anything. Only *Clear cache* (the DELETE
    endpoint) resets the manifest.
 
-## The fix
+## The fix (all four items implemented)
 
-1. **[must] Make the temp file acceptable to FFmpeg** — one line, either form:
-   - keep the name, declare the muxer: add `"-f", "mp4"` to the command's output
-     options (the documented FFmpeg remedy, quoted in the error itself); or
-   - keep an `.mp4` extension on the temp name
-     (`target.with_suffix(".tmp.mp4")` → `fade.tmp.mp4`), so extension-based
-     format detection keeps working and the atomic `tmp.replace(target)` is
-     preserved. Failure paths already unlink the temp file, and the test that
-     asserts "no partial files left behind" still passes.
-   Either is safe; the `-f mp4` variant is the smallest diff, the `.tmp.mp4`
-   variant keeps "the extension always tells the truth" hygiene.
-2. **[must] Bump `CACHE_VERSION` 1 → 2 in the same change.** The manifest loader
-   ignores manifests with an older version, so every deployment automatically
-   forgets the 191 `failed` records and goes back to *pending* — the gallery
-   then offers *"Render all 191 missing"* and one click rebuilds the whole
-   cache with the fixed command. Without the bump, existing installations stay
-   stuck (see the self-heal trap above) until they manually clear the cache.
-3. **[should] Close the test gap**: extend the stub so it *refuses* output names
-   whose extension doesn't map to a muxer (mirroring real FFmpeg), or simply add
-   an assertion that the render command carries `-f mp4` / the temp name ends in
-   `.mp4`. One new test: "a failed render leaves no output and records the
-   reason".
-4. **[nice] Surface the recorded reason in the GUI**: the manifest already keeps
-   the real stderr per slug, but the gallery only prints a generic
-   *"Preview could not be rendered"*. Showing `status.items[slug].error` as a
-   tooltip / detail line (and a counter for failed tiles) would have made this
-   diagnosis instant from the browser.
+1. **[must, done] The temp file is now acceptable to FFmpeg** — the render
+   command declares the muxer explicitly: `"-f", "mp4"` before the output path
+   (the remedy the FFmpeg error itself recommends). The atomic
+   `tmp.replace(target)` and the failure clean-ups are unchanged.
+2. **[must, done] `CACHE_VERSION` bumped 1 → 2.** The manifest loader ignores
+   older manifests, so every deployment automatically forgets the 191 `failed`
+   records and returns to *pending* — the gallery offers *"Render all N
+   missing"* and one click rebuilds the whole cache with the fixed command.
+   Verified: a poisoned v1 manifest + the new code reports `failed=0,
+   pending=191`.
+3. **[should, done] Test gap closed.** The test stub now behaves like real
+   FFmpeg at the muxer stage: it refuses output names whose extension maps to
+   no muxer unless the command declares `-f mp4` after the inputs. New tests:
+   the render command must carry `-f mp4` (asserted, including that it applies
+   to the `.part` temp file); a v1 manifest must be forgotten; and a guard test
+   proves the stub itself rejects `x.mp4.part` — if that guard ever goes green
+   again the suite would be blind to the real failure mode.
+4. **[nice, done] The recorded reason is surfaced in the GUI.** Failed tiles in
+   the picker and the gallery carry a red `failed` flag whose tooltip shows the
+   exact FFmpeg error; the gallery's detail panel prints
+   *"Preview could not be rendered: <reason>"* for the focused tile; both
+   footers show an `⚠ N failed` counter whose tooltip carries the last recorded
+   error.
+
+## Deployment note
+
+After pulling this change and restarting the container, open the transition
+gallery once: the old `failed` records are gone (v2 manifest), and
+*"Render all 191 missing"* rebuilds the whole catalogue with the fixed command —
+rendered once, then cached on the config volume as before.
 
 ## Verification
 
-With the fix applied (variant B), the exact production command renders a valid
-5.7 KB example clip for `fade.mp4.part` with the same real FFmpeg binary that
-failed without it; the full cache pass then renders all native transitions and
-records the GL ones per its normal fallback logic on stock builds (the custom
-xfade-easing build in the container renders all 191).
+Verified against a real FFmpeg binary: the exact production command that failed
+now renders valid example clips (Fade, Dissolve and Wipe Up all READY,
+`failed` 191 → 0), the backend suite passes 276/276, and the frontend build is
+clean.

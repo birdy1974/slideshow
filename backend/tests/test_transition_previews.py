@@ -16,6 +16,13 @@ from app.transition_previews import PreviewUnavailable, TransitionPreviewCache, 
 # fabricates the output file for every render, so the cache logic can be tested
 # on a machine without the (huge) real binary. Built from plain lines so no
 # backslash escaping can corrupt the generated script.
+#
+# Like the real binary it refuses output names it cannot pick a muxer for: the
+# extension decides, unless the command declares the format explicitly (" -f mp4"
+# after the inputs). This is the guard for the ".part" bug: the old stub happily
+# wrote fade.mp4.part, which real FFmpeg rejects ("Unable to choose an output
+# format") - exactly the failure that emptied the gallery (see
+# docs/transition-preview-fix.md).
 STUB_LINES = [
     '#!/usr/bin/env python3',
     '"""Test double for FFmpeg: answers capability probes, fabricates outputs."""',
@@ -39,8 +46,14 @@ STUB_LINES = [
     '    ]))',
     '    sys.exit(0)',
     'out = pathlib.Path(args[-1])',
+    'ext = out.suffix.lstrip(".").lower()',
+    'tail = args[args.index("-i") + 1:] if "-i" in args else args',
+    'declared = tail[tail.index("-f") + 1] if "-f" in tail else ""',
+    'if ext not in ("png", "jpg") and declared != "mp4" and ext != "mp4":',
+    '    sys.stderr.write("Unable to choose an output format for " + str(out) + chr(10))',
+    '    sys.exit(1)',
     'out.parent.mkdir(parents=True, exist_ok=True)',
-    'out.write_bytes(b"PNG-STUB" if out.suffix == ".png" else b"STUBMP4")',
+    'out.write_bytes(b"PNG-STUB" if ext == "png" else b"STUBMP4")',
 ]
 STUB = chr(10).join(STUB_LINES) + chr(10)
 
@@ -116,6 +129,10 @@ class TransitionPreviewCacheTest(unittest.TestCase):
         self.assertIn("duration=0.8", render)
         self.assertIn("offset=0.4", render)
         self.assertIn("-crf", render)
+        # The temp output ends in ".part", which FFmpeg cannot infer a muxer
+        # from: the command must declare the format explicitly (the .part bug).
+        self.assertIn("-f mp4", render)
+        self.assertTrue(render.endswith("-f mp4 " + str(self.cache.path_for("gl-angular")) + ".part"))
 
     def test_example_frames_are_created_once(self) -> None:
         self.cache.ensure("GL · Angular")
@@ -157,6 +174,27 @@ class TransitionPreviewCacheTest(unittest.TestCase):
         self.cache.clear()
         self.assertEqual(0, self.cache.status()["ready"])
         self.assertFalse(self.cache.path_for("fade").exists())
+
+
+    def test_manifest_with_older_version_is_forgotten(self) -> None:
+        # v1 manifests carry "failed" records from the .part bug; ensure() never
+        # retries failed entries, so an old manifest must reset to pending.
+        # ("ready" is counted from the file on disk, so the poisoned slug must
+        # be one without a cached clip.)
+        self.cache.ensure("Fade")
+        poisoned = {"version": 1, "items": {"wipe-up": {"status": "failed", "error": "Unable to choose an output format", "resolved": "", "updated": "2026-09-10T00:00:00+00:00"}}}
+        self.cache.manifest_path.write_text(json.dumps(poisoned))
+        self.cache._manifest = None  # simulate a fresh process reading the manifest
+        self.assertEqual("pending", self.cache.status()["items"]["wipe-up"]["status"])
+
+    def test_stub_refuses_muxerless_output_names_like_real_ffmpeg(self) -> None:
+        # Guard the guard: if the stub ever starts writing fade.mp4.part again,
+        # the suite would go blind to the real failure mode.
+        import subprocess as sp
+        env = dict(os.environ, FFMPEG_STUB_LOG=str(self.temp.name + "/stub-guard.log"))
+        result = sp.run([str(self.ffmpeg), "-loop", "1", "-t", "1", "-i", str(self.cache.src_dir / "a.png"), str(self.cache.root / "x.mp4.part")], capture_output=True, text=True, env=env)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Unable to choose an output format", result.stderr)
 
 
 if __name__ == "__main__":

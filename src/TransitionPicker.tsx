@@ -7,7 +7,7 @@
 // rendered in a portal so panel overflow can never clip it.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, LayoutGrid, Loader2, RefreshCw, Search, Star, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, LayoutGrid, Loader2, RefreshCw, Search, Star, X } from 'lucide-react'
 import {
   EASING_DEFAULT, isGLTransition, loadFavouriteTransitions, loadRecentTransitions,
   rememberTransition, toggleFavouriteTransition, totalTransitionCount, transitionGroups,
@@ -75,11 +75,12 @@ export function usePreviewStatus(enabled: boolean) {
 // ---------------------------------------------------------------------------
 
 export function TransitionTile({
-  label, active, state, previewAllowed, playing, favourite, onSelect, onToggleFavourite, onFocusTile, tileRef,
+  label, active, state, error, previewAllowed, playing, favourite, onSelect, onToggleFavourite, onFocusTile, tileRef,
 }: {
   label: string
   active: boolean
   state: PreviewState | null      // null = backend status unknown (offline)
+  error?: string                  // the backend's recorded render failure reason
   previewAllowed: boolean         // false when the backend has no usable FFmpeg
   playing: boolean
   favourite: boolean
@@ -128,7 +129,7 @@ export function TransitionTile({
     role="option"
     aria-selected={active}
     tabIndex={-1}
-    title={`${label}${state === 'unsupported' ? ' · falls back on this FFmpeg build' : ''}`}
+    title={`${label}${state === 'unsupported' ? ' · falls back on this FFmpeg build' : ''}${state === 'failed' ? ` · preview failed${error ? `: ${error}` : ''}` : ''}`}
     onClick={onSelect}
     onFocus={() => { if (state === 'pending') setArmed(true); onFocusTile() }}
     onPointerEnter={() => { if (state === 'pending') setArmed(true) }}
@@ -150,6 +151,7 @@ export function TransitionTile({
       />}
       {showVideo && !loaded && <span className="tile-loading"><Loader2 size={12} className="spin" /></span>}
       {state === 'unsupported' && <span className="tile-flag">fallback</span>}
+      {state === 'failed' && <span className="tile-flag failed" title={error || 'Preview could not be rendered'}>failed</span>}
       <button type="button" className={`tile-star ${favourite ? 'on' : ''}`}
         title={favourite ? 'Remove from favourites' : 'Add to favourites'}
         aria-label={favourite ? `Unfavourite ${label}` : `Favourite ${label}`}
@@ -401,6 +403,7 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className, o
                       label={label}
                       active={label === value}
                       state={status?.items?.[slug]?.status ?? null}
+                      error={status?.items?.[slug]?.error}
                       previewAllowed={status !== null && status.hasFfmpeg !== false}
                       playing={autoplayVisible && flatIndex === activeIndex}
                       favourite={favourites.includes(label)}
@@ -434,6 +437,12 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className, o
                 : `${cached}/${status.total} previews cached`}
           </span>
           : <span className="browser-cache">Preview cache offline</span>}
+        {status && !status.building && status.failed > 0 && (() => {
+          const reason = Object.values(status.items).find(item => item.status === 'failed' && item.error)?.error
+          return <span className="browser-cache failed" title={reason ? `Last FFmpeg error: ${reason}` : 'Some previews could not be rendered'}>
+            <AlertTriangle size={10} /> {status.failed} failed
+          </span>
+        })()}
         {status && !status.building && status.pending > 0 && status.hasFfmpeg !== false &&
           <button type="button" className="browser-build" onClick={() => void buildAllPreviews()}>
             <RefreshCw size={11} /> Render all {status.pending} missing
