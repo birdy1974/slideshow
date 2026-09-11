@@ -818,3 +818,6 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 
 /* --- Transition details in the detailed slide list (docs/transition-details-detailed-list.md) --- */
 .cell-summary{grid-column:1/-1;font:700 7px Manrope;color:#7d8178;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Compact grid: bottom-right preview button (mirrors .compact-edit; titles
+   shift it left so the text-frame pencil keeps its corner). */
+.compact-preview{position:absolute;bottom:6px;right:6px;width:25px;height:25px;border:0;border-radius:50%;background:#1c1f1bcc;color:#fff;display:grid;place-items:center;cursor:zoom-in;z-index:3}.compact-preview:hover{background:#58703a}.compact-thumb.title-thumb .compact-preview{right:36px}
