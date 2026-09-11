@@ -835,3 +835,54 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .settings-chip:hover{background:#d7e6bd;color:#42582a}
 .last-cell{grid-template-columns:76px 1fr}
 .last-cell .end-card{grid-column:2}
+
+
+/* --- Dynamic text effects (registry/text-effects.json) -------------------- */
+.text-effect-controls{display:inline-flex;align-items:center;gap:4px;min-width:0}
+.text-effect-chip{display:inline-flex;align-items:center;gap:5px;height:25px;padding:0 7px;border:1px solid #cbd1c2;background:#e2ead8;color:#526a35;border-radius:5px;font-size:9px;font-weight:700;cursor:pointer;max-width:132px;overflow:hidden}
+.text-effect-chip:hover{background:#d3e2bc}
+.text-effect-chip .text-effect-symbol{font-style:normal;font-size:11px;line-height:1}
+.text-effect-chip .text-effect-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.text-effect-chip svg{opacity:.6}
+.text-effect-seconds{width:52px;height:25px;border:1px solid #cbd1c2;border-radius:5px;background:#fafff2;font-size:9px;padding:0 4px;color:#4c5445}
+.text-effect-params{display:inline-flex;gap:6px;margin-left:6px}
+.text-effect-param{display:inline-flex;align-items:center;gap:3px;font-size:8px;color:#6e7466}
+.text-effect-param input{width:52px;height:22px;border:1px solid #cbd1c2;border-radius:4px;background:#fafff2;font-size:9px;padding:0 4px;color:#4c5445}
+.text-effect-popover{width:540px;max-width:94vw}
+.text-effect-popover .effect-stage{display:grid;place-items:center;background:#242b21}
+.text-effect-popover .effect-fallback{display:grid;place-items:center;width:100%;height:100%;color:#f4f6f0}
+.text-effect-popover .effect-fallback-text{font-size:11px;font-weight:700;padding:0 6px;text-align:center;line-height:1.35}
+.text-effect-popover .popover-empty{padding:14px;font-size:10px;color:#888c82}
+.text-effect-popover .popover-buildnote{display:flex;align-items:center;gap:8px;padding:4px 10px 8px;font-size:8px;color:#888c82}
+.text-effect-popover .popover-buildnote button{margin-left:auto;display:inline-flex;align-items:center;gap:4px;border:1px solid #cbd1c2;background:#f4f5ef;border-radius:5px;font-size:8px;font-weight:700;padding:3px 7px;cursor:pointer}
+
+/* Text animation section in the text-frame editor */
+.fx-section{border-top:1px solid #3a3e36;margin-top:15px;padding-top:13px}
+.fx-section .field-label{color:#b8bcb2}
+.fx-rows{display:grid;gap:6px;margin-top:6px}
+.fx-row{display:flex;align-items:center;gap:8px}
+.fx-row .fx-slot{width:74px;flex:none;font-size:8px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:#92978e}
+.fx-row .text-effect-chip{background:#20231f;border-color:#494e45;color:#d1ef9d;flex:1;max-width:none}
+.fx-row .text-effect-chip:hover{background:#262a24}
+.fx-row .text-effect-seconds{background:#20231f;border-color:#494e45;color:#d1ef9d}
+.fx-row .text-effect-params .text-effect-param{color:#92978e}
+.fx-row .text-effect-param input{background:#20231f;border-color:#494e45;color:#d1ef9d}
+.fx-foot{display:flex;align-items:center;gap:8px;margin-top:9px}
+.fx-foot small{font-size:8px;color:#92978e;line-height:1.5}
+.fx-foot .icon-button{margin-left:auto}
+.fx-section.light{border-top:1px solid #e0e1da;padding-top:12px;margin-top:14px}
+.fx-section.light .fx-row .text-effect-chip{background:#e2ead8;border-color:#cbd1c2;color:#526a35}
+.fx-section.light .fx-row .fx-slot{color:#888c82}
+.fx-section.light .fx-row .text-effect-seconds{background:#fafff2;border-color:#cbd1c2;color:#4c5445}
+.icon-button.playing{color:#718f46}
+
+/* --- Output delivery (Option 1, docs/output-download-options.md) ----------- */
+.render-ready-row{display:flex;align-items:center;gap:10px;border:1px solid #d9e4c6;background:#f2f7e6;border-radius:9px;padding:10px 12px;margin-top:12px}
+.render-ready-row>svg{color:#5d7c38;flex:none}
+.render-ready-info{display:flex;flex-direction:column;min-width:0}
+.render-ready-info strong{font-size:11px;color:#30342d}
+.render-ready-info small{font-size:9px;color:#777b72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.render-ready-row .btn{margin-left:auto;flex:none}
+.queue-missing{display:inline-flex;align-items:center;gap:7px;color:#8a5a2b;font-size:10px;font-weight:700;white-space:nowrap}
+.queue-missing .btn{padding:0 9px;height:29px;font-size:10px}
+.queue-note{margin-bottom:12px}

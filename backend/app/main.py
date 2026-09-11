@@ -25,6 +25,7 @@ from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafeP
 from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
+from .text_effect_previews import TextEffectPreviewCache
 from .uploads import UploadRejected, store_upload
 from .filmstrips import FilmstripUnavailable, build_filmstrip
 
@@ -34,6 +35,7 @@ log = logging.getLogger(__name__)
 db = Database(settings.database_path)
 renderer = Renderer(db, settings)
 transition_previews = TransitionPreviewCache(settings, renderer)
+text_effect_previews = TextEffectPreviewCache(settings, renderer)
 
 
 class ProjectPayload(BaseModel):
@@ -531,6 +533,44 @@ def transition_preview_file(slug: str) -> FileResponse:
     return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline")
 
 
+@app.get("/api/text-effects/status")
+def text_effect_preview_status() -> dict[str, Any]:
+    """Which text effects already have a cached example clip."""
+    return text_effect_previews.status()
+
+
+@app.post("/api/text-effects/build")
+def text_effect_preview_build() -> dict[str, Any]:
+    """Start (or report on) a background pass that renders every missing clip."""
+    return text_effect_previews.build_all()
+
+
+@app.delete("/api/text-effects")
+def text_effect_preview_clear() -> dict[str, Any]:
+    """Drop every cached example so the catalogue can be re-rendered."""
+    text_effect_previews.clear()
+    return text_effect_previews.status()
+
+
+@app.get("/api/text-effects/{slug}")
+def text_effect_preview_file(slug: str) -> FileResponse:
+    """Cached example clip for a text-effect label, rendered on first use."""
+    name = slug[:-4] if slug.lower().endswith(".mp4") else slug
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", name or ""):
+        raise HTTPException(404, "Unknown text-effect preview")
+    entry = next((x for x in text_effect_previews.catalogue() if x["slug"] == name), None)
+    if not entry:
+        raise HTTPException(404, "Unknown text-effect preview")
+    try:
+        path = text_effect_previews.ensure(entry["label"])
+    except PreviewUnavailable as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - a failed render must not 500 the picker
+        log.exception("Could not build a text-effect preview for %s", entry["label"])
+        raise HTTPException(500, f"Could not render preview: {exc}") from exc
+    return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline")
+
+
 @app.post("/api/transitions/preview")
 def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     """Render an authoritative two-clip transition sample at 360p.
@@ -577,6 +617,27 @@ def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     return FileResponse(output, media_type="video/mp4", filename="transition-preview.mp4", content_disposition_type="inline")
 
 
+# Characters no common filesystem accepts in a file name — the same rule as
+# src/projectName.ts, so a downloaded preview is called what the project is
+# called and survives a copy to a phone, a share or a USB stick.
+_ILLEGAL_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_EDGE_NAME = re.compile(r"^[\s.\-]+|[\s.\-]+$")
+
+
+def preview_download_name(project_name: str, job_id: str) -> str:
+    """Attachment filename for a proxy-preview download.
+
+    The preview file on disk carries a job hash (``project-7-preview-ab12.mp4``);
+    the save dialog gets ``<project name> (preview).mp4`` instead. Final renders
+    keep their on-disk name — the user chose it in the Output panel.
+    """
+    text = _EDGE_NAME.sub("", _ILLEGAL_NAME.sub("-", str(project_name or "")).strip()).replace("..", "-")
+    text = _EDGE_NAME.sub("", text[:80])
+    stem = text or "slideshow"
+    # The job suffix keeps two previews of same-named projects distinguishable.
+    return f"{stem} (preview {job_id[:6]}).mp4"
+
+
 @app.post("/api/projects/{project_id}/jobs", status_code=202)
 def create_job(project_id: int, request: JobRequest) -> dict[str, Any]:
     try: return renderer.submit(project_id, request.kind, overwrite=request.overwrite)
@@ -587,7 +648,13 @@ def create_job(project_id: int, request: JobRequest) -> dict[str, Any]:
 
 @app.get("/api/jobs")
 def list_jobs(project_id: int | None = None) -> list[dict[str, Any]]:
-    return db.list_jobs(project_id)
+    jobs = db.list_jobs(project_id)
+    for job in jobs:
+        if job.get("output_path"):
+            # A stat per finished row is local-disk cheap; it saves the GUI a
+            # HEAD round-trip per tile and catches cleared/pruned files.
+            job["fileAvailable"] = Path(job["output_path"]).is_file()
+    return jobs
 
 
 @app.get("/api/jobs/{job_id}")
@@ -601,7 +668,11 @@ def get_job(job_id: str) -> dict[str, Any]:
         log.warning("get_job(%s) failed: %s", job_id, exc)
         raise HTTPException(503, "Database temporarily unavailable; retry shortly") from exc
     if not job: raise HTTPException(404, "Render job not found")
-    if job.get("output_path"): job["fileUrl"] = f"/api/jobs/{job_id}/file"
+    if job.get("output_path"):
+        job["fileUrl"] = f"/api/jobs/{job_id}/file"
+        # Pruned previews and cleared output folders leave rows whose file is
+        # gone; the queue shows a re-render action instead of a dead link.
+        job["fileAvailable"] = Path(job["output_path"]).is_file()
     return job
 
 
@@ -611,7 +682,7 @@ def cancel_job(job_id: str) -> dict[str, str]:
     return {"status": "cancelling"}
 
 
-@app.get("/api/jobs/{job_id}/file")
+@app.api_route("/api/jobs/{job_id}/file", methods=["GET", "HEAD"])
 def job_file(job_id: str) -> FileResponse:
     job = db.get_job(job_id)
     if not job or not job.get("output_path"): raise HTTPException(404, "Output is not available")
@@ -619,7 +690,14 @@ def job_file(job_id: str) -> FileResponse:
     allowed = [settings.output_dir.resolve(), settings.preview_dir.resolve()]
     if not any(path == root or root in path.parents for root in allowed): raise HTTPException(403, "Output path is outside an allowed root")
     if not path.is_file(): raise HTTPException(404, "Output file is missing")
-    return FileResponse(path, media_type="video/mp4", filename=path.name)
+    filename = path.name
+    if job.get("kind") == "preview":
+        # The on-disk preview name is "project-<id>-preview-<hash>.mp4"; the
+        # browser's save dialog gets the project's name instead.
+        project = db.get_project(job["project_id"]) if job.get("project_id") is not None else None
+        name = str((project or {}).get("project", {}).get("name") or "")
+        filename = preview_download_name(name, job_id)
+    return FileResponse(path, media_type="video/mp4", filename=filename)
 
 
 @app.get("/api/jobs/{job_id}/log")

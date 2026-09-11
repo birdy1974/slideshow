@@ -12,6 +12,14 @@ export type MediaItem = {
   textEnabled?: boolean;
   textStart: number; textEnd: number; textEnter: string; textExit: string;
   textEnterDuration: number; textExitDuration: number;
+  // Dynamic text effects (Option 1, docs/text-effects-options.md): labels from
+  // registry/text-effects.json — how the text enters, what it does while
+  // shown (loop period + per-effect params), and how it exits. Absent fields
+  // mean the historic behaviour: Fade in / static / Fade out. src/App.tsx
+  // turns them into CSS previews; backend/app/text_effects.py renders the
+  // real thing with drawtext expressions or libass.
+  textFxEnter?: string; textFxWhile?: string; textFxExit?: string;
+  textFxWhileSpeed?: number; textFxParams?: Record<string, string>;
   textX: number; textY: number; frameBackground: string;
   fontFamily?: string; fontSize?: number; fontColor?: string;
   // Videos can replace the soundtrack with their embedded audio.

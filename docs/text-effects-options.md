@@ -1,6 +1,6 @@
 # Dynamic text effects — options & GUI integration
 
-Date: 2026-09-11 · Status: **advice agreed, implementation pending**
+Date: 2026-09-11 · Status: **implemented as Option 1** — see [text-effects.md](text-effects.md) for what shipped. This document stays as the advisory record.
 
 Advisory for "give options how to add dynamic text effects for the text in the text
 frames (e.g. https://reactbits.dev/), advise on more dynamic text effects, and how
@@ -169,7 +169,7 @@ per-char `\move` events.
 
 ## Implementation strategies
 
-- **Option 1 [agreed direction] — dual-engine, phased (drawtext expressions + libass).**
+- **Option 1 [agreed direction, IMPLEMENTED] — dual-engine (drawtext expressions + libass).**
   A new `backend/app/text_effects.py` builds either extended drawtext expressions
   (slide/rise/flicker/colour) or a per-clip `.ass` file (typewriter/split/blur/pop/
   karaoke/scramble/count-up/wipes/lower-third/…) applied with

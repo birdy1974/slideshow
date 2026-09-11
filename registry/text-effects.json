@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "comment": "Single source of truth for the dynamic text-effect catalogue (see docs/text-effects-options.md, Option 1: drawtext expressions + libass). Consumed by backend/app/text_effects.py and src/textEffects.ts. slot = which of the three text animation rows the effect belongs to: enter | while | exit. engine = dt (animated drawtext expressions) | ass (per-clip .ass file rendered by libass) | none. label = UI name shown in pickers; NEVER rename a label (saved projects store it). symbol = cheap glyph for timeline chips. seconds = default duration for its slot. params = optional per-effect parameters with defaults.",
+  "effects": [
+    { "id": "fade", "label": "Fade", "group": "Fades", "slot": "enter", "engine": "dt", "symbol": "◐", "seconds": 0.5 },
+    { "id": "flicker-in", "label": "Flicker in", "group": "Fades", "slot": "enter", "engine": "ass", "symbol": "⌁", "seconds": 0.6 },
+    { "id": "blur-in", "label": "Blur in", "group": "Fades", "slot": "enter", "engine": "ass", "symbol": "◍", "seconds": 0.7 },
+
+    { "id": "slide-from-left", "label": "Slide from left", "group": "Slides", "slot": "enter", "engine": "dt", "symbol": "←", "seconds": 0.6 },
+    { "id": "slide-from-right", "label": "Slide from right", "group": "Slides", "slot": "enter", "engine": "dt", "symbol": "→", "seconds": 0.6 },
+    { "id": "slide-from-top", "label": "Slide from top", "group": "Slides", "slot": "enter", "engine": "dt", "symbol": "↑", "seconds": 0.6 },
+    { "id": "slide-from-bottom", "label": "Slide from bottom", "group": "Slides", "slot": "enter", "engine": "dt", "symbol": "↓", "seconds": 0.6 },
+    { "id": "rise-settle", "label": "Rise & settle", "group": "Slides", "slot": "enter", "engine": "dt", "symbol": "↥", "seconds": 0.9 },
+    { "id": "drop-bounce", "label": "Drop & bounce", "group": "Slides", "slot": "enter", "engine": "dt", "symbol": "⤓", "seconds": 1.0 },
+    { "id": "slide-overshoot", "label": "Slide & overshoot", "group": "Slides", "slot": "enter", "engine": "dt", "symbol": "⇢", "seconds": 0.8 },
+
+    { "id": "split-fade-chars", "label": "Split fade · chars", "group": "Split", "slot": "enter", "engine": "ass", "symbol": "⁂", "seconds": 0.8 },
+    { "id": "split-fade-words", "label": "Split fade · words", "group": "Split", "slot": "enter", "engine": "ass", "symbol": "⁂", "seconds": 0.9 },
+    { "id": "split-rise-chars", "label": "Split rise · chars", "group": "Split", "slot": "enter", "engine": "ass", "symbol": "⇪", "seconds": 0.9 },
+    { "id": "split-from-centre", "label": "Split from centre", "group": "Split", "slot": "enter", "engine": "ass", "symbol": "✳", "seconds": 0.9 },
+
+    { "id": "typewriter", "label": "Typewriter", "group": "Typed", "slot": "enter", "engine": "ass", "symbol": "⌨", "seconds": 1.2 },
+    { "id": "typewriter-caret", "label": "Typewriter + caret", "group": "Typed", "slot": "enter", "engine": "ass", "symbol": "▏", "seconds": 1.2 },
+    { "id": "word-by-word", "label": "Word by word", "group": "Typed", "slot": "enter", "engine": "ass", "symbol": "⌷", "seconds": 1.2 },
+    { "id": "decrypted-scramble", "label": "Decrypted scramble", "group": "Typed", "slot": "enter", "engine": "ass", "symbol": "⌗", "seconds": 1.1 },
+
+    { "id": "pop-in", "label": "Pop in", "group": "Zoom", "slot": "enter", "engine": "ass", "symbol": "⊕", "seconds": 0.6 },
+    { "id": "zoom-down", "label": "Zoom down", "group": "Zoom", "slot": "enter", "engine": "ass", "symbol": "⊙", "seconds": 0.7 },
+    { "id": "flip-in", "label": "Flip in", "group": "Zoom", "slot": "enter", "engine": "ass", "symbol": "⇕", "seconds": 0.6 },
+    { "id": "rotate-in", "label": "Rotate in", "group": "Zoom", "slot": "enter", "engine": "ass", "symbol": "↻", "seconds": 0.7 },
+
+    { "id": "wipe-from-left", "label": "Wipe from left", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "◧", "seconds": 0.7 },
+    { "id": "wipe-from-right", "label": "Wipe from right", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "◨", "seconds": 0.7 },
+    { "id": "wipe-from-top", "label": "Wipe from top", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "▲", "seconds": 0.7 },
+    { "id": "wipe-from-bottom", "label": "Wipe from bottom", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "▼", "seconds": 0.7 },
+    { "id": "wipe-from-top-left", "label": "Wipe from top-left", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "◜", "seconds": 0.7 },
+    { "id": "wipe-from-top-right", "label": "Wipe from top-right", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "◝", "seconds": 0.7 },
+    { "id": "wipe-from-bottom-left", "label": "Wipe from bottom-left", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "◟", "seconds": 0.7 },
+    { "id": "wipe-from-bottom-right", "label": "Wipe from bottom-right", "group": "Reveal", "slot": "enter", "engine": "ass", "symbol": "◞", "seconds": 0.7 },
+
+    { "id": "lower-third", "label": "Lower-third bar", "group": "Lower third", "slot": "enter", "engine": "ass", "symbol": "▬", "seconds": 0.6 },
+
+    { "id": "none", "label": "None (static)", "group": "—", "slot": "while", "engine": "none", "symbol": "○", "seconds": 2 },
+    { "id": "gentle-float", "label": "Gentle float", "group": "Motion", "slot": "while", "engine": "dt", "symbol": "≈", "seconds": 3 },
+    { "id": "horizontal-drift", "label": "Horizontal drift", "group": "Motion", "slot": "while", "engine": "dt", "symbol": "⇢", "seconds": 4 },
+    { "id": "slow-zoom", "label": "Slow zoom", "group": "Motion", "slot": "while", "engine": "ass", "symbol": "⊕", "seconds": 4 },
+    { "id": "pulse", "label": "Pulse", "group": "Motion", "slot": "while", "engine": "ass", "symbol": "⊛", "seconds": 1.6 },
+    { "id": "wave", "label": "Wave", "group": "Motion", "slot": "while", "engine": "ass", "symbol": "∿", "seconds": 1.8 },
+    { "id": "shake", "label": "Shake", "group": "Motion", "slot": "while", "engine": "ass", "symbol": "⌁", "seconds": 1.2 },
+    { "id": "karaoke-sweep", "label": "Karaoke sweep", "group": "Highlight", "slot": "while", "engine": "ass", "symbol": "▰", "seconds": 2.5 },
+    { "id": "shimmer", "label": "Shimmer", "group": "Light", "slot": "while", "engine": "ass", "symbol": "✷", "seconds": 1.8 },
+    { "id": "neon-glow", "label": "Neon glow", "group": "Light", "slot": "while", "engine": "ass", "symbol": "◎", "seconds": 2.2 },
+    { "id": "colour-cycle", "label": "Colour cycle", "group": "Light", "slot": "while", "engine": "ass", "symbol": "◑", "seconds": 2.4 },
+    { "id": "glitch-flicker", "label": "Glitch flicker", "group": "Light", "slot": "while", "engine": "ass", "symbol": "▚", "seconds": 1.5 },
+    { "id": "count-up", "label": "Count up", "group": "Numbers", "slot": "while", "engine": "ass", "symbol": "#", "seconds": 3, "params": [ { "name": "from", "default": "0" }, { "name": "to", "default": "100" } ] },
+
+    { "id": "fade-out", "label": "Fade out", "group": "Fades", "slot": "exit", "engine": "dt", "symbol": "◐", "seconds": 0.5 },
+    { "id": "blur-out", "label": "Blur out", "group": "Fades", "slot": "exit", "engine": "ass", "symbol": "◍", "seconds": 0.6 },
+
+    { "id": "slide-out-left", "label": "Slide out left", "group": "Slides", "slot": "exit", "engine": "dt", "symbol": "←", "seconds": 0.6 },
+    { "id": "slide-out-right", "label": "Slide out right", "group": "Slides", "slot": "exit", "engine": "dt", "symbol": "→", "seconds": 0.6 },
+    { "id": "slide-out-top", "label": "Slide out top", "group": "Slides", "slot": "exit", "engine": "dt", "symbol": "↑", "seconds": 0.6 },
+    { "id": "slide-out-bottom", "label": "Slide out bottom", "group": "Slides", "slot": "exit", "engine": "dt", "symbol": "↓", "seconds": 0.6 },
+    { "id": "sink-fade", "label": "Sink & fade", "group": "Slides", "slot": "exit", "engine": "dt", "symbol": "↓", "seconds": 0.7 },
+
+    { "id": "split-out-chars", "label": "Split out · chars", "group": "Split", "slot": "exit", "engine": "ass", "symbol": "⁂", "seconds": 0.8 },
+
+    { "id": "typewriter-delete", "label": "Typewriter delete", "group": "Typed", "slot": "exit", "engine": "ass", "symbol": "⌨", "seconds": 1.0 },
+    { "id": "scramble-out", "label": "Scramble out", "group": "Typed", "slot": "exit", "engine": "ass", "symbol": "⌗", "seconds": 0.9 },
+
+    { "id": "pop-out", "label": "Pop out", "group": "Zoom", "slot": "exit", "engine": "ass", "symbol": "⊖", "seconds": 0.5 },
+    { "id": "rotate-out", "label": "Rotate out", "group": "Zoom", "slot": "exit", "engine": "ass", "symbol": "↻", "seconds": 0.6 },
+
+    { "id": "wipe-out-left", "label": "Wipe out left", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "◧", "seconds": 0.7 },
+    { "id": "wipe-out-right", "label": "Wipe out right", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "◨", "seconds": 0.7 },
+    { "id": "wipe-out-top", "label": "Wipe out top", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "▲", "seconds": 0.7 },
+    { "id": "wipe-out-bottom", "label": "Wipe out bottom", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "▼", "seconds": 0.7 },
+    { "id": "wipe-out-top-left", "label": "Wipe out top-left", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "◜", "seconds": 0.7 },
+    { "id": "wipe-out-top-right", "label": "Wipe out top-right", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "◝", "seconds": 0.7 },
+    { "id": "wipe-out-bottom-left", "label": "Wipe out bottom-left", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "◟", "seconds": 0.7 },
+    { "id": "wipe-out-bottom-right", "label": "Wipe out bottom-right", "group": "Reveal", "slot": "exit", "engine": "ass", "symbol": "◞", "seconds": 0.7 },
+
+    { "id": "lower-third-retract", "label": "Lower-third retract", "group": "Lower third", "slot": "exit", "engine": "ass", "symbol": "▬", "seconds": 0.6 }
+  ]
+}
