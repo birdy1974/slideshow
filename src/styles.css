@@ -815,3 +815,6 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .select-all.partial em{color:#4f5d37}
 .select-all.empty{opacity:.4;pointer-events:none}
 .head-select{display:flex;align-items:center;min-width:20px}
+
+/* --- Transition details in the detailed slide list (docs/transition-details-detailed-list.md) --- */
+.cell-summary{grid-column:1/-1;font:700 7px Manrope;color:#7d8178;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
