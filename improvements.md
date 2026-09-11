@@ -1,3 +1,8 @@
+
+
+
+---= DONE =---
+
 2026-09-07
 - give options how to add dynamic text effects for the text in the text frames. for example https://reactbits.dev/
 - confirm if ffmpeg hardware transcoding on synology nas ds918+ is working as gui shows "Quick Sync unavailable · CPU fallback"
@@ -5,9 +10,6 @@
 - in compact view add symbol on slide to open preview popup (in bottom right corner), and add drag and drop functionality (if you click on the middle of the slide) to change the order/location of the slide
 - give options to better use the available size of the detailed slide row to show all information
 - if there are 2 movies back to back (after each other) do not start the audio between the movies (during the transition)
-
-
----= DONE =---
 
 2026-09-11
 - two movies back to back: do not start audio between the movies (during the transition). Previously the second film's original audio faded in across the handoff (afade-in over the incoming transition's length starting at the film's first frame) and the first film's audio faded out early; worse, the music bed leaked into the crossfade because the outgoing duck envelope ramped up while the incoming one ramped down (product ~25% mid-transition). **Now:** when two videos are adjacent, the outgoing film's sound runs at full level until the cut (no fade-out) and the incoming film's sound starts at full level with its first held frame after the transition (no fade-in) — nothing starts or lingers inside the transition; the music-bed duck for the outgoing film stays at zero through the transition and only releases when the next film's own audio starts (release = next start instead of hold end), so the multiplied envelopes can no longer leak. Movies surrounded by pictures keep their fades unchanged. Two new compose-level tests assert the exact chains (no afade on either movie chain, envelope release at starts[next]) and the photo-neighbour contrast — suite 306/306.
