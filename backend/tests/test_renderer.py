@@ -1402,3 +1402,166 @@ class MovieTrimTest(unittest.TestCase):
     def test_soundtrack_only_project_has_no_audio_seek(self) -> None:
         commands = self._render_commands([self._movie(trimStart=30, trimEnd=50)])
         self.assertFalse(any("atrim" in " ".join(c) for c in commands))
+
+
+class VaapiEncodingTest(unittest.TestCase):
+    """VA-API is the hardware path that actually exists on NAS-class iGPUs.
+
+    The DS918+'s Gen9 iGPU has no QSV runtime in the oneVPL-only image, but
+    exposes H.264 encode through VA-API's low-power VDENC entrypoint. The
+    probe must therefore verify a real encode (like QSV's), try -low_power
+    first and remember the working mode, and the encoder selection must
+    degrade safely to CPU — auto through the full chain, explicit labels
+    only through their own hardware.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.renderer = Renderer(Database(base / "test.db"), Settings())
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _set(self, qsv: bool, vaapi: bool) -> None:
+        self.renderer._qsv_encodable = qsv
+        self.renderer._vaapi_encodable = vaapi
+
+    def test_probe_without_render_node_never_spawns_ffmpeg(self) -> None:
+        with mock.patch.object(self.renderer, "_first_render_node", return_value=None), \
+             mock.patch("app.renderer.subprocess.run", side_effect=AssertionError("no GPU, no probe")):
+            self.assertFalse(self.renderer.vaapi_encodable())
+        self.assertFalse(self.renderer.vaapi_encodable_cached())
+
+    def test_probe_prefers_low_power_and_remembers_it(self) -> None:
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(self.renderer.vaapi_encodable())
+        self.assertTrue(self.renderer._vaapi_low_power)
+        self.assertEqual("/dev/dri/renderD128", self.renderer._vaapi_device)
+        command = run.call_args[0][0]
+        self.assertIn("-low_power", command)
+        self.assertIn("h264_vaapi", command)
+        self.assertIn("format=nv12,hwupload", command)
+
+    def test_probe_falls_back_from_low_power_to_normal(self) -> None:
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=[mock.Mock(returncode=1), mock.Mock(returncode=0)]) as run:
+            self.assertTrue(self.renderer.vaapi_encodable())
+        self.assertFalse(self.renderer._vaapi_low_power)
+        self.assertNotIn("-low_power", run.call_args[0][0])
+
+    def test_probe_failure_reports_false(self) -> None:
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=1)):
+            self.assertFalse(self.renderer.vaapi_encodable())
+
+    def test_probe_survives_ffmpeg_errors(self) -> None:
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=OSError("ffmpeg exploded")):
+            self.assertFalse(self.renderer.vaapi_encodable())
+
+    def test_capabilities_includes_vaapi_without_subprocess(self) -> None:
+        self.renderer._ffmpeg_version = "ffmpeg version 8.1.2 test"
+        self.renderer._version_probed = True
+        self.renderer._vaapi_encodable = True
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=AssertionError("capabilities must not spawn processes")):
+            caps = self.renderer.capabilities()
+        self.assertTrue(caps["vaapi"])
+        self.assertTrue(caps["cpuEncoding"])
+
+    def test_select_encoder_auto_prefers_qsv_then_vaapi_then_cpu(self) -> None:
+        self._set(True, True)
+        self.assertEqual("h264_qsv", self.renderer.select_encoder("Auto · Quick Sync"))
+        self._set(False, True)
+        self.assertEqual("h264_vaapi", self.renderer.select_encoder("Auto · Quick Sync"))
+        self._set(False, False)
+        self.assertEqual("libx264", self.renderer.select_encoder("Auto · Quick Sync"))
+
+    def test_select_encoder_explicit_choices_degrade_to_cpu(self) -> None:
+        self._set(False, True)
+        self.assertEqual("h264_vaapi", self.renderer.select_encoder("Hardware · VAAPI"))
+        self.assertEqual("libx264", self.renderer.select_encoder("Intel Quick Sync"))
+        self._set(True, False)
+        self.assertEqual("h264_qsv", self.renderer.select_encoder("Intel Quick Sync"))
+        self.assertEqual("libx264", self.renderer.select_encoder("Hardware · VAAPI"))
+        self._set(False, False)
+        self.assertEqual("libx264", self.renderer.select_encoder("CPU · x264"))
+        self.assertEqual("libx264", self.renderer.select_encoder(""))
+
+
+    def _hw_renderer(self):
+        """A renderer in a prepared temp tree plus the project it renders."""
+        base = Path(self.temp.name)
+        settings = Settings(config_dir=base / "config", photos_dir=base / "photos",
+                            videos_dir=base / "videos", output_dir=base / "out", music_dir=base / "music")
+        for directory in (settings.photos_dir, settings.videos_dir, settings.work_dir, settings.preview_dir, settings.output_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
+        (settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        renderer = Renderer(Database(base / "hw.db"), settings)
+        renderer._qsv_encodable = False
+        renderer._vaapi_encodable = True
+        renderer._vaapi_low_power = True
+        renderer._vaapi_device = "/dev/dri/renderD128"
+        project = {"id": 1, "media": [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ], "soundtrack": {}, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "Hardware · VAAPI", "path": "/output", "filename": "movie.mp4"}}
+        return settings, renderer, project
+
+    def test_vaapi_render_uses_hwupload_and_low_power(self) -> None:
+        """A full compose must carry -vaapi_device, the hwupload hop and -low_power 1."""
+        settings, renderer, project = self._hw_renderer()
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"part")
+
+        with mock.patch.object(renderer, "_validate_media", return_value=None), \
+             mock.patch.object(renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(renderer, "_probe_duration", return_value=2.0):
+            work = settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        hw = [command for command in commands if "h264_vaapi" in command]
+        self.assertTrue(hw, "the VA-API encoder must appear in the compose commands")
+        for command in hw:
+            joined = " ".join(command)
+            self.assertIn("-vaapi_device /dev/dri/renderD128", joined)
+            self.assertIn("hwupload", joined)
+            self.assertIn("fps=30,hwupload[vout]", joined)
+            self.assertIn("-low_power 1", joined)
+        # Segment preparation stays on the CPU (quality intermediates at crf 18).
+        self.assertTrue(any("libx264" in command and "-crf 18" in " ".join(command) for command in commands))
+
+    def test_vaapi_failure_retries_composition_on_cpu(self) -> None:
+        settings, renderer, project = self._hw_renderer()
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            if "h264_vaapi" in command:
+                raise RenderError("broken VA-API driver")
+            Path(command[-1]).write_bytes(b"part")
+
+        with mock.patch.object(renderer, "_validate_media", return_value=None), \
+             mock.patch.object(renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(renderer, "_probe_duration", return_value=2.0):
+            work = settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        retried = [command for command in commands
+                   if "-c:v" in command and command[command.index("-c:v") + 1] == "libx264" and "-crf" not in command]
+        self.assertTrue(retried, "the CPU retry must appear")
+        for command in retried:
+            joined = " ".join(command)
+            self.assertNotIn("-vaapi_device", joined)
+            self.assertNotIn("hwupload", joined)
+            self.assertNotIn("-low_power", joined)
+            self.assertIn("-preset medium", joined)
+            self.assertIn("-pix_fmt yuv420p", joined)

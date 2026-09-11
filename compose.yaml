@@ -23,8 +23,9 @@ services:
       # Files uploaded from the GUI device ("Upload from this device" in the
       # media picker). Kept separate from renders and from the read-only mounts.
       - "${UPLOADS_PATH:-./data/uploads}:/uploads"
-    # Intel Quick Sync on the DS918+. Remove this section if /dev/dri does not
-    # exist; Auto encoding then safely uses CPU/libx264.
+    # Hardware encoding: Intel Quick Sync and/or VA-API share this device.
+    # Remove this section if /dev/dri does not exist; Auto encoding then
+    # safely uses CPU/libx264.
     devices:
       - /dev/dri:/dev/dri
     # Set VIDEO_GID to the numeric group shown by `ls -ln /dev/dri`.

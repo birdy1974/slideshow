@@ -21,6 +21,7 @@ const RESOLUTION_COST: Record<string, number> = {
 const ENCODER_COST: Record<string, number> = {
   'Auto · Quick Sync': 1,
   'Intel Quick Sync': 1,
+  'Hardware · VAAPI': 1,
   'CPU · x264': 2.6,
 }
 /** Previews are always 640×360 · 24 fps · 2 Mbps, whatever the output settings say. */

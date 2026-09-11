@@ -110,7 +110,7 @@ cores) this is workable for 1080p30 photo slideshows — especially since the re
 pre-encodes short segments and concatenates. Cost appears with video-heavy timelines,
 4K, and long previews.
 
-### B. Add a VA-API encode path (recommended)
+### B. Add a VA-API encode path — ✅ IMPLEMENTED (2026-09-11)
 Use `h264_vaapi` on the same iGPU — **on the DS918+ with `-low_power 1`** (see the
 verification section above: Apollo Lake exposes encode only via `EncSliceLP`).
 Drivers are **already in the image**; nothing legacy, everything from Debian repos, and
@@ -138,8 +138,36 @@ a foreign binary over `FFMPEG_BIN` would lose the custom xfade-easing build — 
 transitions and easing/reverse degrade to plain dissolve (the renderer falls back
 automatically). Only sensible if GL transitions are never used, i.e. effectively no.
 
-## Recommendation
+## Implementation (Option B — shipped 2026-09-11)
 
-**B** is the lasting fix for this NAS (and newer Intels alike); **C** is the
-"keep QSV branding" alternative with legacy baggage; **A** costs nothing meanwhile.
-Decision needed before implementation — none of this has been implemented.
+* **Probe** (`Renderer.vaapi_encodable`, mirroring the QSV probe): finds the first
+  `/dev/dri/renderD*` node, then runs the same 12-frame test encode as the QSV probe —
+  `-vaapi_device <node> -f lavfi -i color=... -vf format=nv12,hwupload -c:v h264_vaapi
+  [-low_power 1] -b:v 1M … -f null -`. The low-power VDENC mode (the only encode
+  entrypoint Apollo Lake exposes) is tried first and the working mode is remembered
+  (`_vaapi_low_power`); the probe is warmed at startup like the others and read
+  non-blockingly by `/api/health`.
+* **Selection** (`Renderer.select_encoder`): `Auto · Quick Sync` now walks
+  QSV → VA-API → CPU; the new explicit `Hardware · VAAPI` option walks
+  VA-API → CPU; `Intel Quick Sync` and `CPU · x264` behave exactly as before.
+  Stored projects with the legacy `Auto · Quick Sync` label get the new chain
+  automatically.
+* **Renders**: hold and transition commands gain `-vaapi_device <node>` and a
+  `,hwupload` hop before each graph's `[vout]`; `encode_args_for("h264_vaapi")` emits
+  bitrate + bufsize and `-low_power 1` when the probe said the host needs it (no
+  `-pix_fmt` — frames arrive as VA-API surfaces). Segment preparation stays on
+  `libx264 -crf 18` (quality intermediates); concat and final mux are stream-copy and
+  untouched. Any hardware failure mid-render retries the same command on CPU via the
+  generalized fallback (device, hwupload and `-low_power` stripped, `-preset medium
+  -pix_fmt yuv420p` added) — a broken driver can never fail a job.
+* **GUI**: the checklist line reports `Hardware encoding available · VAAPI` (check,
+  not warning) when `capabilities.vaapi` is true, and the Encoder dropdown gained
+  `Hardware · VAAPI`. Render-time estimates already treat it as hardware speed.
+* **Net effect on the DS918+**: `/api/health` now reports `"quickSync": false,
+  "vaapi": true`, the checklist shows a green hardware line, and `Auto` renders encode
+  hold/transition segments on the J3455's iGPU (VDENC H.264) instead of x264. Verifying
+  after pulling: run one render and check `/config/work/<job-id>/ffmpeg.log` for
+  `h264_vaapi` lines, or watch `intel_gpu_top` during a render.
+
+**C** (legacy Media SDK runtime) remains an alternative if native QSV is ever wanted,
+but with VA-API working there is no reason left to carry EOL legacy runtime baggage.
