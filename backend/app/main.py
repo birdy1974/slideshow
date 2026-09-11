@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafeP
 from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
+from .uploads import UploadRejected, store_upload
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -312,7 +313,7 @@ def clear_output_directory(path: str = Query(default="/output")) -> dict[str, An
 
 
 @app.get("/api/media/browse")
-def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), path: str = "", folders: bool = False,
+def browse_media(root: str = Query(pattern="^(photos|videos|music|output|uploads)$"), path: str = "", folders: bool = False,
                  projects: bool = False) -> dict[str, Any]:
     """List one folder of a mount.
 
@@ -326,11 +327,32 @@ def browse_media(root: str = Query(pattern="^(photos|videos|music|output)$"), pa
     except PermissionError as exc: raise HTTPException(403, str(exc)) from exc
 
 
+@app.post("/api/media/upload")
+async def upload_media(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    """Store photos/movies uploaded from the GUI device into the uploads root.
+
+    Each file is sanitised, de-duplicated, size-capped and verified with
+    ffprobe before it is kept; rejected files leave nothing behind. The
+    returned entries use the media-browser shape, so the frontend adds them
+    to the storyline exactly like files picked from a mount.
+    """
+    added: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for file in files:
+        try:
+            added.append(store_upload(settings, file.filename or "", file.file))
+        except UploadRejected as exc:
+            errors.append({"name": file.filename or "file", "error": str(exc)})
+        finally:
+            await file.close()
+    return {"added": added, "errors": errors}
+
+
 STREAMABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 
 @app.get("/api/media/probe")
-def probe_media(root: str = Query(pattern="^(photos|videos)$"), path: str = "") -> dict[str, Any]:
+def probe_media(root: str = Query(pattern="^(photos|videos|uploads)$"), path: str = "") -> dict[str, Any]:
     """Read video metadata server-side, including formats browsers cannot decode.
 
     Casio EX-Z11 movies are Motion JPEG/PCM in an AVI container. FFmpeg can
@@ -379,7 +401,7 @@ def media_loudness(root: str = Query(pattern="^(music|videos|photos)$"), path: s
 
 @app.get("/api/media/cropdetect")
 def media_cropdetect(
-    root: str = Query(pattern="^(photos|videos)$"),
+    root: str = Query(pattern="^(photos|videos|uploads)$"),
     path: str = "",
     rotation: int = Query(default=0),
     seconds: float = Query(default=4.0, ge=0.5, le=30.0),
@@ -415,7 +437,7 @@ def media_cropdetect(
 
 
 @app.get("/api/media/file")
-def media_file(root: str = Query(pattern="^(photos|videos|music)$"), path: str = "") -> FileResponse:
+def media_file(root: str = Query(pattern="^(photos|videos|music|uploads)$"), path: str = "") -> FileResponse:
     """Stream a media file from a read-only mount for thumbnails, lightbox, and MP3 preview.
 
     Filenames may contain spaces, underscores, dashes, parentheses and other

@@ -768,3 +768,31 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .tile-flag.failed{background:#f8d7d4e6;color:#9b2c22;cursor:help}
 .browser-cache.failed{color:#b34f3c}
 .gallery-warn.failed{background:#f8d7d4;color:#9b2c22;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* --- Uploads from the GUI device (see docs/local-device-media.md) --- */
+/* Location button + action in the media picker's folder tree */
+.upload-location{height:34px;border:1px dashed #b9c69a;background:#f5f8ec;border-radius:6px;text-align:left;font-size:11px;font-weight:700;color:#4f5d37;display:flex;gap:8px;align-items:center;padding:0 9px}
+.upload-location:hover{background:#eaf1da;color:#3c5222}
+/* Drag files from the desktop onto the storyline */
+.timeline-panel{position:relative}
+.timeline-panel.drop-target{outline:2px dashed #99a27f;outline-offset:-6px}
+.drop-overlay{position:absolute;inset:0;z-index:30;display:none;place-items:center;gap:10px;background:#f3f6eae0;border-radius:12px;pointer-events:none;font:700 12px Manrope;color:#4f5d37}
+.drop-overlay svg{width:22px;height:22px}
+.timeline-panel.drop-target .drop-overlay{display:grid}
+/* Bottom-right upload tray */
+.upload-tray{position:fixed;right:18px;bottom:18px;z-index:70;width:310px;background:#22251f;color:#fff;border-radius:10px;box-shadow:0 12px 34px #0006;padding:10px 12px;display:flex;flex-direction:column;gap:7px}
+.upload-tray-head{display:flex;align-items:center;gap:6px;font:700 10px Manrope;letter-spacing:.4px;color:#d7dbcd}
+.upload-tray-head strong{flex:1}
+.upload-tray-head button{border:0;background:transparent;color:#9aa08f;display:grid;place-items:center;padding:2px}
+.upload-tray-head button:hover{color:#fff}
+.upload-item{display:grid;grid-template-columns:auto 1fr auto auto;gap:6px;align-items:center;font-size:9px;color:#c9cec2;min-width:0}
+.upload-item>svg{flex-shrink:0}
+.upload-item.error>svg{color:#e58a76}
+.upload-item.done>svg{color:var(--lime)}
+.upload-item .upload-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upload-item .upload-size{color:#8d9285;white-space:nowrap}
+.upload-item .upload-cancel{border:0;background:transparent;color:#9aa08f;display:grid;place-items:center;padding:2px}
+.upload-item .upload-cancel:hover{color:#fff}
+.upload-item .upload-bar{grid-column:1/5;height:3px;background:#3c4138;border-radius:2px;overflow:hidden}
+.upload-item .upload-bar i{display:block;height:100%;background:var(--lime);transition:width .2s}
+.upload-item.error .upload-bar i{background:#b34f3c}

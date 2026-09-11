@@ -132,7 +132,7 @@ COPY --from=frontend /src/dist ./static
 # Same TTFs the browser preview uses, so FFmpeg renders identical typography.
 COPY public/fonts ./fonts
 ENV FONTS_DIR=/app/fonts
-RUN mkdir -p /config/work /config/previews /output /photos /videos /music
+RUN mkdir -p /config/work /config/previews /output /photos /videos /music /uploads
 EXPOSE 8080
 VOLUME ["/config", "/output"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
