@@ -25,6 +25,7 @@ from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafeP
 from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
+from .text_effect_previews import TextEffectPreviewCache
 from .uploads import UploadRejected, store_upload
 from .filmstrips import FilmstripUnavailable, build_filmstrip
 
@@ -34,6 +35,7 @@ log = logging.getLogger(__name__)
 db = Database(settings.database_path)
 renderer = Renderer(db, settings)
 transition_previews = TransitionPreviewCache(settings, renderer)
+text_effect_previews = TextEffectPreviewCache(settings, renderer)
 
 
 class ProjectPayload(BaseModel):
@@ -527,6 +529,44 @@ def transition_preview_file(slug: str) -> FileResponse:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - a failed probe must not 500 the picker
         log.exception("Could not build a preview for %s", entry["label"])
+        raise HTTPException(500, f"Could not render preview: {exc}") from exc
+    return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline")
+
+
+@app.get("/api/text-effects/status")
+def text_effect_preview_status() -> dict[str, Any]:
+    """Which text effects already have a cached example clip."""
+    return text_effect_previews.status()
+
+
+@app.post("/api/text-effects/build")
+def text_effect_preview_build() -> dict[str, Any]:
+    """Start (or report on) a background pass that renders every missing clip."""
+    return text_effect_previews.build_all()
+
+
+@app.delete("/api/text-effects")
+def text_effect_preview_clear() -> dict[str, Any]:
+    """Drop every cached example so the catalogue can be re-rendered."""
+    text_effect_previews.clear()
+    return text_effect_previews.status()
+
+
+@app.get("/api/text-effects/{slug}")
+def text_effect_preview_file(slug: str) -> FileResponse:
+    """Cached example clip for a text-effect label, rendered on first use."""
+    name = slug[:-4] if slug.lower().endswith(".mp4") else slug
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", name or ""):
+        raise HTTPException(404, "Unknown text-effect preview")
+    entry = next((x for x in text_effect_previews.catalogue() if x["slug"] == name), None)
+    if not entry:
+        raise HTTPException(404, "Unknown text-effect preview")
+    try:
+        path = text_effect_previews.ensure(entry["label"])
+    except PreviewUnavailable as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - a failed render must not 500 the picker
+        log.exception("Could not build a text-effect preview for %s", entry["label"])
         raise HTTPException(500, f"Could not render preview: {exc}") from exc
     return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline")
 

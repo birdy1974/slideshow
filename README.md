@@ -11,7 +11,8 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - FFmpeg xfade catalogue (58 native transitions) plus 133 GL transitions (gl-transitions.com, ported to the custom ffmpeg via `ffmpeg-patch/`), per-transition parameters/labels/groups kept in one shared `registry/transitions.json` consumed by both backend and frontend, per-transition timing, random/bulk assignment, and GLSL-to-dissolve portability fallback
 - A searchable transition browser replacing the 191-entry dropdown: a chip in every transition setting plus a full-screen gallery (Browse all 191) with looping examples rendered once per transition and cached under `/config` — see [docs/transition-previews.md](docs/transition-previews.md)
 - Ken Burns controls with selected-item and random bulk assignment
-- Timed captions, appear/disappear transitions, draggable title placement, 20 bundled open-licence fonts (sans, serif, display & script — see `public/fonts/README.md`), and frame backgrounds
+- Timed captions, draggable title placement, 20 bundled open-licence fonts (sans, serif, display & script — see `public/fonts/README.md`), and frame backgrounds
+- Dynamic text effects in three slots (enter / while shown / exit, 65 effects in `registry/text-effects.json`): typewriter, split stagger, pop/zoom/rotate, wipes, karaoke sweep, shake, glitch flicker, count-up, lower-third bars and more — approximated live by CSS in the editor and rendered for real by animated drawtext expressions or libass (`.ass` overlays), with cached rendered examples in the pickers — see [docs/text-effects.md](docs/text-effects.md)
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming
 - Resilient media validation: 0-byte cloud-synced files are retried before failing a render, and slow NAS volumes get a generous (retryable) ffprobe timeout
 - Real 480p proxy previews streamed from the backend
@@ -88,7 +89,7 @@ SQLite uses WAL mode, foreign keys, a 30-second busy timeout, and schema migrati
 
 ## Rendering notes
 
-All media is first normalized to one resolution, frame rate, time base, SAR, and `yuv420p`, then composed through `xfade`. Text appearance/disappearance choices currently render with smooth alpha fades while their exact selected transition names remain stored for a later shader/text-animation renderer. Experimental GLSL frame transitions fall back to dissolve on the DS918+ portability path.
+All media is first normalized to one resolution, frame rate, time base, SAR, and `yuv420p`, then composed through `xfade`. Text renders through the dual text-effect engine ([docs/text-effects.md](docs/text-effects.md)): simple effects animate the same drawtext filter as before (legacy projects keep its exact fade), everything else is a per-clip `.ass` overlay burned in by the libass build of the custom FFmpeg; on builds without libass the effects degrade to plain fades instead of failing the render. Experimental GLSL frame transitions fall back to dissolve on the DS918+ portability path.
 
 Transition durations are clamped so a transition can never overlap more than the remaining time of either clip it joins — the same rules drive the UI's estimated total time and the renderer, so the two always agree. Quick Sync availability is verified at startup with a short test encode; any `h264_qsv` failure (unsupported rate control, pixel format, or resolution — common on the DS918+) automatically retries the same composition with CPU/x264 instead of failing the job. Final renders refuse to overwrite an existing output file until acknowledged by the user.
 

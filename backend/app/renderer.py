@@ -25,6 +25,7 @@ from .database import Database, utcnow
 from .media import UnsafePath, mounted_path, source_path
 from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
 from .picture_filters import picture_look
+from .text_effects import build_text_overlay, overlay_plan, plan_engine
 
 log = logging.getLogger(__name__)
 
@@ -864,6 +865,8 @@ class Renderer:
         self._version_lock = threading.Lock()
         self._xfade_has_easing: bool | None = None
         self._easing_lock = threading.Lock()
+        self._ass_supported: bool | None = None
+        self._ass_lock = threading.Lock()
 
     def warm_capabilities(self) -> None:
         """Probe ffmpeg version, the xfade catalogue, Quick Sync and VA-API
@@ -1314,36 +1317,40 @@ class Renderer:
                 summary = _summarize_ffmpeg_log(text)
                 raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{summary}")
 
-    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int) -> str | None:
-        text = str(item.get("text", "")).strip()
-        if not text:
+    def ass_filter_supported(self) -> bool:
+        """Whether this FFmpeg build can burn .ass overlays (the libass engine).
+
+        The container build hard-checks CONFIG_LIBASS, but a stock NAS FFmpeg
+        may not have it; text effects then degrade to fades instead of failing
+        the render. Cached once per process.
+        """
+        with self._ass_lock:
+            if self._ass_supported is None:
+                try:
+                    result = subprocess.run(
+                        [self.settings.ffmpeg_bin, "-hide_banner", "-h", "filter=ass"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    self._ass_supported = result.returncode == 0
+                except Exception:
+                    self._ass_supported = False
+            return self._ass_supported
+
+    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None) -> str | None:
+        """Dispatch to the dual text-effect engine (backend/app/text_effects.py).
+
+        Items whose three slots are all at their historic defaults get the exact
+        drawtext filter this method always produced; anything that needs libass
+        gets a per-clip .ass overlay (written to `ass_path` in the job work
+        dir). On FFmpeg builds without the `ass` filter every slot degrades to
+        the plain fades rather than failing the render.
+        """
+        if overlay_plan(item) is None:
             return None
-        # Per-slide opt-out: captions can be disabled without deleting the text.
-        # Title frames are the text itself, so the flag never applies to them.
-        if item.get("type") != "title" and item.get("textEnabled") is False:
-            return None
-        start, end = float(item.get("textStart", 0)), float(item.get("textEnd", item.get("duration", 5)))
-        fade_in = max(.01, float(item.get("textEnterDuration", .5))); fade_out = max(.01, float(item.get("textExitDuration", .5)))
-        x, y = float(item.get("textX", 50)), float(item.get("textY", 72))
-        # Title frames carry their own type settings. Picture captions use the
-        # project-wide defaults so changing “Default text style” never restyles
-        # a standalone text card.
-        if item.get("type") == "title":
-            size_pt = item.get("fontSize", 48)
-            colour_raw = item.get("fontColor") or "#ffffff"
-            bold = item.get("textBold", True)
-            italic = item.get("textItalic", False)
-        else:
-            size_pt = defaults.get("fontSize", 48)
-            colour_raw = defaults.get("fontColor", "#ffffff")
-            bold = defaults.get("bold", True)
-            italic = defaults.get("italic", False)
-        size = max(8, int(float(size_pt) * width / 1920))
-        colour = str(colour_raw).replace("#", "0x")
-        family = str((item.get("fontFamily") if item.get("type") == "title" else defaults.get("fontFamily")) or "Montserrat")
-        font = font_file(family, bool(bold), bool(italic), self.settings.fonts_dir)
-        alpha = f"if(lt(t,{start}),0,if(lt(t,{start+fade_in}),(t-{start})/{fade_in},if(lt(t,{end-fade_out}),1,if(lt(t,{end}),({end}-t)/{fade_out},0))))"
-        return f"drawtext=fontfile='{font}':text='{ff_escape(text)}':fontsize={size}:fontcolor={colour}:alpha='{alpha}':x=(w-text_w)*{x/100}:y=(h-text_h)*{y/100}:shadowcolor=black@0.55:shadowx=2:shadowy=2:enable='between(t,{start},{end})'"
+        if plan_engine(overlay_plan(item)) == "ass" and not self.ass_filter_supported():
+            log.warning("FFmpeg build lacks the libass 'ass' filter; text effects degrade to fades")
+            item = {**item, "textFxEnter": "Fade", "textFxWhile": "None (static)", "textFxExit": "Fade out"}
+        return build_text_overlay(item, defaults, width, height, self.settings.fonts_dir, ass_path, font_file)
 
     def render(self, project: dict[str, Any], kind: str, work: Path, cancelled: threading.Event, progress: Callable[[float,str],None]) -> Path:
         media = list(project.get("media", []))
@@ -1565,7 +1572,7 @@ class Renderer:
                 look = picture_look(item, width, height)
                 if look:
                     filters.append(look)
-            text_filter = self._text_filter(item, defaults, width, height)
+            text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass")
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
             colour_change = frame_colour_change(item) if kind_name == "title" else None

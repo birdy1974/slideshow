@@ -26,6 +26,8 @@ import type { ProjectFileInfo, ProjectRoot } from './projectFiles'
 import { TransitionGallery } from './TransitionGallery'
 import { totalTransitionCount } from './transitionCatalog'
 import { TransitionChip } from './TransitionPicker'
+import { TextEffectChip } from './TextEffectPicker'
+import { DEFAULT_ENTER, DEFAULT_EXIT, DEFAULT_WHILE, WHILE_SPEED_DEFAULT, allTextEffects, normalizeTextEffect, textEffectDefaultSeconds, textEffectParams, textEffectSymbol, type TextEffectSlot } from './textEffects'
 import { EasingSelect, GLParamControls, RandomScopeSelect, pickRandomTransition, randomGLParams, randomScopeLabels } from './transitionControls'
 import type { RandomScope } from './transitionControls'
 import { EASING_DEFAULT, getGLParams, isGLTransition, transitionSymbol } from './transitionCatalog'
@@ -702,12 +704,12 @@ function TimelineTextBox({ item, update, selected, onSelect, onEdit }: { item: M
   const left = textStart / duration * 100
   const width = Math.max(3, (textEnd - textStart) / duration * 100)
   return <div className="timed-text" style={{left:`${left}%`,width:`${width}%`}}>
-    <button className={`text-transition enter ${selected.includes(`${item.id}-enter`)?'selected':''}`} title={`Appear: ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>onSelect('enter')}>{transitionSymbol(item.textEnter)}</button>
+    <button className={`text-transition enter ${selected.includes(`${item.id}-enter`)?'selected':''}`} title={`Appear: ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>onSelect('enter')}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button>
     <i className="timing-handle left" title={`Appears at ${textStart.toFixed(1)}s`} onPointerDown={e=>changeTiming('start',e)}/>
     <input value={item.text} placeholder="+ Add text" onChange={e=>update({text:e.target.value})}/>
     {item.type === 'title' && onEdit && <button type="button" className="frame-edit-mini" title={`Edit this text frame · “${item.text}” · ${item.duration}s — colours, font, position and timing`} aria-label="Edit text frame" onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); onEdit() }}><Pencil size={9}/></button>}
     <i className="timing-handle right" title={`Disappears at ${textEnd.toFixed(1)}s`} onPointerDown={e=>changeTiming('end',e)}/>
-    <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Disappear: ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>onSelect('exit')}>{transitionSymbol(item.textExit)}</button>
+    <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Disappear: ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>onSelect('exit')}>{textEffectSymbol(item.textFxExit || item.textExit)}</button>
   </div>
 }
 // Rounds a number to at most 3 decimals for display, returning '' for NaN.
@@ -848,6 +850,12 @@ function App() {
   const [textItalic, setTextItalic] = useState(false)
   const [textUnderline, setTextUnderline] = useState(false)
   const [defaultTextX, setDefaultTextX] = useState(50)
+  // Default text animation for new captions and text frames (saved with the
+  // project like the rest of the "Default text style" settings).
+  const [defaultTextFxEnter, setDefaultTextFxEnter] = useState(DEFAULT_ENTER)
+  const [defaultTextFxWhile, setDefaultTextFxWhile] = useState(DEFAULT_WHILE)
+  const [defaultTextFxExit, setDefaultTextFxExit] = useState(DEFAULT_EXIT)
+  const [defaultTextFxWhileSpeed, setDefaultTextFxWhileSpeed] = useState(WHILE_SPEED_DEFAULT)
   const [defaultTextY, setDefaultTextY] = useState(72)
   const [showTextStyles, setShowTextStyles] = useState(false)
   const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)
@@ -991,11 +999,18 @@ function App() {
         if (typeof m.transitionParams === 'string') { try{ m.transitionParams = JSON.parse(m.transitionParams)}catch{ m.transitionParams = {}}}
         if (!m.transitionEasing) m.transitionEasing = EASING_DEFAULT
         if (m.transitionReverse == null) m.transitionReverse = 0
+        // Dynamic text effects: map legacy xfade labels onto the text-effect
+        // catalogue (they always *rendered* as plain fades) and fill the new
+        // slots, so GUI chips and the renderer agree on what will be drawn.
+        m.textFxEnter = normalizeTextEffect(m.textFxEnter ?? m.textEnter, 'enter')
+        m.textFxWhile = normalizeTextEffect(m.textFxWhile, 'while')
+        m.textFxExit = normalizeTextEffect(m.textFxExit ?? m.textExit, 'exit')
+        if (!Number.isFinite(Number(m.textFxWhileSpeed)) || !Number(m.textFxWhileSpeed)) m.textFxWhileSpeed = textEffectDefaultSeconds[m.textFxWhile] ?? WHILE_SPEED_DEFAULT
         return m
       })
       setMedia(normalized)
     }
-    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72)}
+    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72);setDefaultTextFxEnter(normalizeTextEffect(saved.textDefaults.textFxEnter, 'enter'));setDefaultTextFxWhile(normalizeTextEffect(saved.textDefaults.textFxWhile, 'while'));setDefaultTextFxExit(normalizeTextEffect(saved.textDefaults.textFxExit, 'exit'));setDefaultTextFxWhileSpeed(Number(saved.textDefaults.textFxWhileSpeed) || WHILE_SPEED_DEFAULT)}
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path)
       // A project saved before the two fields were linked usually still carries
@@ -1037,7 +1052,7 @@ function App() {
 
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
-    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY },
+    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed },
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
     // Sanitised here as well as on blur, so a render started straight after
     // typing can never be handed a name the filesystem would reject.
@@ -1070,7 +1085,7 @@ function App() {
   const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
   const blankProjectSnapshot = () => ({
     schemaVersion: 1, project: { name: BLANK_NAME, randomOrder: false }, media: [],
-    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72 },
+    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72, textFxEnter: DEFAULT_ENTER, textFxWhile: DEFAULT_WHILE, textFxExit: DEFAULT_EXIT, textFxWhileSpeed: WHILE_SPEED_DEFAULT },
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: safeFilename(BLANK_NAME) },
     timeline: { rows: 'auto', zoom: 1 },
@@ -1087,7 +1102,7 @@ function App() {
     setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0); setAudioNormalize(true); setAudioNormalizeTarget(-14)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
     setOutputPath('/output'); setOutputFilename(safeFilename(BLANK_NAME))
-    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72)
+    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72); setDefaultTextFxEnter(DEFAULT_ENTER); setDefaultTextFxWhile(DEFAULT_WHILE); setDefaultTextFxExit(DEFAULT_EXIT); setDefaultTextFxWhileSpeed(WHILE_SPEED_DEFAULT)
     setTimelineRows('auto'); setTimelineZoom(1)
     setGlobalSlideDuration(DEFAULT_SLIDE_SECONDS); setGlobalDuration(DEFAULT_TRANSITION_SECONDS)
     setSelectedIds([]); setSelectedTransitions([]); setSelectedTextTransitions([])
@@ -1381,6 +1396,7 @@ function App() {
         audioSource: isVideo ? 'soundtrack' : undefined,
         text: '', textMode: 'overlay', textStart: 0, textEnd: duration,
         textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5,
+        textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed,
         textX: 50, textY: 72, frameBackground: '#30382a',
       })
     }
@@ -1439,7 +1455,7 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
     setPendingTextFrame(id)
     setEditingTextFrame(id)
   }
@@ -1465,19 +1481,21 @@ function App() {
     const enter = selectedTextTransitions.includes(`${item.id}-enter`)
     const exit = selectedTextTransitions.includes(`${item.id}-exit`)
     return {...item,
-      ...(enter && value !== undefined ? {textEnter:value} : {}), ...(exit && value !== undefined ? {textExit:value} : {}),
+      ...(enter && value !== undefined ? {textFxEnter:value, textEnter:value} : {}), ...(exit && value !== undefined ? {textFxExit:value, textExit:value} : {}),
       ...(enter && duration !== undefined ? {textEnterDuration:duration} : {}), ...(exit && duration !== undefined ? {textExitDuration:duration} : {})}
   }))
   // Same scope as the Ken Burns buttons it sits beside: the selected clips, or
   // every photo when nothing is selected.
   const randomizeTextTransitions = () => {
-    const enterOptions=['Fade','Slide up','Zoom in','Dissolve'], exitOptions=['Fade','Slide left','Dissolve']
+    // Draw from the text-effect catalogue (every label means something for
+    // text), not the 191-entry xfade list.
+    const enterOptions = allTextEffects('enter'), exitOptions = allTextEffects('exit')
     const ids = selectedIds.length ? selectedIds : media.filter(x => x.type === 'image').map(x => x.id)
     if (!ids.length) { notify('No photos to update · add photos or select clips first'); return }
     setMedia(items=>items.map(item=>ids.includes(item.id)?{...item,
-      textEnter:enterOptions[Math.floor(Math.random()*enterOptions.length)],
-      textExit:exitOptions[Math.floor(Math.random()*exitOptions.length)]}:item))
-    notify(`Text transitions randomized · ${ids.length} photo${ids.length===1?'':'s'}`)
+      textFxEnter:enterOptions[Math.floor(Math.random()*enterOptions.length)],
+      textFxExit:exitOptions[Math.floor(Math.random()*exitOptions.length)]}:item))
+    notify(`Text effects randomized · ${ids.length} photo${ids.length===1?'':'s'}`)
   }
   const applyBulkEffect = () => {
     const ids = selectedIds.length ? selectedIds : media.filter(x => x.type === 'image').map(x => x.id)
@@ -1749,7 +1767,7 @@ function App() {
             onDrop={e => { if (Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); setStoryDrop(false); const files = Array.from(e.dataTransfer.files); if (files.length) startUploads(files) } }}>
             <div className="drop-overlay"><Upload size={22}/><span>Drop photos or movies to upload them to the NAS and add them here</span></div>
             <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><label className="switch-label"><input type="checkbox" checked={randomOrder} onChange={e => setRandomOrder(e.target.checked)}/><span className="switch"/>Random order</label><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={15}/> New project</button></div></div>
-            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect} title="Apply the selected effect to the selection — or to every photo when nothing is selected. “None” removes the Ken Burns motion.">Apply effect</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><button className="random-button text-trans-random" onClick={randomizeTextTransitions} title="Randomize how the text flies in and out on these photos · every photo when nothing is selected"><Shuffle size={13}/> Text transitions</button><Select value={bulkFilter} onChange={setBulkFilter} ariaLabel="Picture filter">{LOOK_GROUPS.map(group => <optgroup key={group} label={group}>{LOOK_PRESETS.filter(preset => preset.group === group).map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</optgroup>)}</Select><button onClick={applyBulkFilter} title="Apply this filter to the selection — or to every photo and movie when nothing is selected"><Sparkles size={12}/> Apply filter</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} onOpenGallery={() => setShowTransitionGallery(true)} /><button onClick={() => applyBulkTransition(false)}>Apply effect</button><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Assign a random transition from: ${randomScopeLabels[randomScope]}${randomizeParams && randomScope !== 'xfade' ? ' · GL parameters are randomized too (checkbox in the bar above)' : ''}`} onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button><button className="random-button" title={`Re-roll only the parameters of the GL transitions ${selectedTransitions.length ? 'in the selection' : 'in the storyline'} — the transition names stay exactly as they are`} onClick={randomizeBulkParams}><Settings2 size={13}/> GL params</button></div>
+            <div className="bulk-tools"><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect} title="Apply the selected effect to the selection — or to every photo when nothing is selected. “None” removes the Ken Burns motion.">Apply effect</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><button className="random-button text-trans-random" onClick={randomizeTextTransitions} title="Randomize how the text appears and disappears on these photos, from the text-effect catalogue · every photo when nothing is selected"><Shuffle size={13}/> Text effects</button><Select value={bulkFilter} onChange={setBulkFilter} ariaLabel="Picture filter">{LOOK_GROUPS.map(group => <optgroup key={group} label={group}>{LOOK_PRESETS.filter(preset => preset.group === group).map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</optgroup>)}</Select><button onClick={applyBulkFilter} title="Apply this filter to the selection — or to every photo and movie when nothing is selected"><Sparkles size={12}/> Apply filter</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} onOpenGallery={() => setShowTransitionGallery(true)} /><button onClick={() => applyBulkTransition(false)}>Apply effect</button><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><button className="random-button" title={`Assign a random transition from: ${randomScopeLabels[randomScope]}${randomizeParams && randomScope !== 'xfade' ? ' · GL parameters are randomized too (checkbox in the bar above)' : ''}`} onClick={() => applyBulkTransition(true)}><Shuffle size={13}/> Random</button><button className="random-button" title={`Re-roll only the parameters of the GL transitions ${selectedTransitions.length ? 'in the selection' : 'in the storyline'} — the transition names stay exactly as they are`} onClick={randomizeBulkParams}><Settings2 size={13}/> GL params</button></div>
 
             <div className="bulk-bar" id="section-transitions"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><label className={`check-label random-params-toggle${randomScope === 'xfade' ? ' off' : ''}`} title={randomScope === 'xfade' ? 'The xfade pool has no GL parameters to randomize' : 'When set, randomizing also draws fresh values for the GL transition parameters — the same ranges the parameter sliders use. Applies to “Randomize all”, “Randomize selected” and the selection “Random” below.'}><input type="checkbox" checked={randomizeParams && randomScope !== 'xfade'} disabled={randomScope === 'xfade'} onChange={e => setRandomizeParams(e.target.checked)}/><span><Check size={11}/></span> GL params</label><button className="random-button" title={`Randomize every clip using: ${randomScopeLabels[randomScope]}${randomizeParams && randomScope !== 'xfade' ? ' · GL parameters are randomized too' : ''}`} onClick={() => { randomize(); notify(`Effects and transitions randomized · ${randomScopeLabels[randomScope]}${randomizeParams && randomScope !== 'xfade' ? ' · GL parameters randomized' : ''}`) }}><Shuffle size={14}/> Randomize all</button><button className="random-button" title={`Randomize only the transitions between neighbouring selected slides · ${randomScopeLabels[randomScope]}${randomizeParams && randomScope !== 'xfade' ? ' · GL parameters are randomized too' : ''}`} onClick={randomizeSelectedTransitions}><Shuffle size={14}/> Randomize selected</button><i/><button className="gallery-button" title={`Open a full-screen gallery with a small example of every transition`} onClick={() => setShowTransitionGallery(true)}><LayoutGrid size={14}/> Browse all {totalTransitionCount}</button></div>
             {randomOrder && <div className="notice amber"><Shuffle size={16}/><span><strong>Random order enabled.</strong> A new order will be chosen at render time. The arrangement below remains unchanged.</span></div>}
@@ -1765,7 +1783,7 @@ function App() {
             })}</div>
 
             {selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
-            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><TransitionChip value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnter||'Fade':item?.textExit||'Fade'})()} onChange={v=>updateSelectedTextTransitions(v,undefined)} onOpenGallery={() => setShowTransitionGallery(true)} /><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><TextEffectChip value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?(item?.textFxEnter||item?.textEnter||'Fade'):(item?.textFxExit||item?.textExit||'Fade out')})()} slot={(()=>{const [,edge]=selectedTextTransitions[0].split('-');return (edge==='enter'?'enter':'exit') as TextEffectSlot})()} onChange={v=>updateSelectedTextTransitions(v,undefined)} /><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
 
             <div className="media-view-bar"><span className="view-label">VIEW</span><div className="mode-toggle"><button className={!compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(false)} title="Show the full detail list"><List size={14}/> List</button><button className={compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(true)} title="Show a compact thumbnail grid with quick multi-selection"><LayoutGrid size={14}/> Compact</button></div>{compactMediaView && <div className="zoom-controls compact-zoom"><button onClick={() => setCompactZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out — smaller thumbnails"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={5} step={0.1} value={compactZoom} aria-label="Compact thumbnail zoom" onChange={e => setCompactZoom(Number(e.target.value))}/><span>{Math.round(compactZoom * 100)}%</span><button onClick={() => setCompactZoom(z => Math.min(5, +(z + .2).toFixed(1)))} title="Zoom in — bigger thumbnails"><ZoomIn size={14}/></button></div>}<span className="view-hint">Select frames with the check marks · Shift-click for a range · “Select all” grabs every frame in one go · drag to reorder · click a picture to view it</span></div>
             {compactMediaView && <div className="compact-actions"><button className="btn soft" disabled={!media.length} onClick={() => setSelectedIds(media.map(x => x.id))} title="Select every frame in one go"><Check size={14}/> Select all</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>Clear selection</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={14}/> Delete selected</button><span className="compact-count">{selectedIds.length} of {media.length} frame{media.length === 1 ? '' : 's'} selected</span></div>}
@@ -1777,7 +1795,7 @@ function App() {
                 return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                   <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type !== 'title' && item.effect !== 'None' && <button type="button" className="thumb-effect" title={`Motion: ${item.effect} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
-                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span><div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && item.textEnabled === false ? null : <><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{transitionSymbol(item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{transitionSymbol(item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select></>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TransitionChip value={detailTextEditor.edge==='enter'?item.textEnter:item.textExit} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnter:v}:{textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}{effectPicker===item.id && item.type !== 'title' && <div className="detail-transition-popover effect-picker"><strong>Motion</strong><Select ariaLabel={`${item.name} motion effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select><button type="button" title="Close" onClick={() => setEffectPicker(null)}><X size={13}/></button></div>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false) || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
+                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span><div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && item.textEnabled === false ? null : <><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{textEffectSymbol(item.textFxExit || item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select></>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TextEffectChip value={(detailTextEditor.edge==='enter'?(item.textFxEnter||item.textEnter||'Fade'):(item.textFxExit||item.textExit||'Fade out'))} slot={detailTextEditor.edge} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textFxEnter:v,textEnter:v}:{textFxExit:v,textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}{effectPicker===item.id && item.type !== 'title' && <div className="detail-transition-popover effect-picker"><strong>Motion</strong><Select ariaLabel={`${item.name} motion effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select><button type="button" title="Close" onClick={() => setEffectPicker(null)}><X size={13}/></button></div>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false) || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
                   {index < media.length - 1 ? <TransitionCell item={item} onPatch={patch_ => patch(item.id, patch_)} onDuration={v => updateDuration(item.id, v)} onOpenGallery={() => setShowTransitionGallery(true)} /> : <div className="transition-cell last-cell"><div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div><div className="end-card"><Check size={13}/> End of story</div></div>}
                   <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
                 </div>
@@ -1816,7 +1834,7 @@ function App() {
     {lookItemId != null && (() => { const target = media.find(x => x.id === lookItemId); return target && target.type !== 'title'
       ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
-    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} onClose={()=>setShowTextStyles(false)}/>} 
+    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} fxEnter={defaultTextFxEnter} setFxEnter={setDefaultTextFxEnter} fxWhile={defaultTextFxWhile} setFxWhile={setDefaultTextFxWhile} fxExit={defaultTextFxExit} setFxExit={setDefaultTextFxExit} fxWhileSpeed={defaultTextFxWhileSpeed} setFxWhileSpeed={setDefaultTextFxWhileSpeed} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
@@ -2041,12 +2059,20 @@ function SoundtrackEditor({ track, onChange, onClose }: { track: AudioTrack; onC
   </div></div>
 }
 
-function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,onClose}: any) {
+function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,fxEnter, setFxEnter, fxWhile, setFxWhile, fxExit, setFxExit, fxWhileSpeed, setFxWhileSpeed,onClose}: any) {
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal wide-style-modal" onMouseDown={e=>e.stopPropagation()}>
     <div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>
     <div className="style-modal-body">
       <p>These defaults apply to captions drawn on photos and videos. Standalone text frames keep their own font, size and position.</p>
       <TypeControls fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={Number(fontSize) || 48} setFontSize={v => setFontSize(String(v))} fontColor={fontColor} setFontColor={setFontColor} bold={bold} setBold={setBold} italic={italic} setItalic={setItalic} underline={underline} setUnderline={setUnderline} />
+      <div className="fx-section light">
+        <FieldLabel>Default text animation</FieldLabel>
+        <div className="fx-rows">
+          <div className="fx-row"><span className="fx-slot">Enter</span><TextEffectChip value={fxEnter || 'Fade'} slot="enter" ariaLabel="Default enter effect" onChange={setFxEnter} /></div>
+          <div className="fx-row"><span className="fx-slot">While shown</span><TextEffectChip value={fxWhile || 'None (static)'} slot="while" ariaLabel="Default while-shown effect" seconds={fxWhileSpeed} showSeconds onSecondsChange={setFxWhileSpeed} onChange={v => { setFxWhile(v); setFxWhileSpeed(textEffectDefaultSeconds[v] ?? fxWhileSpeed ?? 2) }} /></div>
+          <div className="fx-row"><span className="fx-slot">Exit</span><TextEffectChip value={fxExit || 'Fade out'} slot="exit" ariaLabel="Default exit effect" onChange={setFxExit} /></div>
+        </div>
+      </div>
       <div className="frame-canvas default-position-stage" style={{background:'#30362d'}}>
         <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
           <Move size={14}/><span>Summer, slowly.</span>
@@ -2075,6 +2101,127 @@ function ColourChangePreview({ change, playing }: { change: NonNullable<ReturnTy
   </>
 }
 
+// CSS approximation of the chosen text effects, looping live on the editor
+// canvas — the same split the app uses everywhere else (CSS in the editor,
+// drawtext/libass in renderer.py via text_effects.py). enter+exit share one
+// keyframes track over the clip duration; the "while shown" loop runs as a
+// second, infinite animation on a nested span. Char-staggered effects are
+// approximated with per-char delays.
+function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: boolean; children: string }) {
+  const enter = item.textFxEnter || 'Fade'
+  const exit = item.textFxExit || 'Fade out'
+  const whileFx = item.textFxWhile || 'None (static)'
+  const di = Math.max(0.1, item.textEnterDuration ?? 0.5)
+  const dOut = Math.max(0.1, item.textExitDuration ?? 0.5)
+  const speed = Math.max(0.4, item.textFxWhileSpeed ?? 2)
+  const hold = Math.max(1.2, item.duration ?? 5)
+  const name = useMemo(() => `tfx${Math.random().toString(36).slice(2, 9)}`, [])
+  const whileName = `${name}w`
+
+  const ENTER_KEYS: Record<string, string> = {
+    'Fade': 'opacity:0', 'Blur in': 'opacity:0;filter:blur(10px)', 'Flicker in': 'opacity:0',
+    'Slide from left': 'opacity:0;transform:translateX(-42px)',
+    'Slide from right': 'opacity:0;transform:translateX(42px)',
+    'Slide from top': 'opacity:0;transform:translateY(-32px)',
+    'Slide from bottom': 'opacity:0;transform:translateY(32px)',
+    'Rise & settle': 'opacity:0;transform:translateY(34px)',
+    'Drop & bounce': 'opacity:0;transform:translateY(-36px)',
+    'Slide & overshoot': 'opacity:0;transform:translateX(-52px)',
+    'Split fade · chars': 'opacity:0', 'Split fade · words': 'opacity:0',
+    'Split rise · chars': 'opacity:0', 'Split from centre': 'opacity:0;transform:scale(.2)',
+    'Typewriter': 'opacity:0', 'Typewriter + caret': 'opacity:0', 'Word by word': 'opacity:0',
+    'Decrypted scramble': 'opacity:0',
+    'Pop in': 'opacity:0;transform:scale(.18)', 'Zoom down': 'opacity:0;transform:scale(3.2)',
+    'Flip in': 'opacity:0;transform:scaleY(.08)', 'Rotate in': 'opacity:0;transform:rotate(-85deg) scale(.85)',
+    'Wipe from left': 'clip-path:inset(0 100% 0 0)', 'Wipe from right': 'clip-path:inset(0 0 0 100%)',
+    'Wipe from top': 'clip-path:inset(0 0 100% 0)', 'Wipe from bottom': 'clip-path:inset(100% 0 0 0)',
+    'Wipe from top-left': 'clip-path:inset(0 100% 100% 0)', 'Wipe from top-right': 'clip-path:inset(0 0 100% 100%)',
+    'Wipe from bottom-left': 'clip-path:inset(100% 100% 0 0)', 'Wipe from bottom-right': 'clip-path:inset(100% 0 0 100%)',
+    'Lower-third bar': 'opacity:0;transform:translateX(-56px)',
+  }
+  const EXIT_KEYS: Record<string, string> = {
+    'Fade out': 'opacity:0', 'Blur out': 'opacity:0;filter:blur(10px)',
+    'Slide out left': 'opacity:0;transform:translateX(-42px)',
+    'Slide out right': 'opacity:0;transform:translateX(42px)',
+    'Slide out top': 'opacity:0;transform:translateY(-32px)',
+    'Slide out bottom': 'opacity:0;transform:translateY(32px)',
+    'Sink & fade': 'opacity:0;transform:translateY(14px)',
+    'Split out · chars': 'opacity:0', 'Typewriter delete': 'opacity:0', 'Scramble out': 'opacity:0',
+    'Pop out': 'opacity:0;transform:scale(1.25)', 'Rotate out': 'opacity:0;transform:rotate(80deg)',
+    'Wipe out left': 'clip-path:inset(0 100% 0 0)', 'Wipe out right': 'clip-path:inset(0 0 0 100%)',
+    'Wipe out top': 'clip-path:inset(0 0 100% 0)', 'Wipe out bottom': 'clip-path:inset(100% 0 0 0)',
+    'Wipe out top-left': 'clip-path:inset(0 100% 100% 0)', 'Wipe out top-right': 'clip-path:inset(0 0 100% 100%)',
+    'Wipe out bottom-left': 'clip-path:inset(100% 100% 0 0)', 'Wipe out bottom-right': 'clip-path:inset(100% 0 0 100%)',
+    'Lower-third retract': 'opacity:0;transform:translateX(-56px)',
+  }
+  const WHILE_KEYS: Record<string, string> = {
+    'Gentle float': 'transform:translateY(-4px)',
+    'Horizontal drift': 'transform:translateX(8px)',
+    'Slow zoom': 'transform:scale(1.1)',
+    'Pulse': 'transform:scale(1.09)',
+    'Wave': 'transform:translateY(-6px)',
+    'Shake': 'transform:translate(2px,-2px)',
+    'Shimmer': 'text-shadow:0 0 10px #ffffff',
+    'Neon glow': 'text-shadow:0 0 9px currentcolor,0 0 18px currentcolor',
+    'Colour cycle': 'color:#66d7ff',
+    'Glitch flicker': 'transform:translate(2px,1px) skewX(-3deg)',
+    'Karaoke sweep': 'color:#66d7ff',
+    'Count up': 'color:#66d7ff',
+  }
+  const from = ENTER_KEYS[enter] || 'opacity:0'
+  const to = EXIT_KEYS[exit] || 'opacity:0'
+  const e0 = 0, e1 = di / hold * 100
+  const x0 = Math.max(e1, (hold - dOut) / hold * 100), x1 = 100
+  // Per-char stagger for the split/typed families (approximation: same fade,
+  // staggered delay; the render does the real per-char motion).
+  const staggered = ['Split fade · chars', 'Split fade · words', 'Split rise · chars', 'Split from centre', 'Typewriter', 'Typewriter + caret', 'Word by word', 'Decrypted scramble', 'Split out · chars', 'Typewriter delete', 'Scramble out'].includes(enter) || ['Split out · chars', 'Typewriter delete', 'Scramble out'].includes(exit)
+  const chars = Array.from(children)
+  const charDelay = (i: number) => (di * i) / Math.max(1, chars.length)
+  const css = `@keyframes ${name}{0%{${from}}${e1.toFixed(2)}%{opacity:1;transform:none;filter:none;clip-path:inset(0 0 0 0)}${x0.toFixed(2)}%{opacity:1;transform:none;filter:none;clip-path:inset(0 0 0 0)}100%{${to}}}`
+  const whileCss = WHILE_KEYS[whileFx] ? `@keyframes ${whileName}{0%{transform:none}${50}%{${WHILE_KEYS[whileFx]}}100%{transform:none}}` : ''
+  const countMatch = whileFx === 'Count up' ? true : false
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    if (!countMatch || !playing) return
+    const defs = textEffectParams('Count up')
+    const from = Number(item.textFxParams?.from ?? defs[0]?.default ?? 0) || 0
+    const toNum = Number(item.textFxParams?.to ?? defs[1]?.default ?? 100) || 0
+    const started = performance.now()
+    const timer = window.setInterval(() => {
+      const u = ((performance.now() - started) / 1000 % speed) / speed
+      setCount(Math.round(from + (toNum - from) * u))
+    }, 90)
+    return () => window.clearInterval(timer)
+  }, [countMatch, playing, speed, item.textFxParams?.from, item.textFxParams?.to])
+
+  const innerStyle: React.CSSProperties = whileCss ? {
+    animationName: whileName, animationDuration: `${speed}s`,
+    animationIterationCount: 'infinite', animationTimingFunction: 'ease-in-out',
+    animationPlayState: playing ? 'running' : 'paused', display: 'inline-block',
+  } : { display: 'inline-block' }
+
+  return <>
+    <style>{css}{whileCss}</style>
+    <span style={{
+      display: 'inline-block', whiteSpace: 'pre',
+      animationName: name, animationDuration: `${hold}s`, animationTimingFunction: 'linear',
+      animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
+    }}>
+      {staggered
+        ? chars.map((ch, i) => <span
+            key={i}
+            style={{
+              display: 'inline-block', whiteSpace: 'pre',
+              animationName: name, animationDuration: `${hold}s`,
+              animationDelay: `${charDelay(i)}s`, animationTimingFunction: 'linear',
+              animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
+            }}
+          >{ch}</span>)
+        : <span style={innerStyle}>{countMatch ? String(count) : children}</span>}
+    </span>
+  </>
+}
+
 function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,stacked=false}:{item:MediaItem,update:(c:Partial<MediaItem>)=>void,onSave:()=>void,onCancel:()=>void,isNew?:boolean,onOpenGallery?:()=>void,stacked?:boolean}) {
   const original = useRef(item)
   // Existing frames: Cancel restores the values from before the editor opened.
@@ -2098,6 +2245,9 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
   const sameAsA = !isHex(item.frameBackground2)
   const colourB = item.frameBackground2 || item.frameBackground
   const [bgPlaying, setBgPlaying] = useState(true)
+  // One play/pause toggle drives the colour-change loop and the text-effect
+  // preview, so the canvas freezes exactly like the transition previews do.
+  const [fxPlaying, setFxPlaying] = useState(true)
   // Stacked: opened from the story preview popup, which stays open underneath
   // (suspended) and shows every change live. Needs the raised z-index the
   // movie/look editors use, or the preview would paint on top of it.
@@ -2107,12 +2257,21 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
       <div className="frame-canvas" style={{background:item.frameBackground}}>
         {change && <ColourChangePreview key={`${change.from}-${change.to}-${change.transition}-${change.time}-${change.start}-${change.hold}`} change={change} playing={bgPlaying} />}
         <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:`'${family}', sans-serif`,fontSize:`${Math.min(size,54)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
-          <Move size={14}/><span>{item.text}</span>
+          <Move size={14}/><TextFxPreview item={item} playing={fxPlaying}>{item.text || ' '}</TextFxPreview>
         </div>
       </div>
       <aside>
         <div><FieldLabel>Frame text</FieldLabel><textarea value={item.text} onChange={e=>update({text:e.target.value})}/></div>
         <TypeControls fontFamily={family} setFontFamily={v => update({fontFamily:v})} fontSize={size} setFontSize={v => update({fontSize:v})} fontColor={color} setFontColor={v => update({fontColor:v})} bold={bold} setBold={v => update({textBold:v})} italic={italic} setItalic={v => update({textItalic:v})} underline={underline} setUnderline={v => update({textUnderline:v})} sample={item.text} />
+        <div className="fx-section">
+          <FieldLabel>Text animation</FieldLabel>
+          <div className="fx-rows">
+            <div className="fx-row"><span className="fx-slot">Enter</span><TextEffectChip value={item.textFxEnter || 'Fade'} slot="enter" ariaLabel={`${item.name} enter effect`} showSeconds seconds={item.textEnterDuration ?? .5} onSecondsChange={v => update({ textEnterDuration: Math.max(0.1, Math.min(6, v)) })} onChange={v => update({ textFxEnter: v, textEnter: v })} /></div>
+            <div className="fx-row"><span className="fx-slot">While shown</span><TextEffectChip value={item.textFxWhile || 'None (static)'} slot="while" ariaLabel={`${item.name} while-shown effect`} showSeconds seconds={item.textFxWhileSpeed ?? 2} onSecondsChange={v => update({ textFxWhileSpeed: Math.max(0.4, Math.min(12, v)) })} params={item.textFxParams} onParamsChange={next => update({ textFxParams: next })} onChange={v => update({ textFxWhile: v, textFxWhileSpeed: textEffectDefaultSeconds[v] ?? item.textFxWhileSpeed ?? 2 })} /></div>
+            <div className="fx-row"><span className="fx-slot">Exit</span><TextEffectChip value={item.textFxExit || 'Fade out'} slot="exit" ariaLabel={`${item.name} exit effect`} showSeconds seconds={item.textExitDuration ?? .5} onSecondsChange={v => update({ textExitDuration: Math.max(0.1, Math.min(6, v)) })} onChange={v => update({ textFxExit: v, textExit: v })} /></div>
+          </div>
+          <div className="fx-foot"><small>The preview loops a CSS approximation — the MP4 renders the real effect.</small><button type="button" className={`icon-button ${fxPlaying ? 'playing' : ''}`} title={fxPlaying ? 'Pause the previews' : 'Play the previews'} onClick={() => setFxPlaying(p => !p)}>{fxPlaying ? <Pause size={13}/> : <Play size={13}/>}</button></div>
+        </div>
         <div className="bg-columns">
           <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(item.frameBackground)?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div>
           <div className={sameAsA?'dimmed':''}><FieldLabel>Colour B</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} disabled={sameAsA} className={colourB===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground2:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" disabled={sameAsA} value={isHex(colourB)?colourB:'#30382a'} onChange={e=>update({frameBackground2:e.target.value})}/></div><label className="check-label dark"><input type="checkbox" checked={sameAsA} onChange={e=>update(e.target.checked?{frameBackground2:undefined}:{frameBackground2:backgrounds.find(b=>b!==item.frameBackground)||'#14213d',frameTransition:item.frameTransition||'Fade',frameTransitionTime:item.frameTransitionTime||1,frameTransitionStart:item.frameTransitionStart??Math.max(0,(item.duration-1)/2)})}/><span><Check size={11}/></span>Same as A</label></div>
