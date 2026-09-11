@@ -4,8 +4,9 @@
 render checklist. Is FFmpeg hardware transcoding actually working on the DS918+?
 **Answer: No — and with the current container image it cannot work, no matter how the
 container is configured. The NAS itself is fine; the image's QSV software stack targets
-the wrong GPU generation.** Nothing is broken at render time: renders always succeed on
-CPU (x264) — hardware encoding is simply never used.
+the wrong GPU generation.** **Confirmed on the device the same day — see
+"Device verification" below.** Nothing is broken at render time: renders always succeed
+on CPU (x264) — hardware encoding is simply never used.
 
 ## How the app decides today
 
@@ -75,6 +76,32 @@ If step 3 fails with "Permission denied" instead (after step 2 shows the device
 works), fix `VIDEO_GID` first — but expect QSV to remain unavailable until one of the
 options below is implemented.
 
+## Device verification (2026-09-11) — diagnosis confirmed
+
+All three checks above were run inside the container on the DS918+ (`/app`):
+
+| Check | Result | Interpretation |
+| --- | --- | --- |
+| `ls -l /dev/dri` | `card0` + `renderD128`, mode `crwxrwxrwx`, group `937` | Device present and **world-accessible** (777) — the compose `group_add: 937` matches; permissions are definitively *not* the problem |
+| `vainfo --display drm --device /dev/dri/renderD128` | iHD driver 25.2.3 (libva 2.22) loads cleanly | VA-API stack in the image is healthy on this iGPU |
+| — (profiles) | `VAProfileH264*` with **only `VAEntrypointEncSliceLP`**; HEVC/VP9/MPEG2 decode (VLD) only, **no HEVC encode** | H.264 *encode* hardware exists — but Apollo Lake exposes it **only via the low-power VDENC path** (low-power encode was introduced in APL/KBL) |
+| The app's `h264_qsv` probe (`-loglevel verbose`) | `Use Intel(R) oneVPL to create MFX session, the required implementation version is 1.1` → **`Error creating a MFX session: -9`** (`MFX_ERR_NOT_FOUND`) | The oneVPL dispatcher finds **no runtime implementation for this Gen9 GPU** — the runtime-generation mismatch predicted above, reproduced exactly. Not a permissions issue, not a bitrate/parameter issue |
+
+Conclusion: hardware ✔, kernel/driver access ✔, VA-API user space ✔ — the only broken
+link is the missing legacy QSV runtime, exactly as analysed. A VA-API encode path is
+empirically viable, **with one platform-specific requirement**: Apollo Lake only offers
+`VAEntrypointEncSliceLP`, and stock FFmpeg's `h264_vaapi` defaults to the normal
+`EncSlice` entrypoint — the encode must pass **`-low_power 1`** (an `h264_vaapi`
+option, default false) plus the standard `format=nv12,hwupload` upload, e.g.:
+
+```bash
+ffmpeg ... -vaapi_device /dev/dri/renderD128 -vf 'format=nv12,hwupload' \
+  -c:v h264_vaapi -low_power 1 -b:v 8M -maxrate 8M -bufsize 16M ...
+```
+
+No HEVC encode exists on this iGPU, so an implementation must stay H.264-only (which
+matches the renderer's current output anyway).
+
 ## Options to fix
 
 ### A. Keep the CPU fallback (no work, current behaviour)
@@ -84,10 +111,13 @@ pre-encodes short segments and concatenates. Cost appears with video-heavy timel
 4K, and long previews.
 
 ### B. Add a VA-API encode path (recommended)
-Use `h264_vaapi` on the same iGPU. Drivers are **already in the image**; nothing legacy,
-everything from Debian repos, and it also benefits any other Intel NAS. Requires code:
-a hardware probe analogous to the QSV one (`-init_hw_device vaapi` + small test encode),
-a `-vaapi_device /dev/dri/renderD128` plus `format=nv12,hwupload` branch in the
+Use `h264_vaapi` on the same iGPU — **on the DS918+ with `-low_power 1`** (see the
+verification section above: Apollo Lake exposes encode only via `EncSliceLP`).
+Drivers are **already in the image**; nothing legacy, everything from Debian repos, and
+it also benefits any other Intel NAS (on Gen12+ hardware plain non-LP mode applies).
+Requires code: a hardware probe analogous to the QSV one (`-init_hw_device vaapi` + a
+small test encode, trying `-low_power 1` first and plain mode as fallback), a
+`-vaapi_device /dev/dri/renderD128` plus `format=nv12,hwupload` branch in the
 segment/transition filter graphs, an encoder branch in `encode_args_for` (e.g.
 `-rc_mode CBR/VBR`), a GUI option label (e.g. "Hardware · VAAPI"), and a capabilities
 flag. The existing per-segment + concat architecture is compatible (intermediates stay
