@@ -1565,3 +1565,69 @@ class VaapiEncodingTest(unittest.TestCase):
             self.assertNotIn("-low_power", joined)
             self.assertIn("-preset medium", joined)
             self.assertIn("-pix_fmt yuv420p", joined)
+
+
+class MovieToMovieAudioTest(unittest.TestCase):
+    """Two movies back to back: nothing may start or leak inside the transition.
+
+    The incoming film's original audio used to fade in across the handoff and
+    the music bed leaked through the crossfade (the outgoing envelope ramped
+    up while the incoming one ramped down). Both films now play at full level
+    right up to the cut and the music stays silent until the next film's own
+    audio starts."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos",
+                                 videos_dir=base / "videos", output_dir=base / "out", music_dir=base / "music")
+        for directory in (self.settings.photos_dir, self.settings.videos_dir, self.settings.work_dir, self.settings.preview_dir, self.settings.output_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.videos_dir / "a.mp4").write_bytes(b"x" * 64)
+        (self.settings.videos_dir / "b.mp4").write_bytes(b"x" * 64)
+        (self.settings.photos_dir / "c.jpg").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "mm.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _audio_filter(self, media: list[dict]) -> str:
+        project = {"id": 1, "media": media, "soundtrack": {}, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "CPU · x264", "path": "/output", "filename": "movie.mp4"}}
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"part")
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        audio = [command for command in commands if "-filter_complex" in command and "amix" in " ".join(command)]
+        self.assertTrue(audio, "the audio composition command must be captured")
+        index = audio[-1].index("-filter_complex")
+        return audio[-1][index + 1]
+
+    def test_back_to_back_movies_start_cleanly_after_the_transition(self) -> None:
+        movie = {"type": "video", "path": "/videos/a.mp4", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1, "audioSource": "original"}
+        graph = self._audio_filter([dict(movie), {**movie, "path": "/videos/b.mp4"}])
+        # No fade on either chain: the first film's sound runs until the cut,
+        # the second film's sound starts at full level with its first frame.
+        self.assertIn("atrim=duration=5,asetpts=PTS-STARTPTS,adelay=0:all=1[moviea0]", graph)
+        self.assertIn("atrim=duration=5,asetpts=PTS-STARTPTS,adelay=6000:all=1[moviea1]", graph)
+        # The music stays silent through the transition and releases when the
+        # second film's audio starts (starts[1] = 6), not at the end of the
+        # first film's hold (5) — no more mid-crossfade leakage.
+        self.assertIn("(t-6)/1", graph)
+        self.assertNotIn("(t-5)/1", graph)
+
+    def test_movie_around_pictures_keeps_its_fades(self) -> None:
+        movie = {"type": "video", "path": "/videos/a.mp4", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1, "audioSource": "original"}
+        photo = {"type": "image", "path": "/photos/c.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1}
+        graph = self._audio_filter([dict(movie), dict(photo), {**movie, "path": "/videos/b.mp4"}])
+        self.assertIn("afade=t=out:st=4:d=1,", graph)  # first film fades out into a picture
+        self.assertIn("afade=t=in:st=0:d=1,", graph)   # last film fades in from a picture
+        self.assertIn("(t-5)/1", graph)                # music release unchanged

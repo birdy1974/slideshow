@@ -1796,14 +1796,26 @@ class Renderer:
                 end_time = start_time + durations[index]
                 fade_in = transitions[index - 1] if index else 0.0
                 fade_out = transitions[index] if index < len(transitions) else 0.0
+                # Two movies back to back: the music must stay silent through
+                # the transition as well. With the plain release the outgoing
+                # film's envelope ramps up while the incoming one ramps down,
+                # and the multiplied duck leaks ~25% music into the crossfade.
+                # The release therefore waits until the next film's own audio
+                # starts instead of the end of this film's hold.
                 down_start = max(0.0, start_time - fade_in)
-                up_end = end_time + fade_out
+                next_is_original = (
+                    index + 1 < len(media)
+                    and media[index + 1].get("type") == "video"
+                    and (media[index + 1].get("audioSource") or "soundtrack") == "original"
+                )
+                release = starts[index + 1] if next_is_original else end_time
+                up_end = release + fade_out
                 if fade_in > 0.0005 and fade_out > 0.0005:
-                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end_time)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end_time)})/{format_ffmpeg_number(fade_out)},1))))")
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(release)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(release)})/{format_ffmpeg_number(fade_out)},1))))")
                 elif fade_in > 0.0005:
                     envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end_time)}),0,1)))")
                 elif fade_out > 0.0005:
-                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(start_time)}),1,if(lt(t,{format_ffmpeg_number(end_time)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end_time)})/{format_ffmpeg_number(fade_out)},1)))")
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(start_time)}),1,if(lt(t,{format_ffmpeg_number(release)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(release)})/{format_ffmpeg_number(fade_out)},1)))")
                 else:
                     envelopes.append(f"if(between(t,{format_ffmpeg_number(start_time)},{format_ffmpeg_number(end_time)}),0,1)")
             bed_gain = "*".join(envelopes) if envelopes else "1"
@@ -1839,6 +1851,14 @@ class Renderer:
                 duration = durations[movie_index]
                 fade_in = transitions[movie_index - 1] if movie_index else 0.0
                 fade_out = transitions[movie_index] if movie_index < len(transitions) else 0.0
+                # Two movies back to back: the incoming film's sound must not
+                # creep in across the handoff and the outgoing film's sound
+                # must not fade early. Both run at full level right up to the
+                # cut, so nothing starts (or lingers) inside the transition.
+                if movie_index > 0 and media[movie_index - 1].get("type") == "video":
+                    fade_in = 0.0
+                if movie_index + 1 < len(media) and media[movie_index + 1].get("type") == "video":
+                    fade_out = 0.0
                 original_filter = f"atrim=duration={format_ffmpeg_number(audio_length)},asetpts=PTS-STARTPTS"
                 if fade_in > 0.0005:
                     original_filter += f",afade=t=in:st=0:d={format_ffmpeg_number(fade_in)}"
