@@ -12,14 +12,20 @@ services:
       TZ: "${TZ:-Europe/Amsterdam}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       RENDER_WORKERS: "${RENDER_WORKERS:-1}"
+      UPLOADS_DIR: /uploads
+      UPLOAD_MAX_MB: "${UPLOAD_MAX_MB:-4096}"
     volumes:
       - "${CONFIG_PATH:-./data/config}:/config"
       - "${PHOTOS_PATH:-./data/photos}:/photos:ro"
       - "${VIDEOS_PATH:-./data/videos}:/videos:ro"
       - "${MUSIC_PATH:-./data/music}:/music:ro"
       - "${OUTPUT_PATH:-./data/output}:/output"
-    # Intel Quick Sync on the DS918+. Remove this section if /dev/dri does not
-    # exist; Auto encoding then safely uses CPU/libx264.
+      # Files uploaded from the GUI device ("Upload from this device" in the
+      # media picker). Kept separate from renders and from the read-only mounts.
+      - "${UPLOADS_PATH:-./data/uploads}:/uploads"
+    # Hardware encoding: Intel Quick Sync and/or VA-API share this device.
+    # Remove this section if /dev/dri does not exist; Auto encoding then
+    # safely uses CPU/libx264.
     devices:
       - /dev/dri:/dev/dri
     # Set VIDEO_GID to the numeric group shown by `ls -ln /dev/dri`.

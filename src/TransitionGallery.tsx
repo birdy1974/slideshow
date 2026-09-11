@@ -6,7 +6,7 @@
 // one to park it on the stage and study it. There is no "apply" — choosing a
 // transition for a slide stays with the chips in the storyline.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { LayoutGrid, Loader2, RefreshCw, Search, X } from 'lucide-react'
+import { AlertTriangle, LayoutGrid, Loader2, RefreshCw, Search, X } from 'lucide-react'
 import {
   totalTransitionCount, transitionGroups, isGLTransition, getGLParams,
   loadFavouriteTransitions, toggleFavouriteTransition, transitionPreviewUrl,
@@ -58,7 +58,9 @@ export function TransitionGallery({ initial, onClose }: { initial?: string; onCl
   }, [query, scope, group, favourites])
 
   const flat = useMemo(() => sections.flatMap(s => s.items), [sections])
-  const state: PreviewState | null = status?.items?.[transitionSlug(focused)]?.status ?? null
+  const focusedItem = status?.items?.[transitionSlug(focused)]
+  const state: PreviewState | null = focusedItem?.status ?? null
+  const focusedError = focusedItem?.error || ''
   const previewAllowed = status !== null && status.hasFfmpeg !== false
   const canPreview = previewAllowed && (state === 'ready' || state === 'pending')
   const cached = status?.ready ?? 0
@@ -97,7 +99,7 @@ export function TransitionGallery({ initial, onClose }: { initial?: string; onCl
             <strong>{focused}</strong>
             <span>{labelToGroup.get(focused)?.replace(/^GL · /, '') || 'Transition'}{isGLTransition(focused) ? ' · GL' : ' · xfade'}</span>
             {state === 'unsupported' && <em className="gallery-warn">Falls back on this FFmpeg build</em>}
-            {state === 'failed' && <em className="gallery-warn">Preview could not be rendered</em>}
+            {state === 'failed' && <em className="gallery-warn failed" title={focusedError}>Preview could not be rendered{focusedError ? `: ${focusedError}` : ''}</em>}
             {params.length > 0 && <small>{params.length} adjustable parameter{params.length === 1 ? '' : 's'}</small>}
           </div>
         </div>
@@ -124,6 +126,7 @@ export function TransitionGallery({ initial, onClose }: { initial?: string; onCl
               label={label}
               active={label === focused}
               state={status?.items?.[transitionSlug(label)]?.status ?? null}
+              error={status?.items?.[transitionSlug(label)]?.error}
               previewAllowed={previewAllowed}
               playing={false}
               favourite={favourites.includes(label)}
@@ -148,6 +151,12 @@ export function TransitionGallery({ initial, onClose }: { initial?: string; onCl
                 : `${cached}/${status.total} cached`}
           </span>
           : <span className="browser-cache">Preview cache offline</span>}
+        {status && !status.building && status.failed > 0 && (() => {
+          const reason = Object.values(status.items).find(item => item.status === 'failed' && item.error)?.error
+          return <span className="browser-cache failed" title={reason ? `Last FFmpeg error: ${reason}` : 'Some previews could not be rendered'}>
+            <AlertTriangle size={10} /> {status.failed} failed
+          </span>
+        })()}
         {status && !status.building && status.pending > 0 && status.hasFfmpeg !== false &&
           <button type="button" className="browser-build" onClick={() => void buildAllPreviews()}>
             <RefreshCw size={11} /> Render all {status.pending} missing

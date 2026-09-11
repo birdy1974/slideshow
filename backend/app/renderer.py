@@ -855,6 +855,10 @@ class Renderer:
         self._xfade_lock = threading.Lock()
         self._qsv_encodable: bool | None = None
         self._qsv_lock = threading.Lock()
+        self._vaapi_encodable: bool | None = None
+        self._vaapi_low_power: bool = False
+        self._vaapi_device: str | None = None
+        self._vaapi_lock = threading.Lock()
         self._ffmpeg_version: str | None = None
         self._version_probed = False
         self._version_lock = threading.Lock()
@@ -862,8 +866,8 @@ class Renderer:
         self._easing_lock = threading.Lock()
 
     def warm_capabilities(self) -> None:
-        """Probe ffmpeg version, the xfade catalogue and Quick Sync once, in a
-        background thread, right after startup.
+        """Probe ffmpeg version, the xfade catalogue, Quick Sync and VA-API
+        once, in a background thread, right after startup.
 
         Container health checks poll this app every 30 s. They used to hit
         /api/health, which ran ``ffmpeg -version`` on every call and could
@@ -879,6 +883,7 @@ class Renderer:
                 self.xfade_supported()
                 self.xfade_has_easing()
                 self.qsv_encodable()
+                self.vaapi_encodable()
             except Exception:
                 log.exception("Capability warm-up failed; capabilities will re-probe lazily")
         threading.Thread(target=_warm, name="capability-warmup", daemon=True).start()
@@ -1011,7 +1016,7 @@ class Renderer:
         if self._xfade_has_easing is None and self._xfade_supported is not None:
             # try quick probe without lock if not yet done? report false until warm
             has_easing = False
-        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "cpuEncoding": bool(ffmpeg), "xfadeTransitions": len(supported) if supported else 0, "hasEasing": bool(has_easing), "hasGL": bool(supported and any(s.startswith("gl_") for s in supported))}
+        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "vaapi": self.vaapi_encodable_cached(), "cpuEncoding": bool(ffmpeg), "xfadeTransitions": len(supported) if supported else 0, "hasEasing": bool(has_easing), "hasGL": bool(supported and any(s.startswith("gl_") for s in supported))}
 
     def qsv_encodable_cached(self) -> bool:
         """Non-blocking view of the Quick Sync probe (False until it finishes).
@@ -1048,6 +1053,79 @@ class Renderer:
             return result.returncode == 0
         except Exception:
             return False
+
+    def vaapi_encodable_cached(self) -> bool:
+        """Non-blocking view of the VA-API probe (False until it finishes)."""
+        return bool(self._vaapi_encodable)
+
+    def vaapi_encodable(self) -> bool:
+        """Whether h264_vaapi actually encodes on this host, verified by a probe.
+
+        Same philosophy as the Quick Sync probe: a device node says nothing
+        about the driver stack, so a tiny test encode decides. NAS-class
+        iGPUs (the DS918+'s Apollo Lake among them) only expose encode via
+        the low-power VDENC entrypoint, which FFmpeg reaches with
+        ``-low_power 1`` — that mode is therefore tried first and the
+        working mode is remembered for the real renders.
+        """
+        with self._vaapi_lock:
+            if self._vaapi_encodable is None:
+                self._vaapi_encodable, self._vaapi_device, self._vaapi_low_power = self._probe_vaapi()
+            return self._vaapi_encodable
+
+    @staticmethod
+    def _first_render_node() -> str | None:
+        """The first DRM render node, or None when the container has no GPU."""
+        try:
+            nodes = sorted(Path("/dev/dri").glob("renderD*"))
+        except OSError:
+            return None
+        return str(nodes[0]) if nodes else None
+
+    def _probe_vaapi(self) -> tuple[bool, str | None, bool]:
+        device = self._first_render_node()
+        if not device:
+            return False, None, False
+
+        def attempt(low_power: bool) -> bool:
+            command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+                       "-vaapi_device", device,
+                       "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25",
+                       "-vf", "format=nv12,hwupload",
+                       "-frames:v", "12", "-c:v", "h264_vaapi"]
+            if low_power:
+                command += ["-low_power", "1"]
+            command += ["-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M", "-f", "null", "-"]
+            try:
+                return subprocess.run(command, capture_output=True, text=True, timeout=30).returncode == 0
+            except Exception:
+                return False
+
+        if attempt(True):
+            return True, device, True
+        return attempt(False), device, False
+
+    def select_encoder(self, label: str) -> str:
+        """Map the GUI encoder choice to a codec, decided by the verified probes.
+
+        "Auto" prefers Quick Sync, then VA-API, then CPU: NAS-class Intel GPUs
+        often lack a QSV runtime entirely (the DS918+'s Gen9 iGPU with a
+        oneVPL-only build) while VA-API drives the very same device.
+        Explicit selections degrade to CPU when their probe failed, exactly
+        like the QSV path always has. Legacy labels keep their meaning —
+        projects stored before VA-API existed still say "Auto · Quick Sync"
+        and get the full auto chain.
+        """
+        if "VAAPI" in label.upper():
+            return "h264_vaapi" if self.vaapi_encodable() else "libx264"
+        if "Quick Sync" in label:
+            if not label.startswith("Auto"):
+                return "h264_qsv" if self.qsv_encodable() else "libx264"
+            if self.qsv_encodable():
+                return "h264_qsv"
+            if self.vaapi_encodable():
+                return "h264_vaapi"
+        return "libx264"
 
     @staticmethod
     def effective_transitions(media: list[dict[str, Any]]) -> list[float]:
@@ -1535,10 +1613,23 @@ class Renderer:
         output = target_dir / filename
         encoder_label = str(output_settings.get("encoder", "Auto"))
         bitrate_value = parse_number(bitrate, 2)
-        encoder = "h264_qsv" if "Quick Sync" in encoder_label and self.qsv_encodable() else "libx264"
+        encoder = self.select_encoder(encoder_label)
+        # VA-API consumes frames on the GPU: both filter graphs must end with a
+        # hwupload hop, and each command opens the device once via -vaapi_device
+        # (which also makes it the default device for the graph's filters).
+        hw_device_args = ["-vaapi_device", self._vaapi_device] if encoder == "h264_vaapi" and self._vaapi_device else []
+        hw_graph_suffix = ",hwupload" if encoder == "h264_vaapi" else ""
 
         def encode_args_for(codec: str, *, intermediate: bool) -> list[str]:
-            if codec == "h264_qsv":
+            if codec == "h264_vaapi":
+                # Frames arrive as VA-API surfaces from hwupload, so nv12/yuv420p
+                # does not apply. -low_power selects the VDENC entrypoint that
+                # NAS-class iGPUs (Apollo Lake) offer as their only encode path;
+                # the probe remembers whether this host needs it.
+                args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M"]
+                if self._vaapi_low_power:
+                    args += ["-low_power", "1"]
+            elif codec == "h264_qsv":
                 args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "nv12"]
             else:
                 preset = "veryfast" if intermediate else "medium"
@@ -1547,25 +1638,48 @@ class Renderer:
                 args += ["-movflags", "+faststart"]
             return args
 
-        def run_compose(command: list[str], *, allow_qsv_fallback: bool) -> None:
+        def run_compose(command: list[str], *, allow_hw_fallback: bool) -> None:
             try:
                 self._run_ffmpeg(command, cancelled, log_file)
             except RenderError:
-                if not allow_qsv_fallback or encoder != "h264_qsv":
+                if not allow_hw_fallback or encoder == "libx264":
                     raise
-                progress(70, "Quick Sync unavailable; retrying on CPU")
-                log.warning("h264_qsv failed; falling back to libx264")
-                patched = list(command)
-                try:
-                    idx = patched.index("h264_qsv")
-                    patched[idx] = "libx264"
-                    if "-pix_fmt" in patched:
-                        pix = patched.index("-pix_fmt")
-                        patched[pix + 1] = "yuv420p"
-                    if "-preset" not in patched:
-                        patched[idx + 1:idx + 1] = ["-preset", "medium"]
-                except ValueError:
-                    raise
+                progress(70, f"{encoder} unavailable; retrying on CPU")
+                log.warning("%s failed; falling back to libx264", encoder)
+                if encoder == "h264_qsv":
+                    patched = list(command)
+                    try:
+                        idx = patched.index("h264_qsv")
+                        patched[idx] = "libx264"
+                        if "-pix_fmt" in patched:
+                            pix = patched.index("-pix_fmt")
+                            patched[pix + 1] = "yuv420p"
+                        if "-preset" not in patched:
+                            patched[idx + 1:idx + 1] = ["-preset", "medium"]
+                    except ValueError:
+                        raise
+                else:
+                    # VA-API: drop the device, the hwupload hops and the encoder
+                    # options, then hand the software frames straight to x264.
+                    patched = []
+                    skip = False
+                    for position, arg in enumerate(command):
+                        if skip:
+                            skip = False
+                            continue
+                        if arg in ("-vaapi_device", "-low_power"):
+                            skip = True  # and its value
+                            continue
+                        if arg in ("-filter_complex", "-vf") and position + 1 < len(command):
+                            patched.append(arg)
+                            patched.append(command[position + 1].replace(",hwupload", ""))
+                            skip = True
+                            continue
+                        if arg == "h264_vaapi":
+                            patched.append("libx264")
+                            continue
+                        patched.append(arg)
+                    patched = patched[:-1] + ["-preset", "medium", "-pix_fmt", "yuv420p"] + patched[-1:]
                 self._run_ffmpeg(patched, cancelled, log_file)
 
         # Build the timeline as individual hold and transition units.  Do not
@@ -1583,10 +1697,10 @@ class Renderer:
             hold_graph = (
                 f"[0:v]trim=start={format_ffmpeg_number(lead_in)}:"
                 f"end={format_ffmpeg_number(lead_in + hold)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[vout]"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
             )
             hold_command = [
-                self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(segment),
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args, "-i", str(segment),
                 "-filter_complex", hold_graph, "-map", "[vout]", "-an",
                 *encode_args_for(encoder, intermediate=True), "-r", str(fps),
                 "-t", format_ffmpeg_number(hold), str(hold_part),
@@ -1596,7 +1710,7 @@ class Renderer:
             # rendered or listed at all: concatenating a 0-second clip leaves
             # the join with nothing to start from.
             if hold > 0.0005:
-                run_compose(hold_command, allow_qsv_fallback=True)
+                run_compose(hold_command, allow_hw_fallback=True)
                 timeline_parts.append(hold_part)
 
             if index >= len(transitions):
@@ -1617,15 +1731,15 @@ class Renderer:
                 f"[1:v]trim=start=0:end={format_ffmpeg_number(transition)},"
                 f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
                 f"[outgoing][incoming]{xfade_fragment},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[vout]"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
             )
             transition_command = [
-                self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(segment),
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args, "-i", str(segment),
                 "-i", str(segments[index + 1]), "-filter_complex", transition_graph,
                 "-map", "[vout]", "-an", *encode_args_for(encoder, intermediate=True),
                 "-r", str(fps), "-t", format_ffmpeg_number(transition), str(transition_part),
             ]
-            run_compose(transition_command, allow_qsv_fallback=True)
+            run_compose(transition_command, allow_hw_fallback=True)
             timeline_parts.append(transition_part)
 
         concat_list = work / "timeline.ffconcat"
@@ -1682,14 +1796,26 @@ class Renderer:
                 end_time = start_time + durations[index]
                 fade_in = transitions[index - 1] if index else 0.0
                 fade_out = transitions[index] if index < len(transitions) else 0.0
+                # Two movies back to back: the music must stay silent through
+                # the transition as well. With the plain release the outgoing
+                # film's envelope ramps up while the incoming one ramps down,
+                # and the multiplied duck leaks ~25% music into the crossfade.
+                # The release therefore waits until the next film's own audio
+                # starts instead of the end of this film's hold.
                 down_start = max(0.0, start_time - fade_in)
-                up_end = end_time + fade_out
+                next_is_original = (
+                    index + 1 < len(media)
+                    and media[index + 1].get("type") == "video"
+                    and (media[index + 1].get("audioSource") or "soundtrack") == "original"
+                )
+                release = starts[index + 1] if next_is_original else end_time
+                up_end = release + fade_out
                 if fade_in > 0.0005 and fade_out > 0.0005:
-                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end_time)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end_time)})/{format_ffmpeg_number(fade_out)},1))))")
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(release)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(release)})/{format_ffmpeg_number(fade_out)},1))))")
                 elif fade_in > 0.0005:
                     envelopes.append(f"if(lt(t,{format_ffmpeg_number(down_start)}),1,if(lt(t,{format_ffmpeg_number(start_time)}),({format_ffmpeg_number(start_time)}-t)/{format_ffmpeg_number(fade_in)},if(lt(t,{format_ffmpeg_number(end_time)}),0,1)))")
                 elif fade_out > 0.0005:
-                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(start_time)}),1,if(lt(t,{format_ffmpeg_number(end_time)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(end_time)})/{format_ffmpeg_number(fade_out)},1)))")
+                    envelopes.append(f"if(lt(t,{format_ffmpeg_number(start_time)}),1,if(lt(t,{format_ffmpeg_number(release)}),0,if(lt(t,{format_ffmpeg_number(up_end)}),(t-{format_ffmpeg_number(release)})/{format_ffmpeg_number(fade_out)},1)))")
                 else:
                     envelopes.append(f"if(between(t,{format_ffmpeg_number(start_time)},{format_ffmpeg_number(end_time)}),0,1)")
             bed_gain = "*".join(envelopes) if envelopes else "1"
@@ -1725,6 +1851,14 @@ class Renderer:
                 duration = durations[movie_index]
                 fade_in = transitions[movie_index - 1] if movie_index else 0.0
                 fade_out = transitions[movie_index] if movie_index < len(transitions) else 0.0
+                # Two movies back to back: the incoming film's sound must not
+                # creep in across the handoff and the outgoing film's sound
+                # must not fade early. Both run at full level right up to the
+                # cut, so nothing starts (or lingers) inside the transition.
+                if movie_index > 0 and media[movie_index - 1].get("type") == "video":
+                    fade_in = 0.0
+                if movie_index + 1 < len(media) and media[movie_index + 1].get("type") == "video":
+                    fade_out = 0.0
                 original_filter = f"atrim=duration={format_ffmpeg_number(audio_length)},asetpts=PTS-STARTPTS"
                 if fade_in > 0.0005:
                     original_filter += f",afade=t=in:st=0:d={format_ffmpeg_number(fade_in)}"
@@ -1751,7 +1885,7 @@ class Renderer:
         if audio_filter:
             command += ["-filter_complex", audio_filter]
         command += ["-map", "0:v:0", *audio_map, "-c:v", "copy", "-t", format_ffmpeg_number(total_duration), "-movflags", "+faststart", str(output)]
-        run_compose(command, allow_qsv_fallback=False)
+        run_compose(command, allow_hw_fallback=False)
         progress(98, "Finalizing MP4")
         return output
 

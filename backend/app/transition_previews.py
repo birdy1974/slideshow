@@ -47,8 +47,11 @@ from .renderer import (
 log = logging.getLogger(__name__)
 
 # Bump to invalidate every cached clip after a change to the example frames or
-# to the encoding settings below.
-CACHE_VERSION = 1
+# to the encoding settings below. Version 2: the v1 manifest is full of
+# "failed" records from the .part-output bug (see docs/transition-preview-fix.md)
+# and ensure() refuses to retry failed entries, so old manifests must be
+# forgotten for the fixed command to rebuild the cache.
+CACHE_VERSION = 2
 
 # Preview geometry. Deliberately small: 191 clips have to fit on a NAS volume.
 WIDTH, HEIGHT, FPS = 640, 360, 25
@@ -316,9 +319,12 @@ class TransitionPreviewCache:
             "-loop", "1", "-t", format_ffmpeg_number(HOLD_SECONDS), "-i", str(a),
             "-loop", "1", "-t", format_ffmpeg_number(HOLD_SECONDS), "-i", str(b),
             "-filter_complex", graph, "-map", "[v]",
+            # The temp name ends in ".part", from which FFmpeg cannot infer an
+            # output muxer ("Unable to choose an output format"), so the muxer
+            # is declared explicitly. See docs/transition-preview-fix.md.
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
-            str(tmp),
+            "-f", "mp4", str(tmp),
         ]
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=RENDER_TIMEOUT)

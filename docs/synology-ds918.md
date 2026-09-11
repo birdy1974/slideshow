@@ -48,10 +48,19 @@ If `/dev/dri` is unavailable, deploy `compose.cpu.yaml` instead.
 Open `http://NAS-IP:8080/api/health`. A DS918+ configured for hardware encoding should report:
 
 ```json
-{"status":"ok","capabilities":{"ffmpeg":true,"quickSync":true,"cpuEncoding":true}}
+{"status":"ok","capabilities":{"ffmpeg":true,"quickSync":true,"vaapi":true,"cpuEncoding":true}}
 ```
 
 `quickSync: true` means a short test encode succeeded with the renderer's bitrate settings, not merely that the render device exists. If the probe fails, the UI reports CPU fallback and the renderer uses x264 directly. Even with an explicit Quick Sync selection, any `h264_qsv` failure at render time automatically retries the same composition with CPU/x264, so a broken QSV runtime can never fail the whole job.
+
+> **DS918+ note:** `quickSync` will be `false` here — the image's oneVPL runtime only
+> supports Gen12+ GPUs, while the J3455's Gen9 iGPU has no QSV runtime. Since
+> 2026-09-11 this is not the end of hardware encoding: the app probes VA-API on the
+> same device (Apollo Lake's H.264 VDENC path) and `Auto` encoding uses it, so the
+> health endpoint reports `"quickSync": false, "vaapi": true` and the GUI shows
+> `Hardware encoding available · VAAPI`. See
+> [hardware-transcoding-ds918plus.md](hardware-transcoding-ds918plus.md) for the full
+> analysis and the implementation details.
 
 ## Storage and backups
 

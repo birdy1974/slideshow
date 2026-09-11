@@ -136,6 +136,37 @@ export function PictureCropPanel({ item, src, onChange, onCancel, onClose, onRes
   const zoom = inscribedZoom(mediaAspect || 1, degrees)
   const edited = !!normalizeRect(draft.rect) || Math.abs(degrees) >= 0.05 || !!lasso
 
+  // Measure the source *before* the stage box can exist. The crop box (which
+  // carries the media element and its load events) is gated on the box size,
+  // and the box size is gated on the intrinsic size — a deadlock that opened
+  // the editor empty: no picture on the left and nothing to drag. The size is
+  // therefore measured off-DOM here; the visible media's own onLoad keeps
+  // working as a redundant second measurement.
+  useEffect(() => {
+    if (intrinsic) return
+    let cancelled = false
+    if (isVideo) {
+      const video = document.createElement('video')
+      video.muted = true
+      video.preload = 'metadata'
+      video.onloadedmetadata = () => {
+        if (cancelled || !video.videoWidth || !video.videoHeight) return
+        setIntrinsic({ width: video.videoWidth, height: video.videoHeight })
+        video.removeAttribute('src')
+        video.load()
+      }
+      video.src = src
+      return () => { cancelled = true; video.onloadedmetadata = null; video.removeAttribute('src'); video.load() }
+    }
+    const image = new Image()
+    image.onload = () => {
+      if (cancelled || !image.naturalWidth) return
+      setIntrinsic({ width: image.naturalWidth, height: image.naturalHeight })
+    }
+    image.src = src
+    return () => { cancelled = true; image.onload = null }
+  }, [src, isVideo, intrinsic])
+
   // Keep the stage box exactly the shape of the (turned) picture, so every
   // percentage in the overlay is a fraction of the picture.
   useEffect(() => {
