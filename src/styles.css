@@ -801,3 +801,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .filmstrip{position:relative}
 .filmstrip-img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;z-index:1;user-select:none}
 .filmstrip.loading i,.filmstrip.none i{opacity:.75}
+
+/* --- Randomize GL parameters (docs/randomize-gl-params.md) --- */
+.random-params-toggle{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:700;color:#54584f;cursor:pointer;white-space:nowrap}
+.random-params-toggle input{display:none}
+.random-params-toggle.off{opacity:.45;cursor:not-allowed}

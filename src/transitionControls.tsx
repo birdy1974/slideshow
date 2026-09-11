@@ -29,6 +29,34 @@ export function pickRandomTransition(scope: RandomScope): string {
   const pool = randomPoolFor(scope)
   return pool[Math.floor(Math.random() * pool.length)]
 }
+
+// A fresh random parameter set for one GL transition, using exactly the
+// bounds the editor's parameter sliders show (GLParamControls: explicit
+// registry min/max/step when present, otherwise the same derived ranges).
+// Numeric params draw uniformly; colours become random hex; anything else
+// keeps its default (omitted here, so the registry default applies).
+export function randomGLParams(label: string): Record<string, string> {
+  const next: Record<string, string> = {}
+  for (const def of getGLParams(label)) {
+    const isColor = /^0x/i.test(def.default) || /color/i.test(def.name)
+    const numDefault = Number(def.default)
+    const isNumeric = Number.isFinite(numDefault) && !isColor
+    if (isNumeric) {
+      const min = def.min !== undefined ? Number(def.min) : Math.min(0, numDefault)
+      const max = def.max !== undefined ? Number(def.max)
+        : (numDefault <= 1 ? 1 : numDefault < 5 ? 5 : numDefault < 20 ? 20 : numDefault <= 100 ? 120 : 360)
+      const step = def.step !== undefined ? Number(def.step) : (max - min <= 1 ? 0.01 : max - min <= 20 ? 0.1 : 1)
+      const steps = Math.max(1, Math.round((max - min) / step))
+      const value = min + step * Math.floor(Math.random() * (steps + 1))
+      const decimals = (String(def.step !== undefined ? def.step : step).split('.')[1] || '').length
+      next[def.name] = value.toFixed(Math.min(4, Math.max(0, decimals)))
+    } else if (isColor) {
+      const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')
+      next[def.name] = `#${hex()}${hex()}${hex()}`
+    }
+  }
+  return next
+}
 export function RandomScopeSelect({ value, onChange }: { value: RandomScope; onChange: (v: RandomScope) => void }) {
   return <Select ariaLabel="Random transition source" value={value} onChange={v => onChange(v as RandomScope)}>
     {(Object.keys(randomScopeLabels) as RandomScope[]).map(k => <option key={k} value={k}>{randomScopeLabels[k]}</option>)}
