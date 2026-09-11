@@ -15,7 +15,7 @@
 - make compact detailed slide list zoom to go 500% (now 180%)
 - in compact view add symbol on slide to open preview popup (in bottom right corner), and add drag and drop functionality (if you click on the middle of the slide) to change the order/location of the slide
 - give options to better use the available size of the detailed slide row to show all information
-- 
+- if there are 2 movies back to back (after each other) do not start the audio between the movies (during the transition)
 
 
 ---= DONE =---
