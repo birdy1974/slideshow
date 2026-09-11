@@ -20,6 +20,28 @@ implement cheaply afterwards.
    karaoke, wave, …) — the third slot is confirmed, not a maybe.
 4. Implementation itself is **deferred**; this document is the reference.
 
+## Rendered proof-of-concept demo (2026-09-11)
+
+`docs/demo/` contains a **real rendered demo** — not CSS, the exact engine the final
+result would use (`ass` filter / libass, already compiled into the custom FFmpeg
+build):
+
+* `text-effects-demo.mp4` — 27 s, 9 effects, one per 3 s segment, each labelled with
+  the ASS tags that build it: Pop (enter, `\fscx/\fscy` overshoot), Bounce (enter,
+  per-frame `\pos` damped bounce), Glow (while shown, coloured `\3c` border breathing
+  `\blur`), Typewriter (enter, karaoke `\k`), Blur-in (enter, `\blur`+`\alpha` via
+  `\t`), Pulse (while shown, chained `\t` scale loop), Split stagger (enter, one event
+  per character with `\move`), Shake (while shown, decaying per-frame `\pos` jitter),
+  Pop-out (exit, delayed `\t` scale + `\alpha` out).
+* `text-effects-poster.png` — 3×3 contact sheet of all nine.
+* `make_text_effects_demo.py` — the generator (runs with any libass-enabled ffmpeg,
+  e.g. the container build or Debian's `ffmpeg`; recreates the .ass and the MP4).
+* `text-effects-demo.ass` — the generated subtitle file, handy as an implementation
+  reference for the future `backend/app/text_effects.py`.
+
+This closes the "is it really renderable?" question empirically: everything the GUI
+would promise, libass burns into the MP4 with the fonts already in the image.
+
 ## The one hard constraint: the MP4 must match the GUI
 
 React Bits components (SplitText, BlurText, ShinyText, DecryptedText, …) are
