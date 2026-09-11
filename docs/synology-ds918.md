@@ -53,6 +53,12 @@ Open `http://NAS-IP:8080/api/health`. A DS918+ configured for hardware encoding 
 
 `quickSync: true` means a short test encode succeeded with the renderer's bitrate settings, not merely that the render device exists. If the probe fails, the UI reports CPU fallback and the renderer uses x264 directly. Even with an explicit Quick Sync selection, any `h264_qsv` failure at render time automatically retries the same composition with CPU/x264, so a broken QSV runtime can never fail the whole job.
 
+> **DS918+ note:** with the current image the probe *will* report `quickSync: false` — the
+> oneVPL runtime shipped in the image supports Gen12+ GPUs only, while the J3455's
+> Gen9 iGPU needs the legacy Media SDK runtime (or VA-API encoding). See
+> [hardware-transcoding-ds918plus.md](hardware-transcoding-ds918plus.md) for the full
+> analysis, diagnostics and fix options.
+
 ## Storage and backups
 
 - SQLite database: `/config/slideshow.db`
