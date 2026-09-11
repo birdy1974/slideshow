@@ -10,7 +10,7 @@ import { ChevronLeft, ChevronRight, Info, Pause, Play, Scissors, X } from 'lucid
 import { TimeField } from './ui'
 import { formatClockPrecise } from './time'
 import type { MediaItem } from './mediaItem'
-import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl } from './filmstrip'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, serverMovieDuration } from './filmstrip'
 
 // Shortest section a movie can be cut down to.
 const MIN_KEEP = 0.5
@@ -34,6 +34,10 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   // filmstrip is fetched instead; only if both fail do the colour bars stay.
   const [strip, setStrip] = useState<{ src: string; kind: 'live' | 'server' } | null>(null)
   const [stripState, setStripState] = useState<'loading' | 'ready' | 'none'>('loading')
+  // True once the stage <video> reports it cannot decode the file. The length
+  // then comes from the backend probe, and the strip frames from the server
+  // filmstrip (the browser has nothing to draw).
+  const [decodeFailed, setDecodeFailed] = useState(false)
 
   const total = fileSeconds
   const start = Math.max(0, Math.min(Number(item.trimStart) || 0, total))
@@ -44,8 +48,21 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   // duration is only a floor — movies always played to the end — so it cannot
   // be used to bound the handles.
   useEffect(() => {
-    setFileSeconds(0); setPosition(0); setPlaying(false)
+    setFileSeconds(0); setPosition(0); setPlaying(false); setDecodeFailed(false)
   }, [src])
+
+  // The browser cannot decode this container (camera AVI and friends): ask
+  // FFmpeg for the length so the trim handles and the server filmstrip still
+  // work. Without this the strip effect below never runs for such files.
+  useEffect(() => {
+    if (!decodeFailed || !src) return
+    let cancelled = false
+    void (async () => {
+      const seconds = await serverMovieDuration(item)
+      if (!cancelled && seconds > 0) setFileSeconds(seconds)
+    })()
+    return () => { cancelled = true }
+  }, [decodeFailed, src, item.path, item.name])
 
   // Build the strip frames once the file length is known. Client capture is
   // instant for decodable files and costs only the bytes around the seek
@@ -157,6 +174,7 @@ export function MovieEditor({ item, src, onChange, onClose }: {
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onEnded={() => setPlaying(false)}
+            onError={() => setDecodeFailed(true)}
           />
           {!total && <div className="movie-stage-note">Reading the movie…</div>}
         </div>

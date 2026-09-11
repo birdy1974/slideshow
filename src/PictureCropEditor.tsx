@@ -13,9 +13,10 @@
 //                  filled with a blurred copy of the same picture
 //   Black bars   — let FFmpeg's cropdetect propose the rectangle
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, VideoHTMLAttributes } from 'react'
-import { Crop as CropIcon, Eraser, Info, RotateCcw, ScanLine, SlidersHorizontal, Trash2, Undo2 } from 'lucide-react'
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, VideoHTMLAttributes } from 'react'
+import { Crop as CropIcon, Eraser, Film, Info, RotateCcw, ScanLine, SlidersHorizontal, Trash2, Undo2 } from 'lucide-react'
 import type { MediaItem } from './mediaItem'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, serverMovieDuration } from './filmstrip'
 import {
   CROP_ASPECTS, DEFAULT_FEATHER, FULL_CROP, MAX_LASSO_POINTS, MAX_STRAIGHTEN, MIN_CROP,
   clampRect, cropSpriteStyle, inscribedZoom, lassoBoxPolygon, normalizeCrop, normalizeLasso,
@@ -127,6 +128,12 @@ export function PictureCropPanel({ item, src, onChange, onCancel, onClose, onRes
   const latest = useRef(draft)
   latest.current = draft
   const [box, setBox] = useState({ width: 0, height: 0 })
+  // Movie timeline under the stage (videos only): the same real-frame strip
+  // the trim editor shows, so the cut/crop tab has a visual timeline too.
+  const stageVideoRef = useRef<HTMLVideoElement | null>(null)
+  const [strip, setStrip] = useState<{ src: string; kind: 'live' | 'server' } | null>(null)
+  const [movieSeconds, setMovieSeconds] = useState(0)
+  const [decodeFailed, setDecodeFailed] = useState(false)
 
   const rotated = intrinsic ? rotatedSize(intrinsic, turn) : null
   const mediaAspect = rotated && rotated.height ? rotated.width / rotated.height : 0
@@ -191,6 +198,43 @@ export function PictureCropPanel({ item, src, onChange, onCancel, onClose, onRes
   // The result preview: one small cropped copy, letterboxed over a blurred
   // copy of itself — exactly what fit_frame_filter does in the render.
   const result = useCroppedSource(src, { crop: settled, rotation: item.rotation }, 'result', isVideo)
+
+  // ── Movie filmstrip (videos only) ──────────────────────────────────────────
+  // The crop tab works on the whole movie, so the strip is a read-only
+  // timeline: ten real frames, click to seek the stage. Same hybrid source as
+  // the trim editor (browser capture first, FFmpeg sprite fallback).
+  useEffect(() => { setStrip(null); setMovieSeconds(0); setDecodeFailed(false) }, [src])
+
+  useEffect(() => {
+    if (!isVideo || !decodeFailed || !src) return
+    let cancelled = false
+    void (async () => {
+      const seconds = await serverMovieDuration(item)
+      if (!cancelled && seconds > 0) setMovieSeconds(seconds)
+    })()
+    return () => { cancelled = true }
+  }, [isVideo, decodeFailed, src, item.path, item.name])
+
+  useEffect(() => {
+    if (!isVideo) return
+    setStrip(null)
+    if (!src || !movieSeconds) return
+    let cancelled = false
+    void (async () => {
+      const captured = await captureFilmstrip(src, FILMSTRIP_CELLS, movieSeconds)
+      if (cancelled) return
+      if (captured) { setStrip({ src: captured, kind: 'live' }); return }
+      const ok = await new Promise<boolean>(resolve => {
+        const img = new Image()
+        img.onload = () => resolve(true)
+        img.onerror = () => resolve(false)
+        img.src = movieFilmstripUrl(item)
+      })
+      if (cancelled) return
+      if (ok) setStrip({ src: movieFilmstripUrl(item), kind: 'server' })
+    })()
+    return () => { cancelled = true }
+  }, [isVideo, src, movieSeconds, item.path, item.name])
 
   /** Store the draft on the item; a full frame with nothing else means "no crop". */
   const publish = (next: PictureCrop) => {
@@ -366,6 +410,16 @@ export function PictureCropPanel({ item, src, onChange, onCancel, onClose, onRes
     if (size.width && size.height) setIntrinsic(size)
   }
 
+  // Clicking the movie timeline seeks the stage video to that point.
+  const seekStrip = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const video = stageVideoRef.current
+    if (!video || !movieSeconds) return
+    const area = event.currentTarget.getBoundingClientRect()
+    if (!area.width) return
+    const fraction = Math.min(1, Math.max(0, (event.clientX - area.left) / area.width))
+    try { video.currentTime = fraction * movieSeconds } catch { /* not seekable yet */ }
+  }
+
   const kept = rect.w * rect.h
   const pixels = rotated
     ? `${Math.round(rotated.width * rect.w)} × ${Math.round(rotated.height * rect.h)} px`
@@ -373,12 +427,16 @@ export function PictureCropPanel({ item, src, onChange, onCancel, onClose, onRes
   const outAspect = mediaAspect ? (rect.w * (rotated?.width ?? 1)) / (rect.h * (rotated?.height ?? 1)) : 0
 
   return <>
-    <div className="editor-body crop-body">
-      <div className="crop-stage" ref={stageRef}>
-        {box.width > 0 && <div className="crop-box" ref={boxRef} style={{ width: box.width, height: box.height }} onPointerDown={onStageDown}>
-          {isVideo
-            ? <video className="crop-media" src={src} style={mediaStyle} muted playsInline preload="metadata" onLoadedMetadata={measured} />
-            : <img className="crop-media" src={src} alt={item.name} style={mediaStyle} draggable={false} onLoad={measured} />}
+    <div className={`editor-body crop-body${isVideo ? ' has-strip' : ''}`}>
+      <div className="crop-left">
+        <div className="crop-stage" ref={stageRef}>
+          {box.width > 0 && <div className="crop-box" ref={boxRef} style={{ width: box.width, height: box.height }} onPointerDown={onStageDown}>
+            {isVideo
+              ? <video ref={stageVideoRef} className="crop-media" src={src} style={mediaStyle} muted playsInline preload="metadata"
+                  onLoadedMetadata={event => { measured(event); const d = event.currentTarget.duration; if (Number.isFinite(d) && d > 0) setMovieSeconds(d) }}
+                  onDurationChange={event => { const d = event.currentTarget.duration; if (Number.isFinite(d) && d > 0) setMovieSeconds(d) }}
+                  onError={() => setDecodeFailed(true)} />
+              : <img className="crop-media" src={src} alt={item.name} style={mediaStyle} draggable={false} onLoad={measured} />}
           {/* The cut-out hole, filled with a blurred copy — pictures only, a
               playing movie cannot be repainted per frame. */}
           {!isVideo && lasso && <span className="crop-hole" style={{ clipPath: lassoBoxPolygon(lasso, rect) }}>
@@ -398,6 +456,17 @@ export function PictureCropPanel({ item, src, onChange, onCancel, onClose, onRes
           {!lasso && !edited && tool === 'cutout' && <em className="crop-hint">Click on the picture to place points around what should disappear</em>}
         </div>}
         {tool === 'cutout' && lasso && <em className="crop-hint bottom">Backspace removes the last point · drag a point to reshape</em>}
+        </div>
+        {isVideo && <div className="crop-strip">
+          <div className="crop-filmstrip" onClick={seekStrip} title="Frames of this movie — click a spot to seek the preview">
+            <div className={`filmstrip ${strip ? 'ready' : 'loading'}`}>
+              {strip && <img className="filmstrip-img" src={strip.src} alt="" draggable={false}
+                title={strip.kind === 'live' ? 'Frames read by your browser' : 'Frames rendered by the backend FFmpeg (browser cannot decode this file)'} />}
+              {!strip && Array.from({ length: FILMSTRIP_CELLS }).map((_, i) => <i key={i} style={{ background: `hsl(${28 + ((i * 37) % 40)} 8% 16%)` }} />)}
+            </div>
+          </div>
+          <span className="crop-strip-label"><Film size={11}/> Frames of this movie · click to seek</span>
+        </div>}
       </div>
 
       <div className="crop-panel">

@@ -84,3 +84,41 @@ so trimming never reshuffles the frames mid-drag.
   cache hit, mtime invalidation, per-count sprites, refused files,
   probe-failure leaves nothing cached, uploads root) against ffmpeg/ffprobe
   stubs that keep the muxer guard. Full suite 294/294 green.
+
+## Fixed (2026-09-11): filmstrip invisible
+
+The strip showed nothing for any movie. Root cause was a CSS cascade conflict:
+the appended rules set `.filmstrip{position:relative}`, which (same specificity,
+later in the file) overrode the strip rule's `position:absolute;inset:9px 0` and
+left the container with no box and no height — the absolutely-positioned sprite
+adds no in-flow height, so the strip collapsed to 0 px and neither the frames
+nor the colour-bar fallback rendered.
+
+- `.filmstrip` is now re-declared `position:absolute;inset:0;display:flex;…`
+  (fills the strip, rounded-corner clipped); the sprite is an `inset:0` child
+  and no longer carries `z-index:1`, so it sits *under* the kept/cut shading,
+  playhead and handles.
+- The server fallback could also never fire for files the browser cannot decode
+  (the strip effect returned early when `total === 0`, and `total` only came
+  from the browser decoder). The stage `<video>` now reports decode errors; on
+  error the editor fetches the length from `/api/media/probe`, which restores
+  the trim handles and lets the server filmstrip render for those files.
+  `captureFilmstrip` also rejects fast on a media error instead of waiting out
+  the seek timeout.
+
+## Extended (2026-09-11): filmstrip in the Cut & crop tab
+
+The **Cut & crop** tab of the picture editor (which serves movies too) now shows
+the same movie timeline under the stage, for videos only:
+
+- Reuses the identical hybrid source (`captureFilmstrip` → `/api/media/filmstrip`
+  fallback) and the same `.filmstrip` strip box, fixed-height (84 px) below the
+  crop stage; the stage shrinks (`min(calc(58vh - 96px), 424px)`) so the left
+  column stays as tall as the right-hand tool panel.
+- **Clicking the strip seeks the stage video** to that point of the movie, so
+  the timeline is not just decorative. For files the browser cannot decode, the
+  duration comes from `/api/media/probe` and the frames from the FFmpeg sprite,
+  exactly like the trim editor.
+- Pictures are unchanged (no strip, no stage resize).
+
+
