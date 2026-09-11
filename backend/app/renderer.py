@@ -116,6 +116,22 @@ def parse_number(label: str, fallback: float) -> float:
     return float(match.group(1)) if match else fallback
 
 
+def vaapi_qp_for_bitrate(mbps: float) -> int:
+    """Map a GUI bitrate preset to a CQP quantizer.
+
+    Some Intel iGPUs (the DS918+'s Apollo Lake low-power VDENC entrypoint)
+    only accept constant-QP rate control, so the bitrate presets cannot be
+    passed through. Lower QP = higher quality = higher bitrate.
+    """
+    if mbps >= 20:
+        return 18
+    if mbps >= 12:
+        return 20
+    if mbps >= 8:
+        return 23
+    return 26
+
+
 def ff_escape(value: str) -> str:
     return value.replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'").replace("%", r"\%").replace("[", r"\[").replace("]", r"\]")
 
@@ -859,6 +875,10 @@ class Renderer:
         self._vaapi_encodable: bool | None = None
         self._vaapi_low_power: bool = False
         self._vaapi_device: str | None = None
+        # "cqp" when the driver only offers constant-QP rate control (Apollo
+        # Lake's low-power VDENC entrypoint); "cbr" for bitrate-based encodes.
+        self._vaapi_rc_mode: str = "cbr"
+        self._vaapi_error: str = ""
         self._vaapi_lock = threading.Lock()
         self._ffmpeg_version: str | None = None
         self._version_probed = False
@@ -1019,7 +1039,7 @@ class Renderer:
         if self._xfade_has_easing is None and self._xfade_supported is not None:
             # try quick probe without lock if not yet done? report false until warm
             has_easing = False
-        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "vaapi": self.vaapi_encodable_cached(), "cpuEncoding": bool(ffmpeg), "xfadeTransitions": len(supported) if supported else 0, "hasEasing": bool(has_easing), "hasGL": bool(supported and any(s.startswith("gl_") for s in supported))}
+        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "vaapi": self.vaapi_encodable_cached(), "vaapiError": self._vaapi_error, "cpuEncoding": bool(ffmpeg), "xfadeTransitions": len(supported) if supported else 0, "hasEasing": bool(has_easing), "hasGL": bool(supported and any(s.startswith("gl_") for s in supported))}
 
     def qsv_encodable_cached(self) -> bool:
         """Non-blocking view of the Quick Sync probe (False until it finishes).
@@ -1088,9 +1108,25 @@ class Renderer:
     def _probe_vaapi(self) -> tuple[bool, str | None, bool]:
         device = self._first_render_node()
         if not device:
+            self._vaapi_error = (
+                "No /dev/dri render node found inside the container — the GPU is "
+                "not passed through (missing `devices: [/dev/dri:/dev/dri]`)."
+            )
+            log.warning("VA-API probe: %s", self._vaapi_error)
             return False, None, False
 
-        def attempt(low_power: bool) -> bool:
+        # Candidates in priority order. Apollo Lake (DS918+) exposes encode only
+        # through the low-power VDENC entrypoint AND only supports constant-QP
+        # rate control, so low-power CQP is tried first; modern Gen12+ hardware
+        # accepts bitrate (CBR) encodes in plain mode.
+        candidates: list[tuple[str, bool]] = [
+            ("cqp", True),   # -low_power 1 + CQP — DS918+ (EncSliceLP, CQP-only)
+            ("cbr", False),  # plain + CBR     — modern Intel iGPUs
+            ("cbr", True),   # low-power + CBR — some LP implementations
+            ("cqp", False),  # plain + CQP     — CQP-only without LP
+        ]
+
+        def attempt(rc_mode: str, low_power: bool) -> tuple[bool, str]:
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error",
                        "-vaapi_device", device,
                        "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25",
@@ -1098,15 +1134,36 @@ class Renderer:
                        "-frames:v", "12", "-c:v", "h264_vaapi"]
             if low_power:
                 command += ["-low_power", "1"]
-            command += ["-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M", "-f", "null", "-"]
+            if rc_mode == "cqp":
+                command += ["-rc_mode", "CQP", "-qp", "23"]
+            else:
+                command += ["-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M"]
+            command += ["-f", "null", "-"]
             try:
-                return subprocess.run(command, capture_output=True, text=True, timeout=30).returncode == 0
-            except Exception:
-                return False
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            except Exception as exc:
+                return False, f"Could not run FFmpeg: {exc}"
+            if result.returncode == 0:
+                return True, ""
+            stderr = getattr(result, "stderr", "") or ""
+            if isinstance(stderr, str):
+                lines = [line for line in stderr.strip().splitlines() if line.strip()]
+                reason = "\n".join(lines[-2:]) if lines else f"FFmpeg exited with code {result.returncode}"
+            else:
+                reason = f"FFmpeg exited with code {result.returncode}"
+            return False, reason
 
-        if attempt(True):
-            return True, device, True
-        return attempt(False), device, False
+        last_error = ""
+        for rc_mode, low_power in candidates:
+            ok, reason = attempt(rc_mode, low_power)
+            if ok:
+                self._vaapi_rc_mode = rc_mode
+                self._vaapi_error = ""
+                return True, device, low_power
+            last_error = last_error or reason
+        self._vaapi_error = last_error
+        log.warning("VA-API probe failed on %s: %s", device, self._vaapi_error)
+        return False, device, False
 
     def select_encoder(self, label: str) -> str:
         """Map the GUI encoder choice to a codec, decided by the verified probes.
@@ -1638,8 +1695,15 @@ class Renderer:
                 # Frames arrive as VA-API surfaces from hwupload, so nv12/yuv420p
                 # does not apply. -low_power selects the VDENC entrypoint that
                 # NAS-class iGPUs (Apollo Lake) offer as their only encode path;
-                # the probe remembers whether this host needs it.
-                args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M"]
+                # the probe remembers whether this host needs it. Some of those
+                # entrypoints accept only constant-QP rate control (the DS918+),
+                # so the probe also remembers the working rc mode: CQP maps the
+                # bitrate preset to a quantizer instead of passing -b:v through.
+                args = ["-c:v", codec]
+                if self._vaapi_rc_mode == "cqp":
+                    args += ["-rc_mode", "CQP", "-qp", str(vaapi_qp_for_bitrate(bitrate_value))]
+                else:
+                    args += ["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M"]
                 if self._vaapi_low_power:
                     args += ["-low_power", "1"]
             elif codec == "h264_qsv":
@@ -1680,7 +1744,7 @@ class Renderer:
                         if skip:
                             skip = False
                             continue
-                        if arg in ("-vaapi_device", "-low_power"):
+                        if arg in ("-vaapi_device", "-low_power", "-rc_mode", "-qp"):
                             skip = True  # and its value
                             continue
                         if arg in ("-filter_complex", "-vf") and position + 1 < len(command):

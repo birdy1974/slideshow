@@ -141,25 +141,29 @@ automatically). Only sensible if GL transitions are never used, i.e. effectively
 ## Implementation (Option B — shipped 2026-09-11)
 
 * **Probe** (`Renderer.vaapi_encodable`, mirroring the QSV probe): finds the first
-  `/dev/dri/renderD*` node, then runs the same 12-frame test encode as the QSV probe —
-  `-vaapi_device <node> -f lavfi -i color=... -vf format=nv12,hwupload -c:v h264_vaapi
-  [-low_power 1] -b:v 1M … -f null -`. The low-power VDENC mode (the only encode
-  entrypoint Apollo Lake exposes) is tried first and the working mode is remembered
-  (`_vaapi_low_power`); the probe is warmed at startup like the others and read
-  non-blockingly by `/api/health`.
+  `/dev/dri/renderD*` node, then runs 12-frame test encodes across four
+  configurations in order — **low-power CQP first** (`-low_power 1 -rc_mode CQP -qp 23`,
+  the only combination Apollo Lake's `EncSliceLP` entrypoint accepts), then plain CBR,
+  low-power CBR, plain CQP — and remembers the working pair (`_vaapi_low_power` +
+  `_vaapi_rc_mode`), plus a human-readable `_vaapi_error` when all four fail. The
+  probe is warmed at startup like the others and read non-blockingly by `/api/health`.
 * **Selection** (`Renderer.select_encoder`): `Auto · Quick Sync` now walks
   QSV → VA-API → CPU; the new explicit `Hardware · VAAPI` option walks
   VA-API → CPU; `Intel Quick Sync` and `CPU · x264` behave exactly as before.
   Stored projects with the legacy `Auto · Quick Sync` label get the new chain
   automatically.
 * **Renders**: hold and transition commands gain `-vaapi_device <node>` and a
-  `,hwupload` hop before each graph's `[vout]`; `encode_args_for("h264_vaapi")` emits
-  bitrate + bufsize and `-low_power 1` when the probe said the host needs it (no
-  `-pix_fmt` — frames arrive as VA-API surfaces). Segment preparation stays on
-  `libx264 -crf 18` (quality intermediates); concat and final mux are stream-copy and
-  untouched. Any hardware failure mid-render retries the same command on CPU via the
-  generalized fallback (device, hwupload and `-low_power` stripped, `-preset medium
-  -pix_fmt yuv420p` added) — a broken driver can never fail a job.
+  `,hwupload` hop before each graph's `[vout]`; `encode_args_for("h264_vaapi")`
+  emits either bitrate+bufsize (CBR-capable hardware) or `-rc_mode CQP -qp <n>`
+  (CQP-only hardware, where the GUI bitrate preset maps to a quantizer:
+  20 Mbps→18 · 12→20 · 8→23 · 4→26) plus `-low_power 1` when the probe said the
+  host needs it (no `-pix_fmt` — frames arrive as VA-API surfaces). Segment
+  preparation stays on `libx264 -crf 18` (quality intermediates); concat and final
+  mux are stream-copy and untouched. Any hardware failure mid-render retries the
+  same command on CPU via the generalized fallback (device, hwupload, `-low_power`,
+  `-rc_mode` and `-qp` stripped, `-preset medium -pix_fmt yuv420p` added) — a
+  broken driver can never fail a job. On CQP-only hardware the bitrate preset only
+  steers quality, so the file-size estimate is approximate there.
 * **GUI**: the checklist line reports `Hardware encoding available · VAAPI` (check,
   not warning) when `capabilities.vaapi` is true, and the Encoder dropdown gained
   `Hardware · VAAPI`. Render-time estimates already treat it as hardware speed.
@@ -171,3 +175,96 @@ automatically). Only sensible if GL transitions are never used, i.e. effectively
 
 **C** (legacy Media SDK runtime) remains an alternative if native QSV is ever wanted,
 but with VA-API working there is no reason left to carry EOL legacy runtime baggage.
+
+## Troubleshooting: "VAAPI still unavailable" (2026-09-11)
+
+Since the probe now records **why** it failed (surfaced as `capabilities.vaapiError`
+in `/api/health`, shown inline in the render checklist and in the container log), the
+first step is always to read that message — it names one of the four cases below.
+Otherwise run the commands in order.
+
+### 0. Are you actually running the new image?
+
+The VA-API path only exists in the image built after 2026-09-11. An old image's
+FFmpeg has no `h264_vaapi` (the Dockerfile only gates `H264_QSV_ENCODER`, not VAAPI),
+and the probe code itself is missing, so the GUI keeps reporting the CPU fallback no
+matter how the device is configured.
+
+```bash
+docker compose pull            # if using the prebuilt ghcr.io image, or
+docker compose build --no-cache # if building locally
+docker compose up -d
+docker exec slideshow ffmpeg -hide_banner -encoders 2>/dev/null | grep -i vaapi
+#   must print "h264_vaapi"; if empty → you are on the old image.
+```
+
+### 1. Is the GPU passed into the container?
+
+```bash
+# on the NAS (SSH):
+ls -ln /dev/dri          # note the group number of renderD128 (e.g. 937)
+# inside the container:
+docker exec slideshow ls -l /dev/dri
+```
+
+- Nothing shown → the `devices:` section is missing. Use the current `compose.yaml`
+  (it has `devices: [/dev/dri:/dev/dri]`) — do **not** use `compose.cpu.yaml`, and add
+  `--device /dev/dri:/dev/dri` if you run `docker run` by hand.
+- The group differs → set `VIDEO_GID` in `.env` to the number from `ls -ln /dev/dri`
+  and recreate the container (`docker compose up -d`).
+
+### 2. Can the container open the device (permissions)?
+
+```bash
+docker exec slideshow id                      # confirm the user/group and added VIDEO_GID
+docker exec slideshow vainfo                  # or: vainfo --display drm --device /dev/dri/renderD128
+```
+
+`vainfo` prints the driver and the H.264 profiles. On a healthy DS918+ expect driver
+**iHD** with `VAEntrypointEncSliceLP` (low-power VDENC) on the H.264 profiles. If it
+fails with "Failed to initialise VAAPI connection: -1" or "Permission denied", fix
+`VIDEO_GID` (step 1) — the container user must be able to open `renderD128`.
+
+### 3. Reproduce the app's exact probe
+
+The fixed probe tries four configurations in order — low-power CQP first (the
+DS918+ needs it), then plain CBR, low-power CBR, plain CQP. Run the DS918+
+combination directly:
+
+```bash
+docker exec slideshow ffmpeg -hide_banner -loglevel error \
+  -vaapi_device /dev/dri/renderD128 \
+  -f lavfi -i color=c=black:s=320x240:r=25 \
+  -vf format=nv12,hwupload -frames:v 12 -c:v h264_vaapi \
+  -low_power 1 -rc_mode CQP -qp 23 -f null -
+```
+
+Reading the stderr here gives the definitive reason:
+
+- `Driver does not support any RC mode compatible with selected options
+  (supported modes: CQP)` → **the DS918+ case**: the low-power VDENC entrypoint
+  only supports constant-QP rate control, so `-b:v/-maxrate/-bufsize` (CBR) can
+  never open the encoder. This is exactly what made the probe report "unavailable"
+  before — the fix above (emit `-rc_mode CQP -qp <n>` on CQP-only hardware) is
+  what makes it pass now.
+- `Failed to initialise VAAPI connection: -1` / `Permission denied` → device/permission
+  (step 1–2).
+- `Driver does not support some wanted surface format` / `no VAEntrypointEncSlice`
+  → the `-low_power 1` mode matters; check the iHD driver version
+  (`vainfo` header line; the image ships Debian trixie's `intel-media-va-driver`).
+- `Unknown encoder 'h264_vaapi'` → old image (step 0).
+- Silence + non-zero exit → bump verbosity: rerun with `-loglevel verbose`.
+
+### 4. Confirm the app now sees it
+
+```bash
+docker exec slideshow python -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health'))['capabilities'])"
+#   expect "vaapi": true (and "quickSync": false on the DS918+)
+```
+
+The health read is non-blocking, so if it reports `vaapi: false` right after a fresh
+start, wait a few seconds for the startup warm-up to finish and re-read. If `vaapi`
+is false but `vaapiError` is populated, that string is the reason; if it is empty the
+probe is still running (the log line `VA-API probe failed on …` will appear in the
+container log when it finishes).
+

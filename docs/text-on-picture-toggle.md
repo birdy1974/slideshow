@@ -2,7 +2,9 @@
 
 Date: 2026-09-05
 
-Each slide now carries a `textEnabled` flag (default: on). Turning it off keeps the
+Each slide now carries a `textEnabled` flag. Newly added photos and movies start
+with it **off** (hidden): the caption controls collapse to the eye toggle and no
+caption is drawn until the user turns text on. Turning it off later keeps the
 caption text and its timing, but the text is not drawn on the picture — in the
 preview, in the editor, and in the final FFmpeg render. Title frames are unaffected:
 a text frame *is* its text, so the flag never applies to `type === "title"` items.
@@ -53,3 +55,7 @@ Alternatives are listed so we can switch cheaply if a different spot is preferre
   (struck-through) box so timing is not lost.
 - Backend `Renderer._text_filter` returns no drawtext filter for a disabled caption, so the
   final render matches the editor. Covered by `TextOnPictureToggleTests`.
+- New items default to `textEnabled: false`, so the caption row starts collapsed and the
+  overview text lane shows no box until text is enabled (click the eye). The "Text hidden"
+  settings chip only appears when there is actually text to restore (empty captions don't
+  advertise a hidden caption).

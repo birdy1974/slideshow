@@ -1461,6 +1461,51 @@ class VaapiEncodingTest(unittest.TestCase):
              mock.patch("app.renderer.subprocess.run", side_effect=OSError("ffmpeg exploded")):
             self.assertFalse(self.renderer.vaapi_encodable())
 
+    def test_probe_prefers_low_power_cqp_first(self) -> None:
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(self.renderer.vaapi_encodable())
+        self.assertTrue(self.renderer._vaapi_low_power)
+        self.assertEqual("cqp", self.renderer._vaapi_rc_mode)
+        command = run.call_args[0][0]
+        self.assertIn("-low_power", command)
+        self.assertIn("-rc_mode", command)
+        self.assertIn("CQP", command)
+
+    def test_probe_falls_back_to_cbr_when_cqp_unsupported(self) -> None:
+        runs = [
+            mock.Mock(returncode=1, stderr="Driver does not support any RC mode compatible with selected options (supported modes: CQP)."),
+            mock.Mock(returncode=0),
+        ]
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=runs):
+            self.assertTrue(self.renderer.vaapi_encodable())
+        self.assertFalse(self.renderer._vaapi_low_power)
+        self.assertEqual("cbr", self.renderer._vaapi_rc_mode)
+
+    def test_probe_records_a_diagnostic_reason(self) -> None:
+        failing = mock.Mock(returncode=1, stderr="[AVHWDeviceContext] Failed to initialise VAAPI connection: -1")
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", return_value=failing):
+            self.assertFalse(self.renderer.vaapi_encodable())
+        self.assertIn("Failed to initialise VAAPI connection", self.renderer._vaapi_error)
+
+    def test_probe_reason_for_missing_render_node(self) -> None:
+        with mock.patch.object(self.renderer, "_first_render_node", return_value=None), \
+             mock.patch("app.renderer.subprocess.run", side_effect=AssertionError("no GPU, no probe")):
+            self.assertFalse(self.renderer.vaapi_encodable())
+        self.assertIn("/dev/dri", self.renderer._vaapi_error)
+
+    def test_capabilities_carries_vaapi_error(self) -> None:
+        self.renderer._ffmpeg_version = "ffmpeg version 8.1.2 test"
+        self.renderer._version_probed = True
+        self.renderer._vaapi_encodable = False
+        self.renderer._vaapi_error = "driver does not support encode"
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffmpeg"):
+            caps = self.renderer.capabilities()
+        self.assertFalse(caps["vaapi"])
+        self.assertEqual("driver does not support encode", caps["vaapiError"])
+
     def test_capabilities_includes_vaapi_without_subprocess(self) -> None:
         self.renderer._ffmpeg_version = "ffmpeg version 8.1.2 test"
         self.renderer._version_probed = True
@@ -1560,6 +1605,64 @@ class VaapiEncodingTest(unittest.TestCase):
         self.assertTrue(retried, "the CPU retry must appear")
         for command in retried:
             joined = " ".join(command)
+            self.assertNotIn("-vaapi_device", joined)
+            self.assertNotIn("hwupload", joined)
+            self.assertNotIn("-low_power", joined)
+            self.assertIn("-preset medium", joined)
+            self.assertIn("-pix_fmt yuv420p", joined)
+
+    def test_vaapi_render_uses_cqp_when_driver_needs_it(self) -> None:
+        """A CQP-only driver must get -rc_mode CQP + a QP, not -b:v."""
+        settings, renderer, project = self._hw_renderer()
+        renderer._vaapi_rc_mode = "cqp"
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"part")
+
+        with mock.patch.object(renderer, "_validate_media", return_value=None), \
+             mock.patch.object(renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(renderer, "_probe_duration", return_value=2.0):
+            work = settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        hw = [command for command in commands if "h264_vaapi" in command]
+        self.assertTrue(hw, "the VA-API encoder must appear")
+        for command in hw:
+            joined = " ".join(command)
+            self.assertIn("-rc_mode CQP", joined)
+            self.assertIn("-qp 23", joined)  # 8 Mbps preset maps to QP 23
+            self.assertNotIn("-b:v", joined)
+            self.assertIn("-low_power 1", joined)
+
+    def test_vaapi_cqp_failure_retries_on_cpu_without_rc_args(self) -> None:
+        """The CPU retry must drop -rc_mode/-qp as well as the device args."""
+        settings, renderer, project = self._hw_renderer()
+        renderer._vaapi_rc_mode = "cqp"
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            if "h264_vaapi" in command:
+                raise RenderError("broken VA-API driver")
+            Path(command[-1]).write_bytes(b"part")
+
+        with mock.patch.object(renderer, "_validate_media", return_value=None), \
+             mock.patch.object(renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(renderer, "_probe_duration", return_value=2.0):
+            work = settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        retried = [command for command in commands
+                   if "-c:v" in command and command[command.index("-c:v") + 1] == "libx264" and "-crf" not in command]
+        self.assertTrue(retried, "the CPU retry must appear")
+        for command in retried:
+            joined = " ".join(command)
+            self.assertNotIn("-rc_mode", joined)
+            self.assertNotIn("-qp", joined)
             self.assertNotIn("-vaapi_device", joined)
             self.assertNotIn("hwupload", joined)
             self.assertNotIn("-low_power", joined)

@@ -129,3 +129,29 @@ The cache sits inside `CONFIG_DIR` (not `OUTPUT_DIR`), so it is covered by the
 documented `/config` backup and never mixes with the user's rendered MP4s.
 `Clear all` is not wired to it — use `DELETE /api/transition-previews` to force
 a rebuild. Typical total size is a few megabytes for the full catalogue.
+
+## Transition preview popup: stored clip first, accurate 360p in background
+
+The *Transition preview* popup (opened from a transition marker on the timeline)
+renders an accurate 360p clip of the transition between the **user's actual two
+slides**, with their params, easing, reverse and duration (`POST
+/api/transitions/preview`). That render takes a few seconds, so the popup used
+to show a spinner until it finished.
+
+Now the popup plays the **stored example clip** for the chosen transition
+(`/api/transition-previews/{slug}.mp4` — the same cached clip the picker tiles
+use, rendered on first request) the moment it opens, while the accurate render
+builds in the background; when it is ready it seamlessly takes over the stage.
+
+- Badge states: `STORED PREVIEW · RENDERING 360P…` (stored clip playing, a small
+  note bottom-left says the accurate render is running) → `ACCURATE FFMPEG · 360P`.
+- The stored clip is a real FFmpeg render between two example frames — not a CSS
+  approximation — so the motion is honest; only the content and the exact
+  timing/params come from the accurate pass.
+- Choosing a different transition (or changing duration/easing/reverse/GL params)
+  re-arms the stored clip for the new label immediately and restarts the accurate
+  render, so the stage is never blank.
+- If the stored clip cannot be produced (offline backend, unsupported transition),
+  the popup falls back to the previous spinner while the accurate render runs, and
+  the error box still surfaces any accurate-render failure.
+

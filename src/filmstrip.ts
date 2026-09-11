@@ -37,14 +37,34 @@ export function movieFilmstripUrl(item: { path: string; name: string }): string 
   return `/api/media/filmstrip?root=${root}&path=${encodeURIComponent(relative)}&count=${FILMSTRIP_CELLS}&width=${CELL_WIDTH}`
 }
 
-// Resolve when the event fires; reject on timeout so a wedged decoder falls
-// back to the server sprite instead of hanging the editor open.
+/** Ask the backend (FFmpeg) for the movie's length when the browser cannot
+ * decode the file and therefore reports no duration of its own. */
+export async function serverMovieDuration(item: { path: string; name: string }): Promise<number> {
+  const { root, relative } = movieRootAndPath(item)
+  try {
+    const response = await fetch(`/api/media/probe?root=${root}&path=${encodeURIComponent(relative)}`)
+    if (!response.ok) return 0
+    const data = await response.json().catch(() => null)
+    return Number.isFinite(data?.duration) ? Number(data.duration) : 0
+  } catch {
+    return 0
+  }
+}
+
+// Resolve when the event fires; reject on timeout or a media error so a wedged
+// decoder falls back to the server sprite instead of hanging the editor open.
 function waitOnce(target: EventTarget, event: string, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => { cleanup(); reject(new Error(`${event} timed out`)) }, timeoutMs)
     const onEvent = () => { cleanup(); resolve() }
-    const cleanup = () => { window.clearTimeout(timer); target.removeEventListener(event, onEvent) }
+    const onError = () => { cleanup(); reject(new Error('media error')) }
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      target.removeEventListener(event, onEvent)
+      if (target instanceof HTMLMediaElement) target.removeEventListener('error', onError)
+    }
     target.addEventListener(event, onEvent, { once: true })
+    if (target instanceof HTMLMediaElement) target.addEventListener('error', onError, { once: true })
   })
 }
 
