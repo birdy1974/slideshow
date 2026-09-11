@@ -796,3 +796,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .upload-item .upload-bar{grid-column:1/5;height:3px;background:#3c4138;border-radius:2px;overflow:hidden}
 .upload-item .upload-bar i{display:block;height:100%;background:var(--lime);transition:width .2s}
 .upload-item.error .upload-bar i{background:#b34f3c}
+
+/* --- Real-frame filmstrip in the movie editor (docs/movie-editor-filmstrip.md) --- */
+.filmstrip{position:relative}
+.filmstrip-img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;z-index:1;user-select:none}
+.filmstrip.loading i,.filmstrip.none i{opacity:.75}

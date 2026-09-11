@@ -26,6 +26,7 @@ from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_f
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
 from .uploads import UploadRejected, store_upload
+from .filmstrips import FilmstripUnavailable, build_filmstrip
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -377,6 +378,23 @@ def probe_media(root: str = Query(pattern="^(photos|videos|uploads)$"), path: st
     except (TypeError, ValueError, json.JSONDecodeError): duration = 0
     if duration <= 0: raise HTTPException(422, "Video duration is unavailable")
     return {"duration": duration}
+
+
+@app.get("/api/media/filmstrip")
+def media_filmstrip(root: str = Query(pattern="^(photos|videos|uploads)$"), path: str = "",
+                    count: int = Query(default=10, ge=4, le=16), width: int = Query(default=160, ge=80, le=480)) -> FileResponse:
+    """One wide JPEG of N frames from a movie, for the movie editor's strip.
+
+    Rendered once per file (cache key includes size and mtime) and cached on
+    the config volume; the fallback for containers the browser cannot decode,
+    where the editor cannot grab frames from the stream itself.
+    """
+    try:
+        sprite = build_filmstrip(settings, root, path, count=count, width=width)
+    except FilmstripUnavailable as exc:
+        status = 404 if "not found" in str(exc) else 422
+        raise HTTPException(status, str(exc)) from exc
+    return FileResponse(sprite, media_type="image/jpeg", filename=f"{sprite.stem}.jpg", content_disposition_type="inline")
 
 
 @app.get("/api/media/loudness")

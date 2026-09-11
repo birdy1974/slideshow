@@ -10,6 +10,7 @@ import { ChevronLeft, ChevronRight, Info, Pause, Play, Scissors, X } from 'lucid
 import { TimeField } from './ui'
 import { formatClockPrecise } from './time'
 import type { MediaItem } from './mediaItem'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl } from './filmstrip'
 
 // Shortest section a movie can be cut down to.
 const MIN_KEEP = 0.5
@@ -28,6 +29,11 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const stripRef = useRef<HTMLDivElement | null>(null)
   const original = useRef({ trimStart: item.trimStart, trimEnd: item.trimEnd, duration: item.duration })
+  // Real frames for the strip: the browser grabs them from the stream; when
+  // it cannot decode the file (camera AVI and friends) the backend FFmpeg
+  // filmstrip is fetched instead; only if both fail do the colour bars stay.
+  const [strip, setStrip] = useState<{ src: string; kind: 'live' | 'server' } | null>(null)
+  const [stripState, setStripState] = useState<'loading' | 'ready' | 'none'>('loading')
 
   const total = fileSeconds
   const start = Math.max(0, Math.min(Number(item.trimStart) || 0, total))
@@ -40,6 +46,30 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   useEffect(() => {
     setFileSeconds(0); setPosition(0); setPlaying(false)
   }, [src])
+
+  // Build the strip frames once the file length is known. Client capture is
+  // instant for decodable files and costs only the bytes around the seek
+  // points; the server sprite covers everything the browser cannot read.
+  useEffect(() => {
+    setStrip(null); setStripState('loading')
+    if (!src || !total) return
+    let cancelled = false
+    void (async () => {
+      const captured = await captureFilmstrip(src, FILMSTRIP_CELLS, total)
+      if (cancelled) return
+      if (captured) { setStrip({ src: captured, kind: 'live' }); setStripState('ready'); return }
+      const ok = await new Promise<boolean>(resolve => {
+        const img = new Image()
+        img.onload = () => resolve(true)
+        img.onerror = () => resolve(false)
+        img.src = movieFilmstripUrl(item)
+      })
+      if (cancelled) return
+      if (ok) { setStrip({ src: movieFilmstripUrl(item), kind: 'server' }); setStripState('ready') }
+      else setStripState('none')
+    })()
+    return () => { cancelled = true }
+  }, [src, total])
 
   // Keep playback inside the kept section and stop at OUT.
   useEffect(() => {
@@ -134,11 +164,15 @@ export function MovieEditor({ item, src, onChange, onClose }: {
         <div className="editor-strip-wrap">
           <div className="ruler"><span>0:00</span><span>{formatClockPrecise(total / 4)}</span><span>{formatClockPrecise(total / 2)}</span><span>{formatClockPrecise(total * 3 / 4)}</span><span>{formatClockPrecise(total)}</span></div>
           <div ref={stripRef} className={`editor-strip ${drag ? 'dragging' : ''}`} onPointerDown={onStripDown('seek')}>
-            <div className="filmstrip">{Array.from({ length: frames }).map((_, i) => {
-              const at = (i + 0.5) / frames * total
-              const inKeep = at >= start && at <= end
-              return <i key={i} style={{ background: `hsl(${28 + ((i * 37) % 40)} ${inKeep ? 34 : 6}% ${inKeep ? 42 : 16}%)` }} />
-            })}</div>
+            <div className={`filmstrip ${stripState}`}>
+              {strip && <img className="filmstrip-img" src={strip.src} alt="" draggable={false}
+                title={strip.kind === 'live' ? 'Frames read by your browser' : 'Frames rendered by the backend FFmpeg (browser cannot decode this file)'} />}
+              {!strip && Array.from({ length: frames }).map((_, i) => {
+                const at = (i + 0.5) / frames * total
+                const inKeep = at >= start && at <= end
+                return <i key={i} style={{ background: `hsl(${28 + ((i * 37) % 40)} ${inKeep ? 34 : 6}% ${inKeep ? 42 : 16}%)` }} />
+              })}
+            </div>
             <div className="cut-shade left" style={{ width: pct(start) }} />
             <div className="cut-shade right" style={{ left: pct(end) }} />
             <div className="playhead" style={{ left: pct(position) }} />
