@@ -875,3 +875,14 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .fx-section.light .fx-row .fx-slot{color:#888c82}
 .fx-section.light .fx-row .text-effect-seconds{background:#fafff2;border-color:#cbd1c2;color:#4c5445}
 .icon-button.playing{color:#718f46}
+
+/* --- Output delivery (Option 1, docs/output-download-options.md) ----------- */
+.render-ready-row{display:flex;align-items:center;gap:10px;border:1px solid #d9e4c6;background:#f2f7e6;border-radius:9px;padding:10px 12px;margin-top:12px}
+.render-ready-row>svg{color:#5d7c38;flex:none}
+.render-ready-info{display:flex;flex-direction:column;min-width:0}
+.render-ready-info strong{font-size:11px;color:#30342d}
+.render-ready-info small{font-size:9px;color:#777b72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.render-ready-row .btn{margin-left:auto;flex:none}
+.queue-missing{display:inline-flex;align-items:center;gap:7px;color:#8a5a2b;font-size:10px;font-weight:700;white-space:nowrap}
+.queue-missing .btn{padding:0 9px;height:29px;font-size:10px}
+.queue-note{margin-bottom:12px}

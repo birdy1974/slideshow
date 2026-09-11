@@ -18,7 +18,7 @@ from typing import Any, Iterator
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -119,6 +119,10 @@ CREATE TABLE IF NOT EXISTS render_jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON render_jobs(project_id, created_at DESC);
 """
 
+# v2: finished jobs remember the size of their output file, so the GUI can show
+# "MP4 ready · 1.2 GB" without a probe per click. NULL until a job completes.
+MIGRATION_2 = "ALTER TABLE render_jobs ADD COLUMN size_bytes INTEGER"
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -155,11 +159,27 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_journal_mode()
         with self.connect(write=True) as conn:
-            conn.executescript(MIGRATION_1)
-            conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                (SCHEMA_VERSION, utcnow()),
-            )
+            # The migrations bookkeeping table must exist before versions are
+            # read; MIGRATION_1 also (re)creates it for fresh installs.
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+            applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations")}
+            if 1 not in applied:
+                conn.executescript(MIGRATION_1)
+                conn.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (1, utcnow()),
+                )
+            if 2 not in applied:
+                # Older databases (and the CREATE TABLE above) may already have
+                # the column only in the v2 shape — the PRAGMA guard keeps the
+                # ALTER idempotent either way.
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(render_jobs)")}
+                if "size_bytes" not in columns:
+                    conn.execute(MIGRATION_2)
+                conn.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (2, utcnow()),
+                )
 
     def _ensure_journal_mode(self) -> None:
         """Switch the database file to WAL exactly once, never per connection.
@@ -380,7 +400,7 @@ class Database:
         self._run_with_busy_retry(_write)
 
     def update_job(self, job_id: str, **changes: Any) -> None:
-        allowed = {"status", "progress", "stage", "output_path", "error_message", "log_text", "started_at", "finished_at"}
+        allowed = {"status", "progress", "stage", "output_path", "error_message", "log_text", "started_at", "finished_at", "size_bytes"}
         values = {k: v for k, v in changes.items() if k in allowed}
         if not values:
             return

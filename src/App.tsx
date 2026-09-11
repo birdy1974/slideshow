@@ -798,6 +798,10 @@ function App() {
   const [previewing, setPreviewing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  // The newest finished MP4 of this project (size + file route), so the
+  // review panel can offer "Download" the moment a render completes —
+  // Option 1 of docs/output-download-options.md.
+  const [finishedRender, setFinishedRender] = useState<{ url: string; name: string; bytes: number | null } | null>(null)
   // Live render feedback: which stage FFmpeg is in, when the backend started it
   // (its own clock, so a refresh does not reset the countdown) and the smoothed
   // progress rate the countdown is derived from.
@@ -1629,7 +1633,10 @@ function App() {
       if(completed.cancelled){notify(`${kind==='preview'?'Preview':'Render'} stopped`);return}
       rememberRenderRate(kind)
       if(kind==='preview'){setPreviewUrl(`${completed.fileUrl}?v=${Date.now()}`);setShowPreview(true);notify('Real FFmpeg preview is ready')}
-      else notify(`MP4 render complete · ${outputFilename}.mp4`)
+      else{
+        notify(`MP4 render complete · ${outputFilename}.mp4`)
+        setFinishedRender({ url: completed.fileUrl || `/api/jobs/${jobId}/file`, name: `${outputFilename}.mp4`, bytes: Number(completed.size_bytes) || null })
+      }
     }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`)}
     finally{
       kind==='preview'?setPreviewing(false):setRendering(false)
@@ -1654,6 +1661,7 @@ function App() {
   }
   const startJob = async (kind:'preview'|'render', overwrite=false) => {
     kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1);setEtaSample(null);setJobStage('');setJobStartedAt(null)
+    if(kind==='render')setFinishedRender(null)
     // Provisional until the backend's own started_at arrives with the first poll.
     jobStartedRef.current=Date.now()
     jobBaseline.current={ timelineSeconds: total, itemCount: media.length, resolution, encoder }
@@ -1688,7 +1696,12 @@ function App() {
     try{
       const jobs=await fetch(`/api/jobs?project_id=${id}`).then(r=>r.ok?r.json():[])
       const active=jobs.find((job:any)=>['queued','running','cancelling'].includes(job.status))
-      if(!active)return
+      // No active job, but a finished render? Keep its download at hand.
+      if(!active){
+        const done=jobs.find((job:any)=>job.status==='complete'&&job.kind==='render'&&job.fileUrl&&job.fileAvailable!==false)
+        if(done)setFinishedRender({ url: done.fileUrl, name: String(done.output_path||'').split('/').pop() || 'movie.mp4', bytes: Number(done.size_bytes)||null })
+        return
+      }
       const kind:'preview'|'render'=active.kind==='preview'?'preview':'render'
       if(kind==='preview')setPreviewing(true);else setRendering(true)
       setProgress(Math.max(1,Math.round(active.progress||0)))
@@ -1820,7 +1833,7 @@ function App() {
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
-          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync||capabilities.vaapi?'':'warning'}>{capabilities.quickSync||capabilities.vaapi?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':capabilities.vaapi?'Hardware encoding available · VAAPI':'Quick Sync and VAAPI unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
+          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync||capabilities.vaapi?'':'warning'}>{capabilities.quickSync||capabilities.vaapi?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':capabilities.vaapi?'Hardware encoding available · VAAPI':'Quick Sync and VAAPI unavailable · CPU fallback'}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
         </div>
         </div>
       </div>
@@ -2552,20 +2565,38 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
 
 function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () => void }) {
   const [jobs,setJobs]=useState<any[]>([])
+  const [rerendering,setRerendering]=useState<string|null>(null)
+  const [rerenderNote,setRerenderNote]=useState<string|null>(null)
   useEffect(()=>{let active=true;const load=()=>fetch(`/api/jobs${projectId?`?project_id=${projectId}`:''}`).then(r=>r.ok?r.json():[]).then(x=>active&&setJobs(x)).catch(()=>{});load();const timer=setInterval(load,2000);return()=>{active=false;clearInterval(timer)}},[projectId])
   const stopJob = (id: string) => { void fetch(`/api/jobs/${id}/cancel`, { method: 'POST' }) }
+  // A finished row whose file vanished (pruned proxy preview, cleared output)
+  // offers a re-render instead of a dead link. Overwrite stays opt-in: the
+  // 409 "output exists" answer sends the user to the editor, where the
+  // acknowledgement dialog lives.
+  const rerenderJob = async (job:any) => {
+    setRerendering(job.id); setRerenderNote(null)
+    try{
+      const response=await fetch(`/api/projects/${job.project_id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:job.kind,overwrite:false})})
+      if(response.status===409)setRerenderNote('The output file exists again — open the editor to overwrite it')
+      else if(!response.ok)setRerenderNote(`Could not re-render: ${(await response.text()).slice(0,140)}`)
+      else setRerenderNote(job.kind==='preview'?'Preview queued — it appears below while it runs':'Render queued — it appears below while it runs')
+    }catch{setRerenderNote('Could not reach the backend')}
+    finally{setRerendering(null)}
+  }
   const live = (status: string) => ['queued', 'running', 'cancelling'].includes(status)
-  return <main className="queue-page"><div className="project-heading"><div><div className="eyebrow">ACTIVITY</div><h1>Render queue</h1><p>FFmpeg jobs and diagnostic history persisted in SQLite.</p></div><button className="btn dark" onClick={onBack}><Plus size={16}/> Back to editor</button></div>{jobs.length===0&&<div className="notice"><Info size={16}/><span>No render jobs yet. Save the project, then generate a preview or MP4.</span></div>}{jobs.map(job=>{
+  return <main className="queue-page"><div className="project-heading"><div><div className="eyebrow">ACTIVITY</div><h1>Render queue</h1><p>FFmpeg jobs and diagnostic history persisted in SQLite.</p></div><button className="btn dark" onClick={onBack}><Plus size={16}/> Back to editor</button></div>{rerenderNote&&<div className="notice queue-note"><Info size={16}/><span>{rerenderNote}</span></div>}{jobs.length===0&&<div className="notice"><Info size={16}/><span>No render jobs yet. Save the project, then generate a preview or MP4.</span></div>}{jobs.map(job=>{
     const failed = job.status==='failed'
     const cancelled = job.status==='cancelled'
     return <section className={`panel queue-card ${failed?'is-failed':''} ${cancelled?'is-cancelled':''} ${live(job.status)?'is-live':''}`} key={job.id}>
       <div className="queue-thumb"><img src="/media/coast.jpg"/><span>{live(job.status)?<RefreshCw className="spin" size={15}/>:failed?<AlertTriangle size={15}/>:<Download size={15}/>}</span></div>
-      <div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.error_message?` · ${job.error_message}`:''}</small></div>
+      <div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.size_bytes?` · ${formatFileSize(job.size_bytes)}`:''}{job.error_message?` · ${job.error_message}`:''}</small></div>
       <span className={`status-pill ${job.status}`}>{failed||cancelled?<AlertTriangle size={13}/>:<Check size={13}/>} {job.status}</span>
       {live(job.status)
         ? <button type="button" className="btn soft stop-job" disabled={job.status==='cancelling'} onClick={()=>stopJob(job.id)}><Square size={13} fill="currentColor"/> {job.status==='cancelling'?'Stopping…':'Stop'}</button>
         : job.output_path
-          ? <a className="btn soft" href={`/api/jobs/${job.id}/file`} download><Download size={15}/> Download</a>
+          ? job.fileAvailable===false
+            ? <span className="queue-missing" title="The file was pruned or deleted — re-render to restore it"><AlertTriangle size={13}/> File missing <button type="button" className="btn soft" disabled={rerendering===job.id} onClick={()=>rerenderJob(job)}>{rerendering===job.id?<RefreshCw className="spin" size={13}/>:<RefreshCw size={13}/>} Re-render</button></span>
+            : <a className="btn soft" href={`/api/jobs/${job.id}/file`} download title={job.size_bytes?`Download · ${formatFileSize(job.size_bytes)}`:'Download'}><Download size={15}/> Download</a>
           : <a className="btn soft" href={`/api/jobs/${job.id}/log`} target="_blank">View log</a>}
     </section>
   })}</main>

@@ -1284,7 +1284,13 @@ class Renderer:
             if not shutil.which(self.settings.ffmpeg_bin):
                 raise RenderError("FFmpeg is not installed or is not available on PATH")
             output = self.render(project, kind, work, cancelled, lambda p,s: self.db.update_job(job_id, progress=p, stage=s))
-            self.db.update_job(job_id, status="complete", progress=100, stage="Complete", output_path=str(output), finished_at=utcnow())
+            # Remember the finished file's size so the GUI can show "MP4 ready ·
+            # 1.2 GB" and real download sizes without probing the file again.
+            try:
+                size_bytes = output.stat().st_size if output.is_file() else None
+            except OSError:
+                size_bytes = None
+            self.db.update_job(job_id, status="complete", progress=100, stage="Complete", output_path=str(output), size_bytes=size_bytes, finished_at=utcnow())
         except Exception as exc:
             status = "cancelled" if cancelled.is_set() else "failed"
             self.db.update_job(job_id, status=status, stage="Cancelled" if cancelled.is_set() else "Failed", error_message=str(exc), finished_at=utcnow())

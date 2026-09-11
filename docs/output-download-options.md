@@ -1,7 +1,9 @@
 # Getting the rendered MP4 onto a local device — options & GUI integration
 
-Date: 2026-09-11 · Status: **advice — nothing implemented yet** (options marked
-like the other docs so we can choose and implement cheaply afterwards).
+Date: 2026-09-11 · Status: **Option 1 implemented** (sizes on job rows,
+friendly preview download names, availability flag + re-render in the queue,
+"MP4 ready" download row in the review panel — see below). Options 2–5 remain
+advice.
 
 Question: *"give options how output result can be made available to download to
 local device, including options for gui"*. The render side is done — a finished
@@ -49,7 +51,7 @@ path** to a phone/tablet/computer and where the GUI surfaces it.
 
 ---
 
-## Option 1 [exists — polish it; recommended baseline] Browser download via the jobs file route
+## Option 1 [IMPLEMENTED] Browser download via the jobs file route
 
 The current `<a download href="/api/jobs/{id}/file">` path is already the
 right mechanical answer: streamed, range-capable, attachment-disposition.
@@ -67,6 +69,17 @@ Cheap polish closes the rough edges:
   output), mark the row and offer **Re-render** instead of a dead link. A
   `fetch(..., {method:'HEAD'})` on hover/render is enough.
 - Effort: **small**. No new infrastructure.
+- **Shipped as described:** `render_jobs.size_bytes` (schema migration v2, set
+  from one `stat()` when a job completes), `fileAvailable` computed by
+  `GET /api/jobs*` per row (a stat, cheaper and more reliable than a HEAD per
+  tile — though the file route also answers `HEAD` now), previews download as
+  `<project name> (preview <job>).mp4` via `Content-Disposition` (RFC 5987,
+  illegal characters dashed exactly like the frontend's `safeFilename`), the
+  queue row shows the real size and swaps a dead link for "File missing ·
+  Re-render" (409 from the re-render still defers to the editor's overwrite
+  acknowledgement), and the review panel flips to an "MP4 ready · 1.2 GB →
+  Download MP4" row the moment a render finishes (also restored on reload
+  from the newest completed render job).
 
 ## Option 2 [recommended] Stable per-project output link + a real completion CTA
 
