@@ -988,3 +988,9 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .timeline-item .thumb .thumb-look+.thumb-look{bottom:17px}
 .timeline-item .thumb>span{bottom:auto;top:3px;right:3px}
 .timeline-item .thumb .thumb-look:not(.on)>span{display:none}
+/* Tiny inline Ken Burns select on the detailed photo row's meta line. */
+.motion-inline{display:inline-flex;align-items:center;gap:3px;height:16px;margin:1px 0 2px;color:#8d9285}
+.motion-inline select{height:16px;border:1px solid #d9dad4;border-radius:4px;background:#fff;font:600 8px Manrope;color:#6c7067;padding:0 2px;outline:0;max-width:78px}
+.motion-inline select.on{border-color:#a9c07f;background:#f1f6e9;color:#4a5d2c}
+.motion-inline button{height:16px;border:1px solid #d9dad4;border-radius:4px;background:#fff;color:#6c7067;font:700 7px Manrope;padding:0 4px;display:inline-flex;align-items:center;gap:2px;cursor:pointer}
+.motion-inline button:hover{border-color:#a9c07f;color:#4a5d2c}
