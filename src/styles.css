@@ -1035,3 +1035,19 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .transition-inline-params .gl-param .color-control.compact input[type="color"]{width:18px;height:18px}
 .transition-inline-params .gl-param .color-control.compact input[type="text"]{height:18px;font-size:8px}
 .transition-inline-params .gl-no-params{grid-column:1/-1;font-size:8px;color:#999}
+/* Every detailed row uses the wide-transition layout, so the transition
+   details look the same whether the caption is shown or hidden. With the
+   caption shown, the text bar is compacted to fit the narrower info column:
+   the mode select becomes a 2-line-narrow select and the input shrinks. */
+.timeline-item.wide-transition{grid-template-columns:34px 78px minmax(190px,1fr) minmax(300px,2fr) 76px;align-items:start}
+.timeline-item.wide-transition .row-select,.timeline-item.wide-transition .row-actions{align-self:center}
+.timeline-item.wide-transition .item-text-edit{gap:3px;flex-wrap:nowrap}
+.timeline-item.wide-transition .item-text-edit>input{min-width:40px;height:22px;font-size:8px;padding:0 5px}
+.timeline-item.wide-transition .item-text-edit .text-toggle,.timeline-item.wide-transition .item-text-edit .text-detail-transition{width:22px;min-width:22px;height:22px}
+.timeline-item.wide-transition .item-text-edit .select-wrap{height:22px;width:64px;min-width:64px}
+.timeline-item.wide-transition .item-text-edit .select-wrap select{font-size:8px;padding:0 16px 0 5px}
+.timeline-item.wide-transition .item-text-edit .select-wrap svg{right:4px;width:11px}
+.timeline-item.wide-transition .detail-transition-popover{grid-template-columns:60px minmax(80px,1fr) 80px 22px;height:auto;padding:4px}
+.timeline-head{grid-template-columns:20px 78px minmax(190px,1fr) minmax(300px,2fr) 76px}
+@media(max-width:1100px){.timeline-item.wide-transition{grid-template-columns:34px 70px minmax(150px,.9fr) minmax(220px,1.5fr) 76px}}
+@media(max-width:760px){.timeline-item.wide-transition{grid-template-columns:34px 65px 1fr}}
