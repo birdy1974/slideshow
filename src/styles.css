@@ -980,3 +980,11 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .kb-focus-readout button:disabled{opacity:.4;cursor:default}.kb-reset{justify-self:start}
 .kb-note{font-size:7.5px;line-height:1.45;color:#8d9285}
 @media(max-width:760px){.kb-body{grid-template-columns:1fr}.kb-preview{max-width:220px}}
+/* Detailed-row thumbnail chips: motion bottom-left, look/crop bottom-right
+   (stacked when both exist) — the Filter chip used to sit on the same
+   bottom-left spot and covered the motion chip entirely. */
+.timeline-item .thumb .thumb-effect{left:3px;right:auto;bottom:3px}
+.timeline-item .thumb .thumb-look{left:auto;right:3px;bottom:3px}
+.timeline-item .thumb .thumb-look+.thumb-look{bottom:17px}
+.timeline-item .thumb>span{bottom:auto;top:3px;right:3px}
+.timeline-item .thumb .thumb-look:not(.on)>span{display:none}
