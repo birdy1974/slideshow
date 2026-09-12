@@ -116,13 +116,6 @@ def effect_for(label: str | None, slot: str) -> dict[str, Any] | None:
     return _by_label().get({"enter": "Fade", "exit": "Fade out", "while": "None (static)"}[slot])
 
 
-def effect_params(label: str | None) -> list[dict[str, str]]:
-    """Parameter definitions (name/default) for an effect, e.g. Count up."""
-    entry = _by_label().get(str(label or "").strip())
-    params = entry.get("params") if entry else None
-    return [p for p in (params or []) if isinstance(p, dict) and p.get("name")]
-
-
 # --------------------------------------------------------------------------
 # Small shared helpers
 # --------------------------------------------------------------------------
@@ -274,14 +267,6 @@ class FxPlan:
 # --------------------------------------------------------------------------
 # Engine 1 — animated drawtext expressions
 # --------------------------------------------------------------------------
-
-# Effects this engine can express. If every chosen slot lands in these sets the
-# renderer stays on a single drawtext filter; anything else switches the whole
-# overlay to libass.
-DT_ENTER = {"Fade", "Slide from left", "Slide from right", "Slide from top", "Slide from bottom",
-            "Rise & settle", "Drop & bounce", "Slide & overshoot"}
-DT_WHILE = {"None (static)", "Gentle float", "Horizontal drift"}
-DT_EXIT = {"Fade out", "Slide out left", "Slide out right", "Slide out top", "Slide out bottom", "Sink & fade"}
 
 
 def _dt_alpha(g: TextGeometry) -> str:

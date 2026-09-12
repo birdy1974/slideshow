@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, ChevronDown, LayoutGrid, Loader2, RefreshCw, Search, Star, X } from 'lucide-react'
 import {
-  EASING_DEFAULT, isGLTransition, loadFavouriteTransitions, loadRecentTransitions,
+  isGLTransition, loadFavouriteTransitions, loadRecentTransitions,
   rememberTransition, toggleFavouriteTransition, totalTransitionCount, transitionGroups,
   transitionPreviewUrl, transitionSlug, transitionSymbol, transitionDirection, transitions,
 } from './transitionCatalog'
@@ -453,12 +453,4 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className, o
       </footer>
     </div>, document.body)}
   </>
-}
-
-/** Easing/reverse summary line, shared by the row popover and the inspector. */
-export function transitionSummary(easing?: string, reverse?: number) {
-  const bits: string[] = []
-  if (easing && easing !== EASING_DEFAULT) bits.push(easing)
-  if (reverse) bits.push('reverse')
-  return bits.join(' · ')
 }

@@ -21,8 +21,6 @@ from app.renderer import (
     _summarize_ffmpeg_log,
     KEN_BURNS_MAX_STRENGTH,
     KEN_BURNS_MAX_ZOOM,
-    build_filter_graph,
-    build_xfade_filter,
     quote_xfade_value,
     video_trim_window,
     fill_frame_filter,
@@ -286,10 +284,6 @@ class XfadeFilterQuotingTest(unittest.TestCase):
             self.renderer.build_transition_xfade({"transition": "GL · Cube", "transitionParams": {"persp": 0.7}, "transitionEasing": "bounce", "transitionReverse": 2}, 1.0, 0.0),
         )
 
-    def test_build_xfade_filter_quotes_too(self) -> None:
-        fragment = build_xfade_filter("gl_cube(persp=0.7,unzoom=0.3)", 1, 0.5, easing="steps(4,jump-start)", reverse=2)
-        self.assertEqual("xfade=transition='gl_cube(persp=0.7,unzoom=0.3)':duration=1:offset=0.5:easing='steps(4,jump-start)':reverse=2", fragment)
-
     def test_stock_build_strips_easing_and_params_via_fallback(self) -> None:
         self.renderer._xfade_supported = _parse_xfade_help(FFMPEG5_XFADE_HELP)
         self.renderer._xfade_has_easing = False
@@ -551,57 +545,6 @@ class MediaValidationTest(unittest.TestCase):
         self.assertNotIn("$ ffmpeg", summary)
         self.assertNotIn("configuration:", summary)
         self.assertLess(len(summary), 500)
-
-
-class FilterGraphTest(unittest.TestCase):
-    def test_three_equal_clips_use_cumulative_xfade_offsets(self) -> None:
-        # Holds are preserved and transitions are added: boundaries are at 5s and 11s.
-        graph = build_filter_graph([5, 5, 5], [1, 1], ["fade", "dissolve"])
-        self.assertEqual(
-            "[0:v]settb=AVTB,setpts=PTS-STARTPTS[s0];"
-            "[1:v]settb=AVTB,setpts=PTS-STARTPTS[s1];"
-            "[2:v]settb=AVTB,setpts=PTS-STARTPTS[s2];"
-            "[s0][s1]xfade=transition=fade:duration=1:offset=5,"
-            "settb=AVTB,setpts=PTS-STARTPTS[x1];"
-            "[x1][s2]xfade=transition=dissolve:duration=1:offset=11,"
-            "settb=AVTB,setpts=PTS-STARTPTS[vout]",
-            graph,
-        )
-
-    def test_single_clip_resets_timestamps_to_vout(self) -> None:
-        self.assertEqual("[0:v]settb=AVTB,setpts=PTS-STARTPTS[vout]", build_filter_graph([5], [], []))
-
-    def test_fps_is_enforced_for_every_xfade_input_and_result(self) -> None:
-        graph = build_filter_graph([5, 5, 5], [3, 3], ["fade", "dissolve"], fps=30)
-        # fps must follow setpts so it is not clobbered by PTS-STARTPTS.
-        normalization = "settb=AVTB,setpts=PTS-STARTPTS,fps=30"
-        for index in range(3):
-            self.assertIn(f"[{index}:v]{normalization}[s{index}]", graph)
-        self.assertIn(
-            "[s0][s1]xfade=transition=fade:duration=3:offset=5,"
-            f"{normalization}[x1]",
-            graph,
-        )
-        self.assertIn(
-            "[x1][s2]xfade=transition=dissolve:duration=3:offset=13,"
-            f"{normalization}[vout]",
-            graph,
-        )
-
-    def test_two_clip_offset_starts_after_first_clip_hold(self) -> None:
-        graph = build_filter_graph([5, 7], [1], ["wipeleft"])
-        self.assertIn(
-            "[s0][s1]xfade=transition=wipeleft:duration=1:offset=5,"
-            "settb=AVTB,setpts=PTS-STARTPTS[vout]",
-            graph,
-        )
-
-    def test_offset_formatting_avoids_float_noise(self) -> None:
-        self.assertEqual("0.8", format_ffmpeg_number(0.8000000000000002))
-        graph = build_filter_graph([1.1, 1.1], [0.3], ["fade"])
-        self.assertIn("offset=1.1", graph)
-        self.assertNotRegex(graph, r"1\.0999|1\.100000")
-
 
 
 class FrameFittingTest(unittest.TestCase):

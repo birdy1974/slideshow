@@ -209,8 +209,3 @@ export function useCroppedSource(src: string, item?: Cropish | null, tier: CropT
   // The copy already carries the quarter turn, so callers must not rotate twice.
   return { src: entry ? entry.url : src, cropped: true, ready: !!entry, rotationApplied: !!entry }
 }
-
-/** True when this item's crop would change what a surface shows. */
-export function isCropped(item?: Cropish | null): boolean {
-  return normalizeCrop(item) !== null
-}
