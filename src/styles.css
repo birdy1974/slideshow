@@ -994,3 +994,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .motion-inline select.on{border-color:#a9c07f;background:#f1f6e9;color:#4a5d2c}
 .motion-inline button{height:16px;border:1px solid #d9dad4;border-radius:4px;background:#fff;color:#6c7067;font:700 7px Manrope;padding:0 4px;display:inline-flex;align-items:center;gap:2px;cursor:pointer}
 .motion-inline button:hover{border-color:#a9c07f;color:#4a5d2c}
+/* The ready row's Download button must not inherit the panel's full-width
+   button rule: keep it a compact button aligned right on the same line. */
+.review-panel .render-ready-row .btn{width:auto;margin:0 0 0 auto;height:32px;padding:0 12px;white-space:nowrap;text-decoration:none}
+.review-panel .render-ready-row .render-ready-info{flex:1}
