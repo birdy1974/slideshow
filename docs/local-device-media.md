@@ -77,14 +77,40 @@ to `<config>/uploads` so a bare checkout keeps working.
 ## GUI integration
 
 - **Media picker**: an "Uploads" location button next to photos/videos, and an
-  **"Upload from this device"** button that opens the native file dialog — on
-  iOS/Android that is the camera roll, which is the exact use case.
+  **Upload from this device** section with **Choose files…** (multi-select with
+  Ctrl/Cmd/Shift, camera roll on iOS/Android) and **Choose folder…** (whole
+  directory incl. subfolders, via `webkitdirectory`). Picks are *staged* first —
+  a review list with size, remove-per-file, and an explicit **Upload N files**
+  button — so several picks can be combined and nothing leaves the device
+  until the button is pressed. Non-media files a folder pick brings along
+  (`.xmp`, `.aae`, `Thumbs.db`, `.DS_Store`) are dropped quietly and counted.
+- **Pre-flight check**: `/api/health` reports `uploads: { writable, reason,
+  maxMb }`. When the uploads volume is not writable by the app user the picker
+  shows the reason (with the uid:gid it runs as) and the Upload button stays
+  disabled — the classic first-run failure is a root-owned `UPLOADS_PATH`
+  folder that Docker created while the container runs as `PUID:PGID`.
 - **Drag & drop**: drop files from the desktop straight onto the storyline /
   compact grid; a drop overlay ("Drop 6 files to upload") starts the same queue,
   and files land in the storyline in drop order.
-- **Upload tray**: a small progress strip (per file: name, bar, speed, cancel)
+- **Upload tray**: a small progress strip (per file: name, bar, MB, cancel)
   bottom-right while a batch is in flight; finished files auto-add to the
-  storyline like picker selections do.
+  storyline like picker selections do. Successful rows fade after a few
+  seconds; **failed rows stay, with the rejection reason printed inline**,
+  until the tray is cleared.
+
+## Troubleshooting "I pick a file and nothing happens"
+
+1. Open the picker → *Upload from this device*. If an amber box says the
+   uploads folder is not writable, fix ownership on the NAS:
+   `sudo chown -R PUID:PGID /volume1/docker/slideshow/uploads` (the same
+   PUID/PGID as in `.env`), or create the folder before the first
+   `docker compose up` so Docker does not create it as root.
+2. Look at the upload tray bottom-right: a red row shows the exact reason
+   (`not a supported photo or movie type`, `larger than the N MB upload
+   limit`, `Not a valid movie: …` from ffprobe, HEIC is not supported).
+3. Behind a reverse proxy (DSM Application Portal / nginx) a large movie may
+   fail with `Upload failed (413)`: raise `client_max_body_size` on the proxy.
+   The app itself accepts up to `UPLOAD_MAX_MB` (default 4096).
 - Everything downstream is untouched: thumbnails, lightbox, cut/crop, filters,
   rotation, transitions, render — an uploaded file *is* a normal media item
   (`path: "/uploads/beach.jpg"`).

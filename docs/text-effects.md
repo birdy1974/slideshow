@@ -45,6 +45,24 @@ calls. Per item it picks one of:
    wipes, `\p1` vector bars (lower third), frame-sliced events (shake,
    glitch flicker, count up, scramble, typewriter delete).
 
+**Outline & shadow.** Picture captions get a dark outline (≈ size/16 px,
+`borderw`/`bordercolor` in drawtext, `Outline`/`OutlineColour` in the .ass
+style) plus the historic 2 px soft shadow. It is a project default
+(`textDefaults.outline`, on unless switched off in *Default text style*);
+text frames never get it since they sit on their own colour bed.
+
+**No drawtext? Everything goes through libass.** `drawtext` needs libfreetype
+at FFmpeg build time and many stock binaries (distro packages, NAS builds,
+the imageio wheel) ship libass *without* it. The renderer probes both filters
+once (`Renderer.drawtext_filter_supported()` / `ass_filter_supported()`); when
+drawtext is missing every `dt` plan — including the legacy caption fade — is
+built with `force_ass=True`, which has libass twins for all of them (`\fad`
+for the fades, `\move` + `\fad` for the slides/rise/drop/overshoot, `\t`
+scale bounces for the springs). Previously those clips failed with
+"Filter not found" and rendered with no text at all, which read as "text
+effects do not work". Builds with neither filter log an error and skip the
+overlay rather than failing the render.
+
 **Fallback:** FFmpeg builds without the `ass` filter (some stock NAS packages;
 the container build hard-checks libass so it is always fine) degrade every
 slot to the plain fades instead of failing the render — logged once per

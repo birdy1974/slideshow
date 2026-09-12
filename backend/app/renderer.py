@@ -30,6 +30,80 @@ from .text_effects import build_text_overlay, overlay_plan, plan_engine
 log = logging.getLogger(__name__)
 
 KEN_BURNS_MAX_ZOOM = 1.12
+# Per-slide Ken Burns strength: the zoom factor the motion reaches by the end
+# of the hold (or holds constant while panning). Clamped so a picture can never
+# be pushed past its edges; 1.12 is the historical fixed value.
+KEN_BURNS_MIN_STRENGTH, KEN_BURNS_MAX_STRENGTH = 1.02, 1.35
+
+
+def ken_burns_settings(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalised per-slide Ken Burns settings, or None when the slide has no motion.
+
+    ``effect`` selects the motion ("Ken Burns · Zoom in / Zoom out / Pan left /
+    Pan right / Pan up / Pan down"); ``kenBurnsZoom`` is the strength (target
+    zoom factor, default KEN_BURNS_MAX_ZOOM); ``kenBurnsX``/``kenBurnsY`` place
+    the focus point of a zoom in percent of the picture (default 50/50 =
+    centre). Pans ignore the focus point: they always travel edge to edge.
+    Anything malformed falls back to the defaults, never to an error.
+    """
+    if item.get("type", "image") != "image":
+        return None
+    effect = str(item.get("effect", ""))
+    if not effect.startswith("Ken Burns"):
+        return None
+    def _num(key: str, default: float, low: float, high: float) -> float:
+        try:
+            value = float(item.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        if value != value:
+            return default
+        return min(high, max(low, value))
+    if "Zoom out" in effect: motion = "zoom-out"
+    elif "Pan left" in effect: motion = "pan-left"
+    elif "Pan right" in effect: motion = "pan-right"
+    elif "Pan up" in effect: motion = "pan-up"
+    elif "Pan down" in effect: motion = "pan-down"
+    else: motion = "zoom-in"
+    return {
+        "motion": motion,
+        "zoom": round(_num("kenBurnsZoom", KEN_BURNS_MAX_ZOOM, KEN_BURNS_MIN_STRENGTH, KEN_BURNS_MAX_STRENGTH), 4),
+        "x": round(_num("kenBurnsX", 50.0, 0.0, 100.0), 2),
+        "y": round(_num("kenBurnsY", 50.0, 0.0, 100.0), 2),
+    }
+
+
+def ken_burns_filter(settings: dict[str, Any], width: int, height: int, fps: int, duration: float) -> str:
+    """zoompan expression for one slide: reaches the strength exactly at the end of the hold.
+
+    ``on`` is zoompan's output frame counter, so progress ``p = on / frames``
+    runs 0→1 over the segment regardless of its length — a 3 s and a 12 s slide
+    both complete the same motion instead of sharing one fixed per-frame step.
+    Zooms anchor on the focus point (percent of the picture); pans keep the
+    strength as a constant zoom and slide the window from one edge to the other.
+    """
+    zoom = format_ffmpeg_number(settings["zoom"])
+    frames = max(1, int(round(max(0.2, duration) * fps)))
+    p = f"min(1,on/{frames})"
+    motion = settings["motion"]
+    if motion in ("zoom-in", "zoom-out"):
+        z = f"1+({zoom}-1)*{p}" if motion == "zoom-in" else f"{zoom}-({zoom}-1)*{p}"
+        fx, fy = format_ffmpeg_number(settings["x"] / 100.0), format_ffmpeg_number(settings["y"] / 100.0)
+        # Keep the focus point where it is while the window shrinks around it:
+        # window origin = focus - focus * window size (clamped inside the frame).
+        x = f"max(0,min(iw-iw/zoom,iw*{fx}-iw/zoom*{fx}))"
+        y = f"max(0,min(ih-ih/zoom,ih*{fy}-ih/zoom*{fy}))"
+    else:
+        z = zoom
+        if motion == "pan-left":      # picture moves left: window travels right→left
+            x, y = f"(iw-iw/zoom)*(1-{p})", "(ih-ih/zoom)/2"
+        elif motion == "pan-right":
+            x, y = f"(iw-iw/zoom)*{p}", "(ih-ih/zoom)/2"
+        elif motion == "pan-up":
+            x, y = "(iw-iw/zoom)/2", f"(ih-ih/zoom)*(1-{p})"
+        else:                         # pan-down
+            x, y = "(iw-iw/zoom)/2", f"(ih-ih/zoom)*{p}"
+    return f"zoompan=z='{z}':x='{x}':y='{y}':d=1:s={width}x{height}:fps={fps}"
 RESOLUTIONS = {
     "4K UHD · 2160p": (3840, 2160), "Full HD · 1080p": (1920, 1080),
     "HD · 720p": (1280, 720), "SD · 480p": (854, 480),
@@ -886,6 +960,7 @@ class Renderer:
         self._xfade_has_easing: bool | None = None
         self._easing_lock = threading.Lock()
         self._ass_supported: bool | None = None
+        self._drawtext_supported: bool | None = None
         self._ass_lock = threading.Lock()
 
     def warm_capabilities(self) -> None:
@@ -999,10 +1074,17 @@ class Renderer:
         # Decide whether to include easing (only if custom ffmpeg supports it)
         has_easing = self.xfade_has_easing()
         if not has_easing:
+            # Stock xfade knows neither easing/reverse nor the
+            # `name(param=value)` syntax — that whole family belongs to the
+            # xfade-easing patch. Emitting `fade(smoothness=0.6)` on a stock
+            # build fails the render with "Not yet implemented in FFmpeg".
             easing = None
             reverse = 0
+            params = {}
         # Build final transition string with params
         ffmpeg_id = xfade_name(label)
+        if not has_easing:
+            ffmpeg_id, _ = parse_transition_label(ffmpeg_id)
         # If caller stored friendly but we have params, rebuild correctly
         base_id, inline = parse_transition_label(ffmpeg_id)
         merged: dict[str, Any] = {}
@@ -1265,10 +1347,12 @@ class Renderer:
         stem = Path(str(output_settings.get("filename", "slideshow"))).stem or "slideshow"
         return f"{folder}/{stem}.mp4"
 
-    def submit(self, project_id: int, kind: str, overwrite: bool = False) -> dict[str, Any]:
+    def submit(self, project_id: int, kind: str, overwrite: bool = False, media_ids: list[Any] | None = None) -> dict[str, Any]:
         project = self.db.get_project(project_id)
         if not project:
             raise KeyError(project_id)
+        if kind == "preview" and media_ids:
+            project = self.subset_project(project, media_ids)
         if kind == "render":
             output = self.render_output_path(project)
             if output.exists() and not overwrite:
@@ -1279,6 +1363,28 @@ class Renderer:
         event = threading.Event(); self.cancel_events[job_id] = event
         self.pool.submit(self._run, job_id, project, kind, event)
         return self.db.get_job(job_id) or job
+
+    @staticmethod
+    def subset_project(project: dict[str, Any], media_ids: list[Any]) -> dict[str, Any]:
+        """A copy of ``project`` holding only the selected slides, in story order.
+
+        Used by "Generate preview" with a selection: the user wants to check
+        those slides (and the transitions between them), not sit through the
+        whole movie. Ids that do not exist are ignored; an empty result falls
+        back to the full project. "Fit slideshow to audio" is switched off for
+        the subset — stretching three slides across a five-minute soundtrack
+        would show nothing like the final timing.
+        """
+        wanted = {str(x) for x in media_ids}
+        media = [item for item in project.get("media", []) if str(item.get("id")) in wanted]
+        if not media or len(media) == len(project.get("media", [])):
+            return project
+        subset = {**project, "media": media}
+        soundtrack = dict(project.get("soundtrack") or {})
+        if soundtrack.get("policy") == "Fit slideshow to audio":
+            soundtrack["policy"] = "Loop & trim"
+            subset["soundtrack"] = soundtrack
+        return subset
 
     def cancel(self, job_id: str) -> bool:
         event = self.cancel_events.get(job_id)
@@ -1394,13 +1500,46 @@ class Renderer:
                         [self.settings.ffmpeg_bin, "-hide_banner", "-h", "filter=ass"],
                         capture_output=True, text=True, timeout=10,
                     )
-                    self._ass_supported = result.returncode == 0
+                    output = f"{result.stdout or ''}\n{result.stderr or ''}"
+                    self._ass_supported = result.returncode == 0 and "Filter ass" in output
                 except Exception:
                     self._ass_supported = False
             return self._ass_supported
 
-    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None) -> str | None:
+    def drawtext_filter_supported(self) -> bool:
+        """Whether this FFmpeg has drawtext (needs libfreetype at build time).
+
+        Stock distro/NAS binaries often ship libass *without* drawtext; the
+        legacy caption path and the drawtext-expression effects then fail with
+        'Filter not found' and the clip renders with no text at all. When it is
+        missing, every overlay goes through libass instead. Cached per process.
+        """
+        with self._ass_lock:
+            if self._drawtext_supported is None:
+                try:
+                    result = subprocess.run(
+                        [self.settings.ffmpeg_bin, "-hide_banner", "-h", "filter=drawtext"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    # `-h filter=x` exits 0 either way and prints "Unknown
+                    # filter 'x'." on stdout, so look at the text, not the rc.
+                    output = f"{result.stdout or ''}\n{result.stderr or ''}"
+                    self._drawtext_supported = result.returncode == 0 and "Unknown filter" not in output and "Filter drawtext" in output
+                except Exception:
+                    # No usable ffmpeg to ask (tests, offline dev): assume the
+                    # container build, which hard-checks drawtext at image time.
+                    self._drawtext_supported = True
+            return self._drawtext_supported
+
+    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None, lead_in: float = 0.0) -> str | None:
         """Dispatch to the dual text-effect engine (backend/app/text_effects.py).
+
+        ``textStart``/``textEnd`` are what the storyline handles set: seconds
+        from the start of the clip's *visible hold*. The normalized segment
+        opens with the incoming transition handle (``lead_in`` cloned frames
+        that the previous clip crossfades into), so both times are shifted by
+        it — otherwise every caption after the first clip appears and
+        disappears one transition-length too early.
 
         Items whose three slots are all at their historic defaults get the exact
         drawtext filter this method always produced; anything that needs libass
@@ -1410,10 +1549,24 @@ class Renderer:
         """
         if overlay_plan(item) is None:
             return None
-        if plan_engine(overlay_plan(item)) == "ass" and not self.ass_filter_supported():
+        if lead_in > 0.0005:
+            hold = max(0.2, float(item.get("duration", 5) or 5))
+            start = max(0.0, float(item.get("textStart") or 0.0))
+            end_raw = item.get("textEnd")
+            end = float(end_raw) if end_raw is not None and float(end_raw) > 0 else hold
+            end = min(max(end, start + 0.3), hold)
+            item = {**item, "textStart": start + lead_in, "textEnd": end + lead_in}
+        has_ass = self.ass_filter_supported()
+        has_drawtext = self.drawtext_filter_supported()
+        if plan_engine(overlay_plan(item)) == "ass" and not has_ass:
             log.warning("FFmpeg build lacks the libass 'ass' filter; text effects degrade to fades")
             item = {**item, "textFxEnter": "Fade", "textFxWhile": "None (static)", "textFxExit": "Fade out"}
-        return build_text_overlay(item, defaults, width, height, self.settings.fonts_dir, ass_path, font_file)
+        if not has_ass and not has_drawtext:
+            log.error("FFmpeg build has neither 'drawtext' nor 'ass' — captions cannot be drawn")
+            return None
+        # No drawtext (stock builds): route everything through libass.
+        return build_text_overlay(item, defaults, width, height, self.settings.fonts_dir, ass_path, font_file,
+                                  force_ass=has_ass and not has_drawtext)
 
     def render(self, project: dict[str, Any], kind: str, work: Path, cancelled: threading.Event, progress: Callable[[float,str],None]) -> Path:
         media = list(project.get("media", []))
@@ -1462,8 +1615,11 @@ class Renderer:
                         scaled.append(item)
                         continue
                     hold = max(.2, float(item.get("duration", 5)) * factor)
+                    # The caption window stretches with its clip so a text that
+                    # covered "the middle third" still does.
                     text_end = min(float(item.get("textEnd", item.get("duration", 5))) * factor, hold)
-                    scaled.append({**item, "duration": hold, "textEnd": text_end})
+                    text_start = min(float(item.get("textStart") or 0.0) * factor, max(0.0, text_end - 0.3))
+                    scaled.append({**item, "duration": hold, "textStart": text_start, "textEnd": text_end})
                 media = scaled
         segments: list[Path] = []
         transitions = self.effective_transitions(media)
@@ -1517,13 +1673,13 @@ class Renderer:
             duration = segment_durations[index]
             segment = work / f"segment-{index:04d}.mp4"
             kind_name = item.get("type", "image")
-            effect = str(item.get("effect", ""))
-            ken_burns = kind_name == "image" and effect.startswith("Ken Burns")
+            ken_burns = ken_burns_settings(item)
             if kind_name == "image":
                 # Photos are never cropped: fit the whole picture in the frame and
                 # fill the letterbox bars with a blurred copy. Ken Burns clips are
-                # fitted smaller so the zoom still cannot reach the picture edges.
-                base_filter = fit_frame_filter(width, height, fps, KEN_BURNS_MAX_ZOOM if ken_burns else 1.0)
+                # fitted smaller (by the slide's own strength) so the zoom still
+                # cannot reach the picture edges.
+                base_filter = fit_frame_filter(width, height, fps, ken_burns["zoom"] if ken_burns else 1.0)
             else:
                 base_filter = fill_frame_filter(width, height, fps)
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-y"]
@@ -1592,14 +1748,11 @@ class Renderer:
                 prefix += crop_filters(crop)
             filters = prefix + [base_filter]
             if ken_burns:
-                delta = "0.0008" if "Zoom in" in effect else "-0.0008" if "Zoom out" in effect else "0.0003"
-                start_zoom = "1" if delta.startswith("0") else format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)
-                zoom = f"max(1,min({format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)},{start_zoom}+on*{delta}))"
-                # Anchor the zoom in the centre; zoompan otherwise defaults to the
-                # top-left corner, which would push the picture out of frame.
-                filters.append(
-                    f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={width}x{height}:fps={fps}"
-                )
+                # Per-slide motion, strength and focus point. The motion is
+                # paced over the slide's own hold, so a 3 s and a 12 s slide
+                # both complete it; during the transition handles that follow
+                # the window simply stays at its end position.
+                filters.append(ken_burns_filter(ken_burns, width, height, fps, durations[index]))
             if kind_name == "video":
                 # Freeze the opening frame for the incoming xfade handle and the
                 # closing frame for the outgoing handle (plus any extra hold the
@@ -1635,7 +1788,7 @@ class Renderer:
                 look = picture_look(item, width, height)
                 if look:
                     filters.append(look)
-            text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass")
+            text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass", lead_in=lead_in)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
             colour_change = frame_colour_change(item) if kind_name == "title" else None
@@ -1691,6 +1844,14 @@ class Renderer:
         hw_graph_suffix = ",hwupload" if encoder == "h264_vaapi" else ""
 
         def encode_args_for(codec: str, *, intermediate: bool) -> list[str]:
+            # Every part is stitched later with -c:v copy, so all of them must
+            # share one H.264 parameter set: same profile/level, no B-frames
+            # (which also keeps DTS monotonic at the joins), identical GOP and
+            # timescale. Without this a hold encoded after a CPU fallback and a
+            # transition encoded on the GPU decode as stripes/garbage because
+            # the MP4 carries only the first part's SPS/PPS.
+            pinned = ["-profile:v", "high", "-level", "4.1", "-bf", "0", "-g", str(fps * 2), "-keyint_min", str(fps * 2),
+                      "-video_track_timescale", "90000"] if intermediate else []
             if codec == "h264_vaapi":
                 # Frames arrive as VA-API surfaces from hwupload, so nv12/yuv420p
                 # does not apply. -low_power selects the VDENC entrypoint that
@@ -1713,51 +1874,69 @@ class Renderer:
                 args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-preset", preset, "-pix_fmt", "yuv420p"]
             if not intermediate:
                 args += ["-movflags", "+faststart"]
-            return args
+            return pinned + args
+
+        def cpu_variant(command: list[str]) -> list[str]:
+            """The same compose command re-targeted at libx264."""
+            if encoder not in command:
+                return list(command)  # e.g. the final -c:v copy mux: nothing to retarget
+            if encoder == "h264_qsv":
+                patched = list(command)
+                idx = patched.index("h264_qsv")
+                patched[idx] = "libx264"
+                if "-pix_fmt" in patched:
+                    pix = patched.index("-pix_fmt")
+                    patched[pix + 1] = "yuv420p"
+                if "-preset" not in patched:
+                    patched[idx + 1:idx + 1] = ["-preset", "medium"]
+                return patched
+            # VA-API: drop the device, the hwupload hops and the encoder
+            # options, then hand the software frames straight to x264.
+            patched: list[str] = []
+            skip = False
+            for position, arg in enumerate(command):
+                if skip:
+                    skip = False
+                    continue
+                if arg in ("-vaapi_device", "-low_power", "-rc_mode", "-qp"):
+                    skip = True  # and its value
+                    continue
+                if arg in ("-filter_complex", "-vf") and position + 1 < len(command):
+                    patched.append(arg)
+                    patched.append(command[position + 1].replace(",hwupload", ""))
+                    skip = True
+                    continue
+                if arg == "h264_vaapi":
+                    patched.append("libx264")
+                    continue
+                patched.append(arg)
+            return patched[:-1] + ["-preset", "medium", "-pix_fmt", "yuv420p"] + patched[-1:]
+
+        # Compose commands that already succeeded on the hardware encoder, so a
+        # later CPU fallback can redo them: parts from two encoders must never
+        # meet in one -c:v copy stitch.
+        hw_done: list[list[str]] = []
+        cpu_only = {"on": encoder == "libx264"}
 
         def run_compose(command: list[str], *, allow_hw_fallback: bool) -> None:
+            if cpu_only["on"] and encoder != "libx264":
+                self._run_ffmpeg(cpu_variant(command), cancelled, log_file)
+                return
             try:
                 self._run_ffmpeg(command, cancelled, log_file)
+                if encoder != "libx264":
+                    hw_done.append(command)
             except RenderError:
                 if not allow_hw_fallback or encoder == "libx264":
                     raise
                 progress(70, f"{encoder} unavailable; retrying on CPU")
-                log.warning("%s failed; falling back to libx264", encoder)
-                if encoder == "h264_qsv":
-                    patched = list(command)
-                    try:
-                        idx = patched.index("h264_qsv")
-                        patched[idx] = "libx264"
-                        if "-pix_fmt" in patched:
-                            pix = patched.index("-pix_fmt")
-                            patched[pix + 1] = "yuv420p"
-                        if "-preset" not in patched:
-                            patched[idx + 1:idx + 1] = ["-preset", "medium"]
-                    except ValueError:
-                        raise
-                else:
-                    # VA-API: drop the device, the hwupload hops and the encoder
-                    # options, then hand the software frames straight to x264.
-                    patched = []
-                    skip = False
-                    for position, arg in enumerate(command):
-                        if skip:
-                            skip = False
-                            continue
-                        if arg in ("-vaapi_device", "-low_power", "-rc_mode", "-qp"):
-                            skip = True  # and its value
-                            continue
-                        if arg in ("-filter_complex", "-vf") and position + 1 < len(command):
-                            patched.append(arg)
-                            patched.append(command[position + 1].replace(",hwupload", ""))
-                            skip = True
-                            continue
-                        if arg == "h264_vaapi":
-                            patched.append("libx264")
-                            continue
-                        patched.append(arg)
-                    patched = patched[:-1] + ["-preset", "medium", "-pix_fmt", "yuv420p"] + patched[-1:]
-                self._run_ffmpeg(patched, cancelled, log_file)
+                log.warning("%s failed; falling back to libx264 for every timeline part", encoder)
+                cpu_only["on"] = True
+                for earlier in hw_done:
+                    self._run_ffmpeg(cpu_variant(earlier), cancelled, log_file)
+                hw_done.clear()
+                self._run_ffmpeg(cpu_variant(command), cancelled, log_file)
+                return
 
         # Build the timeline as individual hold and transition units.  Do not
         # chain xfade filters: a chain has quadratic full-resolution work and
@@ -1771,13 +1950,17 @@ class Renderer:
             lead_in = transitions[index - 1] if index else 0.0
             hold = durations[index]
             hold_part = work / f"hold-{index:04d}.mp4"
-            hold_graph = (
-                f"[0:v]trim=start={format_ffmpeg_number(lead_in)}:"
-                f"end={format_ffmpeg_number(lead_in + hold)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
-            )
+            # Cut the window on the *input* (-ss before -i seeks to the nearest
+            # keyframe and decodes only from there; -t stops reading after the
+            # window) instead of decoding the whole segment and discarding
+            # frames with trim. Segments are our own libx264 files with 2 s
+            # GOPs, so the seek is frame-accurate. This saves a full decode of
+            # every hold per transition — pure CPU time on a NAS.
+            hold_graph = f"[0:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
             hold_command = [
-                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args, "-i", str(segment),
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,
+                *(["-ss", format_ffmpeg_number(lead_in)] if lead_in > 0.0005 else []),
+                "-t", format_ffmpeg_number(hold), "-i", str(segment),
                 "-filter_complex", hold_graph, "-map", "[vout]", "-an",
                 *encode_args_for(encoder, intermediate=True), "-r", str(fps),
                 "-t", format_ffmpeg_number(hold), str(hold_part),
@@ -1801,18 +1984,20 @@ class Renderer:
             # Build xfade with params/easing/reverse from the outgoing media's transition config
             xfade_fragment = self.build_transition_xfade(media[index], transition, 0.0)
             # xfade_fragment is like "xfade=transition=gl_cube(...):duration=1:offset=0:easing=...:reverse=..."
+            # Both inputs are windowed at the demuxer (see the hold above): the
+            # outgoing handle starts after lead_in + hold, the incoming handle
+            # is the head of the next segment. xfade only ever sees the two
+            # transition-length clips.
             transition_graph = (
-                f"[0:v]trim=start={format_ffmpeg_number(lead_in + hold)}:"
-                f"end={format_ffmpeg_number(lead_in + hold + transition)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
-                f"[1:v]trim=start=0:end={format_ffmpeg_number(transition)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
+                f"[0:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
+                f"[1:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
                 f"[outgoing][incoming]{xfade_fragment},"
                 f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
             )
             transition_command = [
-                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args, "-i", str(segment),
-                "-i", str(segments[index + 1]), "-filter_complex", transition_graph,
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,
+                "-ss", format_ffmpeg_number(lead_in + hold), "-t", format_ffmpeg_number(transition), "-i", str(segment),
+                "-t", format_ffmpeg_number(transition), "-i", str(segments[index + 1]), "-filter_complex", transition_graph,
                 "-map", "[vout]", "-an", *encode_args_for(encoder, intermediate=True),
                 "-r", str(fps), "-t", format_ffmpeg_number(transition), str(transition_part),
             ]
@@ -1830,9 +2015,21 @@ class Renderer:
             encoding="utf-8",
         )
         timeline = work / "timeline.mp4"
+        # Safety net for the -c:v copy stitch: every part must carry the same
+        # codec parameters (profile, level, pixel format, extradata = SPS/PPS).
+        # If anything differs the join is re-encoded once instead — slower, but
+        # it can never produce a file whose holds decode as garbage.
+        uniform = self._parts_share_parameter_set(timeline_parts)
+        if uniform:
+            join_codec = ["-c:v", "copy"]
+        else:
+            log.warning("Timeline parts carry different H.264 parameter sets; re-encoding the join instead of copying")
+            progress(80, "Parts differ; re-encoding the join")
+            join_codec = ["-c:v", "libx264", "-preset", "medium", "-b:v", bitrate, "-maxrate", bitrate,
+                          "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "yuv420p"]
         concat_command = [
             self.settings.ffmpeg_bin, "-hide_banner", "-y", "-f", "concat", "-safe", "0",
-            "-i", str(concat_list), "-map", "0:v:0", "-an", "-c:v", "copy",
+            "-i", str(concat_list), "-map", "0:v:0", "-an", *join_codec,
             "-movflags", "+faststart", "-t", format_ffmpeg_number(total_duration), str(timeline),
         ]
         progress(82, "Joining timeline")
@@ -1993,6 +2190,33 @@ class Renderer:
             log.warning("Loudness measurement of %s exited with %s", source.name, process.returncode)
             return None
         return parse_loudnorm_stats(stderr_text)
+
+    def _stream_signature(self, path: Path) -> tuple | None:
+        """(codec, profile, level, pix_fmt, size, extradata) of a part's video stream."""
+        try:
+            result = subprocess.run(
+                [self.settings.ffprobe_bin, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=codec_name,profile,level,pix_fmt,width,height,extradata", "-of", "json", str(path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            stream = (json.loads(result.stdout or "{}").get("streams") or [{}])[0]
+        except Exception as exc:
+            log.warning("Could not probe %s for its parameter set: %s", path.name, exc)
+            return None
+        if not stream.get("codec_name"):
+            return None
+        return tuple(stream.get(key) for key in ("codec_name", "profile", "level", "pix_fmt", "width", "height", "extradata"))
+
+    def _parts_share_parameter_set(self, parts: list[Path]) -> bool:
+        """True when every part can be bitstream-copied into one H.264 stream.
+
+        Unknown (probe failed) is treated as uniform so a missing ffprobe never
+        forces the slow path — the pinned encoder flags already make the parts
+        match in that case.
+        """
+        signatures = {self._stream_signature(part) for part in parts}
+        signatures.discard(None)
+        return len(signatures) <= 1
 
     def _probe_duration(self, path: Path) -> float:
         result=subprocess.run([self.settings.ffprobe_bin,"-v","error","-show_entries","format=duration","-of","json",str(path)],capture_output=True,text=True,timeout=30)

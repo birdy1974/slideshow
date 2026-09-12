@@ -4,7 +4,7 @@ import {
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
-  Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom,
+  Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom, FolderUp,
 } from 'lucide-react'
 import { FieldLabel, Select, TimeField } from './ui'
 import { formatClock, formatClockPrecise, formatTimecode, parseClock } from './time'
@@ -14,6 +14,7 @@ import {
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
 import { CropSpriteVideo } from './PictureCropEditor'
 import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilterStyle, type Lookish } from './pictureFilters'
@@ -31,7 +32,7 @@ import { DEFAULT_ENTER, DEFAULT_EXIT, DEFAULT_WHILE, WHILE_SPEED_DEFAULT, allTex
 import { EasingSelect, GLParamControls, RandomScopeSelect, pickRandomTransition, randomGLParams, randomScopeLabels } from './transitionControls'
 import type { RandomScope } from './transitionControls'
 import { EASING_DEFAULT, getGLParams, isGLTransition, transitionPreviewUrl, transitionSymbol } from './transitionCatalog'
-import { uploadFile, type UploadItem } from './uploads'
+import { uploadFile, isUploadableFile, type UploadItem, type UploadsStatus } from './uploads'
 
 type MediaRoot = 'photos' | 'videos' | 'music' | 'uploads'
 
@@ -287,6 +288,60 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
 // Renders a media thumbnail (image or video) with a graceful placeholder when
 // the backend reports the file unreadable — a 0-byte or missing file would
 // otherwise show as a silently broken image in the timeline and filmstrip.
+// Module-level cache so the storyline does not re-capture a movie's frames on
+// every re-render or reorder: keyed by the stream URL, holds the sprite src.
+const movieStripCache = new Map<string, { src: string; total: number } | null>()
+
+/** Real frames of a movie laid edge to edge — the same strip the movie editor
+ * draws, sized for a storyline clip. Cut (trimmed-away) sections are shaded so
+ * the clip shows exactly the part of the movie that will play. */
+function MovieStrip({ item, onClick, onPointerDown }: { item: MediaItem; onClick?: React.MouseEventHandler; onPointerDown?: React.PointerEventHandler }) {
+  const src = itemThumbUrl(item)
+  const [strip, setStrip] = useState<{ src: string; total: number } | null>(() => movieStripCache.get(src) ?? null)
+  const [failed, setFailed] = useState(() => movieStripCache.has(src) && movieStripCache.get(src) === null)
+  useEffect(() => {
+    if (!src) return
+    if (movieStripCache.has(src)) { setStrip(movieStripCache.get(src) ?? null); setFailed(movieStripCache.get(src) === null); return }
+    let cancelled = false
+    void (async () => {
+      // Length first (browser, then FFmpeg), then frames the same way.
+      let total = 0
+      try {
+        total = await new Promise<number>((resolve) => {
+          const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true; v.src = src
+          const done = (n: number) => { v.removeAttribute('src'); v.load(); resolve(n) }
+          v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : 0)
+          v.onerror = () => done(0)
+          window.setTimeout(() => done(0), 8000)
+        })
+      } catch { total = 0 }
+      if (!total) total = await serverMovieDuration(item)
+      if (cancelled) return
+      const captured = total > 0 ? await captureFilmstrip(src, FILMSTRIP_CELLS, total) : null
+      if (cancelled) return
+      let result: { src: string; total: number } | null = captured ? { src: captured, total } : null
+      if (!result && total > 0) {
+        const ok = await new Promise<boolean>(resolve => { const img = new Image(); img.onload = () => resolve(true); img.onerror = () => resolve(false); img.src = movieFilmstripUrl(item) })
+        if (ok) result = { src: movieFilmstripUrl(item), total }
+      }
+      if (cancelled) return
+      movieStripCache.set(src, result)
+      setStrip(result); setFailed(!result)
+    })()
+    return () => { cancelled = true }
+  }, [src, item.path, item.name])
+  if (!src || failed || !strip) return <MediaThumb item={item} onClick={onClick} onPointerDown={onPointerDown} />
+  const total = strip.total
+  const start = Math.max(0, Math.min(Number(item.trimStart) || 0, total))
+  const end = Math.min(total, (Number(item.trimEnd) || 0) > 0 ? Number(item.trimEnd) : total)
+  const pct = (t: number) => `${total ? Math.min(100, Math.max(0, t / total * 100)) : 0}%`
+  return <div className="clip-strip" onClick={onClick} onPointerDown={onPointerDown} title={movieIsTrimmed(item) ? `Movie frames · using ${movieKeptLabel(item)} — click to view` : 'Movie frames — click to view'}>
+    <img src={strip.src} alt={item.name} draggable={false} style={pictureFilterStyle(item)} />
+    {start > 0.01 && <i className="clip-cut left" style={{ width: pct(start) }} />}
+    {end < total - 0.01 && <i className="clip-cut right" style={{ left: pct(end) }} />}
+  </div>
+}
+
 function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, style }: {
   item: MediaItem; className?: string; muted?: boolean; preload?: 'metadata' | 'auto' | 'none';
   onClick?: React.MouseEventHandler; onPointerDown?: React.PointerEventHandler; style?: React.CSSProperties;
@@ -622,13 +677,33 @@ function dragOnStage(event: React.PointerEvent<HTMLElement>, onMove: (x: number,
   window.addEventListener('pointerup', stop)
 }
 
-const effects = ['None', 'Ken Burns · Zoom in', 'Ken Burns · Zoom out', 'Ken Burns · Pan left', 'Ken Burns · Pan right', 'Original motion']
+const effects = ['None', 'Ken Burns · Zoom in', 'Ken Burns · Zoom out', 'Ken Burns · Pan left', 'Ken Burns · Pan right', 'Ken Burns · Pan up', 'Ken Burns · Pan down', 'Original motion']
+// Per-slide Ken Burns strength bounds — mirrored by KEN_BURNS_MIN/MAX_STRENGTH
+// in backend/app/renderer.py. 1.12 is the default every slide had before the
+// setting existed, so untouched projects render exactly as they did.
+const KEN_BURNS_DEFAULT_ZOOM = 1.12, KEN_BURNS_MIN_ZOOM = 1.02, KEN_BURNS_MAX_ZOOM_UI = 1.35
+const KEN_BURNS_PRESETS: { label: string; zoom: number }[] = [{ label: 'Subtle', zoom: 1.06 }, { label: 'Normal', zoom: 1.12 }, { label: 'Strong', zoom: 1.2 }, { label: 'Dramatic', zoom: 1.3 }]
+const kenBurnsZoomOf = (item: MediaItem) => Math.min(KEN_BURNS_MAX_ZOOM_UI, Math.max(KEN_BURNS_MIN_ZOOM, Number(item.kenBurnsZoom) || KEN_BURNS_DEFAULT_ZOOM))
+const kenBurnsFocusOf = (item: MediaItem) => ({ x: Math.min(100, Math.max(0, Number.isFinite(Number(item.kenBurnsX)) && item.kenBurnsX !== undefined ? Number(item.kenBurnsX) : 50)), y: Math.min(100, Math.max(0, Number.isFinite(Number(item.kenBurnsY)) && item.kenBurnsY !== undefined ? Number(item.kenBurnsY) : 50)) })
+const isKenBurns = (effect: string) => effect.startsWith('Ken Burns')
+const isKenBurnsZoom = (effect: string) => isKenBurns(effect) && effect.includes('Zoom')
+// One-line summary for the thumbnail chip / tooltips: "Zoom in · 12 %" or "Pan left · 6 %".
+const kenBurnsSummary = (item: MediaItem) => {
+  if (!isKenBurns(item.effect)) return shortEffect(item.effect)
+  const pct = Math.round((kenBurnsZoomOf(item) - 1) * 100)
+  const f = kenBurnsFocusOf(item)
+  const focus = isKenBurnsZoom(item.effect) && (Math.round(f.x) !== 50 || Math.round(f.y) !== 50) ? ` · focus ${Math.round(f.x)}/${Math.round(f.y)}` : ''
+  return `${shortEffect(item.effect)} · ${pct} %${focus}`
+}
 
 // Closed-state label for the row's motion chip: the "Ken Burns · " prefix is
 // identical on every option and would only waste width in a thumbnail chip.
 const shortEffect = (effect: string) => effect.startsWith('Ken Burns · ') ? effect.slice('Ken Burns · '.length) : effect === 'Original motion' ? 'Original' : effect
 
-function TransitionCell({ item, onPatch, onDuration, onOpenGallery }: { item: MediaItem; onPatch: (patch: Partial<MediaItem>)=>void; onDuration: (v: number)=>void; onOpenGallery?: () => void }) {
+// `inline`: show easing / reverse / GL parameters directly in the cell (used
+// by detailed rows whose caption is hidden — the freed width goes to the
+// transition) instead of behind the ⚙ popover.
+function TransitionCell({ item, onPatch, onDuration, onOpenGallery, inline = false }: { item: MediaItem; onPatch: (patch: Partial<MediaItem>)=>void; onDuration: (v: number)=>void; onOpenGallery?: () => void; inline?: boolean }) {
   const [open, setOpen] = useState(false)
   const isGL = isGLTransition(item.transition)
   const params = (item.transitionParams as Record<string,string|number>) || {}
@@ -636,7 +711,7 @@ function TransitionCell({ item, onPatch, onDuration, onOpenGallery }: { item: Me
   const reverse = item.transitionReverse || 0
   // ensure transitionTime clamped
   const max = 3600
-  return <div className="transition-cell">
+  return <div className={`transition-cell ${inline ? 'inline-settings' : ''}`}>
     <div className="clip-duration cell-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={onDuration} /><span>sec</span></div>
     <TransitionChip ariaLabel={`${item.name} transition`} className="cell-chip"
       title={`${item.transition}${item.transitionEasing && item.transitionEasing!==EASING_DEFAULT ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · click to browse all transitions`}
@@ -653,9 +728,14 @@ function TransitionCell({ item, onPatch, onDuration, onOpenGallery }: { item: Me
       }
     }} onOpenGallery={onOpenGallery} />
     <NumberStepper value={item.transitionTime ?? DEFAULT_TRANSITION_SECONDS} min={MIN_TRANSITION_SECONDS} max={max} step={0.1} suffix="s" ariaLabel={`${item.name} transition time`} onChange={v => onPatch({ transitionTime: v })} />
-    <button type="button" className={`icon-button small ${open?'active':''}`} title={isGL ? 'Edit GL parameters, easing and reverse' : 'Edit easing and reverse — values not shown here are at their defaults'} onClick={()=>setOpen(o=>!o)}><Settings2 size={13}/></button>
-    {(easing !== EASING_DEFAULT || reverse || (isGL && Object.keys(params).length > 0)) && <em className="cell-summary" title="Non-default transition settings">{easing !== EASING_DEFAULT ? easing : ''}{reverse ? `${easing !== EASING_DEFAULT ? ' · ' : ''}reverse` : ''}{isGL && Object.keys(params).length > 0 ? `${easing !== EASING_DEFAULT || reverse ? ' · ' : ''}${Object.keys(params).length} param${Object.keys(params).length === 1 ? '' : 's'}` : ''}</em>}
-    {open && <div className="transition-popover">
+    {!inline && <button type="button" className={`icon-button small ${open?'active':''}`} title={isGL ? 'Edit GL parameters, easing and reverse' : 'Edit easing and reverse — values not shown here are at their defaults'} onClick={()=>setOpen(o=>!o)}><Settings2 size={13}/></button>}
+    {inline && <div className="transition-inline">
+      <label>Easing <EasingSelect value={easing} onChange={v=>onPatch({transitionEasing: v})}/></label>
+      <label className="check-label"><input type="checkbox" checked={Boolean(reverse)} onChange={e=>onPatch({transitionReverse: e.target.checked?1:0})}/><span><Check size={11}/></span> Reverse</label>
+      {isGL && <div className="transition-inline-params"><GLParamControls transition={item.transition} params={params} onChange={next=>onPatch({transitionParams: next})}/></div>}
+    </div>}
+    {!inline && (easing !== EASING_DEFAULT || reverse || (isGL && Object.keys(params).length > 0)) && <em className="cell-summary" title="Non-default transition settings">{easing !== EASING_DEFAULT ? easing : ''}{reverse ? `${easing !== EASING_DEFAULT ? ' · ' : ''}reverse` : ''}{isGL && Object.keys(params).length > 0 ? `${easing !== EASING_DEFAULT || reverse ? ' · ' : ''}${Object.keys(params).length} param${Object.keys(params).length === 1 ? '' : 's'}` : ''}</em>}
+    {!inline && open && <div className="transition-popover">
       {isGL && <><FieldLabel>GL parameters <small>{item.transition}</small></FieldLabel><GLParamControls transition={item.transition} params={params} onChange={next=>onPatch({transitionParams: next})}/></>}
       <div className="transition-meta">
         <label>Easing <EasingSelect value={easing} onChange={v=>onPatch({transitionEasing: v})}/></label>
@@ -765,8 +845,12 @@ function App() {
   const [projectName, setProjectName] = useState(STARTER_NAME)
   const [projectId, setProjectId] = useState<number|null>(null)
   const [backendOnline, setBackendOnline] = useState(false)
-  const [capabilities, setCapabilities] = useState({ffmpeg:false,quickSync:false,vaapi:false,vaapiError:'',cpuEncoding:false})
+  const [capabilities, setCapabilities] = useState({ffmpeg:false,quickSync:false,vaapi:false,vaapiError:'',cpuEncoding:false,hasGL:true,hasEasing:true})
+  // Uploads volume status from /api/health — the picker warns before a file is chosen.
+  const [uploadsStatus, setUploadsStatus] = useState<UploadsStatus | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string|null>(null)
+  // What the last preview covered: 'all' or the number of selected slides.
+  const [previewScope, setPreviewScope] = useState<number|'all'>('all')
   const [activeTab, setActiveTab] = useState<'editor' | 'renders'>('editor')
   const [showBrowser, setShowBrowser] = useState(false)
   const [showAudioBrowser, setShowAudioBrowser] = useState(false)
@@ -853,6 +937,9 @@ function App() {
   const [textBold, setTextBold] = useState(true)
   const [textItalic, setTextItalic] = useState(false)
   const [textUnderline, setTextUnderline] = useState(false)
+  // Dark outline + shadow behind picture captions (Default text style). On
+  // unless switched off: white text on a bright photo is unreadable without it.
+  const [textOutline, setTextOutline] = useState(true)
   const [defaultTextX, setDefaultTextX] = useState(50)
   // Default text animation for new captions and text frames (saved with the
   // project like the rest of the "Default text style" settings).
@@ -1014,7 +1101,7 @@ function App() {
       })
       setMedia(normalized)
     }
-    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72);setDefaultTextFxEnter(normalizeTextEffect(saved.textDefaults.textFxEnter, 'enter'));setDefaultTextFxWhile(normalizeTextEffect(saved.textDefaults.textFxWhile, 'while'));setDefaultTextFxExit(normalizeTextEffect(saved.textDefaults.textFxExit, 'exit'));setDefaultTextFxWhileSpeed(Number(saved.textDefaults.textFxWhileSpeed) || WHILE_SPEED_DEFAULT)}
+    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setTextOutline(saved.textDefaults.outline !== false);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72);setDefaultTextFxEnter(normalizeTextEffect(saved.textDefaults.textFxEnter, 'enter'));setDefaultTextFxWhile(normalizeTextEffect(saved.textDefaults.textFxWhile, 'while'));setDefaultTextFxExit(normalizeTextEffect(saved.textDefaults.textFxExit, 'exit'));setDefaultTextFxWhileSpeed(Number(saved.textDefaults.textFxWhileSpeed) || WHILE_SPEED_DEFAULT)}
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path)
       // A project saved before the two fields were linked usually still carries
@@ -1031,7 +1118,7 @@ function App() {
   }
   useEffect(()=>{
     const restore=async()=>{try{
-      const health=await fetch('/api/health');if(!health.ok)throw new Error();const healthData=await health.json();setCapabilities(healthData.capabilities);setBackendOnline(true)
+      const health=await fetch('/api/health');if(!health.ok)throw new Error();const healthData=await health.json();setCapabilities(healthData.capabilities);setUploadsStatus(healthData.uploads||null);setBackendOnline(true)
       const list=await fetch('/api/projects').then(r=>r.json())
       if(list.length){const saved=await fetch(`/api/projects/${list[0].id}`).then(r=>r.json());applySavedProject(saved);await resumeActiveJob(list[0].id);return}
     }catch{setBackendOnline(false)}
@@ -1056,7 +1143,7 @@ function App() {
 
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
-    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed },
+    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, outline:textOutline, textX: defaultTextX, textY: defaultTextY, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed },
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
     // Sanitised here as well as on blur, so a render started straight after
     // typing can never be handed a name the filesystem would reject.
@@ -1089,7 +1176,7 @@ function App() {
   const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
   const blankProjectSnapshot = () => ({
     schemaVersion: 1, project: { name: BLANK_NAME, randomOrder: false }, media: [],
-    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72, textFxEnter: DEFAULT_ENTER, textFxWhile: DEFAULT_WHILE, textFxExit: DEFAULT_EXIT, textFxWhileSpeed: WHILE_SPEED_DEFAULT },
+    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFxEnter: DEFAULT_ENTER, textFxWhile: DEFAULT_WHILE, textFxExit: DEFAULT_EXIT, textFxWhileSpeed: WHILE_SPEED_DEFAULT },
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: safeFilename(BLANK_NAME) },
     timeline: { rows: 'auto', zoom: 1 },
@@ -1395,9 +1482,10 @@ function App() {
       additions.push({
         id: Date.now() + index, name: file.name, path: file.path, src,
         type: file.kind as 'image' | 'video', duration,
-        effect: isVideo ? 'Original motion' : 'None',
+        effect: 'None',
         transition: 'Fade', transitionTime: transitionSeconds,
-        audioSource: isVideo ? 'soundtrack' : undefined,
+        // Movies keep their own sound by default; the soundtrack ducks around them.
+        audioSource: isVideo ? 'original' : undefined,
         text: '', textMode: 'overlay', textEnabled: false, textStart: 0, textEnd: duration,
         textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5,
         textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed,
@@ -1411,7 +1499,7 @@ function App() {
   // request per file with progress and cancel; every completed file joins
   // the storyline immediately, exactly like a file picked from a mount.
   const startUploads = (fileList: File[]) => {
-    const accepted = fileList.filter(file => !file.type || file.type.startsWith('image/') || file.type.startsWith('video/'))
+    const accepted = fileList.filter(isUploadableFile)
     const ignored = fileList.length - accepted.length
     if (!accepted.length) { notify('No photos or movies in that selection — uploads accept pictures and videos only'); return }
     const base = uploadIdRef.current
@@ -1450,9 +1538,11 @@ function App() {
       }
       if (ignored) failures.push(`${ignored} file${ignored === 1 ? '' : 's'} ignored (photos and movies only)`)
       if (ok) notify(`Uploaded ${ok} file${ok === 1 ? '' : 's'} and added ${ok === 1 ? 'it' : 'them'} to the storyline`)
-      if (failures.length) notify(`${failures[0]}${failures.length > 1 ? ` · +${failures.length - 1} more` : ''}`)
+      if (failures.length) notify(`Upload problem — ${failures[0]}${failures.length > 1 ? ` · +${failures.length - 1} more` : ''}\nThe reasons stay listed in the upload tray (bottom right).`)
       setBrowserReloadKey(key => key + 1)
-      window.setTimeout(() => setUploads(current => current.filter(u => u.status === 'uploading')), 6000)
+      // Successful rows fade out on their own; failed rows stay until the
+      // user clears the tray, so the reason can actually be read.
+      window.setTimeout(() => setUploads(current => current.filter(u => u.status !== 'done')), 6000)
     })()
   }
   const addTitleFrame = () => {
@@ -1539,7 +1629,7 @@ function App() {
       ...item,
       transition: picked,
       transitionParams: isGLTransition(picked) ? (randomizeParams ? randomGLParams(picked) : {}) : undefined,
-      effect: item.type === 'video' ? 'Original motion' : effects[1 + Math.floor(Math.random() * (effects.length - 2))],
+      effect: item.type === 'video' ? 'None' : effects[1 + Math.floor(Math.random() * (effects.length - 2))],
     }
   }))
   // Re-roll only the parameters of the GL transitions already in place —
@@ -1659,15 +1749,21 @@ function App() {
       wallSeconds, timelineSeconds, at: Date.now(),
     }))
   }
+  // A preview with slides selected covers only those slides (story order is
+  // kept); with nothing selected it covers the whole movie. Renders always
+  // produce the complete output.
+  const previewSubset = selectedIds.length > 0 && selectedIds.length < media.length ? media.filter(m => selectedIds.includes(m.id)) : null
   const startJob = async (kind:'preview'|'render', overwrite=false) => {
     kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1);setEtaSample(null);setJobStage('');setJobStartedAt(null)
     if(kind==='render')setFinishedRender(null)
     // Provisional until the backend's own started_at arrives with the first poll.
     jobStartedRef.current=Date.now()
-    jobBaseline.current={ timelineSeconds: total, itemCount: media.length, resolution, encoder }
+    const subset = kind==='preview' ? previewSubset : null
+    if(kind==='preview')setPreviewScope(subset?subset.length:'all')
+    jobBaseline.current={ timelineSeconds: subset ? timelineModel(subset).total : total, itemCount: subset ? subset.length : media.length, resolution, encoder }
     try{
       const id=await persistProject(true)
-      const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,overwrite})})
+      const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,overwrite,...(subset?{mediaIds:subset.map(m=>m.id)}:{})})})
       if(!response.ok){
         const text=await response.text()
         // The backend refuses to overwrite an existing output file until the
@@ -1729,7 +1825,7 @@ function App() {
     ? estimateRenderSeconds({ timelineSeconds: total, itemCount: media.length, resolution, encoder, kind: 'render', rates: renderRates })
     : null
   const predictedPreview = media.length
-    ? estimateRenderSeconds({ timelineSeconds: total, itemCount: media.length, resolution, encoder, kind: 'preview', rates: renderRates })
+    ? estimateRenderSeconds({ timelineSeconds: previewSubset ? timelineModel(previewSubset).total : total, itemCount: previewSubset ? previewSubset.length : media.length, resolution, encoder, kind: 'preview', rates: renderRates })
     : null
   const estimatedBytes = estimateOutputBytes(total, bitrate, soundProgramSeconds > 0)
   // A countdown that has run out but whose job has not finished yet means the
@@ -1792,7 +1888,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => setEditingTextFrame(item.id) : undefined}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type === 'title' && <button type="button" className="clip-frame-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => setEditingTextFrame(item.id) : undefined}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''} ${item.type === 'video' ? 'movie-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}>{item.type === 'video' ? <MovieStrip item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} /> : <MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="clip-frame-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
@@ -1805,11 +1901,12 @@ function App() {
             {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={e => { setDraggedId(item.id); e.dataTransfer.setData('text/plain', String(item.id)); e.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? frameBackgroundStyle(item) : undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="compact-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }}><Pencil size={13}/></button>}<button type="button" className="compact-preview" title={item.type === 'title' ? `Preview this text frame · “${item.text}”` : `Preview · ${item.name}`} aria-label={`Open preview of ${item.name}`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }}><ZoomIn size={13}/></button><PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div><button className="compact-select" title="Select frame · Shift-click for a range" aria-label={selectedIds.includes(item.id) ? `Deselect ${item.name}` : `Select ${item.name}`} aria-pressed={selectedIds.includes(item.id)} onClick={e => { e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selectedIds.includes(item.id) && <Check size={11}/>}</span></button><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
               {media.map((item, index) => {
                 const thumb = itemThumbUrl(item)
-                return <div className={`timeline-item ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
+                const textHidden = item.type !== 'title' && item.textEnabled === false
+                return <div className={`timeline-item wide-transition ${item.type === 'video' ? 'movie-row' : item.type === 'title' ? 'title-row' : ''} ${textHidden ? 'text-hidden-row' : ''} ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
-                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type !== 'title' && item.effect !== 'None' && <button type="button" className="thumb-effect" title={`Motion: ${item.effect} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
-                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span><div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && item.textEnabled === false ? null : <><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{textEffectSymbol(item.textFxExit || item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select></>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TextEffectChip value={(detailTextEditor.edge==='enter'?(item.textFxEnter||item.textEnter||'Fade'):(item.textFxExit||item.textExit||'Fade out'))} slot={detailTextEditor.edge} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textFxEnter:v,textEnter:v}:{textFxExit:v,textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}{effectPicker===item.id && item.type !== 'title' && <div className="detail-transition-popover effect-picker"><strong>Motion</strong><Select ariaLabel={`${item.name} motion effect`} value={item.effect} onChange={v => patch(item.id, { effect: v })}>{effects.map(x => <option key={x}>{x}</option>)}</Select><button type="button" title="Close" onClick={() => setEffectPicker(null)}><X size={13}/></button></div>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false && item.text.trim() !== '') || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && item.text.trim() !== '' && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
-                  {index < media.length - 1 ? <TransitionCell item={item} onPatch={patch_ => patch(item.id, patch_)} onDuration={v => updateDuration(item.id, v)} onOpenGallery={() => setShowTransitionGallery(true)} /> : <div className="transition-cell last-cell"><div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div><div className="end-card"><Check size={13}/> End of story</div></div>}
+                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'image' && item.effect === 'None' && <button type="button" className="thumb-effect off" title="No motion on this photo — click to add a Ken Burns effect" onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/></button>}{item.type === 'image' && item.effect !== 'None' && <button type="button" className={`thumb-effect ${isKenBurns(item.effect) && Math.abs(kenBurnsZoomOf(item) - KEN_BURNS_DEFAULT_ZOOM) > 0.001 ? 'custom' : ''}`} title={`Motion: ${item.effect}${isKenBurns(item.effect) ? ` · strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} %` : ''} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
+                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && item.textEnabled === false ? null : <><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{textEffectSymbol(item.textFxExit || item.textExit)}</button><Select value={item.textMode} onChange={v => patch(item.id,{textMode:v as 'overlay'|'frame'})}><option value="overlay">On picture</option><option value="frame">New frame</option></Select></>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TextEffectChip value={(detailTextEditor.edge==='enter'?(item.textFxEnter||item.textEnter||'Fade'):(item.textFxExit||item.textExit||'Fade out'))} slot={detailTextEditor.edge} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textFxEnter:v,textEnter:v}:{textFxExit:v,textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}{effectPicker===item.id && item.type !== 'title' && <KenBurnsPanel item={item} thumb={thumb} onPatch={p => patch(item.id, p)} onClose={() => setEffectPicker(null)}/>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false && item.text.trim() !== '') || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && item.text.trim() !== '' && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
+                  {index < media.length - 1 ? <TransitionCell item={item} inline onPatch={patch_ => patch(item.id, patch_)} onDuration={v => updateDuration(item.id, v)} onOpenGallery={() => setShowTransitionGallery(true)} /> : <div className="transition-cell last-cell"><div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div><div className="end-card"><Check size={13}/> End of story</div></div>}
                   <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
                 </div>
               })}
@@ -1833,7 +1930,16 @@ function App() {
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
-          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync||capabilities.vaapi?'':'warning'} title={capabilities.quickSync||capabilities.vaapi?undefined:(capabilities.vaapiError||undefined)}>{capabilities.quickSync||capabilities.vaapi?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':capabilities.vaapi?'Hardware encoding available · VAAPI':<>{'Quick Sync and VAAPI unavailable · CPU fallback'}{capabilities.vaapiError&&<small className="cap-note">{capabilities.vaapiError}</small>}</>}</li><li className="warning"><AlertTriangle size={13}/> GLSL transitions may use CPU fallback</li>{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
+          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync||capabilities.vaapi?'':'warning'} title={capabilities.quickSync||capabilities.vaapi?undefined:(capabilities.vaapiError||undefined)}>{capabilities.quickSync||capabilities.vaapi?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':capabilities.vaapi?'Hardware encoding available · VAAPI':<>{'Quick Sync and VAAPI unavailable · CPU fallback'}{capabilities.vaapiError&&<small className="cap-note">{capabilities.vaapiError}</small>}</>}</li>{(() => {
+              // GL transitions are C ports of the gl-transitions shaders running
+              // inside xfade: always computed on the CPU, by design, on every
+              // machine. The GPU (when present) still encodes every part. The only
+              // real "fallback" is a stock FFmpeg without the xfade-easing patch.
+              const usesGL = media.some(m => isGLTransition(m.transition))
+              if (capabilities.ffmpeg && capabilities.hasGL === false) return <li className={usesGL ? 'warning' : ''} title="This FFmpeg build lacks the xfade-easing patch: GL transitions and easing/reverse render as a plain dissolve.">{usesGL ? <AlertTriangle size={13}/> : <Check size={13}/>} {usesGL ? 'This FFmpeg has no GL transitions · the ones in this project fall back to dissolve' : 'This FFmpeg has no GL transitions (none used in this project)'}</li>
+              const hw = capabilities.quickSync || capabilities.vaapi
+              return <li title="GL transitions are computed on the CPU inside FFmpeg's xfade filter on every system — there is no GPU shader path. Hardware encoding still applies to the transition clips."><Check size={13}/> {hw ? 'GL transitions computed on CPU (by design) · clips encoded on the GPU' : 'GL transitions computed on CPU (by design) · CPU encoding'}</li>
+            })()}{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} title={previewSubset?`Low-resolution preview of the ${previewSubset.length} selected slide${previewSubset.length===1?'':'s'} only (${formatClock(timelineModel(previewSubset).total)}) — clear the selection to preview the whole movie`:'Low-resolution preview of the whole movie — select slides in the storyline to preview only those'} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:previewSubset?`Preview ${previewSubset.length} selected`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
         </div>
         </div>
       </div>
@@ -1847,7 +1953,7 @@ function App() {
     {lookItemId != null && (() => { const target = media.find(x => x.id === lookItemId); return target && target.type !== 'title'
       ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
-    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} fxEnter={defaultTextFxEnter} setFxEnter={setDefaultTextFxEnter} fxWhile={defaultTextFxWhile} setFxWhile={setDefaultTextFxWhile} fxExit={defaultTextFxExit} setFxExit={setDefaultTextFxExit} fxWhileSpeed={defaultTextFxWhileSpeed} setFxWhileSpeed={setDefaultTextFxWhileSpeed} onClose={()=>setShowTextStyles(false)}/>} 
+    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} fxEnter={defaultTextFxEnter} setFxEnter={setDefaultTextFxEnter} fxWhile={defaultTextFxWhile} setFxWhile={setDefaultTextFxWhile} fxExit={defaultTextFxExit} setFxExit={setDefaultTextFxExit} fxWhileSpeed={defaultTextFxWhileSpeed} setFxWhileSpeed={setDefaultTextFxWhileSpeed} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
@@ -1866,12 +1972,12 @@ function App() {
         notify(`${files.length} soundtrack${files.length === 1 ? '' : 's'} added`)
       })()
     }}/>}
-    {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} reloadKey={browserReloadKey} onUploadFiles={startUploads} onAdd={(files:any[]) => {
+    {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} reloadKey={browserReloadKey} onUploadFiles={startUploads} uploadsStatus={uploadsStatus} onAdd={(files:any[]) => {
       void addFilesToStoryline(files).then(added => notify(`${added} mounted media file${added === 1 ? '' : 's'} added`))
       setShowBrowser(false)
     }}/>} 
     {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onOpenGallery={() => setShowTransitionGallery(true)} onApply={(patchData) => { patch(media[index].id, patchData); setTransitionPreviewId(null); notify(`Applied ${patchData.transition} transition`) }} /> : null })()}
-    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
+    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} previewScope={previewScope} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showProjectFileSave && <ProjectFileBrowser
       projectName={projectName}
       snapshot={projectSnapshot}
@@ -2072,12 +2178,23 @@ function SoundtrackEditor({ track, onChange, onClose }: { track: AudioTrack; onC
   </div></div>
 }
 
-function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,fxEnter, setFxEnter, fxWhile, setFxWhile, fxExit, setFxExit, fxWhileSpeed, setFxWhileSpeed,onClose}: any) {
+/** CSS twin of the renderer's caption outline (borderw ≈ size/16 + a 2 px shadow). */
+function captionShadow(outline: boolean, sizePx: number): string {
+  const shadow = '2px 2px 2px rgba(0,0,0,.55)'
+  if (!outline) return shadow
+  const w = Math.max(1, Math.round(sizePx / 16))
+  return `0 0 ${w}px rgba(0,0,0,.85), 0 0 ${w}px rgba(0,0,0,.85), 0 0 ${w * 2}px rgba(0,0,0,.6), ${shadow}`
+}
+
+function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,outline=true,setOutline,textX=50,setTextX,textY=72,setTextY,fxEnter, setFxEnter, fxWhile, setFxWhile, fxExit, setFxExit, fxWhileSpeed, setFxWhileSpeed,onClose}: any) {
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal wide-style-modal" onMouseDown={e=>e.stopPropagation()}>
     <div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>
     <div className="style-modal-body">
       <p>These defaults apply to captions drawn on photos and videos. Standalone text frames keep their own font, size and position.</p>
       <TypeControls fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={Number(fontSize) || 48} setFontSize={v => setFontSize(String(v))} fontColor={fontColor} setFontColor={setFontColor} bold={bold} setBold={setBold} italic={italic} setItalic={setItalic} underline={underline} setUnderline={setUnderline} />
+      <label className="check-label caption-outline-toggle" title="Draws a thin dark outline and a soft shadow behind captions on photos and videos so light text stays readable on bright pictures. Text frames are not affected.">
+        <input type="checkbox" checked={outline} onChange={e => setOutline?.(e.target.checked)}/><span><Check size={11}/></span> Outline &amp; shadow behind captions <small>recommended</small>
+      </label>
       <div className="fx-section light">
         <FieldLabel>Default text animation</FieldLabel>
         <div className="fx-rows">
@@ -2087,7 +2204,7 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
         </div>
       </div>
       <div className="frame-canvas default-position-stage" style={{background:'#30362d'}}>
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none',textShadow:captionShadow(outline, Math.min(Number(fontSize)||48,54))}}>
           <Move size={14}/><span>Summer, slowly.</span>
         </div>
       </div>
@@ -2313,6 +2430,51 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
   </div></div>
 }
 
+// Per-slide Ken Burns settings, opened from the motion chip on a detailed row's
+// thumbnail. Motion (zoom/pan direction), strength (target zoom, presets +
+// fine slider) and — for zooms — the focus point, set by clicking on a small
+// copy of the picture. The CSS preview animates the actual values, so the
+// choice can be judged without a render.
+function KenBurnsPanel({ item, thumb, onPatch, onClose }: { item: MediaItem; thumb: string | null | undefined; onPatch: (patch: Partial<MediaItem>) => void; onClose: () => void }) {
+  const kb = isKenBurns(item.effect)
+  const zoom = kenBurnsZoomOf(item)
+  const focus = kenBurnsFocusOf(item)
+  const pct = Math.round((zoom - 1) * 100)
+  const zoomMotion = isKenBurnsZoom(item.effect)
+  const [replay, setReplay] = useState(0)
+  const options = item.type === 'video' ? ['None', ...(item.effect === 'Original motion' ? ['Original motion'] : [])] : effects.filter(x => x !== 'Original motion')
+  const setFocus = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = Math.round(Math.min(100, Math.max(0, (e.clientX - rect.left) / rect.width * 100)))
+    const y = Math.round(Math.min(100, Math.max(0, (e.clientY - rect.top) / rect.height * 100)))
+    onPatch({ kenBurnsX: x, kenBurnsY: y }); setReplay(n => n + 1)
+  }
+  // Preview animation: zooms scale around the focus point; pans slide an
+  // over-scaled copy edge to edge — the same geometry the renderer uses.
+  const dir = item.effect.includes('Pan left') ? 'left' : item.effect.includes('Pan right') ? 'right' : item.effect.includes('Pan up') ? 'up' : item.effect.includes('Pan down') ? 'down' : item.effect.includes('Zoom out') ? 'out' : 'in'
+  const previewStyle = { '--kbZoom': zoom, '--kbX': `${focus.x}%`, '--kbY': `${focus.y}%`, '--kbSeconds': `${Math.max(1.5, Math.min(8, item.duration || 5))}s` } as React.CSSProperties
+  return <div className="kb-panel" onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+    <div className="kb-head"><Move size={12}/><strong>Motion on this slide</strong><span>{kenBurnsSummary(item)}</span><button type="button" title="Close" aria-label="Close motion settings" onClick={onClose}><X size={13}/></button></div>
+    <div className="kb-body">
+      <div className={`kb-preview ${kb ? `kb-${dir}` : ''} ${zoomMotion ? 'focusable' : ''}`} key={`${replay}-${item.effect}-${zoom}`} style={previewStyle} onClick={zoomMotion ? setFocus : () => setReplay(n => n + 1)} title={zoomMotion ? 'Click where the zoom should centre on' : kb ? 'Click to replay' : 'Choose a motion to preview it'}>
+        {thumb ? <img src={thumb} alt="" draggable={false} style={rotationStyle(item.rotation)}/> : <span className="kb-noimg"><ImageIcon size={18}/></span>}
+        {zoomMotion && <i className="kb-focus" style={{ left: `${focus.x}%`, top: `${focus.y}%` }}/>}
+        <small>{zoomMotion ? 'click to set focus' : kb ? 'click to replay' : ''}</small>
+      </div>
+      <div className="kb-controls">
+        <label className="kb-row"><span>Motion</span><Select ariaLabel={`${item.name} motion effect`} value={item.effect} onChange={v => onPatch({ effect: v })}>{options.map(x => <option key={x}>{x}</option>)}</Select></label>
+        {kb && <>
+          <div className="kb-row"><span>Strength</span><div className="kb-presets">{KEN_BURNS_PRESETS.map(p => <button type="button" key={p.label} className={Math.abs(p.zoom - zoom) < 0.005 ? 'active' : ''} title={`${Math.round((p.zoom - 1) * 100)} % ${zoomMotion ? 'zoom' : 'travel'}`} onClick={() => { onPatch({ kenBurnsZoom: p.zoom }); setReplay(n => n + 1) }}>{p.label}</button>)}</div></div>
+          <div className="kb-row"><span/><div className="kb-slider"><input type="range" min={Math.round((KEN_BURNS_MIN_ZOOM - 1) * 100)} max={Math.round((KEN_BURNS_MAX_ZOOM_UI - 1) * 100)} step={1} value={pct} aria-label="Ken Burns strength" onChange={e => onPatch({ kenBurnsZoom: Number((1 + Number(e.target.value) / 100).toFixed(2)) })} onPointerUp={() => setReplay(n => n + 1)} onKeyUp={() => setReplay(n => n + 1)}/><b>{pct} %</b></div></div>
+          {zoomMotion && <div className="kb-row"><span>Focus</span><div className="kb-focus-readout"><b>{Math.round(focus.x)} % · {Math.round(focus.y)} %</b><button type="button" disabled={Math.round(focus.x) === 50 && Math.round(focus.y) === 50} onClick={() => { onPatch({ kenBurnsX: 50, kenBurnsY: 50 }); setReplay(n => n + 1) }}>Centre</button></div></div>}
+          <div className="kb-row"><span/><small className="kb-note">{zoomMotion ? `The picture ${dir === 'in' ? 'zooms in towards' : 'zooms out from'} the focus point over the slide's ${item.duration}s. Strength is how far it zooms; the picture never leaves the frame.` : `The picture glides ${dir} across the frame over the slide's ${item.duration}s at a constant ${pct} % zoom. Focus does not apply to pans.`}</small></div>
+          {Math.abs(zoom - KEN_BURNS_DEFAULT_ZOOM) > 0.001 || (zoomMotion && (Math.round(focus.x) !== 50 || Math.round(focus.y) !== 50)) ? <div className="kb-row"><span/><button type="button" className="kb-reset" onClick={() => { onPatch({ kenBurnsZoom: undefined, kenBurnsX: undefined, kenBurnsY: undefined }); setReplay(n => n + 1) }}><RotateCcw size={11}/> Reset to default (12 %, centre)</button></div> : null}
+        </>}
+      </div>
+    </div>
+  </div>
+}
+
 // Live status for files uploading from this device into the NAS uploads
 // volume. Sits bottom-right so it survives picker/drag contexts.
 function UploadTray({ items, onCancel, onClear }: { items: UploadItem[], onCancel: (id: number) => void, onClear: () => void }) {
@@ -2325,11 +2487,12 @@ function UploadTray({ items, onCancel, onClear }: { items: UploadItem[], onCance
       <span className="upload-size">{item.status === 'done' ? 'added' : item.status === 'error' ? 'failed' : `${(item.sent / 1048576).toFixed(1)} / ${(item.total / 1048576).toFixed(1)} MB`}</span>
       {item.status === 'uploading' && <button type="button" className="upload-cancel" aria-label={`Cancel ${item.name}`} title="Cancel this upload" onClick={() => onCancel(item.id)}><X size={11}/></button>}
       <span className="upload-bar"><i style={{ width: `${item.total ? Math.min(100, Math.round(item.sent / item.total * 100)) : 0}%` }}/></span>
+      {item.status === 'error' && item.error && <span className="upload-reason">{item.error}</span>}
     </div>)}
   </div>
 }
 
-function MediaBrowser({ onClose, onAdd, onUploadFiles, reloadKey = 0, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[]) => void, reloadKey?: number, audioOnly?:boolean }) {
+function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloadKey = 0, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[]) => void, uploadsStatus?: UploadsStatus|null, reloadKey?: number, audioOnly?:boolean }) {
   const [root,setRoot]=useState<MediaRoot>(audioOnly?'music':'photos')
   // "All media" lists the photos and videos mounts together, so pictures and
   // videos can be mixed freely no matter which location button is active.
@@ -2338,6 +2501,30 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, reloadKey = 0, audioOnly=
   const [lightbox,setLightbox]=useState<LightboxTarget|null>(null)
   const preview=useAudioPreview(message=>setError(message))
   const uploadInputRef=useRef<HTMLInputElement|null>(null)
+  const folderInputRef=useRef<HTMLInputElement|null>(null)
+  // Files chosen on this device wait here until the user presses Upload, so
+  // several picks (files + a folder) can be combined and reviewed first.
+  const [staged,setStaged]=useState<File[]>([])
+  const [stagedSkipped,setStagedSkipped]=useState(0)
+  const stageFiles=(picked:File[])=>{
+    const accepted=picked.filter(isUploadableFile)
+    setStagedSkipped(n=>n+(picked.length-accepted.length))
+    setStaged(current=>{
+      const seen=new Set(current.map(f=>`${f.name}|${f.size}|${f.lastModified}`))
+      return [...current,...accepted.filter(f=>!seen.has(`${f.name}|${f.size}|${f.lastModified}`))]
+    })
+  }
+  const stagedBytes=staged.reduce((sum,f)=>sum+f.size,0)
+  const tooLarge=uploadsStatus?staged.filter(f=>f.size>uploadsStatus.maxMb*1048576):[]
+  const uploadStaged=()=>{
+    const files=staged.filter(f=>!tooLarge.includes(f))
+    if(!files.length)return
+    onUploadFiles?.(files)
+    setStaged([]);setStagedSkipped(0)
+    chooseRoot('uploads')
+  }
+  // The folder picker attribute is not in React's typings; set it imperatively.
+  useEffect(()=>{const el=folderInputRef.current;if(el){el.setAttribute('webkitdirectory','');el.setAttribute('directory','')}},[audioOnly])
   useEffect(()=>{
     let cancelled=false
     setLoading(true);setError('')
@@ -2378,7 +2565,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, reloadKey = 0, audioOnly=
   }
   const skippedEmpty = selected.filter((f:any)=>f.empty).length
   const addable = selected.filter((f:any)=>!f.empty)
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick photos or movies on this device — they upload to the NAS and are added to the storyline"><Upload size={16}/> Upload from this device</button><input ref={uploadInputRef} type="file" accept="image/*,video/*" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) onUploadFiles?.(files)}}/></>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='audio'&&preview.playingKey===file.path ? <span className="card-player" onClick={e=>e.stopPropagation()}><AudioSeekBar bars={32} seed={3} color="#58703a" current={preview.progress.current} duration={preview.progress.duration} onSeek={preview.seek} className="compact"/><AudioTimeReadout current={preview.progress.current} duration={preview.progress.duration}/></span> : <BrowserThumb root={fileRoot(file)} file={file}/>}{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}</button><small className="stage-note">Uploaded files are stored in the uploads volume on the NAS and added to the storyline; progress shows bottom right.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='audio'&&preview.playingKey===file.path ? <span className="card-player" onClick={e=>e.stopPropagation()}><AudioSeekBar bars={32} seed={3} color="#58703a" current={preview.progress.current} duration={preview.progress.duration} onSeek={preview.seek} className="compact"/><AudioTimeReadout current={preview.progress.current} duration={preview.progress.duration}/></span> : <BrowserThumb root={fileRoot(file)} file={file}/>}{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
 }
 
 // Pick a destination folder inside the mounted /output volume. Folders are
@@ -2547,7 +2734,7 @@ export function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpen
   </div></div>
 }
 
-function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
+function Preview({ media, projectName, previewUrl, previewScope = 'all', playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, previewScope?: number|'all', playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
   const [current, setCurrent] = useState(0)
   const [stageFailed, setStageFailed] = useState(false)
 
@@ -2577,7 +2764,7 @@ function Preview({ media, projectName, previewUrl, playing, setPlaying, onClose 
   const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
   const stageTurned = stageCrop.rotationApplied || stageLook.rotationBaked
 
-  if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview</strong><span>REAL PROXY RENDER · 854 × 480</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> This file is streamed through the backend project API from the mounted preview volume.<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
+  if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> This file is streamed through the backend project API from the mounted preview volume.<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 

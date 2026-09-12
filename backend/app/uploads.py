@@ -25,6 +25,7 @@ the storyline through its normal path.
 from __future__ import annotations
 
 import json
+import os
 import logging
 import re
 import subprocess
@@ -110,6 +111,36 @@ def probe_media_file(ffprobe_bin: str, target: Path, image: bool) -> None:
         raise UploadRejected(f"Not a valid {'photo' if image else 'movie'}: no picture data")
 
 
+def uploads_unwritable_reason(root: Path, exc: OSError | None = None) -> str:
+    """Human-readable reason why the uploads volume cannot take files.
+
+    Mentions the uid/gid the app runs as, because a wrong PUID/PGID or a
+    root-owned host folder is almost always the cause on a NAS.
+    """
+    who = f"uid {os.getuid()}:gid {os.getgid()}" if hasattr(os, "getuid") else "the app user"
+    detail = f" ({exc.strerror})" if exc is not None and exc.strerror else ""
+    return (f"The uploads folder {root} is not writable by the app ({who}){detail}. "
+            "Check the UPLOADS_PATH host folder exists and is owned by PUID:PGID from your compose file.")
+
+
+def uploads_status(settings: Settings) -> dict[str, Any]:
+    """Health information about the uploads volume for the GUI.
+
+    Returned by /api/health so the media picker can warn *before* a file is
+    chosen instead of after a multi-GB transfer.
+    """
+    root = settings.uploads_dir
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"path": str(root), "writable": False, "reason": uploads_unwritable_reason(root, exc),
+                "maxMb": int(getattr(settings, "upload_max_mb", 4096))}
+    writable = os.access(root, os.W_OK | os.X_OK)
+    return {"path": str(root), "writable": writable,
+            "reason": None if writable else uploads_unwritable_reason(root),
+            "maxMb": int(getattr(settings, "upload_max_mb", 4096))}
+
+
 def store_upload(settings: Settings, original_name: str, source: BinaryIO) -> dict[str, Any]:
     """Validate, write and probe one uploaded file. Returns a browse-style entry.
 
@@ -121,9 +152,18 @@ def store_upload(settings: Settings, original_name: str, source: BinaryIO) -> di
     image = Path(name).suffix.lower() in IMAGE_EXTENSIONS
     cap = max(1, int(getattr(settings, "upload_max_mb", 4096))) * 1024 * 1024
     root = settings.uploads_dir
-    root.mkdir(parents=True, exist_ok=True)
+    # A missing or root-owned uploads volume is the classic first-run failure
+    # (Docker creates an absent bind-mount source as root:root while the app
+    # runs as PUID:PGID). Report it as a rejection with the reason instead of
+    # letting it surface as a bare 500 the GUI cannot explain.
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise UploadRejected(uploads_unwritable_reason(root, exc)) from exc
+    if not os.access(root, os.W_OK | os.X_OK):
+        raise UploadRejected(uploads_unwritable_reason(root))
     # safe_path guards the (already sanitised) name against any surprise.
-    target = safe_path(root, name)
+    safe_path(root, name)
     final = root / unique_name(root, name)
     written = 0
     try:
@@ -142,7 +182,7 @@ def store_upload(settings: Settings, original_name: str, source: BinaryIO) -> di
         raise
     except OSError as exc:
         final.unlink(missing_ok=True)
-        raise UploadRejected(f"Could not write the upload: {exc}") from exc
+        raise UploadRejected(f"Could not write the upload: {exc.strerror or exc}") from exc
     if written == 0:
         final.unlink(missing_ok=True)
         raise UploadRejected(f"'{Path(original_name).name}' is empty (0 bytes)")

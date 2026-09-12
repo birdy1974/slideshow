@@ -208,6 +208,7 @@ class TextGeometry:
     italic: bool
     colour: str              # #RRGGBB
     params: dict[str, str]   # per-effect parameters (Count up from/to, ...)
+    outline: bool = True     # dark outline + shadow behind picture captions
 
 
 def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height: int) -> TextGeometry | None:
@@ -233,12 +234,18 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         bold = bool(item.get("textBold", True))
         italic = bool(item.get("textItalic", False))
         family = str(item.get("fontFamily") or "Montserrat")
+        # Text frames sit on a flat colour bed of the user's choosing: no
+        # outline, exactly as before.
+        outline = False
     else:
         size_pt = _num(defaults, "fontSize", 48)
         colour_raw = str(defaults.get("fontColor") or "#ffffff")
         bold = bool(defaults.get("bold", True))
         italic = bool(defaults.get("italic", False))
         family = str(defaults.get("fontFamily") or "Montserrat")
+        # "Outline & shadow" in Default text style (on unless switched off):
+        # keeps white captions readable on bright photos.
+        outline = defaults.get("outline", True) is not False
     raw_params = item.get("textFxParams")
     params = {str(k): str(v) for k, v in raw_params.items()} if isinstance(raw_params, dict) else {}
     colour = colour_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", colour_raw or "") else "#ffffff"
@@ -250,6 +257,7 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         start=start, end=end, di=di, do=do, speed=speed,
         text=text, lines=text.split("\n"),
         family=family, bold=bold, italic=italic, colour=colour, params=params,
+        outline=outline,
     )
 
 
@@ -353,8 +361,18 @@ def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_:
     return (
         f"drawtext=fontfile='{font}':text='{ff_escape_drawtext(g.text)}':fontsize={g.size}"
         f":fontcolor=0x{g.colour[1:]}:alpha='{alpha}':x='{x_expr}':y='{y_expr}'"
-        f":shadowcolor=black@0.55:shadowx=2:shadowy=2:enable='between(t,{_n(g.start)},{_n(g.end)})'"
+        f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}:enable='between(t,{_n(g.start)},{_n(g.end)})'"
     )
+
+
+def outline_width(g: TextGeometry) -> int:
+    """Outline thickness in pixels: ~1/16 em, at least 1 px, 0 when off."""
+    return max(1, round(g.size / 16)) if g.outline else 0
+
+
+def _dt_outline(g: TextGeometry) -> str:
+    w = outline_width(g)
+    return f":borderw={w}:bordercolor=black@0.85" if w else ""
 
 
 # --------------------------------------------------------------------------
@@ -365,12 +383,13 @@ CHAR_W = 0.66      # average glyph width estimate (em) — used for clip/bar box
 LINE_H = 1.3       # line height estimate (em)
 SCRAMBLE_GLYPHS = "#@$%&*+=<>?/\\|"
 SHADOW_STYLE = "&H73000000&"   # black @ 0.55, the drawtext shadow
+OUTLINE_STYLE = "&H26000000&"  # black @ 0.85, the drawtext bordercolor
 
 
 def _header(g: TextGeometry) -> str:
     style = (
-        f"Style: FX,{g.family.replace(',', ' ')},{g.size},{ass_colour(g.colour)},&HFFFFFF&,&H000000&,{SHADOW_STYLE},"
-        f"{'-1' if g.bold else '0'},{'-1' if g.italic else '0'},0,0,100,100,0,0,1,0,2,5,0,0,0,1"
+        f"Style: FX,{g.family.replace(',', ' ')},{g.size},{ass_colour(g.colour)},&HFFFFFF&,{OUTLINE_STYLE},{SHADOW_STYLE},"
+        f"{'-1' if g.bold else '0'},{'-1' if g.italic else '0'},0,0,100,100,0,0,1,{outline_width(g)},2,5,0,0,0,1"
     )
     return (
         "[Script Info]\n"
@@ -775,6 +794,30 @@ def _enter_tags(g: TextGeometry, effect: dict[str, Any]) -> tuple[str, str | Non
     body: str | None = None
     if enter_id == "fade":
         tags += f"\\fad({di},0)"
+    elif enter_id in ("slide-from-left", "slide-from-right", "slide-from-top", "slide-from-bottom",
+                      "rise-settle", "drop-bounce", "slide-overshoot"):
+        # libass twins of the drawtext slides: a \move over the enter window
+        # plus a fade. Springs/bounces are approximated by a two-stage move
+        # (overshoot past the target, then back), which reads the same at
+        # caption sizes. The event's \pos is replaced by the \move.
+        dx, dy = {
+            "slide-from-left": (-g.width * 0.3, 0.0),
+            "slide-from-right": (g.width * 0.3, 0.0),
+            "slide-from-top": (0.0, -g.height * 0.18),
+            "slide-from-bottom": (0.0, g.height * 0.18),
+            "rise-settle": (0.0, g.height * 0.08),
+            "drop-bounce": (0.0, -g.height * 0.24),
+            "slide-overshoot": (-g.width * 0.24, 0.0),
+        }[enter_id]
+        if enter_id in ("rise-settle", "drop-bounce", "slide-overshoot"):
+            # Overshoot: move most of the way in an accelerated first leg, the
+            # remainder is a \t-scaled settle. libass has a single \move per
+            # event, so the settle is expressed by a slight scale bounce.
+            tags += (f"\\move({g.cx + dx:.0f},{g.cy + dy:.0f},{g.cx:.0f},{g.cy:.0f},0,{di})"
+                     f"\\fad({max(1, di // 2)},0)"
+                     f"\\t({int(di * 0.6)},{di},\\fscx106\\fscy106)\\t({di},{int(di * 1.35) + 1},\\fscx100\\fscy100)")
+        else:
+            tags += f"\\move({g.cx + dx:.0f},{g.cy + dy:.0f},{g.cx:.0f},{g.cy:.0f},0,{di})\\fad({di},0)"
     elif enter_id == "blur-in":
         tags += f"\\blur10\\alpha&HFF&\\t(0,{di},\\blur0\\alpha&H00&)"
     elif enter_id == "flicker-in":
@@ -970,7 +1013,14 @@ def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
         body = enter_body if enter_body is not None else _multiline(g)
     if exit_id == "split-out-chars":
         body = _split_out_body(g)
-    events = [_ev(0, g.start, end_at, _pos_tags(g) + enter_tags + while_tags + karaoke_tags + _exit_tags(g, plan.exit_), body)]
+    exit_tags = _exit_tags(g, plan.exit_)
+    if "\\move(" in enter_tags:
+        # One \move per event: the enter owns it, a move-based exit keeps its fade.
+        pos = "\\an5"
+        exit_tags = _degrade_move_exit(exit_tags)
+    else:
+        pos = _pos_tags(g)
+    events = [_ev(0, g.start, end_at, pos + enter_tags + while_tags + karaoke_tags + exit_tags, body)]
     return _header(g) + "\n" + "\n".join(events + tail_events) + "\n"
 
 
@@ -1012,12 +1062,15 @@ def build_text_overlay(
     fonts_dir: Path | str,
     ass_path: Path | None,
     font_resolver: Callable[[str, bool, bool, Path], str] | None = None,
+    force_ass: bool = False,
 ) -> str | None:
     """The renderer's text filter for one item, or None when there is no text.
 
     ``ass_path`` is where the per-clip .ass file is written (the renderer's
     per-job work dir keeps concurrent renders apart). ``font_resolver`` is the
-    renderer's ``font_file`` — only the drawtext path needs it.
+    renderer's ``font_file`` — only the drawtext path needs it. ``force_ass``
+    routes even drawtext-expressible plans through libass — for FFmpeg builds
+    that have libass but no drawtext (stock distro/NAS binaries).
     """
     plan = overlay_plan(item)
     if plan is None:
@@ -1025,7 +1078,7 @@ def build_text_overlay(
     g = _geometry(item, defaults, width, height)
     if g is None:
         return None
-    if plan_engine(plan) == "dt":
+    if plan_engine(plan) == "dt" and not (force_ass and ass_path is not None):
         resolver = font_resolver or (lambda family, bold, italic, fonts: str(fonts))
         font = resolver(g.family, g.bold, g.italic, Path(fonts_dir))
         return _drawtext_filter(

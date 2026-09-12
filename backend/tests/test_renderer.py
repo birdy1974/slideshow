@@ -19,6 +19,7 @@ from app.renderer import (
     _parse_xfade_help,
     _probe_readable,
     _summarize_ffmpeg_log,
+    KEN_BURNS_MAX_STRENGTH,
     KEN_BURNS_MAX_ZOOM,
     build_filter_graph,
     build_xfade_filter,
@@ -706,6 +707,34 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertLess(graph.index("xfade="), graph.index("drawtext"), "caption must be drawn on top of the colour change")
         self.assertEqual("[v]", title[title.index("-map") + 1])
 
+    def test_caption_timing_is_shifted_by_the_incoming_transition_handle(self) -> None:
+        # Storyline handles: appear at 1 s, disappear at 3 s of a 5 s hold.
+        # The segment opens with the previous clip's 1 s crossfade handle, so
+        # inside the segment the caption must run 2 s -> 4 s.
+        commands = self._segment_commands([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1,
+             "text": "First", "textStart": 0.5, "textEnd": 1.5, "textEnterDuration": 0.2, "textExitDuration": 0.2},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1,
+             "text": "Second", "textStart": 1, "textEnd": 3, "textEnterDuration": 0.2, "textExitDuration": 0.2},
+        ])
+        first = commands[0][commands[0].index("-vf") + 1]
+        second = commands[1][commands[1].index("-vf") + 1]
+        self.assertIn("lt(t,0.5)", first, "first clip has no incoming handle: times are unchanged")
+        self.assertIn("lt(t,2)", second)
+        self.assertIn("lt(t,4)", second)
+        self.assertNotIn("lt(t,1)", second)
+
+    def test_caption_running_to_the_end_stops_at_the_hold_end(self) -> None:
+        commands = self._segment_commands([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1,
+             "text": "Second", "textStart": 0, "textEnd": 5, "textEnterDuration": 0.5, "textExitDuration": 0.5},
+        ])
+        second = commands[1][commands[1].index("-vf") + 1]
+        # 0..5 s of hold -> 1..6 s of segment (segment itself is 7 s incl. handles).
+        self.assertIn("lt(t,1)", second)
+        self.assertIn("lt(t,6)", second)
+
     def test_single_colour_text_frame_keeps_plain_vf(self) -> None:
         commands = self._segment_commands([
             {"id": 2, "type": "title", "path": "Generated frame", "duration": 4, "text": "Hi", "effect": "None", "transition": "Fade", "transitionTime": 0.5, "frameBackground": "#112233", "frameBackground2": "#112233"},
@@ -728,9 +757,39 @@ class SegmentFilterSelectionTest(unittest.TestCase):
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 3, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5},
         ])
         self.assertIn("zoompan=", filters[0])
-        self.assertIn("x='iw/2-(iw/zoom/2)'", filters[0], "zoompan defaults to the top-left corner")
-        self.assertIn("y='ih/2-(ih/zoom/2)'", filters[0])
+        # Default focus is the centre: origin = 0.5*iw - 0.5*window, clamped in frame
+        # (zoompan itself would anchor at the top-left corner).
+        self.assertIn("x='max(0,min(iw-iw/zoom,iw*0.5-iw/zoom*0.5))'", filters[0])
+        self.assertIn("y='max(0,min(ih-ih/zoom,ih*0.5-ih/zoom*0.5))'", filters[0])
         self.assertIn(f"scale={int(1920 / KEN_BURNS_MAX_ZOOM) // 2 * 2}:", filters[0])
+        # Default strength is the historical 1.12 and the zoom completes at the
+        # end of the slide's hold (3 s at 30 fps = 90 frames).
+        self.assertIn("z='1+(1.12-1)*min(1,on/90)'", filters[0])
+
+    def test_ken_burns_per_slide_strength_focus_and_pans(self) -> None:
+        filters = self._segment_filters([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5, "kenBurnsZoom": 1.25, "kenBurnsX": 20, "kenBurnsY": 80},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Pan left", "transition": "Fade", "transitionTime": 0.5, "kenBurnsZoom": 1.1},
+            {"id": 3, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Pan down", "transition": "Fade", "transitionTime": 0.5},
+            {"id": 4, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Zoom out", "transition": "Fade", "transitionTime": 0.5, "kenBurnsZoom": 9, "kenBurnsX": "junk"},
+        ])
+        # Strength scales the fit headroom too, so a 25 % zoom never leaves the picture.
+        self.assertIn(f"scale={int(1920 / 1.25) // 2 * 2}:", filters[0])
+        self.assertIn("z='1+(1.25-1)*min(1,on/", filters[0])
+        self.assertIn("iw*0.2-iw/zoom*0.2", filters[0])
+        self.assertIn("ih*0.8-ih/zoom*0.8", filters[0])
+        # Pans hold the strength as a constant zoom and travel edge to edge.
+        self.assertIn("z='1.1'", filters[1])
+        self.assertIn("x='(iw-iw/zoom)*(1-min(1,on/", filters[1])
+        self.assertIn("y='(ih-ih/zoom)/2'", filters[1])
+        self.assertIn("z='1.12'", filters[2])
+        self.assertIn("y='(ih-ih/zoom)*min(1,on/", filters[2])
+        # Malformed values clamp / fall back instead of failing the render.
+        self.assertIn(f"z='{KEN_BURNS_MAX_STRENGTH}-({KEN_BURNS_MAX_STRENGTH}-1)*min(1,on/", filters[3])
+        self.assertIn("iw*0.5-iw/zoom*0.5", filters[3])
+        self.assertNotIn("zoompan", self._segment_filters([
+            {"id": 5, "type": "video", "path": "/videos/a.mp4", "duration": 2, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5},
+        ])[0], "motion is a photo-only control")
 
 
     def test_photo_rotation_is_applied_before_fitting(self) -> None:
@@ -801,7 +860,7 @@ class TransitionPreviewTrimTest(unittest.TestCase):
         return [
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": max(1.0, transition_time),
              "effect": "None", "transition": "Fade", "transitionTime": transition_time, "previewTrim": True},
-            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": max(1.0, transition_time),
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": max(1.0, transition_time),
              "effect": "None", "transition": "Fade", "transitionTime": 1, "previewTrim": True},
         ]
 
@@ -833,7 +892,7 @@ class TransitionPreviewTrimTest(unittest.TestCase):
         # Without previewTrim the same two clips run hold + transition + hold.
         plain = [
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 5},
-            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
         ]
         self.assertEqual("15", self._render(plain)[-1][self._render(plain)[-1].index("-t") + 1])
 
@@ -1552,7 +1611,7 @@ class VaapiEncodingTest(unittest.TestCase):
         renderer._vaapi_device = "/dev/dri/renderD128"
         project = {"id": 1, "media": [
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
-            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
         ], "soundtrack": {}, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "Hardware · VAAPI", "path": "/output", "filename": "movie.mp4"}}
         return settings, renderer, project
 
@@ -1734,3 +1793,160 @@ class MovieToMovieAudioTest(unittest.TestCase):
         self.assertIn("afade=t=out:st=4:d=1,", graph)  # first film fades out into a picture
         self.assertIn("afade=t=in:st=0:d=1,", graph)   # last film fades in from a picture
         self.assertIn("(t-5)/1", graph)                # music release unchanged
+
+
+class PreviewSubsetTest(unittest.TestCase):
+    """Generate preview with a selection renders only those slides."""
+
+    def _project(self):
+        return {"id": 1, "media": [{"id": 1, "type": "image"}, {"id": 2, "type": "image"}, {"id": 3, "type": "video"}, {"id": 4, "type": "title"}],
+                "soundtrack": {"policy": "Fit slideshow to audio", "volume": 80}}
+
+    def test_keeps_story_order_and_ignores_unknown_ids(self) -> None:
+        from app.renderer import Renderer
+        subset = Renderer.subset_project(self._project(), [4, "2", 99])
+        self.assertEqual([2, 4], [m["id"] for m in subset["media"]])
+        # Fitting a handful of slides to the whole soundtrack would fake the timing.
+        self.assertEqual("Loop & trim", subset["soundtrack"]["policy"])
+        self.assertEqual(80, subset["soundtrack"]["volume"])
+
+    def test_empty_or_complete_selection_is_the_whole_project(self) -> None:
+        from app.renderer import Renderer
+        project = self._project()
+        self.assertIs(project, Renderer.subset_project(project, [99]))
+        self.assertIs(project, Renderer.subset_project(project, [1, 2, 3, 4]))
+        self.assertEqual("Fit slideshow to audio", project["soundtrack"]["policy"], "the original is never mutated")
+
+    def test_submit_applies_the_subset_to_previews_only(self) -> None:
+        from app.config import Settings
+        from app.database import Database
+        from app.renderer import Renderer
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        renderer = Renderer(Database(base / "t.db"), Settings(config_dir=base / "cfg", photos_dir=base, videos_dir=base, music_dir=base, output_dir=base))
+        seen: list[tuple[str, list]] = []
+        with mock.patch.object(renderer.db, "get_project", return_value=self._project()), \
+             mock.patch.object(renderer.db, "create_job"), \
+             mock.patch.object(renderer.db, "get_job", return_value={"id": "x"}), \
+             mock.patch.object(renderer.pool, "submit", side_effect=lambda fn, job_id, project, kind, event: seen.append((kind, [m["id"] for m in project["media"]]))), \
+             mock.patch.object(renderer, "render_output_path", return_value=base / "never.mp4"):
+            renderer.submit(1, "preview", media_ids=[3, 1])
+            renderer.submit(1, "render", media_ids=[3, 1])
+        self.assertEqual([("preview", [1, 3]), ("render", [1, 2, 3, 4])], seen)
+
+
+class UniformStitchTest(unittest.TestCase):
+    """Hold and transition parts are joined with -c:v copy, so they must all
+    carry one H.264 parameter set — mixing a CPU-encoded hold with GPU-encoded
+    transitions decoded as stripes/garbage on every steady picture."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        (base / "photos").mkdir(); (base / "photos" / "a.jpg").write_bytes(b"x")
+        self.settings = Settings(config_dir=base / "cfg", photos_dir=base / "photos", videos_dir=base, music_dir=base, output_dir=base / "out")
+        self.renderer = Renderer(Database(base / "t.db"), self.settings)
+        self.media = [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ]
+        self.project = {"id": 1, "media": self.media, "output": {"resolution": "HD · 720p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "Auto · Quick Sync", "path": "/output", "filename": "movie"}}
+
+    def _render(self, fail_first_hold_on_qsv: bool, uniform: bool = True) -> list[list[str]]:
+        commands: list[list[str]] = []
+        state = {"failed": False}
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            if fail_first_hold_on_qsv and "h264_qsv" in command and "hold-0000" in command[-1] and not state["failed"]:
+                state["failed"] = True
+                raise RenderError("qsv rejected")
+            Path(command[-1]).write_bytes(b"part")
+
+        self.renderer._qsv_encodable = True
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=uniform), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"; work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(self.project, "render", work, threading.Event(), lambda p, s: None)
+        return commands
+
+    @staticmethod
+    def _parts(commands: list[list[str]]) -> list[list[str]]:
+        return [c for c in commands if "hold-" in c[-1] or "transition-" in c[-1]]
+
+    def test_every_part_is_pinned_to_one_parameter_set(self) -> None:
+        parts = self._parts(self._render(fail_first_hold_on_qsv=False))
+        self.assertEqual(3, len(parts))
+        for command in parts:
+            text = " ".join(command)
+            self.assertIn("-profile:v high -level 4.1 -bf 0 -g 60 -keyint_min 60 -video_track_timescale 90000", text)
+            self.assertIn("h264_qsv", text)
+
+    def test_cpu_fallback_applies_to_every_part(self) -> None:
+        commands = self._render(fail_first_hold_on_qsv=True)
+        parts = self._parts(commands)
+        # The failed QSV attempt plus three libx264 parts; nothing else on QSV.
+        qsv = [c for c in parts if "h264_qsv" in c]
+        cpu = [c for c in parts if "libx264" in c]
+        self.assertEqual(1, len(qsv))
+        self.assertEqual(3, len(cpu))
+        self.assertEqual({"hold-0000.mp4", "transition-0000.mp4", "hold-0001.mp4"}, {Path(c[-1]).name for c in cpu})
+        join = next(c for c in commands if "timeline.ffconcat" in " ".join(c))
+        self.assertIn("copy", join)
+
+    def test_fallback_redoes_parts_already_made_on_the_gpu(self) -> None:
+        # Fail the *second* hold instead: the first hold and the transition
+        # were already encoded on QSV and must be redone on the CPU.
+        commands: list[list[str]] = []
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            if "h264_qsv" in command and "hold-0001" in command[-1]:
+                raise RenderError("qsv rejected")
+            Path(command[-1]).write_bytes(b"part")
+        self.renderer._qsv_encodable = True
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=True), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"; work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(self.project, "render", work, threading.Event(), lambda p, s: None)
+        cpu = [Path(c[-1]).name for c in self._parts(commands) if "libx264" in c]
+        self.assertEqual(["hold-0000.mp4", "transition-0000.mp4", "hold-0001.mp4"], cpu)
+
+    def test_non_uniform_parts_reencode_the_join(self) -> None:
+        commands = self._render(fail_first_hold_on_qsv=False, uniform=False)
+        join = next(c for c in commands if "timeline.ffconcat" in " ".join(c))
+        self.assertNotIn("copy", join)
+        self.assertIn("libx264", join)
+
+    def test_parameter_set_comparison(self) -> None:
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[("h264", "High", 41, "yuv420p", 1280, 720, "AA"), ("h264", "High", 41, "yuv420p", 1280, 720, "AA")]):
+            self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[("h264", "High", 41, "yuv420p", 1280, 720, "AA"), ("h264", "Main", 40, "nv12", 1280, 720, "BB")]):
+            self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[None, ("h264", "High", 41, "yuv420p", 1280, 720, "AA")]):
+            self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]), "an unreadable probe never forces the slow path")
+
+
+class InputWindowTest(UniformStitchTest):
+    """Hold/transition parts window their inputs with -ss/-t at the demuxer
+    instead of decoding the whole segment and trimming in the graph."""
+
+    def test_parts_seek_their_inputs(self) -> None:
+        parts = {Path(c[-1]).name: c for c in self._parts(self._render(fail_first_hold_on_qsv=False))}
+        first_hold = parts["hold-0000.mp4"]
+        self.assertNotIn("-ss", first_hold, "the first clip has no incoming handle to skip")
+        self.assertEqual("2", first_hold[first_hold.index("-t") + 1])
+        second_hold = parts["hold-0001.mp4"]
+        self.assertEqual("1", second_hold[second_hold.index("-ss") + 1], "skip the 1 s incoming handle")
+        transition = parts["transition-0000.mp4"]
+        # Outgoing handle of clip 1 starts at lead_in(0) + hold(2) = 2 s, incoming is the head of clip 2.
+        self.assertEqual("2", transition[transition.index("-ss") + 1])
+        graph = transition[transition.index("-filter_complex") + 1]
+        self.assertNotIn("trim=", graph)
+        self.assertIn("xfade=", graph)
+        self.assertEqual(2, transition.count("-i"))

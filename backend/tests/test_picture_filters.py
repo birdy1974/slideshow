@@ -315,10 +315,12 @@ class SegmentLookTest(unittest.TestCase):
         # filters must all produce the byte-identical command. (The blurred
         # letterbox backdrop carries its own eq=, so comparing against the
         # untouched baseline is the only honest assertion here.)
+        # Each item is rendered on its own: a caption's timing is shifted by
+        # the incoming transition handle, which only the first clip lacks.
         baseline = self._segment_filters([self._item()])[0]
-        for chain in self._segment_filters([self._item(id=2, filter="none"), self._item(id=3, filterAmount=0.4),
-                                            self._item(id=4, filter="mono", filterAmount=0), self._item(id=5, filterAdjust={})]):
-            self.assertEqual(baseline, chain)
+        for item in (self._item(id=2, filter="none"), self._item(id=3, filterAmount=0.4),
+                     self._item(id=4, filter="mono", filterAmount=0), self._item(id=5, filterAdjust={})):
+            self.assertEqual(baseline, self._segment_filters([item])[0])
 
     def test_text_frames_never_take_a_look(self) -> None:
         filters = self._segment_filters([

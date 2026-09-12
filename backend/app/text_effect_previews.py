@@ -233,6 +233,7 @@ class TextEffectPreviewCache:
         ass_path = self.root / f"{entry['slug']}.ass"
         overlay = build_text_overlay(
             item, {}, WIDTH, HEIGHT, self.settings.fonts_dir, ass_path, self.renderer_font,
+            force_ass=self.force_ass(),
         )
         if not overlay:
             raise PreviewUnavailable("Could not build the text overlay")
@@ -265,6 +266,13 @@ class TextEffectPreviewCache:
         tmp.replace(target)
         self._record(entry["slug"], "ready")
         return target
+
+    def force_ass(self) -> bool:
+        """Mirror the renderer: no drawtext in this FFmpeg → examples via libass."""
+        try:
+            return self.renderer.ass_filter_supported() and not self.renderer.drawtext_filter_supported()
+        except Exception:
+            return False
 
     def renderer_font(self, family: str, bold: bool, italic: bool, fonts_dir: Path) -> str:
         from .renderer import font_file

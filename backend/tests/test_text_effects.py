@@ -242,6 +242,86 @@ class AssEngineTests(unittest.TestCase):
         self.assertIn("&H5F903C&", doc)
 
 
+class OutlineTests(unittest.TestCase):
+    """'Outline & shadow' in Default text style: on unless switched off,
+    picture captions only (text frames sit on their own colour bed)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_picture_caption_gets_outline_by_default(self):
+        item = title_item(type="picture", text="Caption")
+        overlay = build_text_overlay(item, {"fontSize": 48}, 1920, 1080, Path("/fonts"), None)
+        self.assertIn(":borderw=3:bordercolor=black@0.85", overlay)
+
+    def test_outline_can_be_switched_off(self):
+        item = title_item(type="picture", text="Caption")
+        overlay = build_text_overlay(item, {"fontSize": 48, "outline": False}, 1920, 1080, Path("/fonts"), None)
+        self.assertNotIn("borderw", overlay)
+        self.assertIn("shadowx=2", overlay, "the soft shadow stays, as it always did")
+
+    def test_text_frames_never_get_an_outline(self):
+        overlay = build_text_overlay(title_item(), {"outline": True}, 1920, 1080, Path("/fonts"), None)
+        self.assertNotIn("borderw", overlay)
+
+    def test_libass_style_carries_the_outline(self):
+        path = self.tmp / "c.ass"
+        item = title_item(type="picture", text="Caption", textFxEnter="Pop in")
+        build_text_overlay(item, {"fontSize": 48}, 1920, 1080, Path("/fonts"), path)
+        style = [l for l in path.read_text().splitlines() if l.startswith("Style: FX")][0]
+        self.assertIn(",&H26000000&,&H73000000&,", style)
+        self.assertTrue(style.endswith(",1,3,2,5,0,0,0,1"), style)
+        build_text_overlay(item, {"fontSize": 48, "outline": False}, 1920, 1080, Path("/fonts"), path)
+        style = [l for l in path.read_text().splitlines() if l.startswith("Style: FX")][0]
+        self.assertTrue(style.endswith(",1,0,2,5,0,0,0,1"), style)
+
+
+class NoDrawtextBuildTests(unittest.TestCase):
+    """Stock FFmpeg binaries (distro packages, many NAS builds) ship libass but
+    not drawtext. Until now the legacy caption and every drawtext-expression
+    effect (Fade, the Slides, Gentle float ...) failed with 'Filter not found'
+    — the clip rendered with no text, which read as "text effects do not
+    work". With force_ass everything goes through libass."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def overlay(self, item: dict, force: bool = True) -> tuple[str, str]:
+        path = self.tmp / "clip.ass"
+        result = build_text_overlay(item, {}, 1280, 720, Path("/fonts"), path, force_ass=force)
+        self.assertIsNotNone(result)
+        return result, path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def test_legacy_fades_route_through_libass_when_forced(self):
+        overlay, doc = self.overlay(title_item())
+        self.assertTrue(overlay.startswith("ass=filename="), overlay)
+        self.assertIn("\\fad(800,0)", doc)
+        self.assertIn("\\fad(0,600)", doc)
+
+    def test_without_force_the_drawtext_path_is_unchanged(self):
+        overlay, _ = self.overlay(title_item(), force=False)
+        self.assertTrue(overlay.startswith("drawtext="), overlay)
+
+    def test_slides_get_a_move_and_no_duplicate_pos(self):
+        for label, expect in (("Slide from left", "\\move(256,360,640,360,0,800)"),
+                              ("Slide from bottom", "\\move(640,490,640,360,0,800)"),
+                              ("Rise & settle", "\\move(640,418,640,360,0,800)")):
+            with self.subTest(label):
+                _, doc = self.overlay(title_item(textFxEnter=label))
+                self.assertIn(expect, doc)
+                self.assertNotIn("\\pos(", doc, "one anchor per event: \\move replaces \\pos")
+                self.assertIn("\\an5", doc)
+
+    def test_move_enter_keeps_only_the_fade_of_a_move_exit(self):
+        _, doc = self.overlay(title_item(textFxEnter="Slide from left", textFxExit="Slide out right"))
+        self.assertEqual(1, doc.count("\\move("), doc)
+        self.assertIn("\\fad(0,600)", doc)
+
+    def test_while_effects_compose_with_forced_ass(self):
+        _, doc = self.overlay(title_item(textFxWhile="Gentle float"))
+        self.assertIn("\\fscy103", doc)
+
+
 class RendererIntegrationTests(unittest.TestCase):
     def _renderer(self, fonts_dir: Path):
         import sys
