@@ -1833,3 +1833,100 @@ class PreviewSubsetTest(unittest.TestCase):
             renderer.submit(1, "preview", media_ids=[3, 1])
             renderer.submit(1, "render", media_ids=[3, 1])
         self.assertEqual([("preview", [1, 3]), ("render", [1, 2, 3, 4])], seen)
+
+
+class UniformStitchTest(unittest.TestCase):
+    """Hold and transition parts are joined with -c:v copy, so they must all
+    carry one H.264 parameter set — mixing a CPU-encoded hold with GPU-encoded
+    transitions decoded as stripes/garbage on every steady picture."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        (base / "photos").mkdir(); (base / "photos" / "a.jpg").write_bytes(b"x")
+        self.settings = Settings(config_dir=base / "cfg", photos_dir=base / "photos", videos_dir=base, music_dir=base, output_dir=base / "out")
+        self.renderer = Renderer(Database(base / "t.db"), self.settings)
+        self.media = [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ]
+        self.project = {"id": 1, "media": self.media, "output": {"resolution": "HD · 720p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "Auto · Quick Sync", "path": "/output", "filename": "movie"}}
+
+    def _render(self, fail_first_hold_on_qsv: bool, uniform: bool = True) -> list[list[str]]:
+        commands: list[list[str]] = []
+        state = {"failed": False}
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            if fail_first_hold_on_qsv and "h264_qsv" in command and "hold-0000" in command[-1] and not state["failed"]:
+                state["failed"] = True
+                raise RenderError("qsv rejected")
+            Path(command[-1]).write_bytes(b"part")
+
+        self.renderer._qsv_encodable = True
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=uniform), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"; work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(self.project, "render", work, threading.Event(), lambda p, s: None)
+        return commands
+
+    @staticmethod
+    def _parts(commands: list[list[str]]) -> list[list[str]]:
+        return [c for c in commands if "hold-" in c[-1] or "transition-" in c[-1]]
+
+    def test_every_part_is_pinned_to_one_parameter_set(self) -> None:
+        parts = self._parts(self._render(fail_first_hold_on_qsv=False))
+        self.assertEqual(3, len(parts))
+        for command in parts:
+            text = " ".join(command)
+            self.assertIn("-profile:v high -level 4.1 -bf 0 -g 60 -keyint_min 60 -video_track_timescale 90000", text)
+            self.assertIn("h264_qsv", text)
+
+    def test_cpu_fallback_applies_to_every_part(self) -> None:
+        commands = self._render(fail_first_hold_on_qsv=True)
+        parts = self._parts(commands)
+        # The failed QSV attempt plus three libx264 parts; nothing else on QSV.
+        qsv = [c for c in parts if "h264_qsv" in c]
+        cpu = [c for c in parts if "libx264" in c]
+        self.assertEqual(1, len(qsv))
+        self.assertEqual(3, len(cpu))
+        self.assertEqual({"hold-0000.mp4", "transition-0000.mp4", "hold-0001.mp4"}, {Path(c[-1]).name for c in cpu})
+        join = next(c for c in commands if "timeline.ffconcat" in " ".join(c))
+        self.assertIn("copy", join)
+
+    def test_fallback_redoes_parts_already_made_on_the_gpu(self) -> None:
+        # Fail the *second* hold instead: the first hold and the transition
+        # were already encoded on QSV and must be redone on the CPU.
+        commands: list[list[str]] = []
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            if "h264_qsv" in command and "hold-0001" in command[-1]:
+                raise RenderError("qsv rejected")
+            Path(command[-1]).write_bytes(b"part")
+        self.renderer._qsv_encodable = True
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=True), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"; work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(self.project, "render", work, threading.Event(), lambda p, s: None)
+        cpu = [Path(c[-1]).name for c in self._parts(commands) if "libx264" in c]
+        self.assertEqual(["hold-0000.mp4", "transition-0000.mp4", "hold-0001.mp4"], cpu)
+
+    def test_non_uniform_parts_reencode_the_join(self) -> None:
+        commands = self._render(fail_first_hold_on_qsv=False, uniform=False)
+        join = next(c for c in commands if "timeline.ffconcat" in " ".join(c))
+        self.assertNotIn("copy", join)
+        self.assertIn("libx264", join)
+
+    def test_parameter_set_comparison(self) -> None:
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[("h264", "High", 41, "yuv420p", 1280, 720, "AA"), ("h264", "High", 41, "yuv420p", 1280, 720, "AA")]):
+            self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[("h264", "High", 41, "yuv420p", 1280, 720, "AA"), ("h264", "Main", 40, "nv12", 1280, 720, "BB")]):
+            self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[None, ("h264", "High", 41, "yuv420p", 1280, 720, "AA")]):
+            self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]), "an unreadable probe never forces the slow path")

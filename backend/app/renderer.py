@@ -1844,6 +1844,14 @@ class Renderer:
         hw_graph_suffix = ",hwupload" if encoder == "h264_vaapi" else ""
 
         def encode_args_for(codec: str, *, intermediate: bool) -> list[str]:
+            # Every part is stitched later with -c:v copy, so all of them must
+            # share one H.264 parameter set: same profile/level, no B-frames
+            # (which also keeps DTS monotonic at the joins), identical GOP and
+            # timescale. Without this a hold encoded after a CPU fallback and a
+            # transition encoded on the GPU decode as stripes/garbage because
+            # the MP4 carries only the first part's SPS/PPS.
+            pinned = ["-profile:v", "high", "-level", "4.1", "-bf", "0", "-g", str(fps * 2), "-keyint_min", str(fps * 2),
+                      "-video_track_timescale", "90000"] if intermediate else []
             if codec == "h264_vaapi":
                 # Frames arrive as VA-API surfaces from hwupload, so nv12/yuv420p
                 # does not apply. -low_power selects the VDENC entrypoint that
@@ -1866,51 +1874,69 @@ class Renderer:
                 args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-preset", preset, "-pix_fmt", "yuv420p"]
             if not intermediate:
                 args += ["-movflags", "+faststart"]
-            return args
+            return pinned + args
+
+        def cpu_variant(command: list[str]) -> list[str]:
+            """The same compose command re-targeted at libx264."""
+            if encoder not in command:
+                return list(command)  # e.g. the final -c:v copy mux: nothing to retarget
+            if encoder == "h264_qsv":
+                patched = list(command)
+                idx = patched.index("h264_qsv")
+                patched[idx] = "libx264"
+                if "-pix_fmt" in patched:
+                    pix = patched.index("-pix_fmt")
+                    patched[pix + 1] = "yuv420p"
+                if "-preset" not in patched:
+                    patched[idx + 1:idx + 1] = ["-preset", "medium"]
+                return patched
+            # VA-API: drop the device, the hwupload hops and the encoder
+            # options, then hand the software frames straight to x264.
+            patched: list[str] = []
+            skip = False
+            for position, arg in enumerate(command):
+                if skip:
+                    skip = False
+                    continue
+                if arg in ("-vaapi_device", "-low_power", "-rc_mode", "-qp"):
+                    skip = True  # and its value
+                    continue
+                if arg in ("-filter_complex", "-vf") and position + 1 < len(command):
+                    patched.append(arg)
+                    patched.append(command[position + 1].replace(",hwupload", ""))
+                    skip = True
+                    continue
+                if arg == "h264_vaapi":
+                    patched.append("libx264")
+                    continue
+                patched.append(arg)
+            return patched[:-1] + ["-preset", "medium", "-pix_fmt", "yuv420p"] + patched[-1:]
+
+        # Compose commands that already succeeded on the hardware encoder, so a
+        # later CPU fallback can redo them: parts from two encoders must never
+        # meet in one -c:v copy stitch.
+        hw_done: list[list[str]] = []
+        cpu_only = {"on": encoder == "libx264"}
 
         def run_compose(command: list[str], *, allow_hw_fallback: bool) -> None:
+            if cpu_only["on"] and encoder != "libx264":
+                self._run_ffmpeg(cpu_variant(command), cancelled, log_file)
+                return
             try:
                 self._run_ffmpeg(command, cancelled, log_file)
+                if encoder != "libx264":
+                    hw_done.append(command)
             except RenderError:
                 if not allow_hw_fallback or encoder == "libx264":
                     raise
                 progress(70, f"{encoder} unavailable; retrying on CPU")
-                log.warning("%s failed; falling back to libx264", encoder)
-                if encoder == "h264_qsv":
-                    patched = list(command)
-                    try:
-                        idx = patched.index("h264_qsv")
-                        patched[idx] = "libx264"
-                        if "-pix_fmt" in patched:
-                            pix = patched.index("-pix_fmt")
-                            patched[pix + 1] = "yuv420p"
-                        if "-preset" not in patched:
-                            patched[idx + 1:idx + 1] = ["-preset", "medium"]
-                    except ValueError:
-                        raise
-                else:
-                    # VA-API: drop the device, the hwupload hops and the encoder
-                    # options, then hand the software frames straight to x264.
-                    patched = []
-                    skip = False
-                    for position, arg in enumerate(command):
-                        if skip:
-                            skip = False
-                            continue
-                        if arg in ("-vaapi_device", "-low_power", "-rc_mode", "-qp"):
-                            skip = True  # and its value
-                            continue
-                        if arg in ("-filter_complex", "-vf") and position + 1 < len(command):
-                            patched.append(arg)
-                            patched.append(command[position + 1].replace(",hwupload", ""))
-                            skip = True
-                            continue
-                        if arg == "h264_vaapi":
-                            patched.append("libx264")
-                            continue
-                        patched.append(arg)
-                    patched = patched[:-1] + ["-preset", "medium", "-pix_fmt", "yuv420p"] + patched[-1:]
-                self._run_ffmpeg(patched, cancelled, log_file)
+                log.warning("%s failed; falling back to libx264 for every timeline part", encoder)
+                cpu_only["on"] = True
+                for earlier in hw_done:
+                    self._run_ffmpeg(cpu_variant(earlier), cancelled, log_file)
+                hw_done.clear()
+                self._run_ffmpeg(cpu_variant(command), cancelled, log_file)
+                return
 
         # Build the timeline as individual hold and transition units.  Do not
         # chain xfade filters: a chain has quadratic full-resolution work and
@@ -1983,9 +2009,21 @@ class Renderer:
             encoding="utf-8",
         )
         timeline = work / "timeline.mp4"
+        # Safety net for the -c:v copy stitch: every part must carry the same
+        # codec parameters (profile, level, pixel format, extradata = SPS/PPS).
+        # If anything differs the join is re-encoded once instead — slower, but
+        # it can never produce a file whose holds decode as garbage.
+        uniform = self._parts_share_parameter_set(timeline_parts)
+        if uniform:
+            join_codec = ["-c:v", "copy"]
+        else:
+            log.warning("Timeline parts carry different H.264 parameter sets; re-encoding the join instead of copying")
+            progress(80, "Parts differ; re-encoding the join")
+            join_codec = ["-c:v", "libx264", "-preset", "medium", "-b:v", bitrate, "-maxrate", bitrate,
+                          "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "yuv420p"]
         concat_command = [
             self.settings.ffmpeg_bin, "-hide_banner", "-y", "-f", "concat", "-safe", "0",
-            "-i", str(concat_list), "-map", "0:v:0", "-an", "-c:v", "copy",
+            "-i", str(concat_list), "-map", "0:v:0", "-an", *join_codec,
             "-movflags", "+faststart", "-t", format_ffmpeg_number(total_duration), str(timeline),
         ]
         progress(82, "Joining timeline")
@@ -2146,6 +2184,33 @@ class Renderer:
             log.warning("Loudness measurement of %s exited with %s", source.name, process.returncode)
             return None
         return parse_loudnorm_stats(stderr_text)
+
+    def _stream_signature(self, path: Path) -> tuple | None:
+        """(codec, profile, level, pix_fmt, size, extradata) of a part's video stream."""
+        try:
+            result = subprocess.run(
+                [self.settings.ffprobe_bin, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=codec_name,profile,level,pix_fmt,width,height,extradata", "-of", "json", str(path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            stream = (json.loads(result.stdout or "{}").get("streams") or [{}])[0]
+        except Exception as exc:
+            log.warning("Could not probe %s for its parameter set: %s", path.name, exc)
+            return None
+        if not stream.get("codec_name"):
+            return None
+        return tuple(stream.get(key) for key in ("codec_name", "profile", "level", "pix_fmt", "width", "height", "extradata"))
+
+    def _parts_share_parameter_set(self, parts: list[Path]) -> bool:
+        """True when every part can be bitstream-copied into one H.264 stream.
+
+        Unknown (probe failed) is treated as uniform so a missing ffprobe never
+        forces the slow path — the pinned encoder flags already make the parts
+        match in that case.
+        """
+        signatures = {self._stream_signature(part) for part in parts}
+        signatures.discard(None)
+        return len(signatures) <= 1
 
     def _probe_duration(self, path: Path) -> float:
         result=subprocess.run([self.settings.ffprobe_bin,"-v","error","-show_entries","format=duration","-of","json",str(path)],capture_output=True,text=True,timeout=30)
