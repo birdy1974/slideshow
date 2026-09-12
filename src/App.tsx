@@ -14,6 +14,7 @@ import {
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
 import { CropSpriteVideo } from './PictureCropEditor'
 import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilterStyle, type Lookish } from './pictureFilters'
@@ -287,6 +288,60 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
 // Renders a media thumbnail (image or video) with a graceful placeholder when
 // the backend reports the file unreadable — a 0-byte or missing file would
 // otherwise show as a silently broken image in the timeline and filmstrip.
+// Module-level cache so the storyline does not re-capture a movie's frames on
+// every re-render or reorder: keyed by the stream URL, holds the sprite src.
+const movieStripCache = new Map<string, { src: string; total: number } | null>()
+
+/** Real frames of a movie laid edge to edge — the same strip the movie editor
+ * draws, sized for a storyline clip. Cut (trimmed-away) sections are shaded so
+ * the clip shows exactly the part of the movie that will play. */
+function MovieStrip({ item, onClick, onPointerDown }: { item: MediaItem; onClick?: React.MouseEventHandler; onPointerDown?: React.PointerEventHandler }) {
+  const src = itemThumbUrl(item)
+  const [strip, setStrip] = useState<{ src: string; total: number } | null>(() => movieStripCache.get(src) ?? null)
+  const [failed, setFailed] = useState(() => movieStripCache.has(src) && movieStripCache.get(src) === null)
+  useEffect(() => {
+    if (!src) return
+    if (movieStripCache.has(src)) { setStrip(movieStripCache.get(src) ?? null); setFailed(movieStripCache.get(src) === null); return }
+    let cancelled = false
+    void (async () => {
+      // Length first (browser, then FFmpeg), then frames the same way.
+      let total = 0
+      try {
+        total = await new Promise<number>((resolve) => {
+          const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true; v.src = src
+          const done = (n: number) => { v.removeAttribute('src'); v.load(); resolve(n) }
+          v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : 0)
+          v.onerror = () => done(0)
+          window.setTimeout(() => done(0), 8000)
+        })
+      } catch { total = 0 }
+      if (!total) total = await serverMovieDuration(item)
+      if (cancelled) return
+      const captured = total > 0 ? await captureFilmstrip(src, FILMSTRIP_CELLS, total) : null
+      if (cancelled) return
+      let result: { src: string; total: number } | null = captured ? { src: captured, total } : null
+      if (!result && total > 0) {
+        const ok = await new Promise<boolean>(resolve => { const img = new Image(); img.onload = () => resolve(true); img.onerror = () => resolve(false); img.src = movieFilmstripUrl(item) })
+        if (ok) result = { src: movieFilmstripUrl(item), total }
+      }
+      if (cancelled) return
+      movieStripCache.set(src, result)
+      setStrip(result); setFailed(!result)
+    })()
+    return () => { cancelled = true }
+  }, [src, item.path, item.name])
+  if (!src || failed || !strip) return <MediaThumb item={item} onClick={onClick} onPointerDown={onPointerDown} />
+  const total = strip.total
+  const start = Math.max(0, Math.min(Number(item.trimStart) || 0, total))
+  const end = Math.min(total, (Number(item.trimEnd) || 0) > 0 ? Number(item.trimEnd) : total)
+  const pct = (t: number) => `${total ? Math.min(100, Math.max(0, t / total * 100)) : 0}%`
+  return <div className="clip-strip" onClick={onClick} onPointerDown={onPointerDown} title={movieIsTrimmed(item) ? `Movie frames · using ${movieKeptLabel(item)} — click to view` : 'Movie frames — click to view'}>
+    <img src={strip.src} alt={item.name} draggable={false} style={pictureFilterStyle(item)} />
+    {start > 0.01 && <i className="clip-cut left" style={{ width: pct(start) }} />}
+    {end < total - 0.01 && <i className="clip-cut right" style={{ left: pct(end) }} />}
+  </div>
+}
+
 function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, style }: {
   item: MediaItem; className?: string; muted?: boolean; preload?: 'metadata' | 'auto' | 'none';
   onClick?: React.MouseEventHandler; onPointerDown?: React.PointerEventHandler; style?: React.CSSProperties;
@@ -1821,7 +1876,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => setEditingTextFrame(item.id) : undefined}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}><MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />{item.type === 'title' && <button type="button" className="clip-frame-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `${timelineZoom * 100}%`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => setEditingTextFrame(item.id) : undefined}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''} ${item.type === 'video' ? 'movie-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}>{item.type === 'video' ? <MovieStrip item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} /> : <MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="clip-frame-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
