@@ -30,6 +30,80 @@ from .text_effects import build_text_overlay, overlay_plan, plan_engine
 log = logging.getLogger(__name__)
 
 KEN_BURNS_MAX_ZOOM = 1.12
+# Per-slide Ken Burns strength: the zoom factor the motion reaches by the end
+# of the hold (or holds constant while panning). Clamped so a picture can never
+# be pushed past its edges; 1.12 is the historical fixed value.
+KEN_BURNS_MIN_STRENGTH, KEN_BURNS_MAX_STRENGTH = 1.02, 1.35
+
+
+def ken_burns_settings(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalised per-slide Ken Burns settings, or None when the slide has no motion.
+
+    ``effect`` selects the motion ("Ken Burns · Zoom in / Zoom out / Pan left /
+    Pan right / Pan up / Pan down"); ``kenBurnsZoom`` is the strength (target
+    zoom factor, default KEN_BURNS_MAX_ZOOM); ``kenBurnsX``/``kenBurnsY`` place
+    the focus point of a zoom in percent of the picture (default 50/50 =
+    centre). Pans ignore the focus point: they always travel edge to edge.
+    Anything malformed falls back to the defaults, never to an error.
+    """
+    if item.get("type", "image") != "image":
+        return None
+    effect = str(item.get("effect", ""))
+    if not effect.startswith("Ken Burns"):
+        return None
+    def _num(key: str, default: float, low: float, high: float) -> float:
+        try:
+            value = float(item.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        if value != value:
+            return default
+        return min(high, max(low, value))
+    if "Zoom out" in effect: motion = "zoom-out"
+    elif "Pan left" in effect: motion = "pan-left"
+    elif "Pan right" in effect: motion = "pan-right"
+    elif "Pan up" in effect: motion = "pan-up"
+    elif "Pan down" in effect: motion = "pan-down"
+    else: motion = "zoom-in"
+    return {
+        "motion": motion,
+        "zoom": round(_num("kenBurnsZoom", KEN_BURNS_MAX_ZOOM, KEN_BURNS_MIN_STRENGTH, KEN_BURNS_MAX_STRENGTH), 4),
+        "x": round(_num("kenBurnsX", 50.0, 0.0, 100.0), 2),
+        "y": round(_num("kenBurnsY", 50.0, 0.0, 100.0), 2),
+    }
+
+
+def ken_burns_filter(settings: dict[str, Any], width: int, height: int, fps: int, duration: float) -> str:
+    """zoompan expression for one slide: reaches the strength exactly at the end of the hold.
+
+    ``on`` is zoompan's output frame counter, so progress ``p = on / frames``
+    runs 0→1 over the segment regardless of its length — a 3 s and a 12 s slide
+    both complete the same motion instead of sharing one fixed per-frame step.
+    Zooms anchor on the focus point (percent of the picture); pans keep the
+    strength as a constant zoom and slide the window from one edge to the other.
+    """
+    zoom = format_ffmpeg_number(settings["zoom"])
+    frames = max(1, int(round(max(0.2, duration) * fps)))
+    p = f"min(1,on/{frames})"
+    motion = settings["motion"]
+    if motion in ("zoom-in", "zoom-out"):
+        z = f"1+({zoom}-1)*{p}" if motion == "zoom-in" else f"{zoom}-({zoom}-1)*{p}"
+        fx, fy = format_ffmpeg_number(settings["x"] / 100.0), format_ffmpeg_number(settings["y"] / 100.0)
+        # Keep the focus point where it is while the window shrinks around it:
+        # window origin = focus - focus * window size (clamped inside the frame).
+        x = f"max(0,min(iw-iw/zoom,iw*{fx}-iw/zoom*{fx}))"
+        y = f"max(0,min(ih-ih/zoom,ih*{fy}-ih/zoom*{fy}))"
+    else:
+        z = zoom
+        if motion == "pan-left":      # picture moves left: window travels right→left
+            x, y = f"(iw-iw/zoom)*(1-{p})", "(ih-ih/zoom)/2"
+        elif motion == "pan-right":
+            x, y = f"(iw-iw/zoom)*{p}", "(ih-ih/zoom)/2"
+        elif motion == "pan-up":
+            x, y = "(iw-iw/zoom)/2", f"(ih-ih/zoom)*(1-{p})"
+        else:                         # pan-down
+            x, y = "(iw-iw/zoom)/2", f"(ih-ih/zoom)*{p}"
+    return f"zoompan=z='{z}':x='{x}':y='{y}':d=1:s={width}x{height}:fps={fps}"
 RESOLUTIONS = {
     "4K UHD · 2160p": (3840, 2160), "Full HD · 1080p": (1920, 1080),
     "HD · 720p": (1280, 720), "SD · 480p": (854, 480),
@@ -1517,13 +1591,13 @@ class Renderer:
             duration = segment_durations[index]
             segment = work / f"segment-{index:04d}.mp4"
             kind_name = item.get("type", "image")
-            effect = str(item.get("effect", ""))
-            ken_burns = kind_name == "image" and effect.startswith("Ken Burns")
+            ken_burns = ken_burns_settings(item)
             if kind_name == "image":
                 # Photos are never cropped: fit the whole picture in the frame and
                 # fill the letterbox bars with a blurred copy. Ken Burns clips are
-                # fitted smaller so the zoom still cannot reach the picture edges.
-                base_filter = fit_frame_filter(width, height, fps, KEN_BURNS_MAX_ZOOM if ken_burns else 1.0)
+                # fitted smaller (by the slide's own strength) so the zoom still
+                # cannot reach the picture edges.
+                base_filter = fit_frame_filter(width, height, fps, ken_burns["zoom"] if ken_burns else 1.0)
             else:
                 base_filter = fill_frame_filter(width, height, fps)
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-y"]
@@ -1592,14 +1666,11 @@ class Renderer:
                 prefix += crop_filters(crop)
             filters = prefix + [base_filter]
             if ken_burns:
-                delta = "0.0008" if "Zoom in" in effect else "-0.0008" if "Zoom out" in effect else "0.0003"
-                start_zoom = "1" if delta.startswith("0") else format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)
-                zoom = f"max(1,min({format_ffmpeg_number(KEN_BURNS_MAX_ZOOM)},{start_zoom}+on*{delta}))"
-                # Anchor the zoom in the centre; zoompan otherwise defaults to the
-                # top-left corner, which would push the picture out of frame.
-                filters.append(
-                    f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={width}x{height}:fps={fps}"
-                )
+                # Per-slide motion, strength and focus point. The motion is
+                # paced over the slide's own hold, so a 3 s and a 12 s slide
+                # both complete it; during the transition handles that follow
+                # the window simply stays at its end position.
+                filters.append(ken_burns_filter(ken_burns, width, height, fps, durations[index]))
             if kind_name == "video":
                 # Freeze the opening frame for the incoming xfade handle and the
                 # closing frame for the outgoing handle (plus any extra hold the

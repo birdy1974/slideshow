@@ -28,6 +28,12 @@ export type MediaItem = {
   // Photo orientation fix in whole quarter turns (0, 90, 180, 270, clockwise).
   // Applied in every thumbnail/lightbox and by the FFmpeg renderer.
   rotation?: number;
+  // Per-slide Ken Burns settings (photos with a "Ken Burns · …" effect only).
+  // kenBurnsZoom = strength as the zoom factor reached at the end of the hold
+  // (default 1.12); kenBurnsX/Y = focus point of a zoom in percent of the
+  // picture (default 50/50 = centre). Pans always travel edge to edge.
+  // Mirrored by ken_burns_settings() in backend/app/renderer.py.
+  kenBurnsZoom?: number; kenBurnsX?: number; kenBurnsY?: number;
   // Text frames: optional second background colour reached via an xfade
   // transition that starts `frameTransitionStart` seconds into the frame and
   // lasts `frameTransitionTime` seconds. The caption stays fixed on top.

@@ -19,6 +19,7 @@ from app.renderer import (
     _parse_xfade_help,
     _probe_readable,
     _summarize_ffmpeg_log,
+    KEN_BURNS_MAX_STRENGTH,
     KEN_BURNS_MAX_ZOOM,
     build_filter_graph,
     build_xfade_filter,
@@ -728,9 +729,39 @@ class SegmentFilterSelectionTest(unittest.TestCase):
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 3, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5},
         ])
         self.assertIn("zoompan=", filters[0])
-        self.assertIn("x='iw/2-(iw/zoom/2)'", filters[0], "zoompan defaults to the top-left corner")
-        self.assertIn("y='ih/2-(ih/zoom/2)'", filters[0])
+        # Default focus is the centre: origin = 0.5*iw - 0.5*window, clamped in frame
+        # (zoompan itself would anchor at the top-left corner).
+        self.assertIn("x='max(0,min(iw-iw/zoom,iw*0.5-iw/zoom*0.5))'", filters[0])
+        self.assertIn("y='max(0,min(ih-ih/zoom,ih*0.5-ih/zoom*0.5))'", filters[0])
         self.assertIn(f"scale={int(1920 / KEN_BURNS_MAX_ZOOM) // 2 * 2}:", filters[0])
+        # Default strength is the historical 1.12 and the zoom completes at the
+        # end of the slide's hold (3 s at 30 fps = 90 frames).
+        self.assertIn("z='1+(1.12-1)*min(1,on/90)'", filters[0])
+
+    def test_ken_burns_per_slide_strength_focus_and_pans(self) -> None:
+        filters = self._segment_filters([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5, "kenBurnsZoom": 1.25, "kenBurnsX": 20, "kenBurnsY": 80},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Pan left", "transition": "Fade", "transitionTime": 0.5, "kenBurnsZoom": 1.1},
+            {"id": 3, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Pan down", "transition": "Fade", "transitionTime": 0.5},
+            {"id": 4, "type": "image", "path": "/photos/a.jpg", "duration": 4, "effect": "Ken Burns · Zoom out", "transition": "Fade", "transitionTime": 0.5, "kenBurnsZoom": 9, "kenBurnsX": "junk"},
+        ])
+        # Strength scales the fit headroom too, so a 25 % zoom never leaves the picture.
+        self.assertIn(f"scale={int(1920 / 1.25) // 2 * 2}:", filters[0])
+        self.assertIn("z='1+(1.25-1)*min(1,on/", filters[0])
+        self.assertIn("iw*0.2-iw/zoom*0.2", filters[0])
+        self.assertIn("ih*0.8-ih/zoom*0.8", filters[0])
+        # Pans hold the strength as a constant zoom and travel edge to edge.
+        self.assertIn("z='1.1'", filters[1])
+        self.assertIn("x='(iw-iw/zoom)*(1-min(1,on/", filters[1])
+        self.assertIn("y='(ih-ih/zoom)/2'", filters[1])
+        self.assertIn("z='1.12'", filters[2])
+        self.assertIn("y='(ih-ih/zoom)*min(1,on/", filters[2])
+        # Malformed values clamp / fall back instead of failing the render.
+        self.assertIn(f"z='{KEN_BURNS_MAX_STRENGTH}-({KEN_BURNS_MAX_STRENGTH}-1)*min(1,on/", filters[3])
+        self.assertIn("iw*0.5-iw/zoom*0.5", filters[3])
+        self.assertNotIn("zoompan", self._segment_filters([
+            {"id": 5, "type": "video", "path": "/videos/a.mp4", "duration": 2, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5},
+        ])[0], "motion is a photo-only control")
 
 
     def test_photo_rotation_is_applied_before_fitting(self) -> None:
