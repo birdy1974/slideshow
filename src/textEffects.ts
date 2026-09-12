@@ -49,7 +49,6 @@ for (const entry of textEffectEntries) {
   if (entry.params?.length) defaultParams[entry.label] = entry.params
 }
 
-export const textEffectSymbols = symbols
 export const textEffectDefaultSeconds = defaultSeconds
 
 /** Grouped labels for one slot, in registry order (drives pickers). */
@@ -61,10 +60,6 @@ export function allTextEffects(slot: TextEffectSlot): string[] {
   return Object.values(groupIndex[slot]).flat()
 }
 
-export function getTextEffect(label: string | undefined): TextEffectEntry | undefined {
-  return byLabel.get(String(label || '').trim())
-}
-
 export function textEffectParams(label: string | undefined): TextEffectParamDef[] {
   return defaultParams[String(label || '').trim()] || []
 }
@@ -72,8 +67,6 @@ export function textEffectParams(label: string | undefined): TextEffectParamDef[
 export const DEFAULT_ENTER = 'Fade'
 export const DEFAULT_WHILE = 'None (static)'
 export const DEFAULT_EXIT = 'Fade out'
-export const WHILE_SPEED_MIN = 0.4
-export const WHILE_SPEED_MAX = 12
 export const WHILE_SPEED_DEFAULT = 2
 
 /**
@@ -131,9 +124,4 @@ export function textEffectSlug(label: string) {
 
 export function textEffectPreviewUrl(label: string) {
   return `/api/text-effects/${textEffectSlug(label)}.mp4`
-}
-
-/** Seconds stepper bounds for one slot (durations, not the while period). */
-export function durationBoundsFor(slot: 'enter' | 'exit') {
-  return slot === 'enter' ? { min: 0.1, max: 6, step: 0.1 } : { min: 0.1, max: 6, step: 0.1 }
 }

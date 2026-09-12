@@ -49,7 +49,6 @@ export const easingGroups: Record<string, string[]> = {
   'Elastic / Back / Bounce': ['elastic', 'elastic-in', 'elastic-out', 'elastic-in-out', 'back', 'back-in', 'back-out', 'back-in-out', 'bounce', 'bounce-in', 'bounce-out', 'bounce-in-out', 'squareroot', 'cuberoot', 'flipelastic', 'flipback'],
   'CSS': ['ease', 'ease-in', 'ease-out', 'ease-in-out', 'cubic-bezier(0.42,0,0.58,1)', 'cubic-bezier(0.25,0.1,0.25,1)', 'step-start', 'step-end'],
 }
-export const easings = Object.values(easingGroups).flat()
 export const EASING_DEFAULT = 'linear'
 
 // ---------------------------------------------------------------------------

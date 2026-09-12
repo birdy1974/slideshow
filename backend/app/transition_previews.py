@@ -29,7 +29,6 @@ import logging
 import re
 import subprocess
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -399,13 +398,3 @@ class TransitionPreviewCache:
         with self._lock:
             self._manifest = {"version": CACHE_VERSION, "items": {}}
         self._write_manifest()
-
-    def wait_for(self, slug: str, timeout: float = RENDER_TIMEOUT) -> Path | None:
-        """Used by tests/CLI: block until a clip is cached (or give up)."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            cached = self.path_for(slug)
-            if cached.exists():
-                return cached
-            time.sleep(0.2)
-        return None

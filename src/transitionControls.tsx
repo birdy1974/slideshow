@@ -1,8 +1,6 @@
 // Reusable transition-related form controls: the easing picker, the
 // per-transition GL parameter editors and the "random source" selector.
 // Used by App.tsx, the transition browser and the preview modal.
-import type { ReactNode } from 'react'
-import { Check } from 'lucide-react'
 import { Select } from './ui'
 import {
   EASING_DEFAULT, easingGroups, getGLParams, glTransitions, nativeTransitions, transitions,
@@ -87,13 +85,4 @@ export function GLParamControls({ transition, params, onChange }: { transition: 
       </label>
     })}
   </div>
-}
-
-/** Compact read-only summary of the non-default bits of a transition config. */
-export function TransitionMeta({ children }: { children: ReactNode }) {
-  return <div className="transition-meta">{children}</div>
-}
-
-export function ReverseToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  return <label className="check-label"><input type="checkbox" checked={value} onChange={e => onChange(e.target.checked)} /><span><Check size={11} /></span> Reverse</label>
 }

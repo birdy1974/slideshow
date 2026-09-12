@@ -163,27 +163,6 @@ def _load_gl_registry() -> tuple[frozenset[str], dict[str, str]]:
 GL_TRANSITIONS, GL_FRIENDLY_TO_ID = _load_gl_registry()
 GL_ID_TO_FRIENDLY = {v: k for k, v in GL_FRIENDLY_TO_ID.items()}
 
-# Easing catalogue supported by the patched xfade (custom ffmpeg). Empty/linear = no easing.
-EASING_PRESETS = [
-    "linear",
-    "quadratic","quadratic-in","quadratic-out","quadratic-in-out",
-    "cubic","cubic-in","cubic-out","cubic-in-out",
-    "quartic","quartic-in","quartic-out","quartic-in-out",
-    "quintic","quintic-in","quintic-out","quintic-in-out",
-    "sinusoidal","sinusoidal-in","sinusoidal-out","sinusoidal-in-out",
-    "exponential","exponential-in","exponential-out","exponential-in-out",
-    "circular","circular-in","circular-out","circular-in-out",
-    "elastic","elastic-in","elastic-out","elastic-in-out",
-    "back","back-in","back-out","back-in-out",
-    "bounce","bounce-in","bounce-out","bounce-in-out",
-    "squareroot","squareroot-in","squareroot-out","squareroot-in-out",
-    "cuberoot","cuberoot-in","cuberoot-out","cuberoot-in-out",
-    "flipelastic","flipelastic-in","flipelastic-out","flipelastic-in-out",
-    "flipback","flipback-in","flipback-out","flipback-in-out",
-    "ease","ease-in","ease-out","ease-in-out","cubic-bezier(0.42,0,0.58,1)","cubic-bezier(0.25,0.1,0.25,1)","step-start","step-end",
-]
-
-
 
 def parse_number(label: str, fallback: float) -> float:
     match = re.search(r"([\d.]+)", label or "")
@@ -204,30 +183,6 @@ def vaapi_qp_for_bitrate(mbps: float) -> int:
     if mbps >= 8:
         return 23
     return 26
-
-
-def ff_escape(value: str) -> str:
-    return value.replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'").replace("%", r"\%").replace("[", r"\[").replace("]", r"\]")
-
-
-def source_path(settings: Settings, item: dict[str, Any]) -> Path:
-    """Resolve a media/soundtrack item to a file on a mounted root.
-
-    The UI used to store `path` as the parent folder and `name` as the
-    filename. Newer snapshots store the full file path in `path`. Both work.
-    Folder names that contain a dot (e.g. ``holiday.2024``) must not be treated
-    as files just because ``Path.suffix`` is non-empty — if `path` is a
-    directory, `name` is always joined.
-    """
-    path = str(item.get("path", "") or "").replace("\\", "/")
-    name = str(item.get("name", "") or "")
-    filename = Path(name).name
-    if filename and Path(path.rstrip("/")).name == filename:
-        return mounted_path(settings, path)
-    base = mounted_path(settings, path)
-    if not filename or base.is_file():
-        return base
-    return mounted_path(settings, path, filename)
 
 
 def xfade_name(label: str) -> str:
@@ -356,61 +311,6 @@ def quote_xfade_value(value: str) -> str:
     if not any(ch in value for ch in ",:'\\[];"):
         return value
     return "'" + value.replace("\\", "\\\\").replace("'", r"\'") + "'"
-
-
-def build_xfade_filter(transition_label: str, duration: float, offset: float, easing: str | None = None, reverse: int | bool | None = None, params: dict[str, Any] | None = None, ffmpeg_bin: str | None = None) -> str:
-    """Build xfade filter fragment, handling gl params, easing and reverse.
-
-    If the local ffmpeg lacks easing support (stock build), easing/reverse are
-    silently stripped so the filter remains valid. GL transitions on stock
-    builds will have been filtered via resolve_xfade -> fallback.
-    """
-    ffmpeg_id = xfade_name(transition_label)
-    # If caller passed params separately, merge with inline params
-    base_id, inline_params = parse_transition_label(ffmpeg_id)
-    merged: dict[str, str] = {}
-    merged.update(inline_params)
-    if params:
-        for k,v in params.items():
-            if v is None or (isinstance(v,str) and not v.strip()):
-                continue
-            merged[k] = str(v)
-    transition_str = format_transition_params(base_id, merged if merged else None)
-
-    # Validate easing – keep linear as default (no extra option needed)
-    easing_str = None
-    if easing and isinstance(easing, str):
-        e = easing.strip()
-        if e and e.lower() not in ("", "linear"):
-            # allow css forms like cubic-bezier(...) steps(...) etc.
-            easing_str = e
-
-    reverse_int = 0
-    if reverse is not None:
-        try:
-            reverse_int = int(bool(reverse)) if isinstance(reverse, bool) else int(reverse)
-        except Exception:
-            reverse_int = 1 if reverse else 0
-        if reverse_int not in (0,1,2,3):
-            reverse_int = 1 if reverse_int else 0
-
-    # Probe easing support if ffmpeg_bin provided
-    has_easing = True
-    if ffmpeg_bin and easing_str:
-        has_easing = probe_xfade_has_easing(ffmpeg_bin)
-        if not has_easing:
-            easing_str = None
-            reverse_int = 0
-
-    parts = [f"transition={quote_xfade_value(transition_str)}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
-    if easing_str and has_easing:
-        # CSS easings carry commas (cubic-bezier(a,b,c,d), steps(n,pos)):
-        # quote so the filtergraph parser does not split the chain there.
-        parts.append(f"easing={quote_xfade_value(easing_str)}")
-    if reverse_int and has_easing:
-        parts.append(f"reverse={reverse_int}")
-    return "xfade=" + ":".join(parts)
-
 
 
 class RenderError(RuntimeError):
@@ -894,49 +794,6 @@ def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1
     )
 
 
-def build_filter_graph(durations: list[float], transitions: list[float], xfade_names: list[str], fps: int | None = None) -> str:
-    """Compose transitions after each clip, rather than subtracting them.
-
-    A clip's configured duration is its visible hold time.  Each transition is
-    additional timeline time, so four 5-second clips with three 3-second
-    transitions produces 29 seconds.  The caller supplies normalized segment
-    files with lead-in/lead-out handles for xfade; offsets are calculated from
-    the user-facing (hold) durations and the preceding transitions.
-
-    ``fps`` is repeated before every xfade and after every xfade result as a
-    CFR guard.  ``setpts=PTS-STARTPTS`` discards frame-rate metadata (FFmpeg
-    6+/7+ then reports the link as 1/0), so ``fps`` must come *after* it —
-    the last filter before each xfade — to reimpose a constant rate.  Placing
-    it first lets ``setpts`` clobber it and every following xfade fails.
-    """
-    if not durations:
-        raise ValueError("build_filter_graph requires at least one clip")
-    normalize = f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}" if fps else "settb=AVTB,setpts=PTS-STARTPTS"
-    if len(durations) == 1:
-        return f"[0:v]{normalize}[vout]"
-    expected = len(durations) - 1
-    if len(transitions) != expected or len(xfade_names) != expected:
-        raise ValueError("transitions and xfade names must cover every clip pair")
-    prepared = [f"[{index}:v]{normalize}[s{index}]" for index in range(len(durations))]
-    chains: list[str] = []
-    # xfade's offset is measured on its first input.  At each boundary the
-    # prior clip has held for its configured duration and all earlier
-    # transitions have completed.
-    offset = durations[0]
-    previous = "[s0]"
-    for index in range(1, len(durations)):
-        transition = transitions[index - 1]
-        out = f"[x{index}]" if index < len(durations) - 1 else "[vout]"
-        chains.append(
-            f"{previous}[s{index}]xfade=transition={xfade_names[index - 1]}"
-            f":duration={format_ffmpeg_number(transition)}"
-            f":offset={format_ffmpeg_number(offset)},{normalize}{out}"
-        )
-        previous = out
-        offset += durations[index] + transition
-    return ";".join(prepared + chains)
-
-
 class Renderer:
     def __init__(self, db: Database, settings: Settings):
         self.db, self.settings = db, settings
@@ -1094,7 +951,7 @@ class Renderer:
                 continue
             merged[k] = str(v).strip()
         transition_str = format_transition_params(base_id, merged if merged else None)
-        # Re-compose with easing/reverse exactly like build_xfade_filter but without extra probe.
+        # Re-compose the fragment, appending easing/reverse when set.
         # Values containing ',' (GL params, CSS easings) must be quoted or the
         # filtergraph parser splits the chain there — see quote_xfade_value.
         parts = [f"transition={quote_xfade_value(transition_str)}", f"duration={format_ffmpeg_number(duration)}", f"offset={format_ffmpeg_number(offset)}"]
