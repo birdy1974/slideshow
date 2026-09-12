@@ -1059,3 +1059,9 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .overview-clip .clip-strip .clip-cut.left{left:0;border-right:2px solid var(--lime)}
 .overview-clip .clip-strip .clip-cut.right{right:0;border-left:2px solid var(--lime)}
 .overview-clip.movie-clip:after{background:linear-gradient(0deg,#141712bb,transparent 55%)}
+/* Detailed list: movie rows get a cool blue-grey tint (same family as the
+   storyline's video-row band) so they stand out among photos at a glance. */
+.timeline-item.movie-row{background:#eaf0f5;box-shadow:inset 3px 0 #7d9bb8}
+.timeline-item.movie-row:hover{background:#e2eaf2}
+.timeline-item.movie-row.selected-row{background:#e3ecf0;box-shadow:inset 3px 0 #85a94e}
+.timeline-item.movie-row .media-path{color:#5d7590}
