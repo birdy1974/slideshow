@@ -1479,7 +1479,8 @@ function App() {
         type: file.kind as 'image' | 'video', duration,
         effect: isVideo ? 'Original motion' : 'None',
         transition: 'Fade', transitionTime: transitionSeconds,
-        audioSource: isVideo ? 'soundtrack' : undefined,
+        // Movies keep their own sound by default; the soundtrack ducks around them.
+        audioSource: isVideo ? 'original' : undefined,
         text: '', textMode: 'overlay', textEnabled: false, textStart: 0, textEnd: duration,
         textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5,
         textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed,
