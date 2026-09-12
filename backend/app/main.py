@@ -57,6 +57,9 @@ class ProjectPayload(BaseModel):
 class JobRequest(BaseModel):
     kind: Literal["preview", "render"] = "render"
     overwrite: bool = False
+    # Preview only: restrict the proxy to these media ids (storyline order is
+    # kept). Empty/None means the whole project, as before.
+    mediaIds: list[int | str] | None = None
 
 
 class TransitionPreviewRequest(BaseModel):
@@ -648,7 +651,7 @@ def preview_download_name(project_name: str, job_id: str) -> str:
 
 @app.post("/api/projects/{project_id}/jobs", status_code=202)
 def create_job(project_id: int, request: JobRequest) -> dict[str, Any]:
-    try: return renderer.submit(project_id, request.kind, overwrite=request.overwrite)
+    try: return renderer.submit(project_id, request.kind, overwrite=request.overwrite, media_ids=request.mediaIds)
     except KeyError as exc: raise HTTPException(404, "Project not found") from exc
     except OutputExistsError as exc:
         raise HTTPException(409, detail={"code": "output_exists", "path": str(exc)}) from exc

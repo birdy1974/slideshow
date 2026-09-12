@@ -1347,10 +1347,12 @@ class Renderer:
         stem = Path(str(output_settings.get("filename", "slideshow"))).stem or "slideshow"
         return f"{folder}/{stem}.mp4"
 
-    def submit(self, project_id: int, kind: str, overwrite: bool = False) -> dict[str, Any]:
+    def submit(self, project_id: int, kind: str, overwrite: bool = False, media_ids: list[Any] | None = None) -> dict[str, Any]:
         project = self.db.get_project(project_id)
         if not project:
             raise KeyError(project_id)
+        if kind == "preview" and media_ids:
+            project = self.subset_project(project, media_ids)
         if kind == "render":
             output = self.render_output_path(project)
             if output.exists() and not overwrite:
@@ -1361,6 +1363,28 @@ class Renderer:
         event = threading.Event(); self.cancel_events[job_id] = event
         self.pool.submit(self._run, job_id, project, kind, event)
         return self.db.get_job(job_id) or job
+
+    @staticmethod
+    def subset_project(project: dict[str, Any], media_ids: list[Any]) -> dict[str, Any]:
+        """A copy of ``project`` holding only the selected slides, in story order.
+
+        Used by "Generate preview" with a selection: the user wants to check
+        those slides (and the transitions between them), not sit through the
+        whole movie. Ids that do not exist are ignored; an empty result falls
+        back to the full project. "Fit slideshow to audio" is switched off for
+        the subset — stretching three slides across a five-minute soundtrack
+        would show nothing like the final timing.
+        """
+        wanted = {str(x) for x in media_ids}
+        media = [item for item in project.get("media", []) if str(item.get("id")) in wanted]
+        if not media or len(media) == len(project.get("media", [])):
+            return project
+        subset = {**project, "media": media}
+        soundtrack = dict(project.get("soundtrack") or {})
+        if soundtrack.get("policy") == "Fit slideshow to audio":
+            soundtrack["policy"] = "Loop & trim"
+            subset["soundtrack"] = soundtrack
+        return subset
 
     def cancel(self, job_id: str) -> bool:
         event = self.cancel_events.get(job_id)

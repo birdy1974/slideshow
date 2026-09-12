@@ -1793,3 +1793,43 @@ class MovieToMovieAudioTest(unittest.TestCase):
         self.assertIn("afade=t=out:st=4:d=1,", graph)  # first film fades out into a picture
         self.assertIn("afade=t=in:st=0:d=1,", graph)   # last film fades in from a picture
         self.assertIn("(t-5)/1", graph)                # music release unchanged
+
+
+class PreviewSubsetTest(unittest.TestCase):
+    """Generate preview with a selection renders only those slides."""
+
+    def _project(self):
+        return {"id": 1, "media": [{"id": 1, "type": "image"}, {"id": 2, "type": "image"}, {"id": 3, "type": "video"}, {"id": 4, "type": "title"}],
+                "soundtrack": {"policy": "Fit slideshow to audio", "volume": 80}}
+
+    def test_keeps_story_order_and_ignores_unknown_ids(self) -> None:
+        from app.renderer import Renderer
+        subset = Renderer.subset_project(self._project(), [4, "2", 99])
+        self.assertEqual([2, 4], [m["id"] for m in subset["media"]])
+        # Fitting a handful of slides to the whole soundtrack would fake the timing.
+        self.assertEqual("Loop & trim", subset["soundtrack"]["policy"])
+        self.assertEqual(80, subset["soundtrack"]["volume"])
+
+    def test_empty_or_complete_selection_is_the_whole_project(self) -> None:
+        from app.renderer import Renderer
+        project = self._project()
+        self.assertIs(project, Renderer.subset_project(project, [99]))
+        self.assertIs(project, Renderer.subset_project(project, [1, 2, 3, 4]))
+        self.assertEqual("Fit slideshow to audio", project["soundtrack"]["policy"], "the original is never mutated")
+
+    def test_submit_applies_the_subset_to_previews_only(self) -> None:
+        from app.config import Settings
+        from app.database import Database
+        from app.renderer import Renderer
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        renderer = Renderer(Database(base / "t.db"), Settings(config_dir=base / "cfg", photos_dir=base, videos_dir=base, music_dir=base, output_dir=base))
+        seen: list[tuple[str, list]] = []
+        with mock.patch.object(renderer.db, "get_project", return_value=self._project()), \
+             mock.patch.object(renderer.db, "create_job"), \
+             mock.patch.object(renderer.db, "get_job", return_value={"id": "x"}), \
+             mock.patch.object(renderer.pool, "submit", side_effect=lambda fn, job_id, project, kind, event: seen.append((kind, [m["id"] for m in project["media"]]))), \
+             mock.patch.object(renderer, "render_output_path", return_value=base / "never.mp4"):
+            renderer.submit(1, "preview", media_ids=[3, 1])
+            renderer.submit(1, "render", media_ids=[3, 1])
+        self.assertEqual([("preview", [1, 3]), ("render", [1, 2, 3, 4])], seen)
