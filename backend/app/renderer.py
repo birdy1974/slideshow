@@ -1950,13 +1950,17 @@ class Renderer:
             lead_in = transitions[index - 1] if index else 0.0
             hold = durations[index]
             hold_part = work / f"hold-{index:04d}.mp4"
-            hold_graph = (
-                f"[0:v]trim=start={format_ffmpeg_number(lead_in)}:"
-                f"end={format_ffmpeg_number(lead_in + hold)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
-            )
+            # Cut the window on the *input* (-ss before -i seeks to the nearest
+            # keyframe and decodes only from there; -t stops reading after the
+            # window) instead of decoding the whole segment and discarding
+            # frames with trim. Segments are our own libx264 files with 2 s
+            # GOPs, so the seek is frame-accurate. This saves a full decode of
+            # every hold per transition — pure CPU time on a NAS.
+            hold_graph = f"[0:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
             hold_command = [
-                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args, "-i", str(segment),
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,
+                *(["-ss", format_ffmpeg_number(lead_in)] if lead_in > 0.0005 else []),
+                "-t", format_ffmpeg_number(hold), "-i", str(segment),
                 "-filter_complex", hold_graph, "-map", "[vout]", "-an",
                 *encode_args_for(encoder, intermediate=True), "-r", str(fps),
                 "-t", format_ffmpeg_number(hold), str(hold_part),
@@ -1980,18 +1984,20 @@ class Renderer:
             # Build xfade with params/easing/reverse from the outgoing media's transition config
             xfade_fragment = self.build_transition_xfade(media[index], transition, 0.0)
             # xfade_fragment is like "xfade=transition=gl_cube(...):duration=1:offset=0:easing=...:reverse=..."
+            # Both inputs are windowed at the demuxer (see the hold above): the
+            # outgoing handle starts after lead_in + hold, the incoming handle
+            # is the head of the next segment. xfade only ever sees the two
+            # transition-length clips.
             transition_graph = (
-                f"[0:v]trim=start={format_ffmpeg_number(lead_in + hold)}:"
-                f"end={format_ffmpeg_number(lead_in + hold + transition)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
-                f"[1:v]trim=start=0:end={format_ffmpeg_number(transition)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
+                f"[0:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
+                f"[1:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
                 f"[outgoing][incoming]{xfade_fragment},"
                 f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
             )
             transition_command = [
-                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args, "-i", str(segment),
-                "-i", str(segments[index + 1]), "-filter_complex", transition_graph,
+                self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,
+                "-ss", format_ffmpeg_number(lead_in + hold), "-t", format_ffmpeg_number(transition), "-i", str(segment),
+                "-t", format_ffmpeg_number(transition), "-i", str(segments[index + 1]), "-filter_complex", transition_graph,
                 "-map", "[vout]", "-an", *encode_args_for(encoder, intermediate=True),
                 "-r", str(fps), "-t", format_ffmpeg_number(transition), str(transition_part),
             ]

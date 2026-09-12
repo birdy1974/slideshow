@@ -1930,3 +1930,23 @@ class UniformStitchTest(unittest.TestCase):
             self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
         with mock.patch.object(self.renderer, "_stream_signature", side_effect=[None, ("h264", "High", 41, "yuv420p", 1280, 720, "AA")]):
             self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]), "an unreadable probe never forces the slow path")
+
+
+class InputWindowTest(UniformStitchTest):
+    """Hold/transition parts window their inputs with -ss/-t at the demuxer
+    instead of decoding the whole segment and trimming in the graph."""
+
+    def test_parts_seek_their_inputs(self) -> None:
+        parts = {Path(c[-1]).name: c for c in self._parts(self._render(fail_first_hold_on_qsv=False))}
+        first_hold = parts["hold-0000.mp4"]
+        self.assertNotIn("-ss", first_hold, "the first clip has no incoming handle to skip")
+        self.assertEqual("2", first_hold[first_hold.index("-t") + 1])
+        second_hold = parts["hold-0001.mp4"]
+        self.assertEqual("1", second_hold[second_hold.index("-ss") + 1], "skip the 1 s incoming handle")
+        transition = parts["transition-0000.mp4"]
+        # Outgoing handle of clip 1 starts at lead_in(0) + hold(2) = 2 s, incoming is the head of clip 2.
+        self.assertEqual("2", transition[transition.index("-ss") + 1])
+        graph = transition[transition.index("-filter_complex") + 1]
+        self.assertNotIn("trim=", graph)
+        self.assertIn("xfade=", graph)
+        self.assertEqual(2, transition.count("-i"))
