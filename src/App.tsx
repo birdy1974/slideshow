@@ -4,7 +4,7 @@ import {
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
-  Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom,
+  Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom, FolderUp,
 } from 'lucide-react'
 import { FieldLabel, Select, TimeField } from './ui'
 import { formatClock, formatClockPrecise, formatTimecode, parseClock } from './time'
@@ -31,7 +31,7 @@ import { DEFAULT_ENTER, DEFAULT_EXIT, DEFAULT_WHILE, WHILE_SPEED_DEFAULT, allTex
 import { EasingSelect, GLParamControls, RandomScopeSelect, pickRandomTransition, randomGLParams, randomScopeLabels } from './transitionControls'
 import type { RandomScope } from './transitionControls'
 import { EASING_DEFAULT, getGLParams, isGLTransition, transitionPreviewUrl, transitionSymbol } from './transitionCatalog'
-import { uploadFile, type UploadItem } from './uploads'
+import { uploadFile, isUploadableFile, type UploadItem, type UploadsStatus } from './uploads'
 
 type MediaRoot = 'photos' | 'videos' | 'music' | 'uploads'
 
@@ -766,6 +766,8 @@ function App() {
   const [projectId, setProjectId] = useState<number|null>(null)
   const [backendOnline, setBackendOnline] = useState(false)
   const [capabilities, setCapabilities] = useState({ffmpeg:false,quickSync:false,vaapi:false,vaapiError:'',cpuEncoding:false})
+  // Uploads volume status from /api/health — the picker warns before a file is chosen.
+  const [uploadsStatus, setUploadsStatus] = useState<UploadsStatus | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string|null>(null)
   const [activeTab, setActiveTab] = useState<'editor' | 'renders'>('editor')
   const [showBrowser, setShowBrowser] = useState(false)
@@ -1031,7 +1033,7 @@ function App() {
   }
   useEffect(()=>{
     const restore=async()=>{try{
-      const health=await fetch('/api/health');if(!health.ok)throw new Error();const healthData=await health.json();setCapabilities(healthData.capabilities);setBackendOnline(true)
+      const health=await fetch('/api/health');if(!health.ok)throw new Error();const healthData=await health.json();setCapabilities(healthData.capabilities);setUploadsStatus(healthData.uploads||null);setBackendOnline(true)
       const list=await fetch('/api/projects').then(r=>r.json())
       if(list.length){const saved=await fetch(`/api/projects/${list[0].id}`).then(r=>r.json());applySavedProject(saved);await resumeActiveJob(list[0].id);return}
     }catch{setBackendOnline(false)}
@@ -1411,7 +1413,7 @@ function App() {
   // request per file with progress and cancel; every completed file joins
   // the storyline immediately, exactly like a file picked from a mount.
   const startUploads = (fileList: File[]) => {
-    const accepted = fileList.filter(file => !file.type || file.type.startsWith('image/') || file.type.startsWith('video/'))
+    const accepted = fileList.filter(isUploadableFile)
     const ignored = fileList.length - accepted.length
     if (!accepted.length) { notify('No photos or movies in that selection — uploads accept pictures and videos only'); return }
     const base = uploadIdRef.current
@@ -1450,9 +1452,11 @@ function App() {
       }
       if (ignored) failures.push(`${ignored} file${ignored === 1 ? '' : 's'} ignored (photos and movies only)`)
       if (ok) notify(`Uploaded ${ok} file${ok === 1 ? '' : 's'} and added ${ok === 1 ? 'it' : 'them'} to the storyline`)
-      if (failures.length) notify(`${failures[0]}${failures.length > 1 ? ` · +${failures.length - 1} more` : ''}`)
+      if (failures.length) notify(`Upload problem — ${failures[0]}${failures.length > 1 ? ` · +${failures.length - 1} more` : ''}\nThe reasons stay listed in the upload tray (bottom right).`)
       setBrowserReloadKey(key => key + 1)
-      window.setTimeout(() => setUploads(current => current.filter(u => u.status === 'uploading')), 6000)
+      // Successful rows fade out on their own; failed rows stay until the
+      // user clears the tray, so the reason can actually be read.
+      window.setTimeout(() => setUploads(current => current.filter(u => u.status !== 'done')), 6000)
     })()
   }
   const addTitleFrame = () => {
@@ -1866,7 +1870,7 @@ function App() {
         notify(`${files.length} soundtrack${files.length === 1 ? '' : 's'} added`)
       })()
     }}/>}
-    {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} reloadKey={browserReloadKey} onUploadFiles={startUploads} onAdd={(files:any[]) => {
+    {showBrowser && <MediaBrowser onClose={() => setShowBrowser(false)} reloadKey={browserReloadKey} onUploadFiles={startUploads} uploadsStatus={uploadsStatus} onAdd={(files:any[]) => {
       void addFilesToStoryline(files).then(added => notify(`${added} mounted media file${added === 1 ? '' : 's'} added`))
       setShowBrowser(false)
     }}/>} 
@@ -2325,11 +2329,12 @@ function UploadTray({ items, onCancel, onClear }: { items: UploadItem[], onCance
       <span className="upload-size">{item.status === 'done' ? 'added' : item.status === 'error' ? 'failed' : `${(item.sent / 1048576).toFixed(1)} / ${(item.total / 1048576).toFixed(1)} MB`}</span>
       {item.status === 'uploading' && <button type="button" className="upload-cancel" aria-label={`Cancel ${item.name}`} title="Cancel this upload" onClick={() => onCancel(item.id)}><X size={11}/></button>}
       <span className="upload-bar"><i style={{ width: `${item.total ? Math.min(100, Math.round(item.sent / item.total * 100)) : 0}%` }}/></span>
+      {item.status === 'error' && item.error && <span className="upload-reason">{item.error}</span>}
     </div>)}
   </div>
 }
 
-function MediaBrowser({ onClose, onAdd, onUploadFiles, reloadKey = 0, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[]) => void, reloadKey?: number, audioOnly?:boolean }) {
+function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloadKey = 0, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[]) => void, uploadsStatus?: UploadsStatus|null, reloadKey?: number, audioOnly?:boolean }) {
   const [root,setRoot]=useState<MediaRoot>(audioOnly?'music':'photos')
   // "All media" lists the photos and videos mounts together, so pictures and
   // videos can be mixed freely no matter which location button is active.
@@ -2338,6 +2343,30 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, reloadKey = 0, audioOnly=
   const [lightbox,setLightbox]=useState<LightboxTarget|null>(null)
   const preview=useAudioPreview(message=>setError(message))
   const uploadInputRef=useRef<HTMLInputElement|null>(null)
+  const folderInputRef=useRef<HTMLInputElement|null>(null)
+  // Files chosen on this device wait here until the user presses Upload, so
+  // several picks (files + a folder) can be combined and reviewed first.
+  const [staged,setStaged]=useState<File[]>([])
+  const [stagedSkipped,setStagedSkipped]=useState(0)
+  const stageFiles=(picked:File[])=>{
+    const accepted=picked.filter(isUploadableFile)
+    setStagedSkipped(n=>n+(picked.length-accepted.length))
+    setStaged(current=>{
+      const seen=new Set(current.map(f=>`${f.name}|${f.size}|${f.lastModified}`))
+      return [...current,...accepted.filter(f=>!seen.has(`${f.name}|${f.size}|${f.lastModified}`))]
+    })
+  }
+  const stagedBytes=staged.reduce((sum,f)=>sum+f.size,0)
+  const tooLarge=uploadsStatus?staged.filter(f=>f.size>uploadsStatus.maxMb*1048576):[]
+  const uploadStaged=()=>{
+    const files=staged.filter(f=>!tooLarge.includes(f))
+    if(!files.length)return
+    onUploadFiles?.(files)
+    setStaged([]);setStagedSkipped(0)
+    chooseRoot('uploads')
+  }
+  // The folder picker attribute is not in React's typings; set it imperatively.
+  useEffect(()=>{const el=folderInputRef.current;if(el){el.setAttribute('webkitdirectory','');el.setAttribute('directory','')}},[audioOnly])
   useEffect(()=>{
     let cancelled=false
     setLoading(true);setError('')
@@ -2378,7 +2407,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, reloadKey = 0, audioOnly=
   }
   const skippedEmpty = selected.filter((f:any)=>f.empty).length
   const addable = selected.filter((f:any)=>!f.empty)
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick photos or movies on this device — they upload to the NAS and are added to the storyline"><Upload size={16}/> Upload from this device</button><input ref={uploadInputRef} type="file" accept="image/*,video/*" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) onUploadFiles?.(files)}}/></>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='audio'&&preview.playingKey===file.path ? <span className="card-player" onClick={e=>e.stopPropagation()}><AudioSeekBar bars={32} seed={3} color="#58703a" current={preview.progress.current} duration={preview.progress.duration} onSeek={preview.seek} className="compact"/><AudioTimeReadout current={preview.progress.current} duration={preview.progress.duration}/></span> : <BrowserThumb root={fileRoot(file)} file={file}/>}{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}</button><small className="stage-note">Uploaded files are stored in the uploads volume on the NAS and added to the storyline; progress shows bottom right.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}<div className="file-grid">{entries.map(file=><div className={`file-card ${selected.some(x=>x.path===file.path)?'selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}><button type="button" className="file-thumb" onClick={()=>file.kind==='directory'?open(file):file.kind==='image'||file.kind==='video'?viewFile(file):open(file)} title={file.kind==='directory'?(file.accessible===false?'No permission to open this folder':'Open folder'):file.kind==='image'||file.kind==='video'?'View':file.name}>{file.kind==='audio'&&<span className={`audio-hover-play ${preview.playingKey===file.path?'playing':''}`} title={preview.playingKey===file.path?'Stop preview':'Play preview'} onClick={e=>{e.stopPropagation();preview.toggle(file.path,mediaFileUrl(fileRoot(file),file.path),file.name)}}>{preview.playingKey===file.path?<Pause size={14}/>:<Play size={13}/>}</span>}{file.kind==='audio'&&preview.playingKey===file.path ? <span className="card-player" onClick={e=>e.stopPropagation()}><AudioSeekBar bars={32} seed={3} color="#58703a" current={preview.progress.current} duration={preview.progress.duration} onSeek={preview.seek} className="compact"/><AudioTimeReadout current={preview.progress.current} duration={preview.progress.duration}/></span> : <BrowserThumb root={fileRoot(file)} file={file}/>}{file.empty&&<span className="empty-badge"><AlertTriangle size={10}/> EMPTY · 0 B</span>}{file.kind==='directory'&&file.accessible===false&&<span className="empty-badge"><AlertTriangle size={10}/> NO ACCESS</span>}{(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}{selected.some(x=>x.path===file.path)&&<span className="selected-check"><Check size={13}/></span>}</button><button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button></div>)}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation.</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}</div>
 }
 
 // Pick a destination folder inside the mounted /output volume. Folders are

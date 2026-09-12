@@ -22,6 +22,9 @@ services:
       - "${OUTPUT_PATH:-./data/output}:/output"
       # Files uploaded from the GUI device ("Upload from this device" in the
       # media picker). Kept separate from renders and from the read-only mounts.
+      # Create this host folder yourself and chown it to PUID:PGID — if Docker
+      # creates it on first start it is root-owned and uploads are refused
+      # (the picker then shows "uploads folder is not writable").
       - "${UPLOADS_PATH:-./data/uploads}:/uploads"
     # Hardware encoding: Intel Quick Sync and/or VA-API share this device.
     # Remove this section if /dev/dri does not exist; Auto encoding then

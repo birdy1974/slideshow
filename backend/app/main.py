@@ -15,6 +15,7 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 import mimetypes
@@ -26,7 +27,7 @@ from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_f
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
 from .text_effect_previews import TextEffectPreviewCache
-from .uploads import UploadRejected, store_upload
+from .uploads import UploadRejected, store_upload, uploads_status
 from .filmstrips import FilmstripUnavailable, build_filmstrip
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -125,7 +126,8 @@ async def ping() -> dict[str, str]:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     capabilities = renderer.capabilities()
-    return {"status": "ok", "database": str(settings.database_path), "capabilities": capabilities, "version": app.version}
+    return {"status": "ok", "database": str(settings.database_path), "capabilities": capabilities,
+            "uploads": uploads_status(settings), "version": app.version}
 
 
 @app.get("/api/projects")
@@ -343,9 +345,15 @@ async def upload_media(files: list[UploadFile] = File(...)) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     for file in files:
         try:
-            added.append(store_upload(settings, file.filename or "", file.file))
+            # Disk writes and the ffprobe verification block; keep them off the
+            # event loop so progress polling and the rest of the API stay
+            # responsive during a multi-GB movie upload.
+            added.append(await run_in_threadpool(store_upload, settings, file.filename or "", file.file))
         except UploadRejected as exc:
             errors.append({"name": file.filename or "file", "error": str(exc)})
+        except OSError as exc:
+            log.exception("Upload of %s failed", file.filename)
+            errors.append({"name": file.filename or "file", "error": f"Could not store the file: {exc.strerror or exc}"})
         finally:
             await file.close()
     return {"added": added, "errors": errors}

@@ -11,6 +11,22 @@ export type UploadItem = {
   status: 'uploading' | 'done' | 'error'; error?: string
 }
 
+// Mirrors /api/health → uploads: can the NAS volume take files at all?
+export type UploadsStatus = { path: string; writable: boolean; reason: string | null; maxMb: number }
+
+// Same allowlist as backend/app/uploads.py (IMAGE_EXTENSIONS | VIDEO_EXTENSIONS).
+// Checked by extension because browsers leave `type` empty for many camera
+// files (e.g. .mov/.mkv from a folder pick) — a folder pick also brings
+// sidecars (.xmp, .aae, Thumbs.db) that must be dropped quietly.
+const UPLOAD_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v'])
+
+export function isUploadableFile(file: File): boolean {
+  if (file.name.startsWith('.')) return false // .DS_Store, ._resource forks
+  const dot = file.name.lastIndexOf('.')
+  const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : ''
+  return UPLOAD_EXTENSIONS.has(ext)
+}
+
 export type UploadHandle = {
   promise: Promise<{ added: any[]; errors: { name: string; error: string }[] }>
   cancel: () => void

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from app.config import Settings
-from app.uploads import UploadRejected, sanitized_name, store_upload, unique_name
+from app.uploads import UploadRejected, sanitized_name, store_upload, unique_name, uploads_status
 
 # A stand-in for ffprobe: accepts the photo/movie extensions with a JSON video
 # stream (like the real binary does for any decodable file) and fails for
@@ -137,3 +137,83 @@ class UploadsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UploadsVolumeTest(unittest.TestCase):
+    """The classic first-run failure: a root-owned or read-only uploads volume.
+
+    Until now that surfaced as a bare 500 (mkdir outside the guard) or a
+    cryptic 'Could not write the upload: [Errno 13]'. The GUI needs a reason it
+    can show *before* a file is picked (health) and a readable rejection after.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        for name in ("config", "photos", "videos", "music", "output", "uploads"):
+            (base / name).mkdir()
+        self.base = base
+        # Settings.__post_init__ only honours an explicit uploads_dir when
+        # UPLOADS_DIR is set (compose does), so mirror the Docker setup.
+        self._env = os.environ.get("UPLOADS_DIR")
+        os.environ["UPLOADS_DIR"] = str(base / "uploads")
+        self.settings = Settings(
+            base / "config", base / "photos", base / "videos", base / "music", base / "output",
+            uploads_dir=base / "uploads", upload_max_mb=1, ffprobe_bin="ffprobe",
+        )
+
+    def tearDown(self) -> None:
+        (self.base / "uploads").chmod(0o755)
+        if self._env is None:
+            os.environ.pop("UPLOADS_DIR", None)
+        else:
+            os.environ["UPLOADS_DIR"] = self._env
+        self.temp.cleanup()
+
+    def _read_only(self) -> bool:
+        (self.base / "uploads").chmod(0o555)
+        return os.access(self.base / "uploads", os.W_OK)  # root ignores modes
+
+    def test_health_reports_writable_volume(self) -> None:
+        status = uploads_status(self.settings)
+        self.assertTrue(status["writable"])
+        self.assertIsNone(status["reason"])
+        self.assertEqual(1, status["maxMb"])
+        self.assertEqual(str(self.base / "uploads"), status["path"])
+
+    def test_health_creates_missing_volume(self) -> None:
+        settings = Settings(
+            self.base / "config", self.base / "photos", self.base / "videos", self.base / "music",
+            self.base / "output", uploads_dir=self.base / "fresh" / "uploads",
+        )
+        self.assertTrue(uploads_status(settings)["writable"])
+        self.assertTrue((self.base / "fresh" / "uploads").is_dir())
+
+    def test_health_explains_unwritable_volume(self) -> None:
+        if self._read_only():
+            self.skipTest("running as root: file modes are not enforced")
+        status = uploads_status(self.settings)
+        self.assertFalse(status["writable"])
+        self.assertIn("not writable", status["reason"])
+        self.assertIn("PUID:PGID", status["reason"])
+
+    def test_upload_into_unwritable_volume_is_rejected_with_reason(self) -> None:
+        if self._read_only():
+            self.skipTest("running as root: file modes are not enforced")
+        with self.assertRaises(UploadRejected) as ctx:
+            store_upload(self.settings, "beach.jpg", io.BytesIO(b"x" * 10))
+        self.assertIn("not writable", str(ctx.exception))
+        self.assertEqual([], list((self.base / "uploads").iterdir()))
+
+    def test_unwritable_parent_is_rejected_not_500(self) -> None:
+        (self.base / "uploads").chmod(0o555)
+        if os.access(self.base / "uploads", os.W_OK):
+            self.skipTest("running as root: file modes are not enforced")
+        settings = Settings(
+            self.base / "config", self.base / "photos", self.base / "videos", self.base / "music",
+            self.base / "output", uploads_dir=self.base / "uploads" / "nested",
+        )
+        with self.assertRaises(UploadRejected):
+            store_upload(settings, "beach.jpg", io.BytesIO(b"x" * 10))
+        self.assertFalse(uploads_status(settings)["writable"])
+

@@ -926,3 +926,21 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* VA-API/QSV diagnostic note in the render checklist */
 .review-panel li{flex-wrap:wrap}
 .review-panel li .cap-note{flex-basis:100%;color:#a0703c;line-height:1.5;white-space:pre-line;word-break:break-word}
+.folder-tree .upload-location+.upload-location{margin-top:5px}
+.upload-warning{display:flex;gap:5px;align-items:flex-start;font-size:8px;line-height:1.4;color:#8a5a2b;background:#fff4e5;border:1px solid #efd9b4;border-radius:6px;padding:6px 7px;margin:7px 0 0}
+.upload-warning svg{flex-shrink:0;margin-top:1px}
+.upload-stage{margin-top:8px;background:#fff;border:1px solid #d9dbd3;border-radius:7px;padding:8px}
+.upload-stage-head{display:flex;align-items:center;justify-content:space-between;font:700 9px Manrope;color:#4f5d37}
+.upload-stage-head button,.upload-stage li button{border:0;background:transparent;color:#9a9e94;padding:2px;display:grid;place-items:center;height:auto}
+.upload-stage-head button:hover,.upload-stage li button:hover{color:#333}
+.upload-stage ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:3px;max-height:150px;overflow-y:auto}
+.upload-stage li{display:grid;grid-template-columns:1fr auto auto;gap:5px;align-items:center;font-size:8px;color:#5b5f56;min-width:0}
+.upload-stage li span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upload-stage li small{color:#999c94;white-space:nowrap}
+.upload-stage li.too-large span{color:#b45a3c;text-decoration:line-through}
+.upload-stage li.more{color:#999c94;grid-template-columns:1fr}
+.upload-stage .stage-note{display:block;font-size:7.5px;line-height:1.4;color:#8d9285;margin-top:6px;padding:0}
+.upload-stage .stage-note.warn{color:#b45a3c}
+.upload-stage .upload-go{width:100%;height:32px;margin-top:8px;font-size:11px;justify-content:center}
+.upload-stage .upload-go:disabled{opacity:.45}
+.upload-item .upload-reason{grid-column:1/5;font-size:8px;line-height:1.35;color:#e8b4a4;white-space:normal;word-break:break-word}
