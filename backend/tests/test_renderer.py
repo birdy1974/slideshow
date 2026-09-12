@@ -707,6 +707,34 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertLess(graph.index("xfade="), graph.index("drawtext"), "caption must be drawn on top of the colour change")
         self.assertEqual("[v]", title[title.index("-map") + 1])
 
+    def test_caption_timing_is_shifted_by_the_incoming_transition_handle(self) -> None:
+        # Storyline handles: appear at 1 s, disappear at 3 s of a 5 s hold.
+        # The segment opens with the previous clip's 1 s crossfade handle, so
+        # inside the segment the caption must run 2 s -> 4 s.
+        commands = self._segment_commands([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1,
+             "text": "First", "textStart": 0.5, "textEnd": 1.5, "textEnterDuration": 0.2, "textExitDuration": 0.2},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1,
+             "text": "Second", "textStart": 1, "textEnd": 3, "textEnterDuration": 0.2, "textExitDuration": 0.2},
+        ])
+        first = commands[0][commands[0].index("-vf") + 1]
+        second = commands[1][commands[1].index("-vf") + 1]
+        self.assertIn("lt(t,0.5)", first, "first clip has no incoming handle: times are unchanged")
+        self.assertIn("lt(t,2)", second)
+        self.assertIn("lt(t,4)", second)
+        self.assertNotIn("lt(t,1)", second)
+
+    def test_caption_running_to_the_end_stops_at_the_hold_end(self) -> None:
+        commands = self._segment_commands([
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1,
+             "text": "Second", "textStart": 0, "textEnd": 5, "textEnterDuration": 0.5, "textExitDuration": 0.5},
+        ])
+        second = commands[1][commands[1].index("-vf") + 1]
+        # 0..5 s of hold -> 1..6 s of segment (segment itself is 7 s incl. handles).
+        self.assertIn("lt(t,1)", second)
+        self.assertIn("lt(t,6)", second)
+
     def test_single_colour_text_frame_keeps_plain_vf(self) -> None:
         commands = self._segment_commands([
             {"id": 2, "type": "title", "path": "Generated frame", "duration": 4, "text": "Hi", "effect": "None", "transition": "Fade", "transitionTime": 0.5, "frameBackground": "#112233", "frameBackground2": "#112233"},
@@ -832,7 +860,7 @@ class TransitionPreviewTrimTest(unittest.TestCase):
         return [
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": max(1.0, transition_time),
              "effect": "None", "transition": "Fade", "transitionTime": transition_time, "previewTrim": True},
-            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": max(1.0, transition_time),
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": max(1.0, transition_time),
              "effect": "None", "transition": "Fade", "transitionTime": 1, "previewTrim": True},
         ]
 
@@ -864,7 +892,7 @@ class TransitionPreviewTrimTest(unittest.TestCase):
         # Without previewTrim the same two clips run hold + transition + hold.
         plain = [
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 5},
-            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
         ]
         self.assertEqual("15", self._render(plain)[-1][self._render(plain)[-1].index("-t") + 1])
 
@@ -1583,7 +1611,7 @@ class VaapiEncodingTest(unittest.TestCase):
         renderer._vaapi_device = "/dev/dri/renderD128"
         project = {"id": 1, "media": [
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
-            {"id": 2, "type": "image", "path": "/photos/b.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 1},
         ], "soundtrack": {}, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "Hardware · VAAPI", "path": "/output", "filename": "movie.mp4"}}
         return settings, renderer, project
 

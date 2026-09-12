@@ -1507,8 +1507,15 @@ class Renderer:
                     self._drawtext_supported = True
             return self._drawtext_supported
 
-    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None) -> str | None:
+    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None, lead_in: float = 0.0) -> str | None:
         """Dispatch to the dual text-effect engine (backend/app/text_effects.py).
+
+        ``textStart``/``textEnd`` are what the storyline handles set: seconds
+        from the start of the clip's *visible hold*. The normalized segment
+        opens with the incoming transition handle (``lead_in`` cloned frames
+        that the previous clip crossfades into), so both times are shifted by
+        it — otherwise every caption after the first clip appears and
+        disappears one transition-length too early.
 
         Items whose three slots are all at their historic defaults get the exact
         drawtext filter this method always produced; anything that needs libass
@@ -1518,6 +1525,13 @@ class Renderer:
         """
         if overlay_plan(item) is None:
             return None
+        if lead_in > 0.0005:
+            hold = max(0.2, float(item.get("duration", 5) or 5))
+            start = max(0.0, float(item.get("textStart") or 0.0))
+            end_raw = item.get("textEnd")
+            end = float(end_raw) if end_raw is not None and float(end_raw) > 0 else hold
+            end = min(max(end, start + 0.3), hold)
+            item = {**item, "textStart": start + lead_in, "textEnd": end + lead_in}
         has_ass = self.ass_filter_supported()
         has_drawtext = self.drawtext_filter_supported()
         if plan_engine(overlay_plan(item)) == "ass" and not has_ass:
@@ -1577,8 +1591,11 @@ class Renderer:
                         scaled.append(item)
                         continue
                     hold = max(.2, float(item.get("duration", 5)) * factor)
+                    # The caption window stretches with its clip so a text that
+                    # covered "the middle third" still does.
                     text_end = min(float(item.get("textEnd", item.get("duration", 5))) * factor, hold)
-                    scaled.append({**item, "duration": hold, "textEnd": text_end})
+                    text_start = min(float(item.get("textStart") or 0.0) * factor, max(0.0, text_end - 0.3))
+                    scaled.append({**item, "duration": hold, "textStart": text_start, "textEnd": text_end})
                 media = scaled
         segments: list[Path] = []
         transitions = self.effective_transitions(media)
@@ -1747,7 +1764,7 @@ class Renderer:
                 look = picture_look(item, width, height)
                 if look:
                     filters.append(look)
-            text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass")
+            text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass", lead_in=lead_in)
             if text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
             colour_change = frame_colour_change(item) if kind_name == "title" else None
