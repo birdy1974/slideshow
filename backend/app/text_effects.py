@@ -775,6 +775,30 @@ def _enter_tags(g: TextGeometry, effect: dict[str, Any]) -> tuple[str, str | Non
     body: str | None = None
     if enter_id == "fade":
         tags += f"\\fad({di},0)"
+    elif enter_id in ("slide-from-left", "slide-from-right", "slide-from-top", "slide-from-bottom",
+                      "rise-settle", "drop-bounce", "slide-overshoot"):
+        # libass twins of the drawtext slides: a \move over the enter window
+        # plus a fade. Springs/bounces are approximated by a two-stage move
+        # (overshoot past the target, then back), which reads the same at
+        # caption sizes. The event's \pos is replaced by the \move.
+        dx, dy = {
+            "slide-from-left": (-g.width * 0.3, 0.0),
+            "slide-from-right": (g.width * 0.3, 0.0),
+            "slide-from-top": (0.0, -g.height * 0.18),
+            "slide-from-bottom": (0.0, g.height * 0.18),
+            "rise-settle": (0.0, g.height * 0.08),
+            "drop-bounce": (0.0, -g.height * 0.24),
+            "slide-overshoot": (-g.width * 0.24, 0.0),
+        }[enter_id]
+        if enter_id in ("rise-settle", "drop-bounce", "slide-overshoot"):
+            # Overshoot: move most of the way in an accelerated first leg, the
+            # remainder is a \t-scaled settle. libass has a single \move per
+            # event, so the settle is expressed by a slight scale bounce.
+            tags += (f"\\move({g.cx + dx:.0f},{g.cy + dy:.0f},{g.cx:.0f},{g.cy:.0f},0,{di})"
+                     f"\\fad({max(1, di // 2)},0)"
+                     f"\\t({int(di * 0.6)},{di},\\fscx106\\fscy106)\\t({di},{int(di * 1.35) + 1},\\fscx100\\fscy100)")
+        else:
+            tags += f"\\move({g.cx + dx:.0f},{g.cy + dy:.0f},{g.cx:.0f},{g.cy:.0f},0,{di})\\fad({di},0)"
     elif enter_id == "blur-in":
         tags += f"\\blur10\\alpha&HFF&\\t(0,{di},\\blur0\\alpha&H00&)"
     elif enter_id == "flicker-in":
@@ -970,7 +994,14 @@ def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
         body = enter_body if enter_body is not None else _multiline(g)
     if exit_id == "split-out-chars":
         body = _split_out_body(g)
-    events = [_ev(0, g.start, end_at, _pos_tags(g) + enter_tags + while_tags + karaoke_tags + _exit_tags(g, plan.exit_), body)]
+    exit_tags = _exit_tags(g, plan.exit_)
+    if "\\move(" in enter_tags:
+        # One \move per event: the enter owns it, a move-based exit keeps its fade.
+        pos = "\\an5"
+        exit_tags = _degrade_move_exit(exit_tags)
+    else:
+        pos = _pos_tags(g)
+    events = [_ev(0, g.start, end_at, pos + enter_tags + while_tags + karaoke_tags + exit_tags, body)]
     return _header(g) + "\n" + "\n".join(events + tail_events) + "\n"
 
 
@@ -1012,12 +1043,15 @@ def build_text_overlay(
     fonts_dir: Path | str,
     ass_path: Path | None,
     font_resolver: Callable[[str, bool, bool, Path], str] | None = None,
+    force_ass: bool = False,
 ) -> str | None:
     """The renderer's text filter for one item, or None when there is no text.
 
     ``ass_path`` is where the per-clip .ass file is written (the renderer's
     per-job work dir keeps concurrent renders apart). ``font_resolver`` is the
-    renderer's ``font_file`` — only the drawtext path needs it.
+    renderer's ``font_file`` — only the drawtext path needs it. ``force_ass``
+    routes even drawtext-expressible plans through libass — for FFmpeg builds
+    that have libass but no drawtext (stock distro/NAS binaries).
     """
     plan = overlay_plan(item)
     if plan is None:
@@ -1025,7 +1059,7 @@ def build_text_overlay(
     g = _geometry(item, defaults, width, height)
     if g is None:
         return None
-    if plan_engine(plan) == "dt":
+    if plan_engine(plan) == "dt" and not (force_ass and ass_path is not None):
         resolver = font_resolver or (lambda family, bold, italic, fonts: str(fonts))
         font = resolver(g.family, g.bold, g.italic, Path(fonts_dir))
         return _drawtext_filter(

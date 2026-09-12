@@ -4,7 +4,7 @@
 // (/api/text-effects/<slug>.mp4, rendered once per effect, then static).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
 import {
   allTextEffects, textEffectGroupsFor, textEffectParams, textEffectPreviewUrl,
   textEffectSlug, textEffectSymbol, type TextEffectSlot,
@@ -70,13 +70,16 @@ export function useEffectStatus(enabled: boolean) {
 // ---------------------------------------------------------------------------
 
 function EffectTile({
-  label, active, state, playing, onSelect,
+  label, active, state, error, playing, onSelect, onFocusTile, tileRef,
 }: {
   label: string
   active: boolean
   state: EffectPreviewState | null
+  error?: string
   playing: boolean
   onSelect: () => void
+  onFocusTile?: () => void
+  tileRef?: (element: HTMLDivElement | null) => void
 }) {
   const [visible, setVisible] = useState(false)
   const [armed, setArmed] = useState(false)
@@ -107,13 +110,15 @@ function EffectTile({
   const canPreview = state === 'ready' || state === 'pending'
   const showVideo = armed && canPreview && !broken
   return <div
-    ref={hostRef}
+    ref={element => { hostRef.current = element; tileRef?.(element) }}
     className={`transition-tile text-effect-tile ${active ? 'active' : ''}`}
     role="option"
     aria-selected={active}
     tabIndex={-1}
-    title={state === 'failed' ? `${label} · example failed to render` : label}
+    title={state === 'failed' ? `${label} · example failed to render${error ? `: ${error}` : ''}` : label}
     onClick={onSelect}
+    onFocus={onFocusTile}
+    onMouseEnter={onFocusTile}
     onKeyDown={event => {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect() }
     }}
@@ -128,8 +133,9 @@ function EffectTile({
       />}
       {(!showVideo || !loaded) && <span className="effect-fallback"><i className="effect-fallback-text">{textEffectSymbol(label)} {label.replace(' (static)', '')}</i></span>}
       {showVideo && !loaded && <span className="tile-loading"><Loader2 size={12} className="spin" /></span>}
+      {state === 'failed' && <span className="tile-flag failed" title={error || 'Example could not be rendered'}>failed</span>}
     </span>
-    <span className="tile-name">{label}</span>
+    <span className="tile-name"><i className="tile-symbol" aria-hidden>{textEffectSymbol(label)}</i>{label.replace(' (static)', '')}</span>
   </div>
 }
 
@@ -143,6 +149,8 @@ for (const slot of ['enter', 'while', 'exit'] as TextEffectSlot[]) {
   for (const [group, names] of Object.entries(textEffectGroupsFor(slot))) groups.set(group, names)
   labelToGroup.set(slot, groups)
 }
+
+const slotTitle: Record<TextEffectSlot, string> = { enter: 'Text appears', while: 'While shown', exit: 'Text disappears' }
 
 export function TextEffectChip({ value, slot, onChange, ariaLabel, title, className, showSeconds, seconds, onSecondsChange, params, onParamsChange }: {
   value: string
@@ -164,9 +172,12 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
   const [query, setQuery] = useState('')
   const [group, setGroup] = useState<string | null>(null)
   const [rect, setRect] = useState<DOMRect | null>(null)
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [autoplayVisible, setAutoplayVisible] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const popRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
+  const tileRefs = useRef<(HTMLDivElement | null)[]>([])
   const status = useEffectStatus(open)
 
   const measure = useCallback(() => {
@@ -185,6 +196,7 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
 
   useEffect(() => {
     if (!open) return
+    setQuery(''); setGroup(null)
     const timer = window.setTimeout(() => searchRef.current?.focus(), 10)
     return () => window.clearTimeout(timer)
   }, [open])
@@ -204,40 +216,82 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
     return () => { document.removeEventListener('pointerdown', onDown, true); document.removeEventListener('keydown', onKey, true) }
   }, [open])
 
+  const groups = labelToGroup.get(slot) || new Map<string, string[]>()
+  const total = allTextEffects(slot).length
+
   const sections = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    const groups = labelToGroup.get(slot) || new Map()
-    const matching = (needle ? allTextEffects(slot) : Object.values(groups).flat()).filter(t => t.toLowerCase().includes(needle))
-    if (group) {
-      const items = matching.filter(t => (groups.get(group) || []).includes(t))
-      return items.length ? [{ name: group, items }] : []
-    }
+    const matching = allTextEffects(slot).filter(t => t.toLowerCase().includes(needle))
     const out: { name: string; items: string[] }[] = []
     for (const [name, names] of groups) {
+      if (group && name !== group) continue
       const items = matching.filter(t => names.includes(t))
       if (items.length) out.push({ name, items })
     }
     return out
-  }, [query, slot, group])
+  }, [query, slot, group, groups])
 
   const flat = useMemo(() => sections.flatMap(s => s.items), [sections])
+
+  useEffect(() => {
+    if (!open) return
+    const current = flat.indexOf(value)
+    setActiveIndex(current >= 0 ? current : 0)
+  }, [open, flat, value])
+
+  const select = (label: string) => { onChange(label); setOpen(false); triggerRef.current?.focus() }
+
+  const focusTile = (index: number) => {
+    const clamped = Math.max(0, Math.min(flat.length - 1, index))
+    setActiveIndex(clamped)
+    tileRefs.current[clamped]?.focus()
+    tileRefs.current[clamped]?.scrollIntoView({ block: 'nearest' })
+  }
+  const onGridKey = (event: React.KeyboardEvent) => {
+    if (!flat.length) return
+    if (event.key === 'ArrowRight') { event.preventDefault(); focusTile(activeIndex + 1) }
+    else if (event.key === 'ArrowLeft') { event.preventDefault(); focusTile(activeIndex - 1) }
+    else if (event.key === 'ArrowDown') { event.preventDefault(); focusTile(activeIndex + 4) }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); focusTile(activeIndex - 4) }
+    else if (event.key === 'Home') { event.preventDefault(); focusTile(0) }
+    else if (event.key === 'End') { event.preventDefault(); focusTile(flat.length - 1) }
+  }
+  const onSearchKey = (event: React.KeyboardEvent) => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); focusTile(activeIndex) }
+    else if (event.key === 'Enter' && flat.length) { event.preventDefault(); select(flat[activeIndex] ?? flat[0]) }
+  }
+
+  // Same placement rules as the transition browser: centred on the chip,
+  // flipped above it when there is more room there.
+  const geometry = rect && (() => {
+    const width = Math.min(720, Math.max(360, window.innerWidth - 24))
+    const left = Math.max(12, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 12))
+    const below = window.innerHeight - rect.bottom - 12
+    const above = rect.top - 12
+    const flip = below < 420 && above > below
+    const height = Math.max(220, Math.min(470, flip ? above : below))
+    const top = flip ? rect.top - height - 6 : rect.bottom + 6
+    return { width, height, left, top: Math.max(12, top) }
+  })()
+
   const activeParams = textEffectParams(value)
-  const popLeft = rect ? Math.min(rect.left, window.innerWidth - 560) : 0
-  const popTop = rect ? rect.bottom + 6 : 0
+  const cached = status?.ready ?? 0
 
   return <>
     <span className="text-effect-controls">
       <button
         ref={triggerRef}
         type="button"
-        aria-label={ariaLabel}
-        title={title || `${value} · click to browse text effects`}
-        className={`text-effect-chip ${className || ''}`}
+        aria-haspopup="listbox" aria-expanded={open}
+        aria-label={ariaLabel || `${slotTitle[slot]}: ${value}`}
+        title={title || `${value} — click to browse all ${total} ${slotTitle[slot].toLowerCase()} effects`}
+        className={`transition-chip text-effect-chip ${open ? 'open' : ''} ${className || ''}`}
         onClick={() => setOpen(o => !o)}
+        onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) } }}
       >
-        <i className="text-effect-symbol" aria-hidden>{textEffectSymbol(value)}</i>
-        <span className="text-effect-label">{value}</span>
-        <ChevronDown size={11} />
+        <i className="chip-symbol text-effect-symbol" aria-hidden>{textEffectSymbol(value)}</i>
+        <span className="chip-name text-effect-label">{value.replace(' (static)', '')}</span>
+        <ChevronDown size={13} />
       </button>
       {showSeconds && onSecondsChange && seconds !== undefined && <input
         type="number"
@@ -258,41 +312,100 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
         />
       </label>)}
     </span>}
-    {open && createPortal(
+    {open && rect && geometry && createPortal(
       <div
         ref={popRef}
-        className="transition-popover text-effect-popover"
-        style={{ position: 'fixed', left: Math.max(8, popLeft), top: Math.min(popTop, window.innerHeight - 380), zIndex: 90 }}
+        className="transition-browser text-effect-browser"
+        style={{ left: geometry.left, top: geometry.top, width: geometry.width, height: geometry.height }}
+        role="dialog"
+        aria-label={`Choose a ${slotTitle[slot].toLowerCase()} effect`}
         onClick={e => e.stopPropagation()}
       >
-        <div className="popover-search">
-          <Search size={13} />
-          <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search effects…" aria-label="Search text effects" />
-          {query && <button type="button" onClick={() => setQuery('')} aria-label="Clear search"><X size={12} /></button>}
+        <header>
+          <label className="browser-search">
+            <Search size={13} />
+            <input ref={searchRef} value={query} placeholder={`Search ${total} ${slotTitle[slot].toLowerCase()} effects…`}
+              aria-label="Search text effects"
+              onChange={e => { setQuery(e.target.value); setGroup(null) }}
+              onKeyDown={onSearchKey} />
+            {query && <button type="button" onClick={() => setQuery('')} aria-label="Clear search"><X size={12} /></button>}
+          </label>
+          <button type="button" className="browser-close" onClick={() => { setOpen(false); triggerRef.current?.focus() }} aria-label="Close"><X size={15} /></button>
+        </header>
+
+        <div className="browser-tabs">
+          <button type="button" className="active" disabled>{slotTitle[slot]} <b>{total}</b></button>
+          <i />
+          <span className="browser-current" title="Currently selected">Current: <b>{value.replace(' (static)', '')}</b></span>
         </div>
-        <div className="popover-groups">
-          <button type="button" className={!group ? 'active' : ''} onClick={() => setGroup(null)}>All</button>
-          {[...(labelToGroup.get(slot) || new Map()).keys()].map(name => (
-            <button key={name} type="button" className={group === name ? 'active' : ''} onClick={() => setGroup(name)}>{name}</button>
-          ))}
+
+        <div className="browser-body">
+          <nav className="browser-groups" aria-label="Categories">
+            <button type="button" className={group === null ? 'active' : ''} onClick={() => setGroup(null)}>All categories</button>
+            {[...groups.entries()].map(([name, names]) =>
+              <button type="button" key={name} className={group === name ? 'active' : ''} onClick={() => setGroup(name === group ? null : name)}>
+                {name}<b>{names.length}</b>
+              </button>)}
+          </nav>
+
+          <div className="browser-grid-wrap">
+            <div className="browser-grid" role="listbox" aria-label={`${slotTitle[slot]} effects`} onKeyDown={onGridKey}>
+              {flat.length === 0 && <p className="browser-empty">No effect matches “{query}”.</p>}
+              {sections.map((section, sectionIndex) => {
+                const offset = sections.slice(0, sectionIndex).reduce((sum, s) => sum + s.items.length, 0)
+                return <section key={section.name}>
+                  <strong>{section.name}</strong>
+                  <div className="tile-row">
+                    {section.items.map((label, index) => {
+                      const flatIndex = offset + index
+                      const entry = status?.items?.[textEffectSlug(label)]
+                      return <EffectTile
+                        key={label}
+                        label={label}
+                        active={label === value}
+                        state={entry?.status ?? null}
+                        error={entry?.error}
+                        playing={autoplayVisible || flatIndex === activeIndex}
+                        onSelect={() => select(label)}
+                        onFocusTile={() => setActiveIndex(flatIndex)}
+                        tileRef={element => { tileRefs.current[flatIndex] = element }}
+                      />
+                    })}
+                  </div>
+                </section>
+              })}
+              {flat.length > 0 && <div className="grid-tail" />}
+            </div>
+          </div>
         </div>
-        {status && status.ready < status.total && <div className="popover-buildnote">
-          <span>{status.ready}/{status.total} examples rendered</span>
-          <button type="button" onClick={() => void buildAllEffectPreviews()} title="Render every missing example clip now (background)"><RefreshCw size={11} /> Render all</button>
-        </div>}
-        <div className="popover-grid transition-grid" role="listbox" aria-label={`${slot} text effects`}>
-          {flat.map(label => (
-            <EffectTile
-              key={label}
-              label={label}
-              active={label === value}
-              state={status?.items?.[textEffectSlug(label)]?.status ?? null}
-              playing={false}
-              onSelect={() => { onChange(label); setOpen(false); triggerRef.current?.focus() }}
-            />
-          ))}
-          {!flat.length && <div className="popover-empty">No effect matches “{query}”.</div>}
-        </div>
+
+        <footer>
+          <span className="browser-count">{flat.length} of {total}</span>
+          <label className="check-label tiny" title="Play every example while you scroll">
+            <input type="checkbox" checked={autoplayVisible} onChange={e => setAutoplayVisible(e.target.checked)} />
+            <span><svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="4"><path d="M20 6 9 17l-5-5" /></svg></span>
+            Autoplay
+          </label>
+          {status
+            ? <span className="browser-cache">
+              {status.building
+                ? <>Rendering {status.buildDone}/{status.buildTotal} <Loader2 size={10} className="spin" /></>
+                : status.hasFfmpeg === false
+                  ? 'FFmpeg unavailable · names only'
+                  : `${cached}/${status.total} examples cached`}
+            </span>
+            : <span className="browser-cache">Example cache offline</span>}
+          {status && !status.building && status.failed > 0 && (() => {
+            const reason = Object.values(status.items).find(item => item.status === 'failed' && item.error)?.error
+            return <span className="browser-cache failed" title={reason ? `Last FFmpeg error: ${reason}` : 'Some examples could not be rendered'}>
+              <AlertTriangle size={10} /> {status.failed} failed
+            </span>
+          })()}
+          {status && !status.building && (status.pending > 0 || status.failed > 0) && status.hasFfmpeg !== false &&
+            <button type="button" className="browser-build" onClick={() => void buildAllEffectPreviews()}>
+              <RefreshCw size={11} /> Render all {status.pending + status.failed} missing
+            </button>}
+        </footer>
       </div>,
       document.body,
     )}

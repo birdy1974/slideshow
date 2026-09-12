@@ -960,6 +960,7 @@ class Renderer:
         self._xfade_has_easing: bool | None = None
         self._easing_lock = threading.Lock()
         self._ass_supported: bool | None = None
+        self._drawtext_supported: bool | None = None
         self._ass_lock = threading.Lock()
 
     def warm_capabilities(self) -> None:
@@ -1073,10 +1074,17 @@ class Renderer:
         # Decide whether to include easing (only if custom ffmpeg supports it)
         has_easing = self.xfade_has_easing()
         if not has_easing:
+            # Stock xfade knows neither easing/reverse nor the
+            # `name(param=value)` syntax — that whole family belongs to the
+            # xfade-easing patch. Emitting `fade(smoothness=0.6)` on a stock
+            # build fails the render with "Not yet implemented in FFmpeg".
             easing = None
             reverse = 0
+            params = {}
         # Build final transition string with params
         ffmpeg_id = xfade_name(label)
+        if not has_easing:
+            ffmpeg_id, _ = parse_transition_label(ffmpeg_id)
         # If caller stored friendly but we have params, rebuild correctly
         base_id, inline = parse_transition_label(ffmpeg_id)
         merged: dict[str, Any] = {}
@@ -1468,10 +1476,36 @@ class Renderer:
                         [self.settings.ffmpeg_bin, "-hide_banner", "-h", "filter=ass"],
                         capture_output=True, text=True, timeout=10,
                     )
-                    self._ass_supported = result.returncode == 0
+                    output = f"{result.stdout or ''}\n{result.stderr or ''}"
+                    self._ass_supported = result.returncode == 0 and "Filter ass" in output
                 except Exception:
                     self._ass_supported = False
             return self._ass_supported
+
+    def drawtext_filter_supported(self) -> bool:
+        """Whether this FFmpeg has drawtext (needs libfreetype at build time).
+
+        Stock distro/NAS binaries often ship libass *without* drawtext; the
+        legacy caption path and the drawtext-expression effects then fail with
+        'Filter not found' and the clip renders with no text at all. When it is
+        missing, every overlay goes through libass instead. Cached per process.
+        """
+        with self._ass_lock:
+            if self._drawtext_supported is None:
+                try:
+                    result = subprocess.run(
+                        [self.settings.ffmpeg_bin, "-hide_banner", "-h", "filter=drawtext"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    # `-h filter=x` exits 0 either way and prints "Unknown
+                    # filter 'x'." on stdout, so look at the text, not the rc.
+                    output = f"{result.stdout or ''}\n{result.stderr or ''}"
+                    self._drawtext_supported = result.returncode == 0 and "Unknown filter" not in output and "Filter drawtext" in output
+                except Exception:
+                    # No usable ffmpeg to ask (tests, offline dev): assume the
+                    # container build, which hard-checks drawtext at image time.
+                    self._drawtext_supported = True
+            return self._drawtext_supported
 
     def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None) -> str | None:
         """Dispatch to the dual text-effect engine (backend/app/text_effects.py).
@@ -1484,10 +1518,17 @@ class Renderer:
         """
         if overlay_plan(item) is None:
             return None
-        if plan_engine(overlay_plan(item)) == "ass" and not self.ass_filter_supported():
+        has_ass = self.ass_filter_supported()
+        has_drawtext = self.drawtext_filter_supported()
+        if plan_engine(overlay_plan(item)) == "ass" and not has_ass:
             log.warning("FFmpeg build lacks the libass 'ass' filter; text effects degrade to fades")
             item = {**item, "textFxEnter": "Fade", "textFxWhile": "None (static)", "textFxExit": "Fade out"}
-        return build_text_overlay(item, defaults, width, height, self.settings.fonts_dir, ass_path, font_file)
+        if not has_ass and not has_drawtext:
+            log.error("FFmpeg build has neither 'drawtext' nor 'ass' — captions cannot be drawn")
+            return None
+        # No drawtext (stock builds): route everything through libass.
+        return build_text_overlay(item, defaults, width, height, self.settings.fonts_dir, ass_path, font_file,
+                                  force_ass=has_ass and not has_drawtext)
 
     def render(self, project: dict[str, Any], kind: str, work: Path, cancelled: threading.Event, progress: Callable[[float,str],None]) -> Path:
         media = list(project.get("media", []))
