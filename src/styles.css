@@ -998,3 +998,22 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
    button rule: keep it a compact button aligned right on the same line. */
 .review-panel .render-ready-row .btn{width:auto;margin:0 0 0 auto;height:32px;padding:0 12px;white-space:nowrap;text-decoration:none}
 .review-panel .render-ready-row .render-ready-info{flex:1}
+/* Detailed row with the caption hidden: the info column gives its width to
+   the transition column and every transition setting is editable in place. */
+.timeline-item.text-hidden-row{grid-template-columns:34px 78px minmax(150px,.9fr) minmax(300px,2.1fr) 76px;align-items:start}
+.timeline-item.text-hidden-row .row-select,.timeline-item.text-hidden-row .row-actions{align-self:center}
+.timeline-item.text-hidden-row .media-info .item-text-edit{margin-top:5px}
+.transition-cell.inline-settings{grid-template-columns:76px minmax(120px,1fr) 64px;align-items:center}
+.transition-cell.inline-settings .transition-chip{grid-column:2}
+.transition-cell.inline-settings .number-stepper{grid-column:3}
+.transition-inline{grid-column:1/-1;grid-row:2;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-top:6px;padding:7px 9px;background:#f4f5f0;border:1px solid #e1e2db;border-radius:7px}
+.transition-inline>label{display:flex;align-items:center;gap:6px;font:600 9px Manrope;color:#555}
+.transition-inline>label .select-wrap{height:26px;min-width:120px}.transition-inline>label .select-wrap select{font-size:9px}
+.transition-inline .check-label{cursor:pointer}
+.transition-inline .check-label input{display:none}
+.transition-inline .check-label span{width:14px;height:14px;border:1px solid #c9ccc3;border-radius:3px;background:#fff;display:grid;place-items:center;color:transparent}
+.transition-inline .check-label input:checked+span{background:#31362d;border-color:#31362d;color:var(--lime)}
+.transition-inline-params{flex-basis:100%;border-top:1px dashed #d8dad2;padding-top:6px}
+.transition-inline-params .gl-params{max-height:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px}
+@media(max-width:1100px){.timeline-item.text-hidden-row{grid-template-columns:34px 70px minmax(130px,.8fr) minmax(220px,1.6fr) 76px}}
+@media(max-width:760px){.timeline-item.text-hidden-row{grid-template-columns:34px 65px 1fr}}
