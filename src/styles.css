@@ -1065,3 +1065,10 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .timeline-item.movie-row:hover{background:#e2eaf2}
 .timeline-item.movie-row.selected-row{background:#e3ecf0;box-shadow:inset 3px 0 #85a94e}
 .timeline-item.movie-row .media-path{color:#5d7590}
+/* Storyline: movie rows/clips carry the same blue-grey tint as the detailed
+   list's movie rows, so movies are found at a glance in both views. */
+.timeline-line.video-line .line-content{background:#e3ebf3}
+.line-number.video{color:#4d6a8a}
+.overview-clip.movie-clip{background:#2c3a48;box-shadow:inset 0 0 0 2px #7d9bb8}
+.overview-clip.movie-clip:hover{outline-color:#9dbbd8}
+.overview-clip.movie-clip:after{background:linear-gradient(0deg,#0f1a26bb,transparent 55%)}
