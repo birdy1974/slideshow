@@ -242,6 +242,40 @@ class AssEngineTests(unittest.TestCase):
         self.assertIn("&H5F903C&", doc)
 
 
+class OutlineTests(unittest.TestCase):
+    """'Outline & shadow' in Default text style: on unless switched off,
+    picture captions only (text frames sit on their own colour bed)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_picture_caption_gets_outline_by_default(self):
+        item = title_item(type="picture", text="Caption")
+        overlay = build_text_overlay(item, {"fontSize": 48}, 1920, 1080, Path("/fonts"), None)
+        self.assertIn(":borderw=3:bordercolor=black@0.85", overlay)
+
+    def test_outline_can_be_switched_off(self):
+        item = title_item(type="picture", text="Caption")
+        overlay = build_text_overlay(item, {"fontSize": 48, "outline": False}, 1920, 1080, Path("/fonts"), None)
+        self.assertNotIn("borderw", overlay)
+        self.assertIn("shadowx=2", overlay, "the soft shadow stays, as it always did")
+
+    def test_text_frames_never_get_an_outline(self):
+        overlay = build_text_overlay(title_item(), {"outline": True}, 1920, 1080, Path("/fonts"), None)
+        self.assertNotIn("borderw", overlay)
+
+    def test_libass_style_carries_the_outline(self):
+        path = self.tmp / "c.ass"
+        item = title_item(type="picture", text="Caption", textFxEnter="Pop in")
+        build_text_overlay(item, {"fontSize": 48}, 1920, 1080, Path("/fonts"), path)
+        style = [l for l in path.read_text().splitlines() if l.startswith("Style: FX")][0]
+        self.assertIn(",&H26000000&,&H73000000&,", style)
+        self.assertTrue(style.endswith(",1,3,2,5,0,0,0,1"), style)
+        build_text_overlay(item, {"fontSize": 48, "outline": False}, 1920, 1080, Path("/fonts"), path)
+        style = [l for l in path.read_text().splitlines() if l.startswith("Style: FX")][0]
+        self.assertTrue(style.endswith(",1,0,2,5,0,0,0,1"), style)
+
+
 class NoDrawtextBuildTests(unittest.TestCase):
     """Stock FFmpeg binaries (distro packages, many NAS builds) ship libass but
     not drawtext. Until now the legacy caption and every drawtext-expression

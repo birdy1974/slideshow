@@ -45,6 +45,12 @@ calls. Per item it picks one of:
    wipes, `\p1` vector bars (lower third), frame-sliced events (shake,
    glitch flicker, count up, scramble, typewriter delete).
 
+**Outline & shadow.** Picture captions get a dark outline (≈ size/16 px,
+`borderw`/`bordercolor` in drawtext, `Outline`/`OutlineColour` in the .ass
+style) plus the historic 2 px soft shadow. It is a project default
+(`textDefaults.outline`, on unless switched off in *Default text style*);
+text frames never get it since they sit on their own colour bed.
+
 **No drawtext? Everything goes through libass.** `drawtext` needs libfreetype
 at FFmpeg build time and many stock binaries (distro packages, NAS builds,
 the imageio wheel) ship libass *without* it. The renderer probes both filters

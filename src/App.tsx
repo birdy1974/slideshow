@@ -935,6 +935,9 @@ function App() {
   const [textBold, setTextBold] = useState(true)
   const [textItalic, setTextItalic] = useState(false)
   const [textUnderline, setTextUnderline] = useState(false)
+  // Dark outline + shadow behind picture captions (Default text style). On
+  // unless switched off: white text on a bright photo is unreadable without it.
+  const [textOutline, setTextOutline] = useState(true)
   const [defaultTextX, setDefaultTextX] = useState(50)
   // Default text animation for new captions and text frames (saved with the
   // project like the rest of the "Default text style" settings).
@@ -1096,7 +1099,7 @@ function App() {
       })
       setMedia(normalized)
     }
-    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72);setDefaultTextFxEnter(normalizeTextEffect(saved.textDefaults.textFxEnter, 'enter'));setDefaultTextFxWhile(normalizeTextEffect(saved.textDefaults.textFxWhile, 'while'));setDefaultTextFxExit(normalizeTextEffect(saved.textDefaults.textFxExit, 'exit'));setDefaultTextFxWhileSpeed(Number(saved.textDefaults.textFxWhileSpeed) || WHILE_SPEED_DEFAULT)}
+    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setTextOutline(saved.textDefaults.outline !== false);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72);setDefaultTextFxEnter(normalizeTextEffect(saved.textDefaults.textFxEnter, 'enter'));setDefaultTextFxWhile(normalizeTextEffect(saved.textDefaults.textFxWhile, 'while'));setDefaultTextFxExit(normalizeTextEffect(saved.textDefaults.textFxExit, 'exit'));setDefaultTextFxWhileSpeed(Number(saved.textDefaults.textFxWhileSpeed) || WHILE_SPEED_DEFAULT)}
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path)
       // A project saved before the two fields were linked usually still carries
@@ -1138,7 +1141,7 @@ function App() {
 
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName, randomOrder }, media,
-    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, textX: defaultTextX, textY: defaultTextY, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed },
+    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, outline:textOutline, textX: defaultTextX, textY: defaultTextY, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed },
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
     // Sanitised here as well as on blur, so a render started straight after
     // typing can never be handed a name the filesystem would reject.
@@ -1171,7 +1174,7 @@ function App() {
   const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
   const blankProjectSnapshot = () => ({
     schemaVersion: 1, project: { name: BLANK_NAME, randomOrder: false }, media: [],
-    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, textX: 50, textY: 72, textFxEnter: DEFAULT_ENTER, textFxWhile: DEFAULT_WHILE, textFxExit: DEFAULT_EXIT, textFxWhileSpeed: WHILE_SPEED_DEFAULT },
+    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFxEnter: DEFAULT_ENTER, textFxWhile: DEFAULT_WHILE, textFxExit: DEFAULT_EXIT, textFxWhileSpeed: WHILE_SPEED_DEFAULT },
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: safeFilename(BLANK_NAME) },
     timeline: { rows: 'auto', zoom: 1 },
@@ -1933,7 +1936,7 @@ function App() {
     {lookItemId != null && (() => { const target = media.find(x => x.id === lookItemId); return target && target.type !== 'title'
       ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
-    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} fxEnter={defaultTextFxEnter} setFxEnter={setDefaultTextFxEnter} fxWhile={defaultTextFxWhile} setFxWhile={setDefaultTextFxWhile} fxExit={defaultTextFxExit} setFxExit={setDefaultTextFxExit} fxWhileSpeed={defaultTextFxWhileSpeed} setFxWhileSpeed={setDefaultTextFxWhileSpeed} onClose={()=>setShowTextStyles(false)}/>} 
+    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} fxEnter={defaultTextFxEnter} setFxEnter={setDefaultTextFxEnter} fxWhile={defaultTextFxWhile} setFxWhile={setDefaultTextFxWhile} fxExit={defaultTextFxExit} setFxExit={setDefaultTextFxExit} fxWhileSpeed={defaultTextFxWhileSpeed} setFxWhileSpeed={setDefaultTextFxWhileSpeed} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
@@ -2158,12 +2161,23 @@ function SoundtrackEditor({ track, onChange, onClose }: { track: AudioTrack; onC
   </div></div>
 }
 
-function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,textX=50,setTextX,textY=72,setTextY,fxEnter, setFxEnter, fxWhile, setFxWhile, fxExit, setFxExit, fxWhileSpeed, setFxWhileSpeed,onClose}: any) {
+/** CSS twin of the renderer's caption outline (borderw ≈ size/16 + a 2 px shadow). */
+function captionShadow(outline: boolean, sizePx: number): string {
+  const shadow = '2px 2px 2px rgba(0,0,0,.55)'
+  if (!outline) return shadow
+  const w = Math.max(1, Math.round(sizePx / 16))
+  return `0 0 ${w}px rgba(0,0,0,.85), 0 0 ${w}px rgba(0,0,0,.85), 0 0 ${w * 2}px rgba(0,0,0,.6), ${shadow}`
+}
+
+function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,outline=true,setOutline,textX=50,setTextX,textY=72,setTextY,fxEnter, setFxEnter, fxWhile, setFxWhile, fxExit, setFxExit, fxWhileSpeed, setFxWhileSpeed,onClose}: any) {
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal wide-style-modal" onMouseDown={e=>e.stopPropagation()}>
     <div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>
     <div className="style-modal-body">
       <p>These defaults apply to captions drawn on photos and videos. Standalone text frames keep their own font, size and position.</p>
       <TypeControls fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={Number(fontSize) || 48} setFontSize={v => setFontSize(String(v))} fontColor={fontColor} setFontColor={setFontColor} bold={bold} setBold={setBold} italic={italic} setItalic={setItalic} underline={underline} setUnderline={setUnderline} />
+      <label className="check-label caption-outline-toggle" title="Draws a thin dark outline and a soft shadow behind captions on photos and videos so light text stays readable on bright pictures. Text frames are not affected.">
+        <input type="checkbox" checked={outline} onChange={e => setOutline?.(e.target.checked)}/><span><Check size={11}/></span> Outline &amp; shadow behind captions <small>recommended</small>
+      </label>
       <div className="fx-section light">
         <FieldLabel>Default text animation</FieldLabel>
         <div className="fx-rows">
@@ -2173,7 +2187,7 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
         </div>
       </div>
       <div className="frame-canvas default-position-stage" style={{background:'#30362d'}}>
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none',textShadow:captionShadow(outline, Math.min(Number(fontSize)||48,54))}}>
           <Move size={14}/><span>Summer, slowly.</span>
         </div>
       </div>

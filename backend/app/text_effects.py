@@ -208,6 +208,7 @@ class TextGeometry:
     italic: bool
     colour: str              # #RRGGBB
     params: dict[str, str]   # per-effect parameters (Count up from/to, ...)
+    outline: bool = True     # dark outline + shadow behind picture captions
 
 
 def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height: int) -> TextGeometry | None:
@@ -233,12 +234,18 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         bold = bool(item.get("textBold", True))
         italic = bool(item.get("textItalic", False))
         family = str(item.get("fontFamily") or "Montserrat")
+        # Text frames sit on a flat colour bed of the user's choosing: no
+        # outline, exactly as before.
+        outline = False
     else:
         size_pt = _num(defaults, "fontSize", 48)
         colour_raw = str(defaults.get("fontColor") or "#ffffff")
         bold = bool(defaults.get("bold", True))
         italic = bool(defaults.get("italic", False))
         family = str(defaults.get("fontFamily") or "Montserrat")
+        # "Outline & shadow" in Default text style (on unless switched off):
+        # keeps white captions readable on bright photos.
+        outline = defaults.get("outline", True) is not False
     raw_params = item.get("textFxParams")
     params = {str(k): str(v) for k, v in raw_params.items()} if isinstance(raw_params, dict) else {}
     colour = colour_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", colour_raw or "") else "#ffffff"
@@ -250,6 +257,7 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         start=start, end=end, di=di, do=do, speed=speed,
         text=text, lines=text.split("\n"),
         family=family, bold=bold, italic=italic, colour=colour, params=params,
+        outline=outline,
     )
 
 
@@ -353,8 +361,18 @@ def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_:
     return (
         f"drawtext=fontfile='{font}':text='{ff_escape_drawtext(g.text)}':fontsize={g.size}"
         f":fontcolor=0x{g.colour[1:]}:alpha='{alpha}':x='{x_expr}':y='{y_expr}'"
-        f":shadowcolor=black@0.55:shadowx=2:shadowy=2:enable='between(t,{_n(g.start)},{_n(g.end)})'"
+        f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}:enable='between(t,{_n(g.start)},{_n(g.end)})'"
     )
+
+
+def outline_width(g: TextGeometry) -> int:
+    """Outline thickness in pixels: ~1/16 em, at least 1 px, 0 when off."""
+    return max(1, round(g.size / 16)) if g.outline else 0
+
+
+def _dt_outline(g: TextGeometry) -> str:
+    w = outline_width(g)
+    return f":borderw={w}:bordercolor=black@0.85" if w else ""
 
 
 # --------------------------------------------------------------------------
@@ -365,12 +383,13 @@ CHAR_W = 0.66      # average glyph width estimate (em) — used for clip/bar box
 LINE_H = 1.3       # line height estimate (em)
 SCRAMBLE_GLYPHS = "#@$%&*+=<>?/\\|"
 SHADOW_STYLE = "&H73000000&"   # black @ 0.55, the drawtext shadow
+OUTLINE_STYLE = "&H26000000&"  # black @ 0.85, the drawtext bordercolor
 
 
 def _header(g: TextGeometry) -> str:
     style = (
-        f"Style: FX,{g.family.replace(',', ' ')},{g.size},{ass_colour(g.colour)},&HFFFFFF&,&H000000&,{SHADOW_STYLE},"
-        f"{'-1' if g.bold else '0'},{'-1' if g.italic else '0'},0,0,100,100,0,0,1,0,2,5,0,0,0,1"
+        f"Style: FX,{g.family.replace(',', ' ')},{g.size},{ass_colour(g.colour)},&HFFFFFF&,{OUTLINE_STYLE},{SHADOW_STYLE},"
+        f"{'-1' if g.bold else '0'},{'-1' if g.italic else '0'},0,0,100,100,0,0,1,{outline_width(g)},2,5,0,0,0,1"
     )
     return (
         "[Script Info]\n"
