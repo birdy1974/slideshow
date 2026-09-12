@@ -1017,3 +1017,21 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .transition-inline-params .gl-params{max-height:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px}
 @media(max-width:1100px){.timeline-item.text-hidden-row{grid-template-columns:34px 70px minmax(130px,.8fr) minmax(220px,1.6fr) 76px}}
 @media(max-width:760px){.timeline-item.text-hidden-row{grid-template-columns:34px 65px 1fr}}
+/* Inline transition settings: a strict 2-column grid with tight rows. Easing
+   and Reverse share the first row; GL parameters fill the grid below, each
+   as one compact "name · slider · value" line. */
+.transition-inline{display:grid;grid-template-columns:1fr 1fr;gap:3px 12px;padding:5px 8px;margin-top:4px}
+.transition-inline>label{height:24px}
+.transition-inline>label .select-wrap{height:22px;min-width:0;flex:1}.transition-inline>label .select-wrap select{font-size:9px;padding:0 20px 0 6px}
+.transition-inline-params{grid-column:1/-1;flex-basis:auto;padding-top:4px;margin-top:1px}
+.transition-inline-params .gl-params{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;padding-right:0}
+.transition-inline-params .gl-param{display:grid;grid-template-columns:minmax(64px,.55fr) 1fr;align-items:center;gap:6px;height:22px}
+.transition-inline-params .gl-param>span{font-size:8px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;justify-content:flex-start;gap:4px}
+.transition-inline-params .gl-param>span em{font-size:7.5px;padding:0 3px;flex:none}
+.transition-inline-params .gl-slider{display:flex;align-items:center;gap:5px;min-width:0}
+.transition-inline-params .gl-slider input[type="range"]{flex:1;min-width:0;height:14px;accent-color:#6f8f42}
+.transition-inline-params .gl-slider input[type="text"],.transition-inline-params .gl-param>input[type="text"]{width:46px;height:20px;border:1px solid #d9dad4;border-radius:4px;padding:0 4px;font:600 8px Manrope}
+.transition-inline-params .gl-param .color-control.compact{height:22px;padding:2px 5px}
+.transition-inline-params .gl-param .color-control.compact input[type="color"]{width:18px;height:18px}
+.transition-inline-params .gl-param .color-control.compact input[type="text"]{height:18px;font-size:8px}
+.transition-inline-params .gl-no-params{grid-column:1/-1;font-size:8px;color:#999}
