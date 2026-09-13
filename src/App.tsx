@@ -898,9 +898,6 @@ function TimelineRuler({ start, duration, zoom, audioLength }: { start:number, d
 }
 
 function TimelineTextBox({ item, update, selected, onSelect, onEdit }: { item: MediaItem, update: (change: Partial<MediaItem>) => void, selected: string[], onSelect: (edge:'enter'|'exit')=>void, onEdit?: () => void }) {
-  // Caption timing is always kept inside the clip, even for projects saved
-  // before the current time rules existed. The outgoing picture transition is
-  // extra timeline time and begins only after this normalized hold.
   const { duration, textStart, textEnd } = normalizedTextTiming(item)
   const changeTiming = (edge: 'start'|'end', event: React.PointerEvent) => {
     event.preventDefault(); event.stopPropagation()
@@ -915,29 +912,22 @@ function TimelineTextBox({ item, update, selected, onSelect, onEdit }: { item: M
     const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop) }
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop)
   }
-  // "Text on slide" off means off: do not show timing handles or an editable
-  // caption bar, but leave a settings affordance in the storyline so a hidden
-  // caption can still be enabled/configured without going back to the detail
-  // list. The eye toggle on the clip and in the detailed list stays as the
-  // quick switch back on.
   if (item.type !== 'title' && item.textEnabled === false) {
     if (!onEdit) return null
-    return <div className="timed-text text-disabled" style={{ left: '0%', width: '100%' }}>
-      <button type="button" className="frame-edit-mini caption-edit-mini" title="Edit this picture's text settings, visibility and timing" aria-label="Edit picture text settings" onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); onEdit() }}><Settings2 size={9}/></button>
+    return <div className="timed-text text-disabled clickable" style={{ left: '0%', width: '100%' }} onClick={e => { e.preventDefault(); e.stopPropagation(); onEdit() }} title="Text is hidden — click to edit text settings, visibility and timing">
     </div>
   }
   const left = textStart / duration * 100
   const width = Math.max(3, (textEnd - textStart) / duration * 100)
-  return <div className="timed-text" style={{left:`${left}%`,width:`${width}%`}}>
-    <button className={`text-transition enter ${selected.includes(`${item.id}-enter`)?'selected':''}`} title={`Appear: ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>onSelect('enter')}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button>
-    <i className="timing-handle left" title={`Appears at ${textStart.toFixed(1)}s`} onPointerDown={e=>changeTiming('start',e)}/>
-    <input value={item.text} placeholder="+ Add text" onChange={e=>update({text:e.target.value})}/>
-    {item.type === 'title' && onEdit && <button type="button" className="frame-edit-mini" title={`Edit this text frame · “${item.text}” · ${item.duration}s — colours, font, position and timing`} aria-label="Edit text frame" onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); onEdit() }}><Pencil size={9}/></button>}
-    {item.type !== 'title' && onEdit && <button type="button" className="frame-edit-mini caption-edit-mini" title="Edit this picture's text settings, visibility and timing" aria-label="Edit picture text settings" onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); onEdit() }}><Settings2 size={9}/></button>}
-    <i className="timing-handle right" title={`Disappears at ${textEnd.toFixed(1)}s`} onPointerDown={e=>changeTiming('end',e)}/>
-    <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Disappear: ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>onSelect('exit')}>{textEffectSymbol(item.textFxExit || item.textExit)}</button>
+  return <div className="timed-text clickable" style={{left:`${left}%`,width:`${width}%`}} onClick={e => { if (e.target === e.currentTarget) { e.preventDefault(); e.stopPropagation(); onEdit?.() } }} title={item.type === 'title' ? `Click to edit text frame · “${item.text}”` : `Click to edit text settings — drag handles to change start/stop timing`}>
+    <button className={`text-transition enter ${selected.includes(`${item.id}-enter`)?'selected':''}`} title={`Appear: ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={e => { e.preventDefault(); e.stopPropagation(); onSelect('enter') }} onPointerDown={e => e.stopPropagation()}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button>
+    <i className="timing-handle left" title={`Appears at ${textStart.toFixed(1)}s`} onPointerDown={e=>changeTiming('start',e)} onClick={e => e.stopPropagation()}/>
+    <input value={item.text} placeholder="+ Add text" onChange={e=>update({text:e.target.value})} onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onDoubleClick={e => { e.preventDefault(); e.stopPropagation(); onEdit?.() }} title={item.type === 'title' ? `Edit text: double-click for full settings` : `Edit text on picture: double-click for style, position and motion`}/>
+    <i className="timing-handle right" title={`Disappears at ${textEnd.toFixed(1)}s`} onPointerDown={e=>changeTiming('end',e)} onClick={e => e.stopPropagation()}/>
+    <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Disappear: ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={e => { e.preventDefault(); e.stopPropagation(); onSelect('exit') }} onPointerDown={e => e.stopPropagation()}>{textEffectSymbol(item.textFxExit || item.textExit)}</button>
   </div>
 }
+
 // Rounds a number to at most 3 decimals for display, returning '' for NaN.
 const round3 = (n: number) => (Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : '')
 
