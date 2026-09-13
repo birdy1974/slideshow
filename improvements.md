@@ -1,3 +1,17 @@
+2026-09-13
+- add option to move the text on picture from starting location to end location. path of movement can be drawn by user
+- also open select transition window if user press on the pre-view transition in the detailed slide row. (same as the transition selection box)
+- move pre-view transition in the detailed slide row to top of the row (align with picture top) also make size bigger so that the bottom is aligning with the bottom of "easing" line
+- in upload popup window add option to delete files and directories (select then delete button)
+- in the detailed slide row move slide duration under the picture and move the transition duration to the old position of the slide duration. also make the box a little bit bigger (now you cannot see the .x values) and use the same look and feel.
+- in the detailed slide row remove the "on picture" indication
+- on "text on picture" box above the picture in the storyline, remove the setting button and open the text setting popup if the user clicks text box. keep in mind that if text is enable the user should be able to still change the start and stop timing.
+- in Edit picture text popup, underline does not show in text on picture example.
+- in Edit picture text popup, move "Text animation" details on the right side of the picture
+- move "Default text style" button in storyline header to the left (left align with "apply effect" button; move "Text frame" to old place "Default text style" button
+
+
+
 ---= DONE =---
 
 2026-09-13
