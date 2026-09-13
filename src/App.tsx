@@ -971,6 +971,9 @@ function App() {
   const [transitionPreviewId, setTransitionPreviewId] = useState<number | null>(null)
   const [selectedTextTransitions, setSelectedTextTransitions] = useState<string[]>([])
   const [detailTextEditor, setDetailTextEditor] = useState<{id:number,edge:'enter'|'exit'}|null>(null)
+  // Per-picture/video caption editor. Title frames use editingTextFrame and
+  // never enter this flow.
+  const [editingPictureText, setEditingPictureText] = useState<number | null>(null)
   const [effectPicker, setEffectPicker] = useState<number | null>(null)
   // Default bulk effect is None: applying motion to every photo must be a
   // deliberate choice, not something the dropdown pre-selects.
@@ -1153,6 +1156,21 @@ function App() {
   const applySavedProject=(saved:any)=>{
     if(saved.id)setProjectId(saved.id)
     if(saved.project){setProjectName(saved.project.name);setRandomOrder(Boolean(saved.project.randomOrder))}
+    const savedTextDefaults = {
+      fontFamily: String(saved.textDefaults?.fontFamily || 'Montserrat'),
+      fontSize: Number(saved.textDefaults?.fontSize) || 48,
+      fontColor: String(saved.textDefaults?.fontColor || '#ffffff'),
+      bold: saved.textDefaults?.bold !== false,
+      italic: saved.textDefaults?.italic === true,
+      underline: saved.textDefaults?.underline === true,
+      outline: saved.textDefaults?.outline !== false,
+      textX: Number.isFinite(Number(saved.textDefaults?.textX)) ? Number(saved.textDefaults.textX) : 50,
+      textY: Number.isFinite(Number(saved.textDefaults?.textY)) ? Number(saved.textDefaults.textY) : 72,
+      fxEnter: normalizeTextEffect(saved.textDefaults?.textFxEnter, 'enter'),
+      fxWhile: normalizeTextEffect(saved.textDefaults?.textFxWhile, 'while'),
+      fxExit: normalizeTextEffect(saved.textDefaults?.textFxExit, 'exit'),
+      fxWhileSpeed: Number(saved.textDefaults?.textFxWhileSpeed) || WHILE_SPEED_DEFAULT,
+    }
     if(Array.isArray(saved.media)){
       const normalized = saved.media.map((m:any)=> {
         if (m.transition) m.transition = normalizeTransition(m.transition)
@@ -1161,13 +1179,31 @@ function App() {
         if (typeof m.transitionParams === 'string') { try{ m.transitionParams = JSON.parse(m.transitionParams)}catch{ m.transitionParams = {}}}
         if (!m.transitionEasing) m.transitionEasing = EASING_DEFAULT
         if (m.transitionReverse == null) m.transitionReverse = 0
+        // Materialise a picture caption's first style from the saved project
+        // defaults. This is the migration for legacy items: captions keep the
+        // look they had before per-item editing existed, but can now be changed
+        // independently without borrowing a second timing/style state.
+        if (m.type !== 'title') {
+          if (!m.fontFamily) m.fontFamily = savedTextDefaults.fontFamily
+          if (!Number.isFinite(Number(m.fontSize))) m.fontSize = savedTextDefaults.fontSize
+          if (!m.fontColor) m.fontColor = savedTextDefaults.fontColor
+          if (m.textBold == null) m.textBold = savedTextDefaults.bold
+          if (m.textItalic == null) m.textItalic = savedTextDefaults.italic
+          if (m.textUnderline == null) m.textUnderline = savedTextDefaults.underline
+          if (m.textOutline == null) m.textOutline = savedTextDefaults.outline
+          if (!Number.isFinite(Number(m.textX))) m.textX = savedTextDefaults.textX
+          if (!Number.isFinite(Number(m.textY))) m.textY = savedTextDefaults.textY
+          if (m.textEnabled == null) m.textEnabled = true
+        }
         // Dynamic text effects: map legacy xfade labels onto the text-effect
         // catalogue (they always *rendered* as plain fades) and fill the new
         // slots, so GUI chips and the renderer agree on what will be drawn.
-        m.textFxEnter = normalizeTextEffect(m.textFxEnter ?? m.textEnter, 'enter')
-        m.textFxWhile = normalizeTextEffect(m.textFxWhile, 'while')
-        m.textFxExit = normalizeTextEffect(m.textFxExit ?? m.textExit, 'exit')
-        if (!Number.isFinite(Number(m.textFxWhileSpeed)) || !Number(m.textFxWhileSpeed)) m.textFxWhileSpeed = textEffectDefaultSeconds[m.textFxWhile] ?? WHILE_SPEED_DEFAULT
+        m.textFxEnter = normalizeTextEffect(m.textFxEnter ?? m.textEnter ?? savedTextDefaults.fxEnter, 'enter')
+        m.textFxWhile = normalizeTextEffect(m.textFxWhile ?? savedTextDefaults.fxWhile, 'while')
+        m.textFxExit = normalizeTextEffect(m.textFxExit ?? m.textExit ?? savedTextDefaults.fxExit, 'exit')
+        if (!m.textEnter) m.textEnter = m.textFxEnter
+        if (!m.textExit) m.textExit = m.textFxExit
+        if (!Number.isFinite(Number(m.textFxWhileSpeed)) || !Number(m.textFxWhileSpeed)) m.textFxWhileSpeed = textEffectDefaultSeconds[m.textFxWhile] ?? savedTextDefaults.fxWhileSpeed
         // Older projects may contain a caption window that reaches into the
         // following transition. Normalize it on load so the timeline display,
         // persisted snapshot, and renderer all use the same hold boundary.
@@ -1175,7 +1211,17 @@ function App() {
       })
       setMedia(normalized)
     }
-    if(saved.textDefaults){setFontFamily(saved.textDefaults.fontFamily);setFontSize(String(saved.textDefaults.fontSize));setFontColor(saved.textDefaults.fontColor);setTextBold(saved.textDefaults.bold);setTextItalic(saved.textDefaults.italic);setTextUnderline(saved.textDefaults.underline);setTextOutline(saved.textDefaults.outline !== false);setDefaultTextX(saved.textDefaults.textX ?? 50);setDefaultTextY(saved.textDefaults.textY ?? 72);setDefaultTextFxEnter(normalizeTextEffect(saved.textDefaults.textFxEnter, 'enter'));setDefaultTextFxWhile(normalizeTextEffect(saved.textDefaults.textFxWhile, 'while'));setDefaultTextFxExit(normalizeTextEffect(saved.textDefaults.textFxExit, 'exit'));setDefaultTextFxWhileSpeed(Number(saved.textDefaults.textFxWhileSpeed) || WHILE_SPEED_DEFAULT)}
+    if(saved.textDefaults){
+      setFontFamily(savedTextDefaults.fontFamily); setFontSize(String(savedTextDefaults.fontSize)); setFontColor(savedTextDefaults.fontColor)
+      setTextBold(savedTextDefaults.bold); setTextItalic(savedTextDefaults.italic); setTextUnderline(savedTextDefaults.underline); setTextOutline(savedTextDefaults.outline)
+      setDefaultTextX(savedTextDefaults.textX); setDefaultTextY(savedTextDefaults.textY); setDefaultTextFxEnter(savedTextDefaults.fxEnter); setDefaultTextFxWhile(savedTextDefaults.fxWhile); setDefaultTextFxExit(savedTextDefaults.fxExit); setDefaultTextFxWhileSpeed(savedTextDefaults.fxWhileSpeed)
+    } else {
+      // Projects from before text defaults existed use the same built-ins as a
+      // fresh project instead of inheriting the defaults of the project loaded
+      // immediately before them.
+      setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setTextOutline(true)
+      setDefaultTextX(50); setDefaultTextY(72); setDefaultTextFxEnter(DEFAULT_ENTER); setDefaultTextFxWhile(DEFAULT_WHILE); setDefaultTextFxExit(DEFAULT_EXIT); setDefaultTextFxWhileSpeed(WHILE_SPEED_DEFAULT)
+    }
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path)
       // A project saved before the two fields were linked usually still carries
@@ -1271,7 +1317,7 @@ function App() {
     setTimelineRows('auto'); setTimelineZoom(1)
     setGlobalSlideDuration(DEFAULT_SLIDE_SECONDS); setGlobalDuration(DEFAULT_TRANSITION_SECONDS)
     setSelectedIds([]); setSelectedTransitions([]); setSelectedTextTransitions([])
-    setDetailTextEditor(null); setEditingTextFrame(null)
+    setDetailTextEditor(null); setEditingPictureText(null); setEditingTextFrame(null)
     setShowNewProjectConfirm(false); setShowProjectLoader(false)
     void persistSnapshot(blankProjectSnapshot(), true, true).then(() => notify('Started a new blank project')).catch(() => notify('Started a new blank project — save it once the backend is back'))
   }
@@ -1572,7 +1618,10 @@ function App() {
         text: '', textMode: 'overlay', textEnabled: false, textStart: 0, textEnd: duration,
         textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5,
         textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed,
-        textX: 50, textY: 72, frameBackground: '#30382a',
+        // New picture captions start as a copy of the current project style.
+        // Saving the per-picture dialog then keeps these fields independent.
+        fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textOutline,
+        textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a',
       })
     }
     setMedia(items => [...items, ...additions])
@@ -2003,7 +2052,7 @@ function App() {
                 return <div className={`timeline-item wide-transition ${item.type === 'video' ? 'movie-row' : item.type === 'title' ? 'title-row' : ''} ${textHidden ? 'text-hidden-row' : ''} ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                   <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'image' && item.effect === 'None' && <button type="button" className="thumb-effect off" title="No motion on this photo — click to add a Ken Burns effect" onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/></button>}{item.type === 'image' && item.effect !== 'None' && <button type="button" className={`thumb-effect ${isKenBurns(item.effect) && Math.abs(kenBurnsZoomOf(item) - KEN_BURNS_DEFAULT_ZOOM) > 0.001 ? 'custom' : ''}`} title={`Motion: ${item.effect}${isKenBurns(item.effect) ? ` · strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} %` : ''} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
-                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && item.textEnabled === false ? null : <><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{textEffectSymbol(item.textFxExit || item.textExit)}</button><span className="text-mode-fixed" title="Text in the detailed slide list is always shown on the picture">On picture</span></>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TextEffectChip value={(detailTextEditor.edge==='enter'?(item.textFxEnter||item.textEnter||'Fade'):(item.textFxExit||item.textExit||'Fade out'))} slot={detailTextEditor.edge} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textFxEnter:v,textEnter:v}:{textFxExit:v,textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}{effectPicker===item.id && item.type !== 'title' && <KenBurnsPanel item={item} thumb={thumb} onPatch={p => patch(item.id, p)} onClose={() => setEffectPicker(null)}/>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false && item.text.trim() !== '') || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && item.text.trim() !== '' && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
+                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && <button type="button" className="edit-picture-text-button" title={`Edit this picture's text style, visibility and timing · ${formatClock(normalizedTextTiming(item).textStart)}–${formatClock(normalizedTextTiming(item).textEnd)}`} onClick={event => { event.preventDefault(); event.stopPropagation(); setEditingPictureText(item.id) }} onPointerDown={event => event.stopPropagation()}><Pencil size={11}/> Edit</button>}{item.type !== 'title' && item.textEnabled === false ? <span className="text-mode-fixed" title="Text in the detailed slide list is always shown on the picture">On picture</span> : <><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{textEffectSymbol(item.textFxExit || item.textExit)}</button><span className="text-mode-fixed" title="Text in the detailed slide list is always shown on the picture">On picture</span></>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TextEffectChip value={(detailTextEditor.edge==='enter'?(item.textFxEnter||item.textEnter||'Fade'):(item.textFxExit||item.textExit||'Fade out'))} slot={detailTextEditor.edge} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textFxEnter:v,textEnter:v}:{textFxExit:v,textExit:v})} /><NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} /><button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}{effectPicker===item.id && item.type !== 'title' && <KenBurnsPanel item={item} thumb={thumb} onPatch={p => patch(item.id, p)} onClose={() => setEffectPicker(null)}/>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false && item.text.trim() !== '') || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && item.text.trim() !== '' && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
                   {index < media.length - 1 ? <RecordedTransitionExample transition={item.transition} /> : <RecordedTransitionExample transition="" empty />}
                   {index < media.length - 1 ? <TransitionCell item={item} inline onPatch={patch_ => patch(item.id, patch_)} onDuration={v => updateDuration(item.id, v)} onOpenGallery={() => setShowTransitionGallery(true)} /> : <div className="transition-cell last-cell"><div className="clip-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div><div className="end-card"><Check size={13}/> End of story</div></div>}
                   <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
@@ -2052,6 +2101,9 @@ function App() {
     {lookItemId != null && (() => { const target = media.find(x => x.id === lookItemId); return target && target.type !== 'title'
       ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
+    {editingPictureText != null && (() => { const target = media.find(x => x.id === editingPictureText); return target && target.type !== 'title'
+      ? <PictureTextEditor item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, fxEnter: defaultTextFxEnter, fxWhile: defaultTextFxWhile, fxExit: defaultTextFxExit, fxWhileSpeed: defaultTextFxWhileSpeed }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} />
+      : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} fxEnter={defaultTextFxEnter} setFxEnter={setDefaultTextFxEnter} fxWhile={defaultTextFxWhile} setFxWhile={setDefaultTextFxWhile} fxExit={defaultTextFxExit} setFxExit={setDefaultTextFxExit} fxWhileSpeed={defaultTextFxWhileSpeed} setFxWhileSpeed={setDefaultTextFxWhileSpeed} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextFrameEditor item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} update={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onCancel={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
@@ -2076,7 +2128,7 @@ function App() {
       setShowBrowser(false)
     }}/>} 
     {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onOpenGallery={() => setShowTransitionGallery(true)} onApply={(patchData) => { patch(media[index].id, patchData); setTransitionPreviewId(null); notify(`Applied ${patchData.transition} transition`) }} /> : null })()}
-    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} previewScope={previewScope} previewMode={previewRunMode} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
+    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} previewScope={previewScope} previewMode={previewRunMode} captionDefaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, fxEnter: defaultTextFxEnter, fxWhile: defaultTextFxWhile, fxExit: defaultTextFxExit, fxWhileSpeed: defaultTextFxWhileSpeed }} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showProjectFileSave && <ProjectFileBrowser
       projectName={projectName}
       snapshot={projectSnapshot}
@@ -2102,7 +2154,7 @@ function App() {
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {showCleanTempConfirm && <ConfirmDialog title="Clean temporary files?" message={`This deletes every intermediate render segment, soundtrack cache and proxy preview (the work and preview folders), and clears the render history. Rendered MP4 files in ${outputPath || '/output'} and your saved projects are kept. This cannot be undone.`} confirmLabel="Clean temp files" onConfirm={cleanTempFiles} onCancel={()=>setShowCleanTempConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : previewedItem.type === 'title' ? 'title' : 'image'} titleFrame={previewedItem.type === 'title' ? previewedItem : undefined} onEditFrame={previewedItem.type === 'title' ? () => setEditingTextFrame(previewedItem.id) : undefined} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} lookItem={previewedItem.type === 'title' ? null : previewedItem} onLook={() => openLookEditor(previewedItem, 'filters')} onCrop={() => openLookEditor(previewedItem, 'crop')} suspended={editingMovieId != null || lookItemId != null || editingTextFrame != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : previewedItem.type === 'title' ? 'title' : 'image'} titleFrame={previewedItem.type === 'title' ? previewedItem : undefined} onEditFrame={previewedItem.type === 'title' ? () => setEditingTextFrame(previewedItem.id) : undefined} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} lookItem={previewedItem.type === 'title' ? null : previewedItem} onLook={() => openLookEditor(previewedItem, 'filters')} onCrop={() => openLookEditor(previewedItem, 'crop')} suspended={editingMovieId != null || lookItemId != null || editingTextFrame != null || editingPictureText != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {uploads.length > 0 && <UploadTray items={uploads} onCancel={id => uploadCancelers.current.get(id)?.()} onClear={() => setUploads([])}/>}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
@@ -2311,6 +2363,131 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
     </div>
     <div className="modal-foot"><span>Changes apply to new text</span><button className="btn ghost" onClick={() => { setTextX(50); setTextY(72) }}>Reset position</button><button className="btn dark" onClick={onClose}><Check size={15}/> Save defaults</button></div>
   </div></div>
+}
+
+// Editor for one picture/video caption. It deliberately lives beside, rather
+// than inside, TextFrameEditor: a title frame is a standalone storyline item,
+// while this dialog only edits the overlay drawn on the current media item.
+function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
+  item: MediaItem
+  defaults: {
+    fontFamily: string; fontSize: number; fontColor: string; bold: boolean; italic: boolean;
+    underline: boolean; outline: boolean; textX: number; textY: number;
+    fxEnter: string; fxWhile: string; fxExit: string; fxWhileSpeed: number;
+  }
+  src: string
+  onSave: (change: Partial<MediaItem>) => void
+  onClose: () => void
+}) {
+  const initialTiming = normalizedTextTiming(item)
+  const [draft, setDraft] = useState<MediaItem>(() => ({
+    ...item,
+    textEnabled: item.textEnabled !== false,
+    fontFamily: item.fontFamily || defaults.fontFamily,
+    fontSize: Number.isFinite(Number(item.fontSize)) ? Number(item.fontSize) : defaults.fontSize,
+    fontColor: item.fontColor || defaults.fontColor,
+    textBold: item.textBold ?? defaults.bold,
+    textItalic: item.textItalic ?? defaults.italic,
+    textUnderline: item.textUnderline ?? defaults.underline,
+    textOutline: item.textOutline ?? defaults.outline,
+    textX: Number.isFinite(Number(item.textX)) ? Number(item.textX) : defaults.textX,
+    textY: Number.isFinite(Number(item.textY)) ? Number(item.textY) : defaults.textY,
+    textFxEnter: item.textFxEnter || item.textEnter || defaults.fxEnter,
+    textFxWhile: item.textFxWhile || defaults.fxWhile,
+    textFxExit: item.textFxExit || item.textExit || defaults.fxExit,
+    textFxWhileSpeed: Number(item.textFxWhileSpeed) || defaults.fxWhileSpeed,
+    textStart: initialTiming.textStart,
+    textEnd: initialTiming.textEnd,
+    textEnterDuration: Number(item.textEnterDuration) || 0.5,
+    textExitDuration: Number(item.textExitDuration) || 0.5,
+  }))
+  const [playing, setPlaying] = useState(true)
+  const setDraftValue = (change: Partial<MediaItem>) => setDraft(current => ({ ...current, ...change }))
+  const timing = normalizedTextTiming(draft)
+  const minimum = Math.min(MIN_TEXT_SECONDS, timing.duration)
+  const setTextStart = (value: number) => setDraftValue({ textStart: Math.min(Math.max(0, value), timing.textEnd - minimum) })
+  const setTextEnd = (value: number) => setDraftValue({ textEnd: Math.max(Math.min(timing.duration, value), timing.textStart + minimum) })
+  const save = () => onSave({
+    text: draft.text,
+    textEnabled: draft.textEnabled !== false,
+    fontFamily: draft.fontFamily,
+    fontSize: draft.fontSize,
+    fontColor: draft.fontColor,
+    textBold: draft.textBold,
+    textItalic: draft.textItalic,
+    textUnderline: draft.textUnderline,
+    textOutline: draft.textOutline,
+    textX: draft.textX,
+    textY: draft.textY,
+    textFxEnter: draft.textFxEnter || defaults.fxEnter,
+    textEnter: draft.textFxEnter || defaults.fxEnter,
+    textFxWhile: draft.textFxWhile || defaults.fxWhile,
+    textFxWhileSpeed: draft.textFxWhileSpeed || defaults.fxWhileSpeed,
+    textFxExit: draft.textFxExit || defaults.fxExit,
+    textExit: draft.textFxExit || defaults.fxExit,
+    textFxParams: draft.textFxParams,
+    textEnterDuration: draft.textEnterDuration,
+    textExitDuration: draft.textExitDuration,
+    textStart: timing.textStart,
+    textEnd: timing.textEnd,
+  })
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  const family = draft.fontFamily || defaults.fontFamily
+  const size = Number(draft.fontSize) || defaults.fontSize
+  const captionText = draft.text || 'Add a caption'
+  return <div className="modal-backdrop" onMouseDown={onClose}>
+    <div className="text-style-modal picture-text-modal" onMouseDown={event => event.stopPropagation()}>
+      <div className="modal-head">
+        <div><span className="eyebrow">THIS PICTURE / VIDEO</span><h2>Edit picture text</h2></div>
+        <button className="icon-button" onClick={onClose} aria-label="Close picture text editor"><X size={19}/></button>
+      </div>
+      <div className="style-modal-body picture-text-body">
+        <p>These settings belong only to <strong>{item.name}</strong>. The standalone text-frame editor remains separate.</p>
+        <label className="check-label picture-text-enabled">
+          <input type="checkbox" checked={draft.textEnabled !== false} onChange={event => setDraftValue({ textEnabled: event.target.checked })}/>
+          <span>{draft.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</span>
+          Show text on this picture
+        </label>
+        <div className="picture-text-preview" style={{ background: src ? undefined : '#30362d' }}>
+          {src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={src} alt="" />)}
+          <i className="picture-text-preview-shade" />
+          <div className="picture-text-preview-caption" onPointerDown={event => dragOnStage(event, (x, y) => setDraftValue({ textX: x, textY: y }))} style={{ left: `${draft.textX}%`, top: `${draft.textY}%`, fontFamily: `'${family}', sans-serif`, fontSize: `${Math.min(size, 54)}px`, color: draft.fontColor, fontWeight: draft.textBold ? 700 : 400, fontStyle: draft.textItalic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal', textDecoration: draft.textUnderline ? 'underline' : 'none', textShadow: captionShadow(Boolean(draft.textOutline), Math.min(size, 54)), opacity: draft.textEnabled === false ? .45 : 1 }}>
+            <Move size={13}/><TextFxPreview item={draft} playing={playing}>{captionText}</TextFxPreview>
+          </div>
+          {draft.textEnabled === false && <span className="picture-text-disabled-badge"><EyeOff size={12}/> Hidden</span>}
+        </div>
+        <div className="picture-text-position"><Move size={13}/><span>Drag the caption to position it</span><strong>X {Math.round(draft.textX)}% · Y {Math.round(draft.textY)}%</strong></div>
+        <div className="picture-text-section">
+          <FieldLabel>Caption</FieldLabel>
+          <textarea value={draft.text} placeholder="Add a caption…" onChange={event => setDraftValue({ text: event.target.value })}/>
+        </div>
+        <TypeControls fontFamily={family} setFontFamily={value => setDraftValue({ fontFamily: value })} fontSize={size} setFontSize={value => setDraftValue({ fontSize: value })} fontColor={draft.fontColor || '#ffffff'} setFontColor={value => setDraftValue({ fontColor: value })} bold={draft.textBold ?? true} setBold={value => setDraftValue({ textBold: value })} italic={draft.textItalic ?? false} setItalic={value => setDraftValue({ textItalic: value })} underline={draft.textUnderline ?? false} setUnderline={value => setDraftValue({ textUnderline: value })} sample={draft.text || 'Caption sample'} />
+        <label className="check-label caption-outline-toggle picture-caption-outline">
+          <input type="checkbox" checked={draft.textOutline !== false} onChange={event => setDraftValue({ textOutline: event.target.checked })}/><span><Check size={11}/></span>
+          Outline &amp; shadow behind this caption
+        </label>
+        <div className="fx-section light picture-text-effects">
+          <FieldLabel>Text animation</FieldLabel>
+          <div className="fx-rows">
+            <div className="fx-row"><span className="fx-slot">Enter</span><TextEffectChip value={draft.textFxEnter || defaults.fxEnter} slot="enter" ariaLabel={`${item.name} enter effect`} showSeconds seconds={draft.textEnterDuration ?? .5} onSecondsChange={value => setDraftValue({ textEnterDuration: Math.max(.1, Math.min(6, value)) })} onChange={value => setDraftValue({ textFxEnter: value, textEnter: value })}/></div>
+            <div className="fx-row"><span className="fx-slot">While shown</span><TextEffectChip value={draft.textFxWhile || defaults.fxWhile} slot="while" ariaLabel={`${item.name} while-shown effect`} showSeconds seconds={draft.textFxWhileSpeed ?? defaults.fxWhileSpeed} onSecondsChange={value => setDraftValue({ textFxWhileSpeed: Math.max(.4, Math.min(12, value)) })} params={draft.textFxParams} onParamsChange={value => setDraftValue({ textFxParams: value })} onChange={value => setDraftValue({ textFxWhile: value, textFxWhileSpeed: textEffectDefaultSeconds[value] ?? draft.textFxWhileSpeed ?? defaults.fxWhileSpeed })}/></div>
+            <div className="fx-row"><span className="fx-slot">Exit</span><TextEffectChip value={draft.textFxExit || defaults.fxExit} slot="exit" ariaLabel={`${item.name} exit effect`} showSeconds seconds={draft.textExitDuration ?? .5} onSecondsChange={value => setDraftValue({ textExitDuration: Math.max(.1, Math.min(6, value)) })} onChange={value => setDraftValue({ textFxExit: value, textExit: value })}/></div>
+          </div>
+          <div className="fx-foot"><small>The preview is approximate; the MP4 uses the same effect settings.</small><button type="button" className={`icon-button ${playing ? 'playing' : ''}`} title={playing ? 'Pause preview' : 'Play preview'} onClick={() => setPlaying(value => !value)}>{playing ? <Pause size={13}/> : <Play size={13}/>}</button></div>
+        </div>
+        <div className="picture-text-timing">
+          <div className="picture-text-timing-head"><FieldLabel>Caption timing on this picture</FieldLabel><span>{formatClock(timing.textStart)} – {formatClock(timing.textEnd)} of {formatClock(timing.duration)}</span></div>
+          <div className="picture-text-time-fields"><TimeField label="Starts at" value={timing.textStart} min={0} max={Math.max(0, timing.textEnd - minimum)} onCommit={setTextStart}/><TimeField label="Ends at" value={timing.textEnd} min={Math.min(timing.duration, timing.textStart + minimum)} max={timing.duration} onCommit={setTextEnd}/></div>
+          <small>These values are the same caption window controlled by the handles in the storyline text lane.</small>
+        </div>
+      </div>
+      <div className="modal-foot"><span>{draft.textEnabled === false ? 'Caption hidden · settings kept' : 'Per-picture settings'}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" onClick={save}><Check size={15}/> Save picture text</button></div>
+    </div>
+  </div>
 }
 
 // Loops the A→B background change inside the editor canvas using a CSS
@@ -2853,7 +3030,7 @@ export function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpen
   </div></div>
 }
 
-function Preview({ media, projectName, previewUrl, previewScope = 'all', previewMode = 'standard', playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, previewScope?: number|'all', previewMode?: PreviewMode, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
+function Preview({ media, projectName, previewUrl, previewScope = 'all', previewMode = 'standard', captionDefaults, playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, previewScope?: number|'all', previewMode?: PreviewMode, captionDefaults?: { fontFamily: string; fontSize: number; fontColor: string; bold: boolean; italic: boolean; underline: boolean; outline: boolean; textX: number; textY: number; fxEnter: string; fxWhile: string; fxExit: string; fxWhileSpeed: number }, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
   const [current, setCurrent] = useState(0)
   const [stageFailed, setStageFailed] = useState(false)
 
@@ -2882,12 +3059,42 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   const stageCrop = useCroppedSource(currentUrl, stageIsVideo ? null : currentItem, 'stage', false)
   const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
   const stageTurned = stageCrop.rotationApplied || stageLook.rotationBaked
+  const defaults = captionDefaults || { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, fxEnter: DEFAULT_ENTER, fxWhile: DEFAULT_WHILE, fxExit: DEFAULT_EXIT, fxWhileSpeed: WHILE_SPEED_DEFAULT }
+  // The editor preview uses the same per-item values as the renderer. Legacy
+  // items without the new fields inherit the project defaults supplied above.
+  const captionItem = currentItem && currentItem.type !== 'title' ? {
+    ...currentItem,
+    fontFamily: currentItem.fontFamily || defaults.fontFamily,
+    fontSize: currentItem.fontSize ?? defaults.fontSize,
+    fontColor: currentItem.fontColor || defaults.fontColor,
+    textBold: currentItem.textBold ?? defaults.bold,
+    textItalic: currentItem.textItalic ?? defaults.italic,
+    textUnderline: currentItem.textUnderline ?? defaults.underline,
+    textOutline: currentItem.textOutline ?? defaults.outline,
+    textX: currentItem.textX ?? defaults.textX,
+    textY: currentItem.textY ?? defaults.textY,
+    textFxEnter: currentItem.textFxEnter || currentItem.textEnter || defaults.fxEnter,
+    textFxWhile: currentItem.textFxWhile || defaults.fxWhile,
+    textFxExit: currentItem.textFxExit || currentItem.textExit || defaults.fxExit,
+    textFxWhileSpeed: currentItem.textFxWhileSpeed ?? defaults.fxWhileSpeed,
+  } : currentItem
+  const captionPosition = currentItem?.type === 'title'
+    ? { left: `${currentItem.textX}%`, top: `${currentItem.textY}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
+    : captionItem
+      ? { left: `${captionItem.textX}%`, top: `${captionItem.textY}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
+      : undefined
+  const captionStyle: React.CSSProperties | undefined = captionItem ? {
+    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min(Number(captionItem.fontSize) || defaults.fontSize, 54)}px`,
+    color: captionItem.fontColor, fontWeight: captionItem.textBold ? 700 : 400,
+    fontStyle: captionItem.textItalic && !FONTS_WITHOUT_ITALIC.has(captionItem.fontFamily || '') ? 'italic' : 'normal',
+    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min(Number(captionItem.fontSize) || defaults.fontSize, 54)),
+  } : undefined
 
   if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={currentItem?.type==='title'?{left:`${currentItem.textX}%`,top:`${currentItem.textY}%`,bottom:'auto',transform:'translate(-50%,-50%)'}:undefined}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : (currentItem?.text || '')}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={captionItem} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () => void }) {

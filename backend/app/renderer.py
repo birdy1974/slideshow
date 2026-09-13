@@ -1453,9 +1453,14 @@ class Renderer:
         }
         has_ass = self.ass_filter_supported()
         has_drawtext = self.drawtext_filter_supported()
-        if plan_engine(overlay_plan(item)) == "ass" and not has_ass:
-            log.warning("FFmpeg build lacks the libass 'ass' filter; text effects degrade to fades")
-            item = {**item, "textFxEnter": "Fade", "textFxWhile": "None (static)", "textFxExit": "Fade out"}
+        # Underline is an ASS-only typography feature (drawtext has no
+        # underline flag). Treat it like an ASS effect for capability probing;
+        # on a build without libass, keep the caption and degrade only the
+        # unsupported underline/effect rather than dropping the whole overlay.
+        needs_ass = plan_engine(overlay_plan(item)) == "ass" or bool(item.get("textUnderline"))
+        if needs_ass and not has_ass:
+            log.warning("FFmpeg build lacks the libass 'ass' filter; text effects/underline degrade to fades")
+            item = {**item, "textFxEnter": "Fade", "textFxWhile": "None (static)", "textFxExit": "Fade out", "textUnderline": False}
         if not has_ass and not has_drawtext:
             log.error("FFmpeg build has neither 'drawtext' nor 'ass' — captions cannot be drawn")
             return None

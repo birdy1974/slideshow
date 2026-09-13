@@ -27,6 +27,9 @@ export type MediaItem = {
   // Videos can replace the soundtrack with their embedded audio.
   audioSource?: 'soundtrack' | 'original';
   textBold?: boolean; textItalic?: boolean; textUnderline?: boolean;
+  // Per-picture caption outline/shadow. Missing means inherit the project default,
+  // which keeps legacy items rendering exactly as they did before per-item styles.
+  textOutline?: boolean;
   // Photo orientation fix in whole quarter turns (0, 90, 180, 270, clockwise).
   // Applied in every thumbnail/lightbox and by the FFmpeg renderer.
   rotation?: number;
