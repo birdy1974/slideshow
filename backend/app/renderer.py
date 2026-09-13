@@ -1137,6 +1137,17 @@ class Renderer:
         """
         return [max(.05, float(item.get("transitionTime", 5))) for item in media[:-1]]
 
+    @staticmethod
+    def preview_has_text(item: dict[str, Any]) -> bool:
+        """Whether a slide has visible text worth keeping in a fast preview."""
+        text = str(item.get("text") or "").strip()
+        if not text:
+            return False
+        # A standalone title frame is text by definition. Picture/video
+        # captions can be hidden without deleting their text, and hidden text
+        # must not accidentally turn a static hold back on in fast mode.
+        return item.get("type") == "title" or item.get("textEnabled") is not False
+
     def _probe_readable(self, path: Path) -> str | None:
         """Check a single file with ffprobe; see module-level `_probe_readable`."""
         return _probe_readable(
@@ -1205,12 +1216,25 @@ class Renderer:
         stem = Path(str(output_settings.get("filename", "slideshow"))).stem or "slideshow"
         return f"{folder}/{stem}.mp4"
 
-    def submit(self, project_id: int, kind: str, overwrite: bool = False, media_ids: list[Any] | None = None) -> dict[str, Any]:
+    def submit(
+        self,
+        project_id: int,
+        kind: str,
+        overwrite: bool = False,
+        media_ids: list[Any] | None = None,
+        preview_mode: str = "standard",
+    ) -> dict[str, Any]:
         project = self.db.get_project(project_id)
         if not project:
             raise KeyError(project_id)
-        if kind == "preview" and media_ids:
-            project = self.subset_project(project, media_ids)
+        if kind == "preview":
+            if media_ids:
+                project = self.subset_project(project, media_ids)
+            # Keep this transient setting out of the saved project. It belongs
+            # to this proxy job only, so changing preview speed never dirties
+            # the user's slideshow or affects a final MP4 render.
+            if preview_mode in {"standard", "fast"}:
+                project = {**project, "previewMode": preview_mode}
         if kind == "render":
             output = self.render_output_path(project)
             if output.exists() and not overwrite:
@@ -1446,7 +1470,15 @@ class Renderer:
             random.shuffle(media)
         if not media:
             raise RenderError("The project contains no media")
-        self._validate_media({**project, "media": media})
+        # Fast proxy mode is intentionally a diagnostic render: it checks text
+        # timing and transitions, so the soundtrack and original movie audio
+        # are unnecessary work. Do not even probe those files during validation
+        # when this option is selected.
+        fast_preview = kind == "preview" and project.get("previewMode") == "fast"
+        validation_project = {**project, "media": media}
+        if fast_preview:
+            validation_project["soundtrack"] = {"tracks": []}
+        self._validate_media(validation_project)
         output_settings = project.get("output", {})
         if kind == "preview":
             width, height, fps, bitrate = 640, 360, 24, "2M"
@@ -1456,9 +1488,9 @@ class Renderer:
             bitrate = f"{parse_number(output_settings.get('bitrate', '8'), 8):g}M"
         defaults = project.get("textDefaults", {})
         log_file = work / "ffmpeg.log"
-        progress(1, "Preparing soundtrack")
-        soundtrack = self._make_soundtrack(project, work, cancelled, log_file)
-        if project.get("soundtrack",{}).get("policy") == "Fit slideshow to audio":
+        progress(1, "Preparing soundtrack" if not fast_preview else "Preparing fast preview")
+        soundtrack = None if fast_preview else self._make_soundtrack(project, work, cancelled, log_file)
+        if not fast_preview and project.get("soundtrack",{}).get("policy") == "Fit slideshow to audio":
             # Original movie audio is part of the sound program too.  When it
             # outlasts the music bed, fitting only to the soundtrack would end
             # the calculated audio time early and incorrectly shrink photos.
@@ -1511,6 +1543,16 @@ class Renderer:
                 # segments still carry the full transition as their xfade
                 # handle, which is where the outgoing and incoming pictures are
                 # seen.  No probing: the caller has already cut the sources.
+                durations.append(0.0)
+                native_video_durations.append(None)
+                video_windows.append(None)
+                continue
+            if fast_preview and len(media) > 1 and not self.preview_has_text(item):
+                # A picture with no caption has no diagnostic hold to inspect.
+                # Leave its incoming/outgoing handles intact so the configured
+                # transition still renders accurately, but omit the expensive
+                # static part. A one-slide text-free preview keeps a tiny
+                # fallback hold because there is no transition to display.
                 durations.append(0.0)
                 native_video_durations.append(None)
                 video_windows.append(None)
@@ -1598,6 +1640,13 @@ class Renderer:
                         limit: float | None = None
                     elif window:
                         seek, limit = window["start"], window["kept"]
+                    elif fast_preview and not self.preview_has_text(item):
+                        # A text-free movie contributes only a transition
+                        # handle, but it must still begin at the editor's trim
+                        # point. The output -t below limits decoding to the
+                        # short handle, so probing the full source is avoided.
+                        seek = max(0.0, float(item.get("trimStart") or 0.0))
+                        limit = None
                     else:
                         seek, limit = 0.0, None
                     if seek > 0.001:
@@ -1912,8 +1961,10 @@ class Renderer:
         audio_args: list[str] = []
         audio_map: list[str] = []
         audio_filter = ""
-        original_movies = [(index, item) for index, item in enumerate(media)
-                           if item.get("type") == "video" and item.get("audioSource") == "original"]
+        original_movies = [] if fast_preview else [
+            (index, item) for index, item in enumerate(media)
+            if item.get("type") == "video" and item.get("audioSource") == "original"
+        ]
         if soundtrack or original_movies:
             # Input 0 is the already-concatenated silent video timeline.
             audio_index = 1

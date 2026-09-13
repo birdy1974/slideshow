@@ -797,12 +797,13 @@ class TransitionPreviewTrimTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _render(self, media: list[dict]) -> list[list[str]]:
+    def _render(self, media: list[dict], preview_mode: str = "fast") -> list[list[str]]:
         """Run a preview render and return every FFmpeg command it issued."""
         # Mirrors POST /api/transitions/preview: two clips, one transition.
         project = {
             "id": "transition",
             "project": {"name": "Transition preview", "randomOrder": False},
+            "previewMode": preview_mode,
             "media": media,
             "soundtrack": {"tracks": [], "policy": "Play once, then silence"},
             "output": {"encoder": "CPU · x264"},
@@ -866,7 +867,7 @@ class TransitionPreviewTrimTest(unittest.TestCase):
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 5},
             {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 5, "effect": "None", "transition": "Fade", "transitionTime": 1},
         ]
-        self.assertEqual("15", self._render(plain)[-1][self._render(plain)[-1].index("-t") + 1])
+        self.assertEqual("15", self._render(plain, "standard")[-1][self._render(plain, "standard")[-1].index("-t") + 1])
 
     def test_short_transition_stays_short(self) -> None:
         commands = self._render(self._preview_pair(0.5))
@@ -1805,6 +1806,96 @@ class PreviewSubsetTest(unittest.TestCase):
             renderer.submit(1, "preview", media_ids=[3, 1])
             renderer.submit(1, "render", media_ids=[3, 1])
         self.assertEqual([("preview", [1, 3]), ("render", [1, 2, 3, 4])], seen)
+
+    def test_submit_keeps_preview_mode_on_the_transient_job_project(self) -> None:
+        from app.config import Settings
+        from app.database import Database
+        from app.renderer import Renderer
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        renderer = Renderer(Database(base / "t.db"), Settings(config_dir=base / "cfg", photos_dir=base, videos_dir=base, music_dir=base, output_dir=base))
+        seen: list[dict] = []
+        with mock.patch.object(renderer.db, "get_project", return_value=self._project()), \
+             mock.patch.object(renderer.db, "create_job"), \
+             mock.patch.object(renderer.db, "get_job", return_value={"id": "x"}), \
+             mock.patch.object(renderer.pool, "submit", side_effect=lambda fn, job_id, project, kind, event: seen.append(project)), \
+             mock.patch.object(renderer, "render_output_path", return_value=base / "never.mp4"):
+            renderer.submit(1, "preview", preview_mode="fast")
+        self.assertEqual("fast", seen[0]["previewMode"])
+        self.assertNotIn("previewMode", self._project())
+
+
+class FastPreviewTest(unittest.TestCase):
+    """Fast proxy previews keep text/timing diagnostics without static holds or audio."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos", output_dir=base / "output", music_dir=base / "music")
+        for directory in (self.settings.photos_dir, self.settings.work_dir, self.settings.preview_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "fast.db"), self.settings)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    @staticmethod
+    def _out_t(command: list[str]) -> str:
+        return command[command.index("-t", command.index("-an")) + 1]
+
+    def _render(self, project: dict) -> tuple[list[list[str]], mock.Mock]:
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"x")
+
+        soundtrack = mock.Mock(return_value=None)
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", soundtrack), \
+             mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=True), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=30.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            self.renderer.render(project, "preview", work, threading.Event(), lambda p, s: None)
+        return commands, soundtrack
+
+    def test_omits_text_free_holds_but_keeps_text_and_transitions(self) -> None:
+        project = {
+            "id": "fast",
+            "previewMode": "fast",
+            "media": [
+                {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 4, "text": "", "transition": "Fade", "transitionTime": 1},
+                {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 3, "text": "Check timing", "transition": "Fade", "transitionTime": 1},
+                {"id": 3, "type": "image", "path": "/photos/a.jpg", "duration": 4, "text": "Hidden", "textEnabled": False, "transition": "Fade", "transitionTime": 1},
+            ],
+            "soundtrack": {"tracks": [{"path": "/music/never.mp3"}], "policy": "Fit slideshow to audio"},
+            "output": {"encoder": "CPU · x264"},
+        }
+        commands, soundtrack = self._render(project)
+        segments = [command for command in commands if "segment-" in command[-1]]
+        self.assertEqual(["1", "5", "1"], [self._out_t(command) for command in segments])
+        holds = [command for command in commands if "hold-" in command[-1]]
+        self.assertEqual(["hold-0001.mp4"], [Path(command[-1]).name for command in holds])
+        transitions = [command for command in commands if "transition-" in command[-1]]
+        self.assertEqual(2, len(transitions))
+        self.assertEqual("5", commands[-1][commands[-1].index("-t") + 1])
+        soundtrack.assert_not_called()
+
+    def test_single_text_free_slide_keeps_a_fallback_hold(self) -> None:
+        project = {
+            "id": "single",
+            "previewMode": "fast",
+            "media": [{"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 4, "text": "", "transition": "Fade", "transitionTime": 1}],
+            "soundtrack": {"tracks": []},
+            "output": {"encoder": "CPU · x264"},
+        }
+        commands, _soundtrack = self._render(project)
+        holds = [command for command in commands if "hold-" in command[-1]]
+        self.assertEqual(1, len(holds))
+        self.assertEqual("4", self._out_t(holds[0]))
 
 
 class UniformStitchTest(unittest.TestCase):

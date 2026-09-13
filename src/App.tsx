@@ -35,6 +35,7 @@ import { EASING_DEFAULT, getGLParams, isGLTransition, transitionPreviewUrl, tran
 import { uploadFile, isUploadableFile, type UploadItem, type UploadsStatus } from './uploads'
 
 type MediaRoot = 'photos' | 'videos' | 'music' | 'uploads'
+type PreviewMode = 'fast' | 'standard'
 
 // Encode each path segment so spaces, dashes, parentheses and unicode survive
 // the query string, while leaving `/` as a real separator (some proxies reject %2F).
@@ -869,8 +870,20 @@ function App() {
   // Uploads volume status from /api/health — the picker warns before a file is chosen.
   const [uploadsStatus, setUploadsStatus] = useState<UploadsStatus | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string|null>(null)
+  // Fast mode is the default diagnostic preview: it keeps text-bearing holds
+  // and every configured transition, while omitting static picture holds and
+  // soundtrack work. Standard mode remains available when the whole selected
+  // sequence needs to be watched.
+  const [previewMode, setPreviewMode] = useState<PreviewMode>(() => {
+    try { return window.localStorage.getItem('slideshow.previewMode') === 'standard' ? 'standard' : 'fast' }
+    catch { return 'fast' }
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem('slideshow.previewMode', previewMode) } catch { /* private mode */ }
+  }, [previewMode])
   // What the last preview covered: 'all' or the number of selected slides.
   const [previewScope, setPreviewScope] = useState<number|'all'>('all')
+  const [previewRunMode, setPreviewRunMode] = useState<PreviewMode>('fast')
   const [activeTab, setActiveTab] = useState<'editor' | 'renders'>('editor')
   const [showBrowser, setShowBrowser] = useState(false)
   const [showAudioBrowser, setShowAudioBrowser] = useState(false)
@@ -1797,18 +1810,19 @@ function App() {
   // A preview with slides selected covers only those slides (story order is
   // kept); with nothing selected it covers the whole movie. Renders always
   // produce the complete output.
-  const previewSubset = selectedIds.length > 0 && selectedIds.length < media.length ? media.filter(m => selectedIds.includes(m.id)) : null
+  const selectedPreviewItems = media.filter(item => selectedIds.includes(item.id))
+  const previewSubset = selectedIds.length > 0 && selectedPreviewItems.length > 0 && selectedPreviewItems.length < media.length ? selectedPreviewItems : null
   const startJob = async (kind:'preview'|'render', overwrite=false) => {
     kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1);setEtaSample(null);setJobStage('');setJobStartedAt(null)
     if(kind==='render')setFinishedRender(null)
     // Provisional until the backend's own started_at arrives with the first poll.
     jobStartedRef.current=Date.now()
     const subset = kind==='preview' ? previewSubset : null
-    if(kind==='preview')setPreviewScope(subset?subset.length:'all')
+    if(kind==='preview'){setPreviewScope(subset?subset.length:'all');setPreviewRunMode(previewMode)}
     jobBaseline.current={ timelineSeconds: subset ? timelineModel(subset).total : total, itemCount: subset ? subset.length : media.length, resolution, encoder }
     try{
       const id=await persistProject(true)
-      const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,overwrite,...(subset?{mediaIds:subset.map(m=>m.id)}:{})})})
+      const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,overwrite,...(subset?{mediaIds:subset.map(m=>m.id)}:{}),...(kind==='preview'?{previewMode}:{})})})
       if(!response.ok){
         const text=await response.text()
         // The backend refuses to overwrite an existing output file until the
@@ -1869,8 +1883,15 @@ function App() {
   const predictedRender = media.length
     ? estimateRenderSeconds({ timelineSeconds: total, itemCount: media.length, resolution, encoder, kind: 'render', rates: renderRates })
     : null
+  const previewEstimateSource = previewSubset || media
+  const previewEstimateItems = previewMode === 'fast' && previewEstimateSource.length > 1
+    ? previewEstimateSource.map(item => ({
+        ...item,
+        duration: item.type === 'title' || (item.text.trim() !== '' && item.textEnabled !== false) ? item.duration : 0,
+      }))
+    : previewEstimateSource
   const predictedPreview = media.length
-    ? estimateRenderSeconds({ timelineSeconds: previewSubset ? timelineModel(previewSubset).total : total, itemCount: previewSubset ? previewSubset.length : media.length, resolution, encoder, kind: 'preview', rates: renderRates })
+    ? estimateRenderSeconds({ timelineSeconds: timelineModel(previewEstimateItems).total, itemCount: previewEstimateItems.length, resolution, encoder, kind: 'preview', rates: renderRates })
     : null
   const estimatedBytes = estimateOutputBytes(total, bitrate, soundProgramSeconds > 0)
   // A countdown that has run out but whose job has not finished yet means the
@@ -1984,7 +2005,7 @@ function App() {
               if (capabilities.ffmpeg && capabilities.hasGL === false) return <li className={usesGL ? 'warning' : ''} title="This FFmpeg build lacks the xfade-easing patch: GL transitions and easing/reverse render as a plain dissolve.">{usesGL ? <AlertTriangle size={13}/> : <Check size={13}/>} {usesGL ? 'This FFmpeg has no GL transitions · the ones in this project fall back to dissolve' : 'This FFmpeg has no GL transitions (none used in this project)'}</li>
               const hw = capabilities.quickSync || capabilities.vaapi
               return <li title="GL transitions are computed on the CPU inside FFmpeg's xfade filter on every system — there is no GPU shader path. Hardware encoding still applies to the transition clips."><Check size={13}/> {hw ? 'GL transitions computed on CPU (by design) · clips encoded on the GPU' : 'GL transitions computed on CPU (by design) · CPU encoding'}</li>
-            })()}{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} title={previewSubset?`Low-resolution preview of the ${previewSubset.length} selected slide${previewSubset.length===1?'':'s'} only (${formatClock(timelineModel(previewSubset).total)}) — clear the selection to preview the whole movie`:'Low-resolution preview of the whole movie — select slides in the storyline to preview only those'} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:previewSubset?`Preview ${previewSubset.length} selected`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
+            })()}{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><div className="preview-options"><div><FieldLabel>PREVIEW DETAIL <span>{previewMode === 'fast' ? 'faster diagnostic' : 'complete selected sequence'}</span></FieldLabel><Select value={previewMode} onChange={value => setPreviewMode(value as PreviewMode)} ariaLabel="Preview detail"><option value="fast">Fast · text + transitions</option><option value="standard">Standard · all selected slides</option></Select></div><p><Info size={12}/> Fast mode skips static holds without text and omits the soundtrack; transitions and text timing remain rendered by FFmpeg.</p></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} title={previewSubset?`Low-resolution preview of the ${previewSubset.length} selected slide${previewSubset.length===1?'':'s'} only (${formatClock(timelineModel(previewSubset).total)}) — clear the selection to preview the whole movie`:'Low-resolution preview of the whole movie — select slides in the storyline to preview only those'} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:previewSubset?`Preview ${previewSubset.length} selected`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
         </div>
         </div>
       </div>
@@ -2022,7 +2043,7 @@ function App() {
       setShowBrowser(false)
     }}/>} 
     {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onOpenGallery={() => setShowTransitionGallery(true)} onApply={(patchData) => { patch(media[index].id, patchData); setTransitionPreviewId(null); notify(`Applied ${patchData.transition} transition`) }} /> : null })()}
-    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} previewScope={previewScope} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
+    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} previewScope={previewScope} previewMode={previewRunMode} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showProjectFileSave && <ProjectFileBrowser
       projectName={projectName}
       snapshot={projectSnapshot}
@@ -2799,7 +2820,7 @@ export function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpen
   </div></div>
 }
 
-function Preview({ media, projectName, previewUrl, previewScope = 'all', playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, previewScope?: number|'all', playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
+function Preview({ media, projectName, previewUrl, previewScope = 'all', previewMode = 'standard', playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, previewScope?: number|'all', previewMode?: PreviewMode, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
   const [current, setCurrent] = useState(0)
   const [stageFailed, setStageFailed] = useState(false)
 
@@ -2829,7 +2850,7 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', playing
   const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
   const stageTurned = stageCrop.rotationApplied || stageLook.rotationBaked
 
-  if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> This file is streamed through the backend project API from the mounted preview volume.<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
+  if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 

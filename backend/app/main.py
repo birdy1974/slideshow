@@ -60,6 +60,11 @@ class JobRequest(BaseModel):
     # Preview only: restrict the proxy to these media ids (storyline order is
     # kept). Empty/None means the whole project, as before.
     mediaIds: list[int | str] | None = None
+    # ``standard`` keeps every selected hold and the soundtrack. ``fast`` keeps
+    # text-bearing holds plus transition handles, and omits audio; the latter
+    # is deliberately an explicit choice because it is a diagnostic preview,
+    # not a final-programme render.
+    previewMode: Literal["standard", "fast"] = "standard"
 
 
 class TransitionPreviewRequest(BaseModel):
@@ -634,6 +639,10 @@ def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     payload = {
         "id": "transition",
         "project": {"name": "Transition preview", "randomOrder": False},
+        # The per-item previewTrim flags make this authoritative transition-only
+        # output; fast mode also prevents any accidental soundtrack/audio work if
+        # the renderer gains another preview input in the future.
+        "previewMode": "fast",
         "media": media,
         "textDefaults": request.textDefaults,
         "soundtrack": {"tracks": [], "policy": "Play once, then silence"},
@@ -679,7 +688,14 @@ def preview_download_name(project_name: str, job_id: str) -> str:
 
 @app.post("/api/projects/{project_id}/jobs", status_code=202)
 def create_job(project_id: int, request: JobRequest) -> dict[str, Any]:
-    try: return renderer.submit(project_id, request.kind, overwrite=request.overwrite, media_ids=request.mediaIds)
+    try:
+        return renderer.submit(
+            project_id,
+            request.kind,
+            overwrite=request.overwrite,
+            media_ids=request.mediaIds,
+            preview_mode=request.previewMode,
+        )
     except KeyError as exc: raise HTTPException(404, "Project not found") from exc
     except OutputExistsError as exc:
         raise HTTPException(409, detail={"code": "output_exists", "path": str(exc)}) from exc
