@@ -265,6 +265,30 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className, o
     setActiveIndex(index >= 0 ? index : 0)
   }, [flat, value])
 
+  // Opening a row's transition chip should land on the transition already
+  // assigned to that row, not on whichever tile happened to be left visible
+  // from a previous search/category. The tile already receives the `active`
+  // class from `label === value`; this second effect brings that highlighted
+  // tile into the scrollable grid's viewport after the portal has mounted.
+  useEffect(() => {
+    if (!open) return
+    const index = flat.indexOf(value)
+    if (index < 0) return
+    const timer = window.setTimeout(() => {
+      tileRefs.current[index]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [open, flat, value])
+
+  const openPicker = () => {
+    // Always start from the full catalogue so the current value cannot be
+    // hidden by a remembered favourites/recent/search filter.
+    setScope('all')
+    setGroup(null)
+    setQuery('')
+    setOpen(true)
+  }
+
   const select = (label: string) => {
     onChange(label)
     rememberTransition(label)
@@ -335,8 +359,8 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className, o
       className={`transition-chip ${gl ? 'gl' : ''} ${open ? 'open' : ''} ${className || ''}`}
       aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel || `Transition: ${value}`}
       title={title || `${value} — click to browse all ${totalTransitionCount} transitions`}
-      onClick={() => setOpen(o => !o)}
-      onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) } }}>
+      onClick={() => { if (open) setOpen(false); else openPicker() }}
+      onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); openPicker() } }}>
       <i className="chip-symbol">{transitionSymbol(value)}</i>
       <span className="chip-name">{value.replace(/^GL · /, '')}</span>
       {gl && <em className="chip-kind">GL</em>}
