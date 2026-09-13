@@ -377,6 +377,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* Storyline text lane: hidden captions render dashed + struck through. */
 /* Detailed slide list: eye toggle at the start of the caption controls. */
 .item-text-edit .text-toggle{width:25px;min-width:25px;height:25px;border:1px solid #ccd1c5;background:#e7ecdf;color:#526838;border-radius:4px;display:grid;place-items:center;padding:0}
+.text-mode-fixed{display:flex;align-items:center;justify-content:center;width:82px;min-width:82px;height:25px;border:1px solid #d9dad4;border-radius:5px;background:#f4f5f0;color:#66705e;font-size:8px;white-space:nowrap}
 .item-text-edit .text-toggle:hover{background:#d3e2bc}
 .item-text-edit .text-toggle.off{background:#fff9eb;border-color:#eee0b5;color:#b9791f}
 
@@ -1077,7 +1078,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .timeline-item.wide-transition .item-text-edit{gap:3px;flex-wrap:nowrap}
 .timeline-item.wide-transition .item-text-edit>input{min-width:40px;height:22px;font-size:8px;padding:0 5px}
 .timeline-item.wide-transition .item-text-edit .text-toggle,.timeline-item.wide-transition .item-text-edit .text-detail-transition{width:22px;min-width:22px;height:22px}
-.timeline-item.wide-transition .item-text-edit .select-wrap{height:22px;width:64px;min-width:64px}
+.timeline-item.wide-transition .item-text-edit .select-wrap,.timeline-item.wide-transition .item-text-edit .text-mode-fixed{height:22px;width:64px;min-width:64px}
 .timeline-item.wide-transition .item-text-edit .select-wrap select{font-size:8px;padding:0 16px 0 5px}
 .timeline-item.wide-transition .item-text-edit .select-wrap svg{right:4px;width:11px}
 .timeline-item.wide-transition .detail-transition-popover{grid-template-columns:60px minmax(80px,1fr) 80px 22px;height:auto;padding:4px}
