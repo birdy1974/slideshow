@@ -39,6 +39,25 @@ export type MediaItem = {
   // picture (default 50/50 = centre). Pans always travel edge to edge.
   // Mirrored by ken_burns_settings() in backend/app/renderer.py.
   kenBurnsZoom?: number; kenBurnsX?: number; kenBurnsY?: number;
+  // Text motion path: when enabled the caption moves from start to end
+  // location during its visible window (textStart → textEnd). The optional
+  // path is a freehand polyline drawn by the user in percent coordinates
+  // (0-100). For title frames textX/Y is the start; for picture captions
+  // textX/Y is also the start unless textMoveFrom* is set. End position is
+  // textMoveToX/Y. When textMovePath is present and has ≥2 points it is used
+  // instead of the straight line. Predefined paths: straight, freehand,
+  // circle, sine. Easing fades speed in/out.
+  textMoveEnabled?: boolean;
+  textMoveFromX?: number; textMoveFromY?: number;
+  textMoveToX?: number; textMoveToY?: number;
+  textMovePath?: [number, number][];
+  textMovePathType?: 'straight' | 'freehand' | 'circle' | 'sine';
+  textMoveEasing?: 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'smooth';
+  textMoveCircleRadius?: number;
+  textMoveCircleTurns?: number;
+  textMoveSineAmplitude?: number;
+  textMoveSineFrequency?: number;
+
   // Text frames: optional second background colour reached via an xfade
   // transition that starts `frameTransitionStart` seconds into the frame and
   // lasts `frameTransitionTime` seconds. The caption stays fixed on top.

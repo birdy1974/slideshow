@@ -149,6 +149,38 @@ def _dir_accessible(path: Path) -> bool:
         return False
 
 
+def delete_media_entry(settings: Settings, root_name: str, relative: str) -> Path:
+    """Delete one file or folder inside a writable mount (currently only uploads).
+
+    The uploads volume is the only writable media root — photos/videos/music
+    are mounted :ro. Deleting the root itself is forbidden; only children
+    below it may be removed. Directories are removed recursively.
+    """
+    if root_name not in settings.media_roots:
+        raise UnsafePath("Unknown media root")
+    # Only uploads is writable for media; output has its own /api/output clear
+    # endpoint and project files have their own API. Keep this narrow.
+    if root_name != "uploads":
+        raise UnsafePath("Deleting is only allowed in /uploads")
+    rel = (relative or "").strip().lstrip("/")
+    if not rel:
+        raise UnsafePath("Cannot delete the root folder itself")
+    root = settings.media_roots[root_name]
+    target = safe_path(root, rel)
+    # safe_path already ensures target is inside root; double-check root != target
+    if target.resolve() == root.resolve():
+        raise UnsafePath("Cannot delete the root folder itself")
+    if not target.exists():
+        raise FileNotFoundError(str(target))
+    # Perform deletion
+    import shutil
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    return target
+
+
 def browse(settings: Settings, root_name: str, relative: str = "", folders_only: bool = False,
            project_files: bool = False) -> dict[str, Any]:
     """List one folder of a mount.

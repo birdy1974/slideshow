@@ -22,7 +22,7 @@ import mimetypes
 
 from .config import settings
 from .database import Database
-from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, create_media_folder, mounted_path, safe_path, source_path
+from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, create_media_folder, delete_media_entry, mounted_path, safe_path, source_path
 from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
@@ -372,6 +372,72 @@ def create_upload_folder(payload: MediaFolderPayload) -> dict[str, Any]:
     except OSError as exc:
         raise HTTPException(500, f"Could not create the folder: {exc}") from exc
     return {"root": "uploads", "entry": entry}
+
+
+@app.delete("/api/media")
+def delete_media(root: str = Query(pattern="^(uploads)$"), path: str = "") -> dict[str, Any]:
+    """Delete one file or folder inside /uploads.
+
+    The uploads volume is the only writable media mount — photos/videos/music
+    are :ro. Deleting the root itself is forbidden; directories are removed
+    recursively. Used by the upload popup's delete button.
+    """
+    try:
+        target = delete_media_entry(settings, root, path)
+    except UnsafePath as exc:
+        raise HTTPException(400, f"Invalid path: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"File or folder not found: {exc}") from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Could not delete: {exc}") from exc
+    return {"deleted": True, "root": root, "path": path, "target": str(target)}
+
+
+class MediaDeleteBatch(BaseModel):
+    root: Literal["uploads"] = "uploads"
+    paths: list[str]
+
+
+@app.post("/api/media/delete-batch")
+def delete_media_batch(payload: MediaDeleteBatch) -> dict[str, Any]:
+    """Delete several files/folders inside /uploads at once.
+
+    Used by the upload browser's “select then delete” flow. Each path is
+    validated independently; failures are reported per-item but do not abort
+    the whole batch. Paths are sorted deepest-first so a file inside a folder
+    that is also selected is removed before its parent — deleting the parent
+    first would make the child “not found”.
+    """
+    deleted: list[str] = []
+    errors: list[dict[str, str]] = []
+    # Deepest first (more slashes, longer path)
+    ordered = sorted(payload.paths, key=lambda p: (p.count('/'), len(p)), reverse=True)
+    deleted_set: set[str] = set()
+    for rel in ordered:
+        # If a parent of this path was already deleted, treat as already gone
+        # rather than an error — the folder's rmtree removed it.
+        if any(rel == parent or rel.startswith(parent.rstrip('/') + '/') for parent in deleted_set):
+            deleted.append(rel)
+            continue
+        try:
+            delete_media_entry(settings, payload.root, rel)
+            deleted.append(rel)
+            deleted_set.add(rel)
+        except UnsafePath as exc:
+            errors.append({"path": rel, "error": str(exc)})
+        except FileNotFoundError:
+            # If parent already deleted, count as deleted; otherwise report
+            if any(rel.startswith(parent.rstrip('/') + '/') for parent in deleted_set):
+                deleted.append(rel)
+            else:
+                errors.append({"path": rel, "error": "Not found"})
+        except PermissionError as exc:
+            errors.append({"path": rel, "error": str(exc)})
+        except OSError as exc:
+            errors.append({"path": rel, "error": f"Could not delete: {exc}"})
+    return {"deleted": deleted, "errors": errors}
 
 
 @app.post("/api/media/upload")
