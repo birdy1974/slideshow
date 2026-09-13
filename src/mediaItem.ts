@@ -10,6 +10,8 @@ export type MediaItem = {
   text: string; textMode: 'overlay' | 'frame';
   // Per-slide opt-out: when false the caption is kept but not drawn on the picture.
   textEnabled?: boolean;
+  // Seconds inside the item's visible hold. The outgoing slide transition is
+  // additional timeline time and is never part of this text window.
   textStart: number; textEnd: number; textEnter: string; textExit: string;
   textEnterDuration: number; textExitDuration: number;
   // Dynamic text effects (Option 1, docs/text-effects-options.md): labels from

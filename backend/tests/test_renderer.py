@@ -678,6 +678,35 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertIn("lt(t,1)", second)
         self.assertIn("lt(t,6)", second)
 
+    def test_title_text_timing_cannot_leak_into_its_outgoing_transition(self) -> None:
+        # The title is first, so it has no incoming handle. Moving its text
+        # start close to the end exposes the old backend rule: it forced a
+        # 0.3 s minimum and extended the text into the next picture's xfade.
+        commands = self._segment_commands([
+            {"id": 1, "type": "title", "path": "Generated frame", "duration": 5, "text": "Title",
+             "textStart": 4.95, "textEnd": 5, "textEnterDuration": 0.1, "textExitDuration": 0.1,
+             "transition": "Fade", "transitionTime": 1, "frameBackground": "#112233"},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 3, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ])
+        title = commands[0][commands[0].index("-vf") + 1]
+        # The outgoing transition starts at the title's 5 s hold boundary;
+        # neither drawtext alpha nor its enable window may continue after it.
+        self.assertIn("lt(t,5)", title)
+        self.assertIn("enable='between(t,4.9,5)'", title)
+        self.assertNotIn("5.25", title)
+
+    def test_title_text_end_is_clamped_before_the_outgoing_transition(self) -> None:
+        commands = self._segment_commands([
+            {"id": 1, "type": "title", "path": "Generated frame", "duration": 4, "text": "Title",
+             "textStart": 0, "textEnd": 20, "transition": "Fade", "transitionTime": 2,
+             "frameBackground": "#112233"},
+            {"id": 2, "type": "image", "path": "/photos/a.jpg", "duration": 3, "effect": "None", "transition": "Fade", "transitionTime": 1},
+        ])
+        title = commands[0][commands[0].index("-vf") + 1]
+        self.assertIn("enable='between(t,0,4)'", title)
+        self.assertNotIn("between(t,0,20)", title)
+        self.assertNotIn("lt(t,20)", title)
+
     def test_single_colour_text_frame_keeps_plain_vf(self) -> None:
         commands = self._segment_commands([
             {"id": 2, "type": "title", "path": "Generated frame", "duration": 4, "text": "Hi", "effect": "None", "transition": "Fade", "transitionTime": 0.5, "frameBackground": "#112233", "frameBackground2": "#112233"},

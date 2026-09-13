@@ -22,6 +22,7 @@ from app.text_effects import (
     effect_for,
     escape_ass,
     ff_escape_drawtext,
+    normalize_text_window,
     overlay_plan,
     plan_engine,
     text_effect_catalog,
@@ -96,6 +97,20 @@ class HelperTests(unittest.TestCase):
     def test_ass_colour_bgr_swap(self):
         self.assertEqual(ass_colour("#3C905F"), "&H5F903C&")
         self.assertEqual(ass_colour("nope"), "&HFFFFFF&")
+
+    def test_text_window_never_reaches_the_outgoing_handle(self):
+        start, end = normalize_text_window(title_item(duration=5, textStart=4.95, textEnd=5))
+        self.assertEqual(4.9, start)
+        self.assertEqual(5, end)
+        start, end = normalize_text_window(title_item(duration=5, textStart=0, textEnd=99))
+        self.assertEqual(0, start)
+        self.assertEqual(5, end)
+
+    def test_geometry_uses_the_normalized_window(self):
+        geometry = _geometry(title_item(duration=5, textStart=4.95, textEnd=5), {}, 1920, 1080)
+        self.assertIsNotNone(geometry)
+        self.assertEqual(4.9, geometry.start)
+        self.assertEqual(5, geometry.end)
 
     def test_escape_ass(self):
         self.assertEqual(escape_ass("{brace}"), "(brace)")

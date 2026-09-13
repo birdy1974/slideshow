@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -25,7 +26,7 @@ from .database import Database, utcnow
 from .media import UnsafePath, mounted_path, source_path
 from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
 from .picture_filters import picture_look
-from .text_effects import build_text_overlay, overlay_plan, plan_engine
+from .text_effects import build_text_overlay, normalize_text_window, overlay_plan, plan_engine
 
 log = logging.getLogger(__name__)
 
@@ -1406,13 +1407,26 @@ class Renderer:
         """
         if overlay_plan(item) is None:
             return None
-        if lead_in > 0.0005:
-            hold = max(0.2, float(item.get("duration", 5) or 5))
-            start = max(0.0, float(item.get("textStart") or 0.0))
-            end_raw = item.get("textEnd")
-            end = float(end_raw) if end_raw is not None and float(end_raw) > 0 else hold
-            end = min(max(end, start + 0.3), hold)
-            item = {**item, "textStart": start + lead_in, "textEnd": end + lead_in}
+        # Normalize the window before shifting it into the segment's incoming
+        # handle.  The visible hold ends at `hold`; the outgoing transition
+        # starts there, so an invalid/saved timing value must never be allowed
+        # to leak into the xfade source.  Extending the temporary duration by
+        # lead_in keeps the shifted window inside the normalized segment while
+        # preserving its original relationship to the visible hold.
+        start, end = normalize_text_window(item)
+        try:
+            hold = float(item.get("duration", 5) or 5)
+        except (TypeError, ValueError):
+            hold = 5.0
+        if not math.isfinite(hold):
+            hold = 5.0
+        hold = max(0.2, hold)
+        item = {
+            **item,
+            "duration": hold + max(0.0, lead_in),
+            "textStart": start + max(0.0, lead_in),
+            "textEnd": end + max(0.0, lead_in),
+        }
         has_ass = self.ass_filter_supported()
         has_drawtext = self.drawtext_filter_supported()
         if plan_engine(overlay_plan(item)) == "ass" and not has_ass:

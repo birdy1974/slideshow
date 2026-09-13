@@ -538,6 +538,22 @@ const MAX_DEFAULT_SLIDE_SECONDS = 600
 const MAX_DEFAULT_TRANSITION_SECONDS = 30
 const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max))
 const safeDuration = (value: number) => Math.max(MIN_CLIP_SECONDS, Number.isFinite(value) ? value : DEFAULT_SLIDE_SECONDS)
+// Keep the text lane and the renderer on the same side of the outgoing
+// transition: a text window is always relative to the slide's visible hold,
+// never to the extra transition handle that follows it. This also repairs old
+// projects whose saved values were outside the current draggable range.
+function normalizedTextTiming(item: Pick<MediaItem, 'duration' | 'textStart' | 'textEnd'>) {
+  const duration = safeDuration(item.duration)
+  const minimum = Math.min(MIN_TEXT_SECONDS, duration)
+  const rawStart = Number(item.textStart)
+  const rawEnd = Number(item.textEnd)
+  const textStart = clampNumber(Number.isFinite(rawStart) ? rawStart : 0, 0, Math.max(0, duration - minimum))
+  const textEnd = clampNumber(Number.isFinite(rawEnd) ? rawEnd : duration, textStart + minimum, duration)
+  return { duration, textStart, textEnd }
+}
+function normalizeItemTextTiming(item: MediaItem): MediaItem {
+  return { ...item, ...normalizedTextTiming(item) }
+}
 // Sanitise the project-wide defaults (typed by the user or read from a saved
 // project) so a bad value can never produce a zero-length clip or transition.
 const clampSlideDefault = (value: unknown, fallback = DEFAULT_SLIDE_SECONDS) => { const n = Number(value); return Number.isFinite(n) && n > 0 ? clampNumber(n, MIN_CLIP_SECONDS, MAX_DEFAULT_SLIDE_SECONDS) : fallback }
@@ -549,9 +565,11 @@ const clampTransitionDefault = (value: unknown, fallback = DEFAULT_TRANSITION_SE
 function resizeClip(item: MediaItem, seconds: number): MediaItem {
   const duration = safeDuration(seconds)
   const previous = safeDuration(item.duration)
-  const ranToEnd = !Number.isFinite(item.textEnd) || item.textEnd >= previous - 1e-6
-  const textEnd = ranToEnd ? duration : clampNumber(item.textEnd, MIN_TEXT_SECONDS, duration)
-  const textStart = clampNumber(Number.isFinite(item.textStart) ? item.textStart : 0, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
+  const rawEnd = Number(item.textEnd)
+  const ranToEnd = !Number.isFinite(rawEnd) || rawEnd >= previous - 1e-6
+  const textEnd = ranToEnd ? duration : clampNumber(rawEnd, MIN_TEXT_SECONDS, duration)
+  const rawStart = Number(item.textStart)
+  const textStart = clampNumber(Number.isFinite(rawStart) ? rawStart : 0, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
   return { ...item, duration, textStart, textEnd }
 }
 function timelineModel(items: MediaItem[]) {
@@ -763,10 +781,9 @@ function TimelineRuler({ start, duration, zoom, audioLength }: { start:number, d
 
 function TimelineTextBox({ item, update, selected, onSelect, onEdit }: { item: MediaItem, update: (change: Partial<MediaItem>) => void, selected: string[], onSelect: (edge:'enter'|'exit')=>void, onEdit?: () => void }) {
   // Caption timing is always kept inside the clip, even for projects saved
-  // before the current time rules existed.
-  const duration = safeDuration(item.duration)
-  const textEnd = clampNumber(Number.isFinite(item.textEnd) ? item.textEnd : duration, MIN_TEXT_SECONDS, duration)
-  const textStart = clampNumber(item.textStart, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
+  // before the current time rules existed. The outgoing picture transition is
+  // extra timeline time and begins only after this normalized hold.
+  const { duration, textStart, textEnd } = normalizedTextTiming(item)
   const changeTiming = (edge: 'start'|'end', event: React.PointerEvent) => {
     event.preventDefault(); event.stopPropagation()
     const lane = event.currentTarget.parentElement?.parentElement
@@ -1100,7 +1117,10 @@ function App() {
         m.textFxWhile = normalizeTextEffect(m.textFxWhile, 'while')
         m.textFxExit = normalizeTextEffect(m.textFxExit ?? m.textExit, 'exit')
         if (!Number.isFinite(Number(m.textFxWhileSpeed)) || !Number(m.textFxWhileSpeed)) m.textFxWhileSpeed = textEffectDefaultSeconds[m.textFxWhile] ?? WHILE_SPEED_DEFAULT
-        return m
+        // Older projects may contain a caption window that reaches into the
+        // following transition. Normalize it on load so the timeline display,
+        // persisted snapshot, and renderer all use the same hold boundary.
+        return normalizeItemTextTiming(m as MediaItem)
       })
       setMedia(normalized)
     }
@@ -1257,7 +1277,16 @@ function App() {
     return serverCropDetect(root, full, normalizeRotation(target.rotation), target.type === 'video' ? 4 : 1)
   }
 
-  const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => item.id === id ? { ...item, ...update } : item))
+  const patch = (id: number, update: Partial<MediaItem>) => setMedia(items => items.map(item => {
+    if (item.id !== id) return item
+    const next = { ...item, ...update }
+    // Title-frame edits and timing-handle edits go through the same hold-bound
+    // rule as project loading. A transition is never allowed to cover a title
+    // text event merely because a stale value was patched into the item.
+    return next.type === 'title' || 'textStart' in update || 'textEnd' in update
+      ? normalizeItemTextTiming(next)
+      : next
+  }))
   // Transition time is extra timeline time, so it is not limited by either
   // neighbouring clip.  Keep only a practical upper bound and xfade's minimum.
   const transitionMaxFor = (items: MediaItem[], index: number) => index < 0 || index >= items.length - 1 ? MIN_TRANSITION_SECONDS : 3600

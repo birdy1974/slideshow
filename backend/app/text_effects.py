@@ -139,6 +139,40 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+# Keep the renderer's text window inside the clip's visible hold.  The
+# storyline uses the same 0.1 s minimum for its draggable handles; keeping the
+# rule here (rather than relying on the UI having sanitised a saved project) is
+# important because the outgoing transition starts immediately after this
+# hold.  A text event that leaks past the hold is already baked into the
+# outgoing segment when xfade begins, so the next picture can cover it.
+TEXT_TIMING_MIN_SECONDS = 0.1
+TEXT_TIMING_MIN_CLIP_SECONDS = 0.2
+
+
+def normalize_text_window(item: dict[str, Any]) -> tuple[float, float]:
+    """Return ``textStart``/``textEnd`` clamped to the item's visible hold.
+
+    ``textStart`` and ``textEnd`` are relative to the clip's hold, not its
+    incoming/outgoing transition handles.  The renderer may temporarily add an
+    incoming handle to ``duration`` before calling this helper, which lets it
+    shift a valid window without moving it into the outgoing handle.
+    """
+    try:
+        clip_duration = float(item.get("duration", 5.0))
+    except (TypeError, ValueError):
+        clip_duration = 5.0
+    if not math.isfinite(clip_duration):
+        clip_duration = 5.0
+    clip_duration = max(TEXT_TIMING_MIN_CLIP_SECONDS, clip_duration)
+    minimum = min(TEXT_TIMING_MIN_SECONDS, clip_duration)
+
+    start_value = _num(item, "textStart", 0.0)
+    start = _clamp(start_value, 0.0, max(0.0, clip_duration - minimum))
+    end_value = _num(item, "textEnd", clip_duration)
+    end = _clamp(end_value, start + minimum, clip_duration)
+    return start, end
+
+
 def ass_time(seconds: float) -> str:
     """ASS timestamp ``H:MM:SS.CS`` (centiseconds, clamped at zero)."""
     cs = max(0, int(round(seconds * 100)))
@@ -212,8 +246,7 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
     # Title frames are the text itself, so the flag never applies to them.
     if item.get("type") != "title" and item.get("textEnabled") is False:
         return None
-    start = max(0.0, _num(item, "textStart", 0.0))
-    end = max(start + 0.3, _num(item, "textEnd", _num(item, "duration", 5.0)))
+    start, end = normalize_text_window(item)
     hold = end - start
     di = _clamp(_num(item, "textEnterDuration", 0.5), 0.05, hold * 0.9)
     do = _clamp(_num(item, "textExitDuration", 0.5), 0.05, hold * 0.9)
