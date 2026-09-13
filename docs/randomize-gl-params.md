@@ -1,40 +1,37 @@
-# Randomizing GL transition parameters — decision & GUI options
+# Randomizing transition parameters — decision & GUI options
 
-Date: 2026-09-11 · Status: **implemented** (O1 + O4)
+Date: 2026-09-13 · Status: **implemented**
 
-Request: "let the user decide if the parameters of the GL transitions also need
-to be randomized when user wants to randomize all/selected transitions — give
-options how to integrate with current GUI."
+Request: "change the GL params control to params and randomize all parameters
+of all xfade and GL transitions without changing duration."
 
 ## Current behaviour (verified)
 
-Both random actions pick a random transition and then set its GL parameters to
-**empty — i.e. silently reset to the registry defaults**:
+The RANDOM SOURCE bar has a `params` checkbox. When it is enabled, both random
+name actions draw a fresh settings set for every transition they touch:
 
-- **Randomize all** (bulk bar, next to the RANDOM SOURCE select) — also
-  re-rolls Ken Burns effects;
-- **Random** (bulk tools, TRANSITION SELECTION group) — applies to the selected
-  transitions, or to all when nothing is selected (this *is* the existing
-  "randomize selected").
+- **Randomize all** (bulk bar, next to the RANDOM SOURCE select);
+- **Random** (bulk tools, TRANSITION SELECTION group), for the selected
+  transitions or all transitions when nothing is selected.
 
-So today the user gets neither their tuned parameters kept nor randomized
-parameters: every GL pick lands on defaults and must be tuned by hand, one
-popover at a time. The ask is a *decision*: randomize the parameters too
-(fully wild looks) or keep defaults (predictable, curated looks).
+The separate `params` button re-rolls parameters on the existing transitions
+without changing their names. In every case `transitionTime` is preserved.
+With the checkbox off, the name actions randomize only the transition names;
+the explicit `params` button always randomizes parameters.
 
 ## What "randomize parameters" means technically
 
 The registry (`registry/transitions.json`, shared by GUI and backend) defines
 the parameters of 102 of the 133 GL transitions — 269 parameters in total:
-251 numeric, 16 colours, 2 text (`fromStep`/`toStep`). A `randomGLParams(label)`
-helper would live next to the existing `pickRandomTransition` and reuse the
-**exact bounds the editor's sliders already show** (`GLParamControls`: explicit
-registry min/max/step when present, otherwise the same derived ranges):
+251 numeric, 16 colour-like values (including packed colour steps such as
+`fromStep`/`toStep`), and no arbitrary text values. `randomGLParams(label)`
+reuses the **exact bounds the editor's sliders show** (`GLParamControls`:
+explicit registry min/max/step when present, otherwise the same derived ranges):
 
 - numeric → uniform draw inside [min…max] rounded to the step;
 - colour → random hex;
-- text params → keep the default (nothing sensible to randomize);
-- transitions without parameters → `{}` as today.
+- transitions without extra GL parameters → `{}`;
+- xfade and GL transitions also receive a random easing and reverse flag.
 
 Each randomized GL transition gets its **own** independent set (not one shared
 set), and the renderer needs no change: parameters already pass through into
@@ -43,13 +40,12 @@ draw the sliders could have produced.
 
 ## GUI integration options
 
-- **O1 [recommended] — "GL parameters" checkbox in the RANDOM SOURCE group.**
-  The bulk bar already holds the random source select that governs *both*
-  random buttons; a small checkbox next to it ("randomize GL parameters",
-  persisted to localStorage like favourites/recents) completes the decision
-  pair: *from which pool* + *how deep*. Both buttons honour it; the post-action
-  toast says "+ GL parameters randomized"; it greys out when the source is
-  "Random xfade" (no GL in that pool).
+- **O1 [implemented] — "params" checkbox in the RANDOM SOURCE group.**
+  The bulk bar holds the random source select that governs *both* random name
+  actions; the checkbox next to it (persisted to localStorage) completes the
+  decision pair: *from which pool* + *whether to randomize settings*. It stays
+  enabled for `Random xfade`, because easing and reverse are parameters there
+  too. Both name actions honour it.
   - Pros: one visible, always-in-context decision for both all/selected;
     zero extra clicks during use; state persists across sessions.
   - Cons: one more control in an already dense bar (it is one checkbox).
@@ -61,33 +57,27 @@ draw the sliders could have produced.
   as today; a small chevron opens a menu with the checkbox (and "apply now").
   Zero new chrome, but the choice is hidden behind a discovery-killer and
   would only cover the bulk-bar button, not the selection "Random".
-- **O4 — separate "Randomize GL parameters" button.** A genuinely *different*
-  capability: re-roll only the parameters of the GL transitions already in
-  place, leaving the chosen transition names alone (a nice power tool:
-  "keep my transition plan, surprise me with the settings"). More chrome;
-  best offered later as an addition in the same group rather than the answer
-  to this request.
+- **O4 [implemented] — separate "params" button.** A genuinely *different*
+  capability: re-roll only the parameters of every xfade and GL transition
+  already in place, leaving names and durations alone ("keep my transition
+  plan, surprise me with the settings").
 
-## Implemented (2026-09-11): O1 + O4
+## Implemented (2026-09-13)
 
-- **The decision**: a persisted **"GL params" checkbox** in the RANDOM SOURCE
-  group of the bulk bar (localStorage `slideshow.randomGlParams`), greyed when
-  the source is "Random xfade". It governs **both** random actions —
-  "Randomize all" and the selection "Random" — and both toasts confirm with
-  "+ GL parameters randomized".
-- **The helper**: `randomGLParams(label)` in `src/transitionControls.tsx`
-  reuses the slider bounds of `GLParamControls` (registry min/max/step, else
-  the same derived ranges), draws numerics uniformly on the step grid, colours
-  as `#rrggbb`, and omits everything else so the registry default applies.
-  Each randomized GL transition receives its own independent set.
-- **O4 as well**: a **"GL params" button** next to the selection "Random" in
-  the bulk tools — re-rolls only the parameters of the GL transitions already
-  in place (selection or all), leaving the transition names untouched; it
-  reports clearly when there is nothing to re-roll.
-- **Verified** against the real registry with a randomized simulation
-  (300 draws): every numeric value inside its bounds, colours well-formed,
-  no invented parameter names; frontend build clean. The renderer is
-  untouched — parameters already pass through unchanged.
+- The persisted checkbox next to RANDOM SOURCE is labelled **"params"** and
+  applies to xfade and GL transitions alike. It reads the old
+  `slideshow.randomGlParams` key once for backwards compatibility and stores
+  the new preference as `slideshow.randomTransitionParams`.
+- `randomTransitionSettings(label)` randomizes easing, reverse, and (for GL
+  labels) the registry-defined parameters. `randomGLParams(label)` uses the
+  same slider bounds as `GLParamControls`, including packed colour values.
+  Each transition receives its own independent set.
+- The `params` button next to the selection Random action re-rolls every
+  supported parameter on existing xfade and GL transitions, keeping both the
+  transition names and `transitionTime` unchanged.
+- The random name actions preserve `transitionTime`; when the checkbox is on,
+  they also apply the complete parameter set to every newly chosen transition.
+- The renderer already passes these stored settings through unchanged.
 
-Out of scope, unchanged: the *text* transition randomizer (enter/exit labels
-have no parameters) and the Ken Burns randomizer.
+The text transition randomizer (enter/exit labels) and Ken Burns randomizer
+remain separate because they are not visual transition parameters.
