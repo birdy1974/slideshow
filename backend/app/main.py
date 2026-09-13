@@ -239,7 +239,13 @@ def cleanup_temporary_files() -> dict[str, Any]:
     import shutil
     deleted_files = 0
     deleted_dirs = 0
-    
+
+    # Stop every active renderer before removing its per-job work directory.
+    # This is especially important when "New project" invokes cleanup while a
+    # preview or final render is still running.
+    for job_id in tuple(renderer.cancel_events):
+        renderer.cancel(job_id)
+
     # Delete work directory contents
     if settings.work_dir.exists():
         for item in settings.work_dir.iterdir():

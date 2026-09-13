@@ -1314,9 +1314,10 @@ function App() {
     timeline: { rows: 'auto', zoom: 1 },
     defaults: { slideSeconds: DEFAULT_SLIDE_SECONDS, transitionSeconds: DEFAULT_TRANSITION_SECONDS },
   })
-  // Wipe the editor back to a completely blank project. The blank project is
-  // persisted right away so a refresh does not resurrect the previous one.
-  const startNewProject = () => {
+  // Wipe the editor back to a completely blank project. New project also
+  // clears every render work file and proxy preview, but leaves final MP4s in
+  // the selected output folder untouched.
+  const startNewProject = async () => {
     setProjectId(null)
     setProjectName(BLANK_NAME)
     setMedia([])
@@ -1325,13 +1326,26 @@ function App() {
     setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0); setAudioNormalize(true); setAudioNormalizeTarget(-14)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
     setOutputPath('/output'); setOutputFilename(safeFilename(BLANK_NAME))
-    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setDefaultTextX(50); setDefaultTextY(72); setDefaultTextFxEnter(DEFAULT_ENTER); setDefaultTextFxWhile(DEFAULT_WHILE); setDefaultTextFxExit(DEFAULT_EXIT); setDefaultTextFxWhileSpeed(WHILE_SPEED_DEFAULT)
+    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setTextOutline(true); setDefaultTextX(50); setDefaultTextY(72); setDefaultTextFxEnter(DEFAULT_ENTER); setDefaultTextFxWhile(DEFAULT_WHILE); setDefaultTextFxExit(DEFAULT_EXIT); setDefaultTextFxWhileSpeed(WHILE_SPEED_DEFAULT)
     setTimelineRows('auto'); setTimelineZoom(1)
     setGlobalSlideDuration(DEFAULT_SLIDE_SECONDS); setGlobalDuration(DEFAULT_TRANSITION_SECONDS)
     setSelectedIds([]); setSelectedTransitions([]); setSelectedTextTransitions([])
     setDetailTextEditor(null); setEditingPictureText(null); setEditingTextFrame(null)
-    setShowNewProjectConfirm(false); setShowProjectLoader(false)
-    void persistSnapshot(blankProjectSnapshot(), true, true).then(() => notify('Started a new blank project')).catch(() => notify('Started a new blank project — save it once the backend is back'))
+    setShowNewProjectConfirm(false); setShowProjectLoader(false); setShowRenderConfirm(false)
+    setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); setJobStage(''); setEtaSample(null); jobCancelRequested.current = true
+    let cleanupMessage = 'render files could not be cleared'
+    try {
+      const response = await fetch('/api/cleanup', { method: 'POST' })
+      if (!response.ok) throw new Error(await readApiError(response, 'Cleanup failed'))
+      const result = await response.json()
+      cleanupMessage = `cleared ${result.deleted_files} temporary file${result.deleted_files === 1 ? '' : 's'} and ${result.deleted_dirs} render director${result.deleted_dirs === 1 ? 'y' : 'ies'}`
+    } catch { /* the blank project is still useful while the backend is offline */ }
+    try {
+      await persistSnapshot(blankProjectSnapshot(), true, true)
+      notify(`Started a new blank project · ${cleanupMessage}`)
+    } catch {
+      notify(`Started a new blank project — ${cleanupMessage}; save it once the backend is back`)
+    }
   }
   const requestNewProject = () => {
     setShowProjectLoader(false)
@@ -1850,8 +1864,11 @@ function App() {
         // Network blip while the render is still running — keep polling.
         continue
       }
-      // 503 = transient SQLite lock; the render is fine, just retry.
+      // 503 = transient SQLite lock; the render is fine, just retry. New
+      // project/cleanup removes the job row after requesting cancellation; in
+      // that deliberate case a missing row is the same as cancelled.
       if (response.status === 503 || response.status === 429) continue
+      if (response.status === 404 && jobCancelRequested.current) return { cancelled: true }
       if (!response.ok) throw new Error('Could not read render status')
       const job=await response.json()
       const now=Date.now()
