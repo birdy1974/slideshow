@@ -1,4 +1,20 @@
-
+2026-09-13
+- in popup window to upload local files, add possibility to make a new folder
+- check the timing of the text frame, so text frames are not overwritten by transitions if text timing is changed.
+- change gui text for "GL params" at "random source" to " params" and change functionality so all parameters (e.g. Easing, reverse, size, zoom, color, smoothness, etc.) of all transitions (xfade and GL transitions and  are randomized (but do not change duration)
+- check code for preview (of selected slides) and give options to speed up the rendering of the preview. only the selected slides needs to be rendered. also in case there is no text on picture only the transition should be shown, not the static pictures. this to speed up the rendering of the preview. do the same for the transitions preview (rendering accurate preview)
+- in the detailed slide if you click on the select transition box, directly jump to the current selected transition and highlight it
+- in the detailed list add the recorded example of the selected transition between the picture filename and the duration
+- in the detailed slide list remove the option to select "on picture" and "new frame" for text. the text here is always "on picture"
+- add option so on picture text style can be specified per individual picture/slide (initial settings as per default text style) advise how to integrate with current gui, e.g. add "edit" button that call up popup with settings as default text style popup. also include enable/disable option and the start and end time of the individual text on picture as set above the pictures in the storyline. so timing settings can be change in multiple places (storyline and detailed list)
+- in storyline add possibility to edit (call up edit popup window) individual text on picture settings.
+- on "new project" remove all files in work and preview directory
+- remove option "Random order" to "Random order enabled. A new order will be chosen at render time. The arrangement below remains unchanged." from code and gui.
+- in gui "PHOTO SELECTION" pane just below the storyline header remove selection box for random gl / random xfade and "random" "gl params" buttons next to it
+- remove settings button on the top right (main header) as it is not used
+- make the "line" selection box so user can also enter a line number.
+- the "fit" for the storyline zoom still gives a horizontal move bar, make it that storyline information just fit in pane (probable because of the textbox above the picture)
+- 
 
 
 ---= DONE =---
