@@ -776,7 +776,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .clip-frame-edit:hover{background:#78a13e;color:#fff}
 /* Text timing strip: ✎ inside the caption bar of a text frame. */
 .frame-edit-mini{position:absolute;z-index:6;right:2px;top:3px;width:16px;height:18px;border:0;border-radius:3px;background:transparent;color:#5d7c38;display:grid;place-items:center;padding:0}
-.frame-edit-mini:hover{background:#e2ead8;color:#3c5222}
+.frame-edit-mini:hover{background:#e2ead8;color:#3c5222}.timed-text.text-disabled{border:1px dashed #c9d0c0;background:#f3f5ef;border-radius:4px}.timed-text.text-disabled .caption-edit-mini{right:3px;top:3px;background:#e4ecd9;color:#58723a}.timed-text.text-disabled .caption-edit-mini:hover{background:#cfe2b5;color:#31441f}
 /* Story preview popup: a text frame renders as the frame itself. */
 .lightbox-stage.title-frame-stage{position:relative}
 .title-frame-caption{position:absolute;transform:translate(-50%,-50%);max-width:92%;white-space:pre-wrap;text-align:center;line-height:1.15;text-shadow:0 2px 8px #0008;z-index:1}
