@@ -2796,11 +2796,13 @@ function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: 
     return () => window.clearInterval(timer)
   }, [countMatch, playing, speed, item.textFxParams?.from, item.textFxParams?.to])
 
+  const deco = (item as any).textUnderline ? 'underline' : 'none'
   const innerStyle: React.CSSProperties = whileCss ? {
     animationName: whileName, animationDuration: `${speed}s`,
     animationIterationCount: 'infinite', animationTimingFunction: 'ease-in-out',
     animationPlayState: playing ? 'running' : 'paused', display: 'inline-block',
-  } : { display: 'inline-block' }
+    textDecoration: deco,
+  } : { display: 'inline-block', textDecoration: deco }
 
   return <>
     <style>{css}{whileCss}</style>
@@ -2808,6 +2810,7 @@ function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: 
       display: 'inline-block', whiteSpace: 'pre',
       animationName: name, animationDuration: `${hold}s`, animationTimingFunction: 'linear',
       animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
+      textDecoration: deco,
     }}>
       {staggered
         ? chars.map((ch, i) => <span
@@ -2817,6 +2820,7 @@ function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: 
               animationName: name, animationDuration: `${hold}s`,
               animationDelay: `${charDelay(i)}s`, animationTimingFunction: 'linear',
               animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
+              textDecoration: deco,
             }}
           >{ch}</span>)
         : <span style={innerStyle}>{countMatch ? String(count) : children}</span>}
