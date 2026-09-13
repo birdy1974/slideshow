@@ -1053,7 +1053,11 @@ function App() {
   const [showProjectFileSave, setShowProjectFileSave] = useState(false)
   const [projectFileFolder, setProjectFileFolder] = useState<{ root: ProjectRoot, folder: string }>({ root: 'output', folder: '' })
   const [showNewProjectConfirm, setShowNewProjectConfirm] = useState(false)
+  const [showRenderConfirm, setShowRenderConfirm] = useState(false)
   const [overwritePath, setOverwritePath] = useState<string | null>(null)
+  // Covers the short window between clicking Preview/Render and receiving the
+  // backend job id, so Stop all also cancels a submission that is still saving.
+  const jobCancelRequested = useRef(false)
   // Storyline preview lightbox: it tracks the previewed item id (not a frozen
   // URL) so the popup can walk the storyline with prev/next and delete the
   // shown item directly, always reflecting the live media list.
@@ -1902,6 +1906,7 @@ function App() {
   const selectedPreviewItems = media.filter(item => selectedIds.includes(item.id))
   const previewSubset = selectedIds.length > 0 && selectedPreviewItems.length > 0 && selectedPreviewItems.length < media.length ? selectedPreviewItems : null
   const startJob = async (kind:'preview'|'render', overwrite=false) => {
+    jobCancelRequested.current = false
     kind==='preview'?setPreviewing(true):setRendering(true);setProgress(1);setEtaSample(null);setJobStage('');setJobStartedAt(null)
     if(kind==='render')setFinishedRender(null)
     // Provisional until the backend's own started_at arrives with the first poll.
@@ -1911,6 +1916,13 @@ function App() {
     jobBaseline.current={ timelineSeconds: subset ? timelineModel(subset).total : total, itemCount: subset ? subset.length : media.length, resolution, encoder }
     try{
       const id=await persistProject(true)
+      // Stop all also covers this save/submit gap: do not create a new backend
+      // job after the user has already cancelled the requested run.
+      if (jobCancelRequested.current) {
+        kind==='preview'?setPreviewing(false):setRendering(false)
+        setActiveJobId(null)
+        return
+      }
       const response=await fetch(`/api/projects/${id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,overwrite,...(subset?{mediaIds:subset.map(m=>m.id)}:{}),...(kind==='preview'?{previewMode}:{})})})
       if(!response.ok){
         const text=await response.text()
@@ -1921,17 +1933,45 @@ function App() {
         throw new Error(text)
       }
       const created=await response.json()
+      if (jobCancelRequested.current) {
+        try { await fetch(`/api/jobs/${created.id}/cancel`, { method: 'POST' }) } catch { /* status polling will report the result */ }
+        kind==='preview'?setPreviewing(false):setRendering(false)
+        setActiveJobId(null)
+        return
+      }
       await trackJob(created.id,kind)
     }catch(error){notify(`${kind==='preview'?'Preview':'Render'} failed: ${error instanceof Error?error.message:'Unknown error'}`);kind==='preview'?setPreviewing(false):setRendering(false)}
   }
   const stopActiveJob = async () => {
-    if (!activeJobId) return
+    // The editor can have more than one queued/running diagnostic or final
+    // render (for example after returning from the queue). Stop all of them,
+    // not just the one whose progress happens to be shown in this panel.
+    jobCancelRequested.current = true
+    const ids = new Set<string>()
+    if (activeJobId) ids.add(activeJobId)
     try {
-      const response = await fetch(`/api/jobs/${activeJobId}/cancel`, { method: 'POST' })
-      if (!response.ok && response.status !== 409) throw new Error(await readApiError(response, 'Could not stop'))
-      notify('Stopping FFmpeg…')
+      const response = await fetch(projectId != null ? `/api/jobs?project_id=${projectId}` : '/api/jobs')
+      if (response.ok) {
+        const jobs = await response.json()
+        for (const job of jobs) {
+          if (['queued', 'running', 'cancelling'].includes(job.status) && job.id) ids.add(String(job.id))
+        }
+      }
+    } catch { /* the active id below can still be cancelled */ }
+    if (!ids.size) {
+      setRendering(false); setPreviewing(false); setActiveJobId(null)
+      notify('No render job was running')
+      return
+    }
+    try {
+      const results = await Promise.all(Array.from(ids).map(async id => {
+        const response = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' })
+        if (!response.ok && response.status !== 409) throw new Error(await readApiError(response, 'Could not stop'))
+        return id
+      }))
+      notify(`Stopping ${results.length} render job${results.length === 1 ? '' : 's'}…`)
     } catch (error) {
-      notify(`Could not stop: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      notify(`Could not stop all renders: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
   // The backend keeps rendering after a page refresh; re-attach to a still-active
@@ -1953,7 +1993,16 @@ function App() {
       void trackJob(active.id,kind)
     }catch{/* job list unavailable; nothing to resume */}
   }
-  const startRender = () => void startJob('render')
+  // Preview is an immediate diagnostic render. A final MP4 is deliberately
+  // gated by an acknowledgement so it cannot be started accidentally.
+  const requestRender = () => {
+    if (rendering || previewing || !capabilities.ffmpeg || media.length === 0) return
+    setShowRenderConfirm(true)
+  }
+  const confirmRender = () => {
+    setShowRenderConfirm(false)
+    void startJob('render')
+  }
   const generatePreview = () => void startJob('preview')
   const jumpTo = (id: string) => {
     setActiveTab('editor')
@@ -2020,7 +2069,7 @@ function App() {
           <input value={projectName} onChange={e=>renameProject(e.target.value)} aria-label="Project name" title="Project name — the filename in the Output pane follows it"/>
           <p>Assemble your media, shape the motion, and export a finished story.</p>
         </div>
-        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a project — from the SQLite list or from a project file on any mounted volume':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={()=>setShowProjectFileSave(true)} title="Choose the folder and filename to save this project to — it is stored in SQLite as well"><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop FFmpeg" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop</button>}</div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a project — from the SQLite list or from a project file on any mounted volume':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={()=>setShowProjectFileSave(true)} title="Choose the folder and filename to save this project to — it is stored in SQLite as well"><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop all running preview and final-render jobs for this project" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop all</button>}</div>
       </section>
 
       <div className="workspace">
@@ -2095,7 +2144,7 @@ function App() {
               if (capabilities.ffmpeg && capabilities.hasGL === false) return <li className={usesGL ? 'warning' : ''} title="This FFmpeg build lacks the xfade-easing patch: GL transitions and easing/reverse render as a plain dissolve.">{usesGL ? <AlertTriangle size={13}/> : <Check size={13}/>} {usesGL ? 'This FFmpeg has no GL transitions · the ones in this project fall back to dissolve' : 'This FFmpeg has no GL transitions (none used in this project)'}</li>
               const hw = capabilities.quickSync || capabilities.vaapi
               return <li title="GL transitions are computed on the CPU inside FFmpeg's xfade filter on every system — there is no GPU shader path. Hardware encoding still applies to the transition clips."><Check size={13}/> {hw ? 'GL transitions computed on CPU (by design) · clips encoded on the GPU' : 'GL transitions computed on CPU (by design) · CPU encoding'}</li>
-            })()}{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><div className="preview-options"><div><FieldLabel>PREVIEW DETAIL <span>{previewMode === 'fast' ? 'faster diagnostic' : 'complete selected sequence'}</span></FieldLabel><Select value={previewMode} onChange={value => setPreviewMode(value as PreviewMode)} ariaLabel="Preview detail"><option value="fast">Fast · text + transitions</option><option value="standard">Standard · all selected slides</option></Select></div><p><Info size={12}/> Fast mode skips static holds without text and omits the soundtrack; transitions and text timing remain rendered by FFmpeg.</p></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} title={previewSubset?`Low-resolution preview of the ${previewSubset.length} selected slide${previewSubset.length===1?'':'s'} only (${formatClock(timelineModel(previewSubset).total)}) — clear the selection to preview the whole movie`:'Low-resolution preview of the whole movie — select slides in the storyline to preview only those'} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:previewSubset?`Preview ${previewSubset.length} selected`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={startRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop the running FFmpeg process" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop {rendering?'render':previewing?'preview':'job'}</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop kills the current FFmpeg process. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
+            })()}{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><div className="preview-options"><div><FieldLabel>PREVIEW DETAIL <span>{previewMode === 'fast' ? 'faster diagnostic' : 'complete selected sequence'}</span></FieldLabel><Select value={previewMode} onChange={value => setPreviewMode(value as PreviewMode)} ariaLabel="Preview detail"><option value="fast">Fast · text + transitions</option><option value="standard">Standard · all selected slides</option></Select></div><p><Info size={12}/> Fast mode skips static holds without text and omits the soundtrack; transitions and text timing remain rendered by FFmpeg.</p></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} title={previewSubset?`Low-resolution preview of the ${previewSubset.length} selected slide${previewSubset.length===1?'':'s'} only (${formatClock(timelineModel(previewSubset).total)}) — clear the selection to preview the whole movie`:'Low-resolution preview of the whole movie — select slides in the storyline to preview only those'} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:previewSubset?`Preview ${previewSubset.length} selected`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={requestRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop all running preview and final-render jobs for this project" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop all</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop all cancels every queued/running preview and final-render job for this project. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
         </div>
         </div>
       </div>
@@ -2157,6 +2206,7 @@ function App() {
     {showFolderPicker && <FolderPicker current={outputPath} onSelect={p=>{setOutputPath(p);notify(`Output folder set to ${p}`)}} onClose={()=>setShowFolderPicker(false)}/>}
     {showProjectLoader && <ProjectLoader onPick={id=>void loadProject(id)} onLoadFile={file=>void loadProjectFile(file)} onNew={requestNewProject} onClose={()=>setShowProjectLoader(false)} currentProjectId={projectId} onNotify={notify} onDeleted={id=>{ if(id===projectId){ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); notify(`Project #${id} deleted — editor detached`)} }} onDeleteAll={()=>{ setProjectId(null); localStorage.removeItem('slideshow.project.mock'); setPreviewUrl(null); setShowPreview(false); setActiveJobId(null); setRendering(false); setPreviewing(false); setProgress(0); }}/>}
     {showNewProjectConfirm && <ConfirmDialog title="Start a new blank project?" message="This clears the current storyline, soundtracks and settings from the editor. Projects already saved in SQLite are not affected." confirmLabel="New project" onConfirm={startNewProject} onCancel={()=>setShowNewProjectConfirm(false)}/>}
+    {showRenderConfirm && <ConfirmDialog title="Start the final MP4 render?" message="This starts the full final render using the current project settings. It may take a while and will write the finished MP4 to the selected output folder. Preview renders remain available immediately without this confirmation." confirmLabel="Render MP4" onConfirm={confirmRender} onCancel={()=>setShowRenderConfirm(false)}/>}
     {showDeleteConfirm && <ConfirmDialog title="Delete selected items?" message={`Are you sure you want to delete ${selectedIds.length} selected item${selectedIds.length > 1 ? 's' : ''}? This action cannot be undone.`} confirmLabel="Delete" onConfirm={deleteSelectedItems} onCancel={()=>setShowDeleteConfirm(false)}/>}
     {showClearAllConfirm && <ConfirmDialog title="Clear all projects?" message="Are you sure you want to delete ALL saved projects and temporary files? The measured render speed is forgotten too, so the next estimate falls back to a guess. This action cannot be undone." confirmLabel="Clear all" onConfirm={clearAllProjects} onCancel={()=>setShowClearAllConfirm(false)}/>}
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
