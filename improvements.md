@@ -1,3 +1,5 @@
+---= DONE =---
+
 2026-09-13
 - in popup window to upload local files, add possibility to make a new folder
 - check the timing of the text frame, so text frames are not overwritten by transitions if text timing is changed.
@@ -14,10 +16,7 @@
 - remove settings button on the top right (main header) as it is not used
 - make the "line" selection box so user can also enter a line number.
 - the "fit" for the storyline zoom still gives a horizontal move bar, make it that storyline information just fit in pane (probable because of the textbox above the picture)
-- 
 
-
----= DONE =---
 
 2026-09-07
 - give options how to add dynamic text effects for the text in the text frames. for example https://reactbits.dev/
