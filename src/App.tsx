@@ -2622,42 +2622,57 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
           <span>{draft.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</span>
           Show text on this picture
         </label>
-        <div className="picture-text-preview" style={{ background: src ? undefined : '#30362d' }}>
-          {src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={src} alt="" />)}
-          <i className="picture-text-preview-shade" />
-          <div className="picture-text-preview-caption" onPointerDown={event => dragOnStage(event, (x, y) => setDraftValue({ textX: x, textY: y, textMoveFromX: draft.textMoveEnabled ? x : draft.textMoveFromX, textMoveFromY: draft.textMoveEnabled ? y : draft.textMoveFromY }))} style={{ left: `${draft.textX}%`, top: `${draft.textY}%`, fontFamily: `'${family}', sans-serif`, fontSize: `${Math.min(size, 120)}px`, color: draft.fontColor, fontWeight: draft.textBold ? 700 : 400, fontStyle: draft.textItalic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal', textDecoration: draft.textUnderline ? 'underline' : 'none', textShadow: captionShadow(Boolean(draft.textOutline), Math.min(size, 120)), opacity: draft.textEnabled === false ? .45 : 1 }}>
-            <Move size={13}/><TextFxPreview item={draft} playing={playing}>{captionText}</TextFxPreview>
-          </div>
-          {draft.textMoveEnabled && (() => {
-            const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2)
-            const d = pts.map((p,i)=>`${i===0?'M':'L'} ${p[0]} ${p[1]}`).join(' ')
-            return <svg className="picture-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType==='straight' || !draft.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
-          })()}
-          {draft.textMoveEnabled && <><span className="motion-handle from small" style={{ left:`${fromX}%`, top:`${fromY}%` }}><b>S</b></span><span className="motion-handle to small" style={{ left:`${toX}%`, top:`${toY}%` }}><b>E</b></span></>}
-          {draft.textEnabled === false && <span className="picture-text-disabled-badge"><EyeOff size={12}/> Hidden</span>}
-        </div>
-        <div className="picture-text-position"><Move size={13}/><span>Drag the caption to position it</span><strong>X {Math.round(draft.textX)}% · Y {Math.round(draft.textY)}%</strong></div>
+        <div className="picture-text-top">
+          <div className="picture-text-top-left">
+            <div className="picture-text-preview" style={{ background: src ? undefined : '#30362d' }}>
+              {src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={src} alt="" />)}
+              <i className="picture-text-preview-shade" />
+              <div className="picture-text-preview-caption" onPointerDown={event => dragOnStage(event, (x, y) => setDraftValue({ textX: x, textY: y, textMoveFromX: draft.textMoveEnabled ? x : draft.textMoveFromX, textMoveFromY: draft.textMoveEnabled ? y : draft.textMoveFromY }))} style={{ left: `${draft.textX}%`, top: `${draft.textY}%`, fontFamily: `'${family}', sans-serif`, fontSize: `${Math.min(size, 120)}px`, color: draft.fontColor, fontWeight: draft.textBold ? 700 : 400, fontStyle: draft.textItalic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal', textDecoration: draft.textUnderline ? 'underline' : 'none', textShadow: captionShadow(Boolean(draft.textOutline), Math.min(size, 120)), opacity: draft.textEnabled === false ? .45 : 1 }}>
+                <Move size={13}/><TextFxPreview item={draft} playing={playing}>{captionText}</TextFxPreview>
+              </div>
+              {draft.textMoveEnabled && (() => {
+                const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2)
+                const d = pts.map((p,i)=>`${i===0?'M':'L'} ${p[0]} ${p[1]}`).join(' ')
+                return <svg className="picture-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType==='straight' || !draft.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
+              })()}
+              {draft.textMoveEnabled && <><span className="motion-handle from small" style={{ left:`${fromX}%`, top:`${fromY}%` }}><b>S</b></span><span className="motion-handle to small" style={{ left:`${toX}%`, top:`${toY}%` }}><b>E</b></span></>}
+              {draft.textEnabled === false && <span className="picture-text-disabled-badge"><EyeOff size={12}/> Hidden</span>}
+            </div>
+            <div className="picture-text-position"><Move size={13}/><span>Drag the caption to position it</span><strong>X {Math.round(draft.textX)}% · Y {Math.round(draft.textY)}%</strong></div>
 
-        <TextMotionPathEditor
-          enabled={Boolean(draft.textMoveEnabled)}
-          fromX={fromX}
-          fromY={fromY}
-          toX={toX}
-          toY={toY}
-          path={draft.textMovePath as any}
-          pathType={draft.textMovePathType as any}
-          easing={draft.textMoveEasing as any}
-          circleRadius={draft.textMoveCircleRadius}
-          circleTurns={draft.textMoveCircleTurns}
-          sineAmplitude={draft.textMoveSineAmplitude}
-          sineFrequency={draft.textMoveSineFrequency}
-          onChange={setDraftValue}
-          src={src}
-          isVideo={item.type === 'video'}
-          background={undefined}
-          caption={captionText}
-          captionStyle={motionCaptionStyle}
-        />
+            <TextMotionPathEditor
+              enabled={Boolean(draft.textMoveEnabled)}
+              fromX={fromX}
+              fromY={fromY}
+              toX={toX}
+              toY={toY}
+              path={draft.textMovePath as any}
+              pathType={draft.textMovePathType as any}
+              easing={draft.textMoveEasing as any}
+              circleRadius={draft.textMoveCircleRadius}
+              circleTurns={draft.textMoveCircleTurns}
+              sineAmplitude={draft.textMoveSineAmplitude}
+              sineFrequency={draft.textMoveSineFrequency}
+              onChange={setDraftValue}
+              src={src}
+              isVideo={item.type === 'video'}
+              background={undefined}
+              caption={captionText}
+              captionStyle={motionCaptionStyle}
+            />
+          </div>
+          <div className="picture-text-top-right">
+            <div className="fx-section light picture-text-effects">
+              <FieldLabel>Text animation</FieldLabel>
+              <div className="fx-rows">
+                <div className="fx-row"><span className="fx-slot">Enter</span><TextEffectChip value={draft.textFxEnter || defaults.fxEnter} slot="enter" ariaLabel={`${item.name} enter effect`} showSeconds seconds={draft.textEnterDuration ?? .5} onSecondsChange={value => setDraftValue({ textEnterDuration: Math.max(.1, Math.min(6, value)) })} onChange={value => setDraftValue({ textFxEnter: value, textEnter: value })}/></div>
+                <div className="fx-row"><span className="fx-slot">While shown</span><TextEffectChip value={draft.textFxWhile || defaults.fxWhile} slot="while" ariaLabel={`${item.name} while-shown effect`} showSeconds seconds={draft.textFxWhileSpeed ?? defaults.fxWhileSpeed} onSecondsChange={value => setDraftValue({ textFxWhileSpeed: Math.max(.4, Math.min(12, value)) })} params={draft.textFxParams} onParamsChange={value => setDraftValue({ textFxParams: value })} onChange={value => setDraftValue({ textFxWhile: value, textFxWhileSpeed: textEffectDefaultSeconds[value] ?? draft.textFxWhileSpeed ?? defaults.fxWhileSpeed })}/></div>
+                <div className="fx-row"><span className="fx-slot">Exit</span><TextEffectChip value={draft.textFxExit || defaults.fxExit} slot="exit" ariaLabel={`${item.name} exit effect`} showSeconds seconds={draft.textExitDuration ?? .5} onSecondsChange={value => setDraftValue({ textExitDuration: Math.max(.1, Math.min(6, value)) })} onChange={value => setDraftValue({ textFxExit: value, textExit: value })}/></div>
+              </div>
+              <div className="fx-foot"><small>The preview is approximate; the MP4 uses the same effect settings.</small><button type="button" className={`icon-button ${playing ? 'playing' : ''}`} title={playing ? 'Pause preview' : 'Play preview'} onClick={() => setPlaying(value => !value)}>{playing ? <Pause size={13}/> : <Play size={13}/>}</button></div>
+            </div>
+          </div>
+        </div>
 
         <div className="picture-text-section">
           <FieldLabel>Caption</FieldLabel>
@@ -2668,15 +2683,6 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
           <input type="checkbox" checked={draft.textOutline !== false} onChange={event => setDraftValue({ textOutline: event.target.checked })}/><span><Check size={11}/></span>
           Outline &amp; shadow behind this caption
         </label>
-        <div className="fx-section light picture-text-effects">
-          <FieldLabel>Text animation</FieldLabel>
-          <div className="fx-rows">
-            <div className="fx-row"><span className="fx-slot">Enter</span><TextEffectChip value={draft.textFxEnter || defaults.fxEnter} slot="enter" ariaLabel={`${item.name} enter effect`} showSeconds seconds={draft.textEnterDuration ?? .5} onSecondsChange={value => setDraftValue({ textEnterDuration: Math.max(.1, Math.min(6, value)) })} onChange={value => setDraftValue({ textFxEnter: value, textEnter: value })}/></div>
-            <div className="fx-row"><span className="fx-slot">While shown</span><TextEffectChip value={draft.textFxWhile || defaults.fxWhile} slot="while" ariaLabel={`${item.name} while-shown effect`} showSeconds seconds={draft.textFxWhileSpeed ?? defaults.fxWhileSpeed} onSecondsChange={value => setDraftValue({ textFxWhileSpeed: Math.max(.4, Math.min(12, value)) })} params={draft.textFxParams} onParamsChange={value => setDraftValue({ textFxParams: value })} onChange={value => setDraftValue({ textFxWhile: value, textFxWhileSpeed: textEffectDefaultSeconds[value] ?? draft.textFxWhileSpeed ?? defaults.fxWhileSpeed })}/></div>
-            <div className="fx-row"><span className="fx-slot">Exit</span><TextEffectChip value={draft.textFxExit || defaults.fxExit} slot="exit" ariaLabel={`${item.name} exit effect`} showSeconds seconds={draft.textExitDuration ?? .5} onSecondsChange={value => setDraftValue({ textExitDuration: Math.max(.1, Math.min(6, value)) })} onChange={value => setDraftValue({ textFxExit: value, textExit: value })}/></div>
-          </div>
-          <div className="fx-foot"><small>The preview is approximate; the MP4 uses the same effect settings.</small><button type="button" className={`icon-button ${playing ? 'playing' : ''}`} title={playing ? 'Pause preview' : 'Play preview'} onClick={() => setPlaying(value => !value)}>{playing ? <Pause size={13}/> : <Play size={13}/>}</button></div>
-        </div>
         <div className="picture-text-timing">
           <div className="picture-text-timing-head"><FieldLabel>Caption timing on this picture</FieldLabel><span>{formatClock(timing.textStart)} – {formatClock(timing.textEnd)} of {formatClock(timing.duration)}</span></div>
           <div className="picture-text-time-fields"><TimeField label="Starts at" value={timing.textStart} min={0} max={Math.max(0, timing.textEnd - minimum)} onCommit={setTextStart}/><TimeField label="Ends at" value={timing.textEnd} min={Math.min(timing.duration, timing.textStart + minimum)} max={timing.duration} onCommit={setTextEnd}/></div>
