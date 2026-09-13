@@ -89,6 +89,13 @@ class UploadsTest(unittest.TestCase):
         self.assertEqual("beach-2.jpg", entry["name"])
         self.assertEqual("/uploads/beach-2.jpg", entry["path"])
 
+    def test_upload_can_target_a_created_subfolder(self) -> None:
+        folder = self.settings.uploads_dir / "Holiday 2026" / "Day 1"
+        folder.mkdir(parents=True)
+        entry = store_upload(self.settings, "beach.jpg", io.BytesIO(b"jpeg-bytes"), "Holiday 2026/Day 1")
+        self.assertEqual("/uploads/Holiday 2026/Day 1/beach.jpg", entry["path"])
+        self.assertTrue((folder / "beach.jpg").exists())
+
     def test_movie_uploads_keep_their_kind(self) -> None:
         entry = store_upload(self.settings, "holiday.mov", io.BytesIO(b"moov"))
         self.assertEqual("video", entry["kind"])

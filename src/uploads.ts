@@ -4,7 +4,8 @@
 // progress, and progress (plus cancel) is the whole point for multi-GB movies
 // on Wi-Fi. The backend answer mirrors the media browser's entry shape, so
 // uploaded files flow into the storyline through the exact same code path as
-// files picked from a mount.
+// files picked from a mount. An optional relative folder keeps local uploads
+// organized below the writable /uploads volume.
 
 export type UploadItem = {
   id: number; name: string; total: number; sent: number
@@ -32,10 +33,11 @@ export type UploadHandle = {
   cancel: () => void
 }
 
-export function uploadFile(file: File, onProgress: (sent: number, total: number) => void): UploadHandle {
+export function uploadFile(file: File, onProgress: (sent: number, total: number) => void, folder = ''): UploadHandle {
   const xhr = new XMLHttpRequest()
   const form = new FormData()
   form.append('files', file, file.name)
+  if (folder) form.append('folder', folder)
   const promise = new Promise<{ added: any[]; errors: { name: string; error: string }[] }>((resolve, reject) => {
     xhr.open('POST', '/api/media/upload')
     xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded, event.total) }

@@ -170,7 +170,9 @@ export function transitionDirection(name: string) {
 }
 
 export function getGLParams(name: string): GLParamDef[] {
-  return glParams[name] || []
+  if (glParams[name]) return glParams[name]
+  const raw = String(name || '').trim().toLowerCase()
+  return glEntries.find(entry => entry.id.toLowerCase() === raw)?.params || []
 }
 
 // ---------------------------------------------------------------------------

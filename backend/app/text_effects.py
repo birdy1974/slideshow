@@ -139,6 +139,40 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+# Keep the renderer's text window inside the clip's visible hold.  The
+# storyline uses the same 0.1 s minimum for its draggable handles; keeping the
+# rule here (rather than relying on the UI having sanitised a saved project) is
+# important because the outgoing transition starts immediately after this
+# hold.  A text event that leaks past the hold is already baked into the
+# outgoing segment when xfade begins, so the next picture can cover it.
+TEXT_TIMING_MIN_SECONDS = 0.1
+TEXT_TIMING_MIN_CLIP_SECONDS = 0.2
+
+
+def normalize_text_window(item: dict[str, Any]) -> tuple[float, float]:
+    """Return ``textStart``/``textEnd`` clamped to the item's visible hold.
+
+    ``textStart`` and ``textEnd`` are relative to the clip's hold, not its
+    incoming/outgoing transition handles.  The renderer may temporarily add an
+    incoming handle to ``duration`` before calling this helper, which lets it
+    shift a valid window without moving it into the outgoing handle.
+    """
+    try:
+        clip_duration = float(item.get("duration", 5.0))
+    except (TypeError, ValueError):
+        clip_duration = 5.0
+    if not math.isfinite(clip_duration):
+        clip_duration = 5.0
+    clip_duration = max(TEXT_TIMING_MIN_CLIP_SECONDS, clip_duration)
+    minimum = min(TEXT_TIMING_MIN_SECONDS, clip_duration)
+
+    start_value = _num(item, "textStart", 0.0)
+    start = _clamp(start_value, 0.0, max(0.0, clip_duration - minimum))
+    end_value = _num(item, "textEnd", clip_duration)
+    end = _clamp(end_value, start + minimum, clip_duration)
+    return start, end
+
+
 def ass_time(seconds: float) -> str:
     """ASS timestamp ``H:MM:SS.CS`` (centiseconds, clamped at zero)."""
     cs = max(0, int(round(seconds * 100)))
@@ -199,6 +233,7 @@ class TextGeometry:
     family: str
     bold: bool
     italic: bool
+    underline: bool
     colour: str              # #RRGGBB
     params: dict[str, str]   # per-effect parameters (Count up from/to, ...)
     outline: bool = True     # dark outline + shadow behind picture captions
@@ -212,44 +247,65 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
     # Title frames are the text itself, so the flag never applies to them.
     if item.get("type") != "title" and item.get("textEnabled") is False:
         return None
-    start = max(0.0, _num(item, "textStart", 0.0))
-    end = max(start + 0.3, _num(item, "textEnd", _num(item, "duration", 5.0)))
+    start, end = normalize_text_window(item)
     hold = end - start
     di = _clamp(_num(item, "textEnterDuration", 0.5), 0.05, hold * 0.9)
     do = _clamp(_num(item, "textExitDuration", 0.5), 0.05, hold * 0.9)
-    speed = _clamp(_num(item, "textFxWhileSpeed", 2.0), 0.4, 12.0)
-    # Title frames carry their own type settings. Picture captions use the
-    # project-wide defaults so changing "Default text style" never restyles a
-    # standalone text card — the same rule the legacy filter applied.
+    speed_default = 2.0 if item.get("type") == "title" else _num(defaults, "textFxWhileSpeed", 2.0)
+    speed = _clamp(_num(item, "textFxWhileSpeed", speed_default), 0.4, 12.0)
+    # Title frames carry their own type settings. Picture captions inherit
+    # project defaults only for fields that have not been individually saved;
+    # standalone text cards never inherit live defaults.
     if item.get("type") == "title":
         size_pt = _num(item, "fontSize", 48)
         colour_raw = str(item.get("fontColor") or "#ffffff")
         bold = bool(item.get("textBold", True))
         italic = bool(item.get("textItalic", False))
+        underline = bool(item.get("textUnderline", False))
         family = str(item.get("fontFamily") or "Montserrat")
         # Text frames sit on a flat colour bed of the user's choosing: no
         # outline, exactly as before.
         outline = False
     else:
-        size_pt = _num(defaults, "fontSize", 48)
-        colour_raw = str(defaults.get("fontColor") or "#ffffff")
-        bold = bool(defaults.get("bold", True))
-        italic = bool(defaults.get("italic", False))
-        family = str(defaults.get("fontFamily") or "Montserrat")
-        # "Outline & shadow" in Default text style (on unless switched off):
-        # keeps white captions readable on bright photos.
-        outline = defaults.get("outline", True) is not False
+        # Picture/video captions inherit the project defaults until a user opens
+        # the per-picture editor. Once saved, each field is read from the item,
+        # so changing the project default never unexpectedly restyles captions
+        # that were individually edited. Missing fields deliberately fall back
+        # to the defaults for old projects and legacy items. The renderer's
+        # real media types are image/video. A migrated legacy item may still
+        # carry another type string, so its new `textOutline` field is also a
+        # safe marker that the per-picture style migration has run.
+        if item.get("type") in ("image", "video") or "textOutline" in item:
+            size_pt = _num(item, "fontSize", _num(defaults, "fontSize", 48))
+            colour_raw = str(item.get("fontColor") or defaults.get("fontColor") or "#ffffff")
+            bold = bool(item["textBold"]) if "textBold" in item else bool(defaults.get("bold", True))
+            italic = bool(item["textItalic"]) if "textItalic" in item else bool(defaults.get("italic", False))
+            underline = bool(item["textUnderline"]) if "textUnderline" in item else bool(defaults.get("underline", False))
+            family = str(item.get("fontFamily") or defaults.get("fontFamily") or "Montserrat")
+            # "Outline & shadow" in Default text style (on unless switched off):
+            # keeps white captions readable on bright photos. A saved false value
+            # is significant and must not be replaced by the project fallback.
+            outline = item["textOutline"] is not False if "textOutline" in item else defaults.get("outline", True) is not False
+        else:
+            # Preserve the historical behaviour for legacy non-media markers.
+            size_pt = _num(defaults, "fontSize", 48)
+            colour_raw = str(defaults.get("fontColor") or "#ffffff")
+            bold = bool(defaults.get("bold", True))
+            italic = bool(defaults.get("italic", False))
+            underline = bool(defaults.get("underline", False))
+            family = str(defaults.get("fontFamily") or "Montserrat")
+            outline = defaults.get("outline", True) is not False
     raw_params = item.get("textFxParams")
     params = {str(k): str(v) for k, v in raw_params.items()} if isinstance(raw_params, dict) else {}
     colour = colour_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", colour_raw or "") else "#ffffff"
     return TextGeometry(
         width=width, height=height,
         size=max(8, int(float(size_pt) * width / 1920)),
-        cx=width * _clamp(_num(item, "textX", 50.0), 0.0, 100.0) / 100.0,
-        cy=height * _clamp(_num(item, "textY", 72.0), 0.0, 100.0) / 100.0,
+        cx=width * _clamp(_num(item, "textX", 50.0 if item.get("type") == "title" else _num(defaults, "textX", 50.0)), 0.0, 100.0) / 100.0,
+        cy=height * _clamp(_num(item, "textY", 72.0 if item.get("type") == "title" else _num(defaults, "textY", 72.0)), 0.0, 100.0) / 100.0,
         start=start, end=end, di=di, do=do, speed=speed,
         text=text, lines=text.split("\n"),
-        family=family, bold=bold, italic=italic, colour=colour, params=params,
+        family=family, bold=bold, italic=italic, underline=underline, colour=colour, params=params,
         outline=outline,
     )
 
@@ -374,7 +430,7 @@ OUTLINE_STYLE = "&H26000000&"  # black @ 0.85, the drawtext bordercolor
 def _header(g: TextGeometry) -> str:
     style = (
         f"Style: FX,{g.family.replace(',', ' ')},{g.size},{ass_colour(g.colour)},&HFFFFFF&,{OUTLINE_STYLE},{SHADOW_STYLE},"
-        f"{'-1' if g.bold else '0'},{'-1' if g.italic else '0'},0,0,100,100,0,0,1,{outline_width(g)},2,5,0,0,0,1"
+        f"{'-1' if g.bold else '0'},{'-1' if g.italic else '0'},{'-1' if g.underline else '0'},0,100,100,0,0,1,{outline_width(g)},2,5,0,0,0,1"
     )
     return (
         "[Script Info]\n"
@@ -1063,7 +1119,9 @@ def build_text_overlay(
     g = _geometry(item, defaults, width, height)
     if g is None:
         return None
-    if plan_engine(plan) == "dt" and not (force_ass and ass_path is not None):
+    # FFmpeg's drawtext has no underline primitive. Route underlined captions
+    # through libass, whose style header carries the exact underline flag.
+    if plan_engine(plan) == "dt" and (not g.underline or ass_path is None) and not (force_ass and ass_path is not None):
         resolver = font_resolver or (lambda family, bold, italic, fonts: str(fonts))
         font = resolver(g.family, g.bold, g.italic, Path(fonts_dir))
         return _drawtext_filter(

@@ -3,7 +3,7 @@
 // Used by App.tsx, the transition browser and the preview modal.
 import { Select } from './ui'
 import {
-  EASING_DEFAULT, easingGroups, getGLParams, glTransitions, nativeTransitions, transitions,
+  EASING_DEFAULT, easingGroups, getGLParams, glTransitions, isGLTransition, nativeTransitions, transitions,
 } from './transitionCatalog'
 
 export function EasingSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -31,13 +31,15 @@ export function pickRandomTransition(scope: RandomScope): string {
 // A fresh random parameter set for one GL transition, using exactly the
 // bounds the editor's parameter sliders show (GLParamControls: explicit
 // registry min/max/step when present, otherwise the same derived ranges).
-// Numeric params draw uniformly; colours become random hex; anything else
-// keeps its default (omitted here, so the registry default applies).
+// Numeric params draw uniformly; colour-like params (including packed colour
+// parameters such as Colour Phase's fromStep/toStep) become random hex; any
+// genuinely textual parameter keeps its registry default.
 export function randomGLParams(label: string): Record<string, string> {
   const next: Record<string, string> = {}
   for (const def of getGLParams(label)) {
-    const isColor = /^0x/i.test(def.default) || /color/i.test(def.name)
-    const numDefault = Number(def.default)
+    const defaultValue = String(def.default ?? '').trim()
+    const isColor = /^(?:#|0x)[0-9a-f]{6,8}$/i.test(defaultValue) || /color/i.test(def.name)
+    const numDefault = Number(defaultValue)
     const isNumeric = Number.isFinite(numDefault) && !isColor
     if (isNumeric) {
       const min = def.min !== undefined ? Number(def.min) : Math.min(0, numDefault)
@@ -53,7 +55,37 @@ export function randomGLParams(label: string): Record<string, string> {
       next[def.name] = `#${hex()}${hex()}${hex()}`
     }
   }
+  // Colour Phase interprets these two packed colours as per-channel lower and
+  // upper steps. Keep that relationship valid while still randomizing both
+  // values; otherwise a random draw could make the custom transition reject
+  // the settings.
+  const from = next.fromStep?.match(/^#([0-9a-f]{6})$/i)
+  const to = next.toStep?.match(/^#([0-9a-f]{6})$/i)
+  if (from && to) {
+    const lower = [0, 1, 2].map(() => Math.floor(Math.random() * 255))
+    const upper = lower.map(value => value + 1 + Math.floor(Math.random() * (255 - value)))
+    const packed = (values: number[]) => `#${values.map(value => value.toString(16).padStart(2, '0')).join('')}`
+    next.fromStep = packed(lower)
+    next.toStep = packed(upper)
+  }
   return next
+}
+
+// Generic transition settings are separate from the transition's duration:
+// randomization may change the easing, reverse flag, and any GL-specific
+// values, but never touches transitionTime. This is used by both random
+// transition actions and the explicit parameter-only action.
+export function randomTransitionSettings(label: string): {
+  transitionEasing: string;
+  transitionReverse: number;
+  transitionParams: Record<string, string> | undefined;
+} {
+  const easings = Object.values(easingGroups).flat()
+  return {
+    transitionEasing: easings[Math.floor(Math.random() * easings.length)] || EASING_DEFAULT,
+    transitionReverse: Math.random() < 0.5 ? 0 : 1,
+    transitionParams: isGLTransition(label) ? randomGLParams(label) : undefined,
+  }
 }
 export function RandomScopeSelect({ value, onChange }: { value: RandomScope; onChange: (v: RandomScope) => void }) {
   return <Select ariaLabel="Random transition source" value={value} onChange={v => onChange(v as RandomScope)}>
@@ -68,7 +100,7 @@ export function GLParamControls({ transition, params, onChange }: { transition: 
     {defs.map(def => {
       const raw = params[def.name]
       const value = raw !== undefined ? String(raw) : def.default
-      const isColor = /^0x/i.test(def.default) || /color/i.test(def.name)
+      const isColor = /^(?:#|0x)[0-9a-f]{6,8}$/i.test(String(def.default).trim()) || /color/i.test(def.name)
       // numeric slider range heuristic: 0..max based on default
       const numDefault = Number(def.default)
       const isNumeric = Number.isFinite(numDefault) && !isColor

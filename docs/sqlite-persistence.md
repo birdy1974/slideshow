@@ -9,7 +9,7 @@ Saving a project must happen in one SQLite transaction. A failed write must roll
 ### `projects`
 
 - `id`, `schema_version`, `name`
-- `random_order`
+- `random_order` (legacy compatibility column; always stored as `0` and ignored)
 - `timeline_rows`, `timeline_zoom`
 - `payload_json` containing the canonical, lossless project envelope
   - includes the editor `defaults` section (`slideSeconds`, `transitionSeconds`): the project-wide "Slide default" / "Transition default" values from the storyline bulk bar. Older projects without it fall back to 5 s / 5 s.

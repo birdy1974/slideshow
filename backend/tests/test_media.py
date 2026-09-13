@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.database import Database
-from app.media import UnsafePath, browse, mounted_path, safe_path
+from app.media import UnsafePath, browse, create_media_folder, mounted_path, safe_folder_name, safe_path
 from app.renderer import RenderError, Renderer, source_path
 
 
@@ -29,6 +29,22 @@ class MediaSecurityTest(unittest.TestCase):
         result = browse(self.settings, "photos", "trip")
         self.assertEqual(["image.jpg"], [x["name"] for x in result["entries"]])
         self.assertEqual(self.settings.photos_dir / "trip" / "image.jpg", mounted_path(self.settings, "/photos/trip", "image.jpg"))
+
+    def test_create_media_folder_returns_a_browse_entry(self) -> None:
+        uploads = self.settings.uploads_dir
+        uploads.mkdir(parents=True)
+        entry = create_media_folder(uploads, "", "Holiday 2026")
+        self.assertEqual("Holiday 2026", entry["name"])
+        self.assertEqual("/uploads/Holiday 2026", entry["path"])
+        self.assertEqual("Holiday 2026", entry["relativePath"])
+        self.assertFalse(entry["empty"])
+        self.assertTrue((uploads / "Holiday 2026").is_dir())
+        nested = create_media_folder(uploads, "Holiday 2026", "Day 1")
+        self.assertEqual("/uploads/Holiday 2026/Day 1", nested["path"])
+        with self.assertRaises(UnsafePath):
+            safe_folder_name("../outside")
+        with self.assertRaises(FileExistsError):
+            create_media_folder(uploads, "", "Holiday 2026")
 
     def test_browse_accepts_casio_camera_avi_case_insensitively(self) -> None:
         # Casio EX-Z11 recordings use a Motion JPEG/PCM AVI container and often

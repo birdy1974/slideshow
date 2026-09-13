@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +22,7 @@ import mimetypes
 
 from .config import settings
 from .database import Database
-from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, mounted_path, safe_path, source_path
+from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, create_media_folder, mounted_path, safe_path, source_path
 from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
@@ -60,6 +60,11 @@ class JobRequest(BaseModel):
     # Preview only: restrict the proxy to these media ids (storyline order is
     # kept). Empty/None means the whole project, as before.
     mediaIds: list[int | str] | None = None
+    # ``standard`` keeps every selected hold and the soundtrack. ``fast`` keeps
+    # text-bearing holds plus transition handles, and omits audio; the latter
+    # is deliberately an explicit choice because it is a diagnostic preview,
+    # not a final-programme render.
+    previewMode: Literal["standard", "fast"] = "standard"
 
 
 class TransitionPreviewRequest(BaseModel):
@@ -71,6 +76,13 @@ class TransitionPreviewRequest(BaseModel):
     transitionParams: dict[str, Any] | None = None
     transitionEasing: str | None = None
     transitionReverse: int | None = None
+
+
+class MediaFolderPayload(BaseModel):
+    """A folder to create below the writable uploads volume."""
+    root: Literal["uploads"] = "uploads"
+    path: str = ""
+    name: str
 
 
 def validate_mount_references(payload: dict[str, Any]) -> None:
@@ -227,7 +239,13 @@ def cleanup_temporary_files() -> dict[str, Any]:
     import shutil
     deleted_files = 0
     deleted_dirs = 0
-    
+
+    # Stop every active renderer before removing its per-job work directory.
+    # This is especially important when "New project" invokes cleanup while a
+    # preview or final render is still running.
+    for job_id in tuple(renderer.cancel_events):
+        renderer.cancel(job_id)
+
     # Delete work directory contents
     if settings.work_dir.exists():
         for item in settings.work_dir.iterdir():
@@ -332,13 +350,38 @@ def browse_media(root: str = Query(pattern="^(photos|videos|music|output|uploads
     except PermissionError as exc: raise HTTPException(403, str(exc)) from exc
 
 
+@app.post("/api/media/folders", status_code=201)
+def create_upload_folder(payload: MediaFolderPayload) -> dict[str, Any]:
+    """Create a destination folder for files uploaded from the local device.
+
+    The browser can read every configured mount, but local uploads are kept in
+    the dedicated writable uploads volume. Keeping this endpoint uploads-only
+    preserves the read-only boundary around the user's photo/video/music
+    shares.
+    """
+    try:
+        entry = create_media_folder(settings.uploads_dir, payload.path, payload.name)
+    except UnsafePath as exc:
+        raise HTTPException(400, f"Invalid folder: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"Parent folder not found: {exc}") from exc
+    except FileExistsError as exc:
+        raise HTTPException(409, "A file or folder with that name already exists") from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Could not create the folder: {exc}") from exc
+    return {"root": "uploads", "entry": entry}
+
+
 @app.post("/api/media/upload")
-async def upload_media(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def upload_media(files: list[UploadFile] = File(...), folder: str = Form(default="")) -> dict[str, Any]:
     """Store photos/movies uploaded from the GUI device into the uploads root.
 
     Each file is sanitised, de-duplicated, size-capped and verified with
-    ffprobe before it is kept; rejected files leave nothing behind. The
-    returned entries use the media-browser shape, so the frontend adds them
+    ffprobe before it is kept; rejected files leave nothing behind. ``folder``
+    is an optional relative path below /uploads, selected by the media picker.
+    The returned entries use the media-browser shape, so the frontend adds them
     to the storyline exactly like files picked from a mount.
     """
     added: list[dict[str, Any]] = []
@@ -348,7 +391,7 @@ async def upload_media(files: list[UploadFile] = File(...)) -> dict[str, Any]:
             # Disk writes and the ffprobe verification block; keep them off the
             # event loop so progress polling and the rest of the API stay
             # responsive during a multi-GB movie upload.
-            added.append(await run_in_threadpool(store_upload, settings, file.filename or "", file.file))
+            added.append(await run_in_threadpool(store_upload, settings, file.filename or "", file.file, folder))
         except UploadRejected as exc:
             errors.append({"name": file.filename or "file", "error": str(exc)})
         except OSError as exc:
@@ -601,7 +644,11 @@ def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     media[1].update(duration=handle, previewTrim=True)
     payload = {
         "id": "transition",
-        "project": {"name": "Transition preview", "randomOrder": False},
+        "project": {"name": "Transition preview"},
+        # The per-item previewTrim flags make this authoritative transition-only
+        # output; fast mode also prevents any accidental soundtrack/audio work if
+        # the renderer gains another preview input in the future.
+        "previewMode": "fast",
         "media": media,
         "textDefaults": request.textDefaults,
         "soundtrack": {"tracks": [], "policy": "Play once, then silence"},
@@ -647,7 +694,14 @@ def preview_download_name(project_name: str, job_id: str) -> str:
 
 @app.post("/api/projects/{project_id}/jobs", status_code=202)
 def create_job(project_id: int, request: JobRequest) -> dict[str, Any]:
-    try: return renderer.submit(project_id, request.kind, overwrite=request.overwrite, media_ids=request.mediaIds)
+    try:
+        return renderer.submit(
+            project_id,
+            request.kind,
+            overwrite=request.overwrite,
+            media_ids=request.mediaIds,
+            preview_mode=request.previewMode,
+        )
     except KeyError as exc: raise HTTPException(404, "Project not found") from exc
     except OutputExistsError as exc:
         raise HTTPException(409, detail={"code": "output_exists", "path": str(exc)}) from exc

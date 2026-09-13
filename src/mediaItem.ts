@@ -10,6 +10,8 @@ export type MediaItem = {
   text: string; textMode: 'overlay' | 'frame';
   // Per-slide opt-out: when false the caption is kept but not drawn on the picture.
   textEnabled?: boolean;
+  // Seconds inside the item's visible hold. The outgoing slide transition is
+  // additional timeline time and is never part of this text window.
   textStart: number; textEnd: number; textEnter: string; textExit: string;
   textEnterDuration: number; textExitDuration: number;
   // Dynamic text effects (Option 1, docs/text-effects-options.md): labels from
@@ -25,6 +27,9 @@ export type MediaItem = {
   // Videos can replace the soundtrack with their embedded audio.
   audioSource?: 'soundtrack' | 'original';
   textBold?: boolean; textItalic?: boolean; textUnderline?: boolean;
+  // Per-picture caption outline/shadow. Missing means inherit the project default,
+  // which keeps legacy items rendering exactly as they did before per-item styles.
+  textOutline?: boolean;
   // Photo orientation fix in whole quarter turns (0, 90, 180, 270, clockwise).
   // Applied in every thumbnail/lightbox and by the FFmpeg renderer.
   rotation?: number;

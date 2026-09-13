@@ -82,7 +82,9 @@ to `<config>/uploads` so a bare checkout keeps working.
   directory incl. subfolders, via `webkitdirectory`). Picks are *staged* first —
   a review list with size, remove-per-file, and an explicit **Upload N files**
   button — so several picks can be combined and nothing leaves the device
-  until the button is pressed. Non-media files a folder pick brings along
+  until the button is pressed. In the **uploads** location, the current folder
+  is the upload destination and **New folder** creates a writable subfolder
+  before the staged files are sent. Non-media files a folder pick brings along
   (`.xmp`, `.aae`, `Thumbs.db`, `.DS_Store`) are dropped quietly and counted.
 - **Pre-flight check**: `/api/health` reports `uploads: { writable, reason,
   maxMb }`. When the uploads volume is not writable by the app user the picker
@@ -146,7 +148,8 @@ to `<config>/uploads` so a bare checkout keeps working.
   on disk). `POST /api/media/upload` in `main.py` returns media-browser-shaped
   entries. The `uploads` root joined `media_roots`, so browsing, `/media/…`
   streaming, thumbnails, cropdetect, probe and render resolution all accept it
-  with no pipeline changes.
+  with no pipeline changes. `POST /api/media/folders` creates a safe subfolder
+  below `/uploads`, and the upload endpoint accepts that relative destination.
 - **GUI**: an *uploads* location and an **"Upload from this device"** button in
   the media picker (native camera-roll picker on phones; the picker reloads
   the uploads root when a batch finishes), **drag & drop** of files from the
