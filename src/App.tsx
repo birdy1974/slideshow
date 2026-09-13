@@ -2055,7 +2055,7 @@ function App() {
         <button type="button" onClick={() => jumpTo('section-render')}>Ready to generate</button>
         <button className={activeTab === 'renders' ? 'active' : ''} onClick={() => setActiveTab('renders')}><ListVideo size={16}/> Render queue <span className="count">1</span></button>
       </nav>
-      <div className="top-actions"><span className={`system-ok ${backendOnline?'':'offline'}`}><i/> {backendOnline?'Backend ready':'Backend offline'}</span><button className="icon-button" title="Settings"><Settings2 size={18}/></button><button className="icon-button" title="Help"><CircleHelp size={18}/></button></div>
+      <div className="top-actions"><span className={`system-ok ${backendOnline?'':'offline'}`}><i/> {backendOnline?'Backend ready':'Backend offline'}</span><button className="icon-button" title="Help"><CircleHelp size={18}/></button></div>
     </header>
 
     {activeTab === 'renders' ? <RenderQueue projectId={projectId} onBack={() => setActiveTab('editor')} /> : <main>
