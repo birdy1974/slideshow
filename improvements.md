@@ -1,18 +1,62 @@
-2026-09-13
-- add option to move the text on picture from starting location to end location. path of movement can be drawn by user
-- also open select transition window if user press on the pre-view transition in the detailed slide row. (same as the transition selection box)
-- move pre-view transition in the detailed slide row to top of the row (align with picture top) also make size bigger so that the bottom is aligning with the bottom of "easing" line
-- in upload popup window add option to delete files and directories (select then delete button)
-- in the detailed slide row move slide duration under the picture and move the transition duration to the old position of the slide duration. also make the box a little bit bigger (now you cannot see the .x values) and use the same look and feel.
-- in the detailed slide row remove the "on picture" indication
-- on "text on picture" box above the picture in the storyline, remove the setting button and open the text setting popup if the user clicks text box. keep in mind that if text is enable the user should be able to still change the start and stop timing.
-- in Edit picture text popup, underline does not show in text on picture example.
-- in Edit picture text popup, move "Text animation" details on the right side of the picture
-- move "Default text style" button in storyline header to the left (left align with "apply effect" button; move "Text frame" to old place "Default text style" button
-
-
+No open tasks — all implemented as of 2026-09-13
 
 ---= DONE =---
+
+2026-09-13 — DONE (latest batch, all 10 items from previous TODO now implemented)
+
+- **Text on picture movement from start to end location, path drawn by user**
+  - Added per-picture motion fields: `textMoveEnabled`, `textMoveFromX/Y`, `textMoveToX/Y`, `textMovePath`, `textMovePathType` (straight, freehand, circle, sinus), `textMoveEasing` (linear, ease-in, ease-out, ease-in-out, smooth), `textMoveCircleRadius`, `textMoveCircleTurns`, `textMoveSineAmplitude`, `textMoveSineFrequency`
+  - New `TextMotionPathEditor` component: draws path overlay (SVG) on picture preview, handles S/E drag, freehand drawing on canvas, circle/sine parameter sliders, easing selector
+  - Path types: straight line (2 points), free draw (user-drawn polyline), circle (generateCirclePoints with radius/turns), sinus (generateSinePoints with amplitude/frequency)
+  - Speed = path length / visible duration (`textEnd - textStart`), easing applied via `easeProgress`, preview animates via `motionProgress` RAF loop, `getMotionPos` + `pointAlongPath` for both picture captions and title frames
+  - Works for captions and title frames, stored with project, renderer uses same effective points
+
+- **Open select transition window when pressing pre-view transition in detailed slide row**
+  - Transition marker in detailed row (`transition-marker` button) now calls `setTransitionPreviewId` and `setShowTransitionGallery(true)` same as transition selection box
+  - Detailed row transition preview opens gallery directly, same flow as clicking transition chip
+
+- **Move pre-view transition to top of detailed row and make bigger, bottom aligns with easing line**
+  - Moved transition cell to top of row (align with picture top), increased size to 88x34 (`thumb-duration`/`transition-duration` 88px), bottom edge aligns with easing line via grid `88px` columns
+  - Larger boxes so `.x` values visible, same look and feel as slide duration
+
+- **Upload popup delete files and directories via select then delete button**
+  - MediaBrowser uploads view: added selection state `deletedSet`, toolbar `upload-delete-toolbar` with select count, Delete button, confirmation
+  - Backend endpoint `DELETE /api/media` handles file and directory removal, filters `failedPaths`, updates UI via `deletedSet`
+  - Fixed contradictory `failedPaths` + double filter logic
+
+- **Detailed slide row: slide duration under picture thumb, transition duration to old position, bigger boxes**
+  - Moved `thumb-column` 88px, `thumb-duration` under thumb, `transition-duration` to old slide duration position
+  - Boxes 88x34, bigger to show `.x` values, same styling (`#b9c6a8`/`#eef4e5` hover)
+
+- **Remove "on picture" indication in detailed slide row**
+  - Removed `.text-mode-fixed` badge and "On picture" label from detailed row, text is always on picture now
+
+- **"Text on picture" box above picture in storyline: remove setting button, open popup on click, keep timing handles**
+  - `TimelineTextBox` rewritten: removed `frame-edit-mini` (title) and `caption-edit-mini` (picture) Settings2/Pencil buttons
+  - Disabled case: `timed-text text-disabled clickable` div with `onClick->onEdit`, no button, hover styles
+  - Enabled case: `timed-text clickable` with left/width %, `onClick` on container (only when `e.target===currentTarget`) calling `onEdit`, input has `stopPropagation`, `onDoubleClick` opens editor, Enter/Exit buttons and timing handles have `stopPropagation` so drag still works
+  - `styles.css`: added `.timed-text.clickable{cursor:pointer}`, hover input border `#8ba05c`, disabled clickable styles
+
+- **Edit picture text popup: underline not showing**
+  - Root cause: `picture-text-preview-caption` had `textDecoration: underline` but child `TextFxPreview` rendered spans with `display:inline-block` losing underline
+  - Fixed `TextFxPreview` to read `textBold/bold`, `textItalic/italic`, `textUnderline/underline` and apply `textDecoration`, `fontWeight` 700/400, `fontStyle` to outer animated span, inner while span, and per-char staggered spans
+  - Also increased max font size from 54 to 120 for main previews (TextStyleModal, PictureTextEditor, TextFrameEditor, Preview caption) so larger fonts correctly show, shadow calc updated, small motion samples kept at 22px
+
+- **Edit picture text popup: move "Text animation" details on right side of picture**
+  - Introduced `.picture-text-top` grid `1fr 360px` gap 18px, left column: preview + position + motion editor, right column: `fx-section light picture-text-effects`
+  - Modal width increased from 900px to 1100px to accommodate side-by-side, responsive breakpoint at 960px stacks columns
+  - Right column resets margin/border so it aligns with picture top
+
+- **Move "Default text style" button in storyline header to left, "Text frame" to old place**
+  - Toolbar reordered from [Text frame, Default text style, Add media, Delete, New] to [Add media, Text frame, Delete, New]
+  - Text frame now occupies old Default text style position (second)
+  - Default text style moved to beginning of `.bulk-tools` row (`default-text-style-bulk` class), left-aligned with Apply effect button area
+
+- **Bold/italic check and max font size 120**
+  - Verified standalone text frames and text-on-picture both show bold/italic/underline via TextFxPreview fix
+  - Max font size 120 applied to all main previews, correctly shows on picture preview
+
+
 
 2026-09-13
 - in popup window to upload local files, add possibility to make a new folder
