@@ -2488,7 +2488,7 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
         </div>
       </div>
       <div className="frame-canvas default-position-stage" style={{background:'#30362d'}}>
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,54)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none',textShadow:captionShadow(outline, Math.min(Number(fontSize)||48,54))}}>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,120)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none',textShadow:captionShadow(outline, Math.min(Number(fontSize)||48,120))}}>
           <Move size={14}/><span>Summer, slowly.</span>
         </div>
       </div>
@@ -2625,7 +2625,7 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
         <div className="picture-text-preview" style={{ background: src ? undefined : '#30362d' }}>
           {src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={src} alt="" />)}
           <i className="picture-text-preview-shade" />
-          <div className="picture-text-preview-caption" onPointerDown={event => dragOnStage(event, (x, y) => setDraftValue({ textX: x, textY: y, textMoveFromX: draft.textMoveEnabled ? x : draft.textMoveFromX, textMoveFromY: draft.textMoveEnabled ? y : draft.textMoveFromY }))} style={{ left: `${draft.textX}%`, top: `${draft.textY}%`, fontFamily: `'${family}', sans-serif`, fontSize: `${Math.min(size, 54)}px`, color: draft.fontColor, fontWeight: draft.textBold ? 700 : 400, fontStyle: draft.textItalic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal', textDecoration: draft.textUnderline ? 'underline' : 'none', textShadow: captionShadow(Boolean(draft.textOutline), Math.min(size, 54)), opacity: draft.textEnabled === false ? .45 : 1 }}>
+          <div className="picture-text-preview-caption" onPointerDown={event => dragOnStage(event, (x, y) => setDraftValue({ textX: x, textY: y, textMoveFromX: draft.textMoveEnabled ? x : draft.textMoveFromX, textMoveFromY: draft.textMoveEnabled ? y : draft.textMoveFromY }))} style={{ left: `${draft.textX}%`, top: `${draft.textY}%`, fontFamily: `'${family}', sans-serif`, fontSize: `${Math.min(size, 120)}px`, color: draft.fontColor, fontWeight: draft.textBold ? 700 : 400, fontStyle: draft.textItalic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal', textDecoration: draft.textUnderline ? 'underline' : 'none', textShadow: captionShadow(Boolean(draft.textOutline), Math.min(size, 120)), opacity: draft.textEnabled === false ? .45 : 1 }}>
             <Move size={13}/><TextFxPreview item={draft} playing={playing}>{captionText}</TextFxPreview>
           </div>
           {draft.textMoveEnabled && (() => {
@@ -2796,13 +2796,18 @@ function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: 
     return () => window.clearInterval(timer)
   }, [countMatch, playing, speed, item.textFxParams?.from, item.textFxParams?.to])
 
-  const deco = (item as any).textUnderline ? 'underline' : 'none'
+  const isBold = (item as any).textBold ?? (item as any).bold ?? true
+  const isItalic = (item as any).textItalic ?? (item as any).italic ?? false
+  const isUnderline = (item as any).textUnderline ?? (item as any).underline ?? false
+  const deco = isUnderline ? 'underline' : 'none'
+  const fWeight = isBold ? 700 : 400
+  const fStyle = isItalic ? 'italic' : 'normal'
   const innerStyle: React.CSSProperties = whileCss ? {
     animationName: whileName, animationDuration: `${speed}s`,
     animationIterationCount: 'infinite', animationTimingFunction: 'ease-in-out',
     animationPlayState: playing ? 'running' : 'paused', display: 'inline-block',
-    textDecoration: deco,
-  } : { display: 'inline-block', textDecoration: deco }
+    textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any,
+  } : { display: 'inline-block', textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any }
 
   return <>
     <style>{css}{whileCss}</style>
@@ -2810,7 +2815,7 @@ function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: 
       display: 'inline-block', whiteSpace: 'pre',
       animationName: name, animationDuration: `${hold}s`, animationTimingFunction: 'linear',
       animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
-      textDecoration: deco,
+      textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any,
     }}>
       {staggered
         ? chars.map((ch, i) => <span
@@ -2820,7 +2825,7 @@ function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: 
               animationName: name, animationDuration: `${hold}s`,
               animationDelay: `${charDelay(i)}s`, animationTimingFunction: 'linear',
               animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
-              textDecoration: deco,
+              textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any,
             }}
           >{ch}</span>)
         : <span style={innerStyle}>{countMatch ? String(count) : children}</span>}
@@ -2877,7 +2882,7 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           return <svg className="frame-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(item.textMovePathType==='straight' || !item.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
         })()}
         {enabled && <><span className="motion-handle from small frame-handle" style={{ left:`${fromX}%`, top:`${fromY}%` }}><b>S</b></span><span className="motion-handle to small frame-handle" style={{ left:`${toX}%`, top:`${toY}%` }}><b>E</b></span></>}
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y, textMoveFromX: enabled ? x : item.textMoveFromX, textMoveFromY: enabled ? y : item.textMoveFromY}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:`'${family}', sans-serif`,fontSize:`${Math.min(size,54)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y, textMoveFromX: enabled ? x : item.textMoveFromX, textMoveFromY: enabled ? y : item.textMoveFromY}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:`'${family}', sans-serif`,fontSize:`${Math.min(size,120)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
           <Move size={14}/><TextFxPreview item={item} playing={fxPlaying}>{item.text || ' '}</TextFxPreview>
         </div>
       </div>
@@ -3476,10 +3481,10 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
       ? { left: `${(motionPos?.x ?? captionItem.textX)}%`, top: `${(motionPos?.y ?? captionItem.textY)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
       : undefined
   const captionStyle: React.CSSProperties | undefined = captionItem ? {
-    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min(Number(captionItem.fontSize) || defaults.fontSize, 54)}px`,
+    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min(Number(captionItem.fontSize) || defaults.fontSize, 120)}px`,
     color: captionItem.fontColor, fontWeight: captionItem.textBold ? 700 : 400,
     fontStyle: captionItem.textItalic && !FONTS_WITHOUT_ITALIC.has(captionItem.fontFamily || '') ? 'italic' : 'normal',
-    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min(Number(captionItem.fontSize) || defaults.fontSize, 54)),
+    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min(Number(captionItem.fontSize) || defaults.fontSize, 120)),
   } : undefined
 
   if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
