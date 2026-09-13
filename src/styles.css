@@ -788,6 +788,22 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* Location button + action in the media picker's folder tree */
 .upload-location{height:34px;border:1px dashed #b9c69a;background:#f5f8ec;border-radius:6px;text-align:left;font-size:11px;font-weight:700;color:#4f5d37;display:flex;gap:8px;align-items:center;padding:0 9px}
 .upload-location:hover{background:#eaf1da;color:#3c5222}
+/* Writable uploads browser: the current folder is also the destination for
+   staged local files, so creating a folder and then uploading needs to be
+   visible beside the breadcrumbs. */
+.upload-folder-toolbar{display:flex;align-items:center;gap:8px;margin:-7px 0 12px;padding:7px 8px;border:1px solid #d9e4c6;border-radius:7px;background:#f4f8ec;color:#6c7860;font-size:9px;line-height:1.3}
+.upload-folder-toolbar span{display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upload-folder-toolbar span svg{flex:none;color:#718f46}
+.upload-folder-toolbar b{color:#40542b;overflow:hidden;text-overflow:ellipsis}
+.upload-folder-toolbar button{margin-left:auto;display:inline-flex;align-items:center;gap:5px;border:1px solid #b9c69a;border-radius:5px;background:#fff;color:#4f6634;padding:5px 8px;font:700 9px Manrope;white-space:nowrap;cursor:pointer}
+.upload-folder-toolbar button:hover:not(:disabled){background:#eaf1da;border-color:#84a950;color:#3c5222}
+.upload-folder-toolbar button:disabled{opacity:.45;cursor:not-allowed}
+.new-folder-form{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:-4px 0 12px;padding:8px;border:1px solid #b9c69a;border-radius:7px;background:#fbfff5;color:#607044}
+.new-folder-form>svg{flex:none}
+.new-folder-form input{height:29px;min-width:120px;flex:1;border:1px solid #cdd5c3;border-radius:5px;background:#fff;padding:0 8px;color:#3c4137;font:500 10px Manrope;outline:0}
+.new-folder-form input:focus{border-color:#84a950;box-shadow:0 0 0 2px #cae6a366}
+.new-folder-form .btn{height:29px;padding:0 9px;font-size:9px}
+.new-folder-error{flex-basis:100%;color:#a14e3e;font-size:8px;line-height:1.3}
 /* Drag files from the desktop onto the storyline */
 .timeline-panel{position:relative}
 .timeline-panel.drop-target{outline:2px dashed #99a27f;outline-offset:-6px}

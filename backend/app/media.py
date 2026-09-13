@@ -26,6 +26,52 @@ class UnsafePath(ValueError):
     pass
 
 
+def safe_folder_name(name: str) -> str:
+    """Validate one user-created folder name.
+
+    Folder creation is deliberately limited to one path component. The
+    parent folder is supplied separately, so a name such as ``../photos`` or
+    ``holiday/2026`` can never turn the upload endpoint into a path traversal
+    primitive. Ordinary spaces and punctuation are fine, just like they are
+    for files already present on the mounted media volumes.
+    """
+    value = str(name or "").strip()
+    if not value or value in {".", ".."}:
+        raise UnsafePath("Folder name cannot be empty")
+    if value.startswith("."):
+        raise UnsafePath("Folder names starting with a dot are not supported")
+    if any(char in value for char in ("/", "\\")):
+        raise UnsafePath("Folder name must not contain a slash")
+    if any(ord(char) < 32 for char in value):
+        raise UnsafePath("Folder name contains an invalid control character")
+    if len(value) > 255:
+        raise UnsafePath("Folder name is too long (maximum 255 characters)")
+    return value
+
+
+def create_media_folder(root: Path, relative: str, name: str) -> dict[str, Any]:
+    """Create one folder below ``root`` and return a browse-style entry."""
+    root.mkdir(parents=True, exist_ok=True)
+    parent = safe_path(root, relative)
+    if not parent.exists() or not parent.is_dir():
+        raise FileNotFoundError(str(parent))
+    folder_name = safe_folder_name(name)
+    target = safe_path(parent, folder_name)
+    target.mkdir()
+    stat = target.stat()
+    rel = target.relative_to(root).as_posix()
+    return {
+        "name": folder_name,
+        "path": f"/uploads/{rel}",
+        "relativePath": rel,
+        "kind": "directory",
+        "size": stat.st_size,
+        "empty": False,
+        "modified": stat.st_mtime,
+        "accessible": _dir_accessible(target),
+    }
+
+
 def safe_path(root: Path, relative: str = "") -> Path:
     root = root.resolve()
     candidate = (root / relative.lstrip("/")).resolve()
@@ -152,7 +198,7 @@ def browse(settings: Settings, root_name: str, relative: str = "", folders_only:
         accessible = _dir_accessible(child) if is_directory else True
         entries.append({
             "name": child.name, "path": f"/{root_name}/{rel}", "relativePath": rel,
-            "kind": kind, "size": stat.st_size, "empty": stat.st_size == 0,
+            "kind": kind, "size": stat.st_size, "empty": is_file and stat.st_size == 0,
             "modified": stat.st_mtime,
             "mime": mimetypes.guess_type(child.name)[0],
             "accessible": accessible,

@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .config import Settings
-from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, safe_path
+from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, safe_path
 from .project_files import safe_stem
 
 log = logging.getLogger(__name__)
@@ -141,12 +141,14 @@ def uploads_status(settings: Settings) -> dict[str, Any]:
             "maxMb": int(getattr(settings, "upload_max_mb", 4096))}
 
 
-def store_upload(settings: Settings, original_name: str, source: BinaryIO) -> dict[str, Any]:
+def store_upload(settings: Settings, original_name: str, source: BinaryIO, folder: str = "") -> dict[str, Any]:
     """Validate, write and probe one uploaded file. Returns a browse-style entry.
 
     ``source`` is any readable binary stream (FastAPI's spooled upload file in
-    production, BytesIO in tests). Raises :class:`UploadRejected` — with the
-    reason — and leaves nothing behind when the file cannot be accepted.
+    production, BytesIO in tests). ``folder`` is a relative path below the
+    uploads root; it must already exist (the folder picker creates it first).
+    Raises :class:`UploadRejected` — with the reason — and leaves nothing
+    behind when the file cannot be accepted.
     """
     name = sanitized_name(original_name)
     image = Path(name).suffix.lower() in IMAGE_EXTENSIONS
@@ -162,9 +164,17 @@ def store_upload(settings: Settings, original_name: str, source: BinaryIO) -> di
         raise UploadRejected(uploads_unwritable_reason(root, exc)) from exc
     if not os.access(root, os.W_OK | os.X_OK):
         raise UploadRejected(uploads_unwritable_reason(root))
+    try:
+        destination = safe_path(root, folder)
+    except (UnsafePath, TypeError, ValueError, OSError) as exc:
+        raise UploadRejected("The selected upload folder is invalid") from exc
+    if not destination.is_dir():
+        raise UploadRejected("The selected upload folder does not exist")
+    if not os.access(destination, os.W_OK | os.X_OK):
+        raise UploadRejected(uploads_unwritable_reason(destination))
     # safe_path guards the (already sanitised) name against any surprise.
-    safe_path(root, name)
-    final = root / unique_name(root, name)
+    safe_path(destination, name)
+    final = destination / unique_name(destination, name)
     written = 0
     try:
         with final.open("wb") as handle:
@@ -192,6 +202,6 @@ def store_upload(settings: Settings, original_name: str, source: BinaryIO) -> di
         final.unlink(missing_ok=True)
         raise
     kind = "image" if image else "video"
-    relative = f"/uploads/{final.name}"
-    log.info("Stored upload %s (%.1f MB)", final.name, written / (1024 * 1024))
+    relative = f"/uploads/{final.relative_to(root).as_posix()}"
+    log.info("Stored upload %s (%.1f MB)", relative, written / (1024 * 1024))
     return {"name": final.name, "path": relative, "kind": kind, "size": written}
