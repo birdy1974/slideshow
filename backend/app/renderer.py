@@ -1470,9 +1470,6 @@ class Renderer:
 
     def render(self, project: dict[str, Any], kind: str, work: Path, cancelled: threading.Event, progress: Callable[[float,str],None]) -> Path:
         media = list(project.get("media", []))
-        if project.get("project", {}).get("randomOrder"):
-            import random
-            random.shuffle(media)
         if not media:
             raise RenderError("The project contains no media")
         # Fast proxy mode is intentionally a diagnostic render: it checks text

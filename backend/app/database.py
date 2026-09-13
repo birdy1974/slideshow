@@ -335,13 +335,13 @@ class Database:
                     if saved_id is None:
                         cur = conn.execute(
                             "INSERT INTO projects(schema_version,name,random_order,timeline_rows,timeline_zoom,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                            (SCHEMA_VERSION, project.get("name", "Untitled"), bool(project.get("randomOrder")), str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, now),
+                            (SCHEMA_VERSION, project.get("name", "Untitled"), 0, str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, now),
                         )
                         saved_id = int(cur.lastrowid)
                     else:
                         result = conn.execute(
                             "UPDATE projects SET schema_version=?,name=?,random_order=?,timeline_rows=?,timeline_zoom=?,payload_json=?,revision=revision+1,updated_at=? WHERE id=?",
-                            (SCHEMA_VERSION, project.get("name", "Untitled"), bool(project.get("randomOrder")), str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, saved_id),
+                            (SCHEMA_VERSION, project.get("name", "Untitled"), 0, str(timeline.get("rows", "auto")), float(timeline.get("zoom", 1)), json.dumps(canonical, ensure_ascii=False), now, saved_id),
                         )
                         if result.rowcount == 0:
                             raise KeyError(f"Project {saved_id} does not exist")

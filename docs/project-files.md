@@ -64,7 +64,7 @@ so it can be diffed and hand-edited:
 ```jsonc
 {
   "schemaVersion": 1,
-  "project": { "name": "Portugal summer", "randomOrder": false },
+  "project": { "name": "Portugal summer" },
   "media":   [ { "id": 1, "type": "image", "path": "/photos/trip/a.jpg",
                  "duration": 4, "crop": { /* … */ }, "filter": "mono" } ],
   "output":  { "path": "/output", "filename": "Portugal summer" },

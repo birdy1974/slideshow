@@ -644,7 +644,7 @@ def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     media[1].update(duration=handle, previewTrim=True)
     payload = {
         "id": "transition",
-        "project": {"name": "Transition preview", "randomOrder": False},
+        "project": {"name": "Transition preview"},
         # The per-item previewTrim flags make this authoritative transition-only
         # output; fast mode also prevents any accidental soundtrack/audio work if
         # the renderer gains another preview input in the future.
