@@ -385,7 +385,7 @@ export function TextMotionPathEditor({
       </div>
 
       {curPathType === 'circle' && <div className="motion-params">
-        <label>Radius <input type="range" min={2} max={40} step={1} value={circleRadius ?? Math.hypot(toX-fromX, toY-fromY)/2 || 15} onChange={e=>onChange({ textMoveCircleRadius: Number(e.target.value), textMovePathType: 'circle' })} /> <em>{Math.round(circleRadius ?? Math.hypot(toX-fromX, toY-fromY)/2 || 15)}%</em></label>
+        <label>Radius <input type="range" min={2} max={40} step={1} value={circleRadius ?? (Math.hypot(toX-fromX, toY-fromY)/2 || 15)} onChange={e=>onChange({ textMoveCircleRadius: Number(e.target.value), textMovePathType: 'circle' })} /> <em>{Math.round(circleRadius ?? (Math.hypot(toX-fromX, toY-fromY)/2 || 15))}%</em></label>
         <label>Turns <input type="range" min={0.25} max={3} step={0.25} value={circleTurns} onChange={e=>onChange({ textMoveCircleTurns: Number(e.target.value) })} /> <em>{circleTurns}×</em></label>
       </div>}
 
