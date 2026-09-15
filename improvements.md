@@ -1,4 +1,9 @@
-No open tasks — all implemented as of 2026-09-13
+2026-09-15
+- text grow / shrink
+- text color changes
+- text movements symbol: star, diamond, triangle
+- text movement: multiple stops, not only start / stop
+- total timing of text on text frame slide should match total slide time
 
 ---= DONE =---
 
