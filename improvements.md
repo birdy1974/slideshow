@@ -8,6 +8,26 @@
 - add user setting to keep text on text frame steady and visible for certain amount of time at the end of the frame
 - random parameters: do not randomize reverse, but set reverse unchecked (disable)
 - if B colour not the same as A colour, start by making B colour the same as A colour
+- when rendering show which slide is processed
+
+{"log":"No FFmpeg output yet."}
+2026-09-15 23:19:01,491 ERROR app.renderer: Render job 662e5c2e732b4cf69bcb923b03bb7c8d failed
+Traceback (most recent call last):
+  File "/app/app/renderer.py", line 1331, in _run
+    output = self.render(project, kind, work, cancelled, lambda p,s: self.db.update_job(job_id, progress=p, stage=s))
+  File "/app/app/renderer.py", line 1742, in render
+    self._run_ffmpeg(command, cancelled, log_file)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/app/renderer.py", line 1369, in _run_ffmpeg
+    raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{summary}")
+app.renderer.RenderError: FFmpeg exited with status 8.
+[AVFilterGraph @ 0x5580d8c80480] No such filter: '0)'
+Error : Filter not found
+2026-09-15 23:19:01,514 INFO app.renderer: Cleaned temporary work dir for job 662e5c2e732b4cf69bcb923b03bb7c8d
+INFO:     172.30.0.1:52560 - "GET /api/jobs/662e5c2e732b4cf69bcb923b03bb7c8d HTTP/1.1" 200 OK
+
+
+
 
 ---= DONE =---
 
