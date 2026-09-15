@@ -3,7 +3,11 @@
 - text color changes
 - text movements symbol: star, diamond, triangle
 - text movement: multiple stops, not only start / stop
+- text movement sinus updown
 - total timing of text on text frame slide should match total slide time
+- add user setting to keep text on text frame steady and visible for certain amount of time at the end of the frame
+- random parameters: do not randomize reverse, but set reverse unchecked (disable)
+- if B colour not the same as A colour, start by making B colour the same as A colour
 
 ---= DONE =---
 
