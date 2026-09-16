@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .filter_values import quote_filter_value
 from .renderer import (
     Renderer,
     XFADE,
@@ -243,11 +244,9 @@ class TransitionPreviewCache:
         font = self._font_file()
         filters = [f"scale={WIDTH}:{HEIGHT}"]
         if font:
-            escaped = font.replace("\\", "/").replace(":", r"\:")
             filters.append(
-                "drawtext=fontfile="
-                + escaped.replace("=", r"\=").replace(",", r"\,")
-                + f":text={spec['label']}:fontsize=200:fontcolor=0xFFFFFF"
+                "drawtext=fontfile=" + quote_filter_value(font.replace("\\", "/"))
+                + f":text={quote_filter_value(spec['label'])}:fontsize=200:fontcolor=0xFFFFFF"
                 ":x=(w-text_w)/2:y=(h-text_h)/2"
             )
         command = [

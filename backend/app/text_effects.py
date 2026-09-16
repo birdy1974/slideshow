@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .filter_values import quote_filter_value
+
 log = logging.getLogger(__name__)
 
 def _registry_candidates() -> list[Path]:
@@ -114,16 +116,29 @@ def ass_colour(hex_colour: str) -> str:
 def escape_ass(text: str) -> str:
     return str(text).replace("{", "(").replace("}", ")")
 
+def escape_drawtext_text(value: str) -> str:
+    """Escape the characters drawtext's *own* text expansion acts on.
+
+    ``text`` is re-scanned for every frame: ``%{...}`` expands metadata,
+    expressions and strftime, and a backslash escapes the next character.
+    Nothing here is about the filter-graph parser — that is
+    :func:`quote_filter_value`'s job, and it runs afterwards.
+    """
+    return str(value).replace("\\", "\\\\").replace("%", "\\%")
+
+
 def ff_escape_drawtext(value: str) -> str:
-    return (
-        str(value)
-        .replace("\\", r"\\")
-        .replace(":", r"\:")
-        .replace("'", r"\'")
-        .replace("%", r"\%")
-        .replace("[", r"\[")
-        .replace("]", r"\]")
-    )
+    """Escape ``value`` for a drawtext ``text=`` option and quote it for the graph.
+
+    Three layers read this string in turn — the graph parser, the option
+    splitter and drawtext itself (see ``app/filter_values.py``) — and each one
+    eats a backslash, so the value is escaped from the inside out. Escaping
+    only for the last layer (the historic behaviour) left an apostrophe able to
+    close the quoted section early: every following option was then re-parsed
+    as a filter, which is how ``Oma's Verjaardag 2006`` produced
+    ``No such filter: '0)'``.
+    """
+    return quote_filter_value(escape_drawtext_text(value))
 
 # --------------------------------------------------------------------------
 # Motion path helpers — including predefined paths and easing
@@ -976,10 +991,19 @@ def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_:
             y_expr = f"({y_expr}+{_bouncy_dt2})"
     except: pass
     # colour morph via dt not possible; if custom colour morph enabled but we are in dt, fall back to base colour (ASS will handle)
+    # Every value goes through quote_filter_value(): user text may contain
+    # commas, colons and apostrophes, and the expressions are full of commas
+    # (``clip((t-0)/5,0,1)``). An unquoted comma ends the filter in the
+    # graph parser and the rest of the expression is read as filter names.
     return (
-        f"drawtext=fontfile='{font}':text='{ff_escape_drawtext(g.text)}':fontsize={fontsize_expr}"
-        f":fontcolor=0x{g.colour[1:]}:alpha='{alpha}':x='{x_expr}':y='{y_expr}'"
-        f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}:enable='between(t,{_n(g.start)},{_n(g.end)})'"
+        f"drawtext=fontfile={quote_filter_value(font)}"
+        f":text={ff_escape_drawtext(g.text)}"
+        f":fontsize={quote_filter_value(fontsize_expr)}"
+        f":fontcolor=0x{g.colour[1:]}"
+        f":alpha={quote_filter_value(alpha)}"
+        f":x={quote_filter_value(x_expr)}:y={quote_filter_value(y_expr)}"
+        f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}"
+        f":enable={quote_filter_value(f'between(t,{_n(g.start)},{_n(g.end)})')}"
     )
 
 def outline_width(g: TextGeometry) -> int:
@@ -1826,6 +1850,13 @@ def build_text_overlay(
         return None
     ass_path.parent.mkdir(parents=True, exist_ok=True)
     ass_path.write_text(document, encoding="utf-8")
-    escaped_path = str(ass_path).replace("\\", "/").replace("'", r"\'")
-    escaped_fonts = str(fonts_dir).replace("\\", "/").replace("'", r"\'")
-    return f"ass=filename='{escaped_path}':fontsdir='{escaped_fonts}'"
+    def posix(path: Path | str) -> str:
+        # libass wants forward slashes, also on Windows paths.
+        return str(path).replace("\\", "/")
+
+    # Same two-pass quoting as the drawtext branch: a work path or fontsdir
+    # containing an apostrophe would otherwise close the quoted section early.
+    return (
+        f"ass=filename={quote_filter_value(posix(ass_path))}"
+        f":fontsdir={quote_filter_value(posix(fonts_dir))}"
+    )

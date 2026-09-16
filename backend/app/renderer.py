@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from .config import Settings
 from .database import Database, utcnow
+from .filter_values import quote_filter_value
 from .media import UnsafePath, mounted_path, source_path
 from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
 from .picture_filters import picture_look
@@ -309,9 +310,7 @@ def quote_xfade_value(value: str) -> str:
     xfade-easing form (transition='gl_cube(...)':easing='cubic-bezier(...)').
     Plain identifiers are left unquoted so existing graphs/tests are unchanged.
     """
-    if not any(ch in value for ch in ",:'\\[];"):
-        return value
-    return "'" + value.replace("\\", "\\\\").replace("'", r"\'") + "'"
+    return quote_filter_value(value)
 
 
 class RenderError(RuntimeError):
