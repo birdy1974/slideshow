@@ -8,6 +8,8 @@ slots, and every catalogue entry must produce a valid overlay.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,18 +117,69 @@ class HelperTests(unittest.TestCase):
     def test_escape_ass(self):
         self.assertEqual(escape_ass("{brace}"), "(brace)")
 
-    def test_ff_escape_drawtext_legacy_parity(self):
-        self.assertEqual(ff_escape_drawtext("a:b'c%d[e]f\\g"), r"a\:b\'c\%d\[e\]f\\g")
+    def test_ff_escape_drawtext_quotes_for_both_parser_passes(self) -> None:
+        """The value has to survive the graph parser *and* the option splitter.
+
+        Escaping for the last layer only (the historic behaviour) left an
+        apostrophe able to close the quoted section early, after which every
+        following option was parsed as a filter name -- ``No such filter:
+        '0)'`` for a title like "Oma's Verjaardag 2006".
+        """
+        # Nothing to escape: the value is emitted as-is.
+        self.assertEqual("plain title", ff_escape_drawtext("plain title"))
+        # A comma would end the filter, so the value is wrapped in quotes.
+        self.assertEqual("'Summer, slowly.'", ff_escape_drawtext("Summer, slowly."))
+        # A colon ends an option in the second pass: escape it.
+        self.assertEqual("'Chapter 1\\: The beginning'", ff_escape_drawtext("Chapter 1: The beginning"))
+        # An apostrophe is escaped for the second pass and then written the
+        # shell way -- close the quoted section, escaped quote, reopen it.
+        self.assertEqual("'Oma\\'\\''s Verjaardag 2006'", ff_escape_drawtext("Oma's Verjaardag 2006"))
+        # drawtext's own scan eats one further backslash: '\%' prints '%'.
+        self.assertEqual("'50\\\\% off'", ff_escape_drawtext("50% off"))
 
 
 class DrawtextEngineTests(unittest.TestCase):
-    def test_legacy_item_produces_the_historic_fade_filter(self):
+    def test_legacy_item_produces_the_historic_fade_filter(self) -> None:
         overlay = build_text_overlay(title_item(), {}, 1920, 1080, Path("/fonts"), None)
         self.assertIsNotNone(overlay)
         self.assertTrue(overlay.startswith("drawtext=fontfile="))
+        # Values containing a comma (expressions, text) are quoted so the graph
+        # parser keeps them in one filter; plain values are left alone.
         self.assertIn("alpha='if(lt(t,0),0,if(lt(t,0.8),(t-0)/0.8,", overlay)
-        self.assertIn("x='(w-text_w)*0.5'", overlay)
+        self.assertIn(":x=(w-text_w)*0.5:y=(h-text_h)*0.5:", overlay)
         self.assertIn("enable='between(t,0,5)'", overlay)
+
+    def test_apostrophe_in_the_title_does_not_break_the_graph(self) -> None:
+        """Regression: "Oma's Verjaardag 2006" produced ``No such filter: '0)'``.
+
+        The apostrophe closed the ``text='...'`` value early, so the commas of
+        the options after it (alpha, x, y, enable) were no longer inside a
+        quoted section and each of them was parsed as a new filter.
+        """
+        item = title_item(text="Oma's Verjaardag 2006", textScaleEnabled=True,
+                          textScaleFrom=0.5, textScaleTo=1.1,
+                          textMoveEnabled=True, textMoveFromX=64.25,
+                          textMoveFromY=20.59, textMoveToX=30.61, textMoveToY=75.60)
+        overlay = build_text_overlay(item, {}, 1280, 720, Path("/fonts"), None)
+        self.assertIsNotNone(overlay)
+        # Escaped for the option splitter, with the quoted section closed and
+        # reopened around the apostrophe.
+        self.assertIn("text='Oma\\'\\''s Verjaardag 2006'", overlay)
+        # A scaling fontsize is an expression full of commas -> quoted.
+        self.assertIn("fontsize='(", overlay)
+        # ...and the options after the text still belong to the same filter.
+        for option in (":fontcolor=", ":alpha='", ":x='", ":y='", ":enable='between(t,0,5)'"):
+            self.assertIn(option, overlay)
+
+    def test_fontsize_expression_is_quoted(self) -> None:
+        # Without the quotes the first comma of the expression ends the filter
+        # and the remainder is read as filter names.
+        item = title_item(text="No apostrophe here", textScaleEnabled=True,
+                          textScaleFrom=0.5, textScaleTo=1.1)
+        overlay = build_text_overlay(item, {}, 1280, 720, Path("/fonts"), None)
+        self.assertIsNotNone(overlay)
+        self.assertIn("fontsize='(", overlay)
+        self.assertIn("clip((t-0)/5,0,1)", overlay)
 
     def test_caption_text_enabled_false_is_none(self):
         item = title_item(type="picture", textEnabled=False)
@@ -367,6 +420,73 @@ class RendererIntegrationTests(unittest.TestCase):
         overlay = renderer._text_filter(item, {"fontSize": 48, "fontColor": "#ff0000", "bold": False, "italic": False, "fontFamily": "Open Sans"}, 1920, 1080)
         self.assertIn("fontsize=48", overlay)
         self.assertIn("fontcolor=0xff0000", overlay)
+
+
+class FfmpegFilterGraphTests(unittest.TestCase):
+    """Hand the generated filter to a real FFmpeg, when one is installed.
+
+    ``No such filter: '0)'`` is a tokenising error, not a drawtext one, so the
+    filter *name* is swapped for ``crop``: what is under test is whether the
+    option values keep the graph in one piece. (``crop`` then rejects the
+    unknown options, which is expected; a *split* graph reports "No such
+    filter" / "Error parsing a filter description" instead.)
+    """
+
+    def _overlay(self) -> str:
+        item = title_item(text="Oma's Verjaardag 2006", textScaleEnabled=True,
+                          textScaleFrom=0.5, textScaleTo=1.1,
+                          textMoveEnabled=True, textMoveFromX=64.25,
+                          textMoveFromY=20.59, textMoveToX=30.61, textMoveToY=75.60)
+        overlay = build_text_overlay(item, {}, 1280, 720, Path("/fonts"), None)
+        self.assertIsNotNone(overlay)
+        return str(overlay)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is not installed")
+    def test_the_option_values_do_not_split_the_graph(self) -> None:
+        ffmpeg = str(shutil.which("ffmpeg"))
+        overlay = self._overlay()
+        probe = "crop=" + overlay.split("drawtext=", 1)[1]
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=320x180:r=25:d=1", "-frames:v", "1",
+             "-vf", probe, "-f", "null", "-"],
+            capture_output=True, text=True, timeout=120,
+        )
+        stderr = result.stderr or ""
+        for marker in ("No such filter", "No option name", "Error parsing", "Trailing garbage"):
+            self.assertNotIn(marker, stderr, f"FFmpeg split the graph: {stderr}\nfilter: {overlay}")
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is not installed")
+    def test_drawtext_gets_the_title_back_unchanged(self) -> None:
+        """The text option must still read "Oma's Verjaardag 2006"."""
+        ffmpeg = str(shutil.which("ffmpeg"))
+        # Same probe the renderer uses: `-h filter=drawtext` exits 0 even when
+        # the filter is missing, so the help text decides.
+        probe = subprocess.run(
+            [ffmpeg, "-hide_banner", "-h", "filter=drawtext"],
+            capture_output=True, text=True,
+        )
+        help_text = (probe.stdout or "") + (probe.stderr or "")
+        if "Filter drawtext" not in help_text or "Unknown filter" in help_text:
+            self.skipTest("this FFmpeg build has no drawtext filter")
+
+        fonts = Path(__file__).resolve().parents[2] / "public" / "fonts"
+        font = fonts / "Montserrat-Bold.ttf"
+        if not font.exists():
+            self.skipTest("bundled fonts are not available")
+        item = title_item(text="Oma's Verjaardag 2006", duration=1, textEnd=1)
+        overlay = build_text_overlay(
+            item, {}, 320, 180, fonts, None,
+            lambda family, bold, italic, fonts_dir: str(font),
+        )
+        self.assertIsNotNone(overlay)
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=320x180:r=25:d=1", "-frames:v", "1",
+             "-vf", str(overlay), "-f", "null", "-"],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
 
 
 if __name__ == "__main__":

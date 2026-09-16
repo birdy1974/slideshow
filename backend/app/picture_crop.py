@@ -25,6 +25,8 @@ import math
 import re
 from typing import Any
 
+from .filter_values import quote_filter_value
+
 # Straightening is a small levelling tool, not a rotation tool: the quarter
 # turns already live in `rotation`. Beyond ~15° the inscribed zoom throws away
 # too much of the picture to be worth it.
@@ -166,9 +168,7 @@ def _quote_filter_value(value: str) -> str:
     keeps those characters literal — exactly what ``quote_xfade_value`` does for
     xfade.
     """
-    if not any(ch in value for ch in ",:'\\[];"):
-        return value
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return quote_filter_value(value)
 
 
 def _even_expression(expression: str) -> str:

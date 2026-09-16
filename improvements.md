@@ -1,3 +1,25 @@
+2026-09-16 — render stops on slide 1 with "No such filter: '0)'" (title frame)
+
+- Reproduced: a 225-slide render dies on the first title slide ("Oma's Verjaardag 2006").
+  Two quoting bugs in the drawtext filter the text effects build:
+  1. `fontsize=(31*(0.5+(0.6)*clip((t-0)/5,0,1)))` was emitted unquoted — an unquoted
+     comma ends the filter and the rest of the expression is parsed as filter names.
+  2. `text='Oma\'s Verjaardag 2006'` escaped the apostrophe *inside* the quotes, but
+     FFmpeg's av_get_token() copies a quoted section verbatim until the next quote, so
+     the value closed early. Every later quote shifted by one, the commas of `alpha=`
+     ended up outside any quoted section and the graph split there -> '0)'.
+- Fix: new backend/app/filter_values.py with `quote_filter_value()`, which escapes for
+  the option splitter (\, ', :) and then wraps the value in single quotes for the graph
+  parser (a literal quote is written as '\''). All drawtext options (fontfile, text,
+  fontsize, alpha, x, y, enable), the ass= branch, quote_xfade_value(),
+  picture_crop._quote_filter_value() and the transition-preview label use it now.
+  `ff_escape_drawtext()` additionally escapes \ and % for drawtext's own expansion,
+  so "%{...}" in a title can never become a metadata expansion.
+- Tests: backend/tests/test_filter_values.py ports av_get_token() + both parser passes
+  and round-trips nasty values; test_text_effects.py lets a real FFmpeg parse the
+  generated filter (skipUnless ffmpeg is installed).
+- Docs: docs/drawtext-quoting-fix.md.
+
 2026-09-15
 - text grow / shrink
 - text color changes
