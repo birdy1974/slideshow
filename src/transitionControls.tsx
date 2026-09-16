@@ -72,8 +72,8 @@ export function randomGLParams(label: string): Record<string, string> {
 }
 
 // Generic transition settings are separate from the transition's duration:
-// randomization may change the easing, reverse flag, and any GL-specific
-// values, but never touches transitionTime. This is used by both random
+// randomization may change the easing and any GL-specific
+// values (reverse is always reset to unchecked), but never touches transitionTime. This is used by both random
 // transition actions and the explicit parameter-only action.
 export function randomTransitionSettings(label: string): {
   transitionEasing: string;
@@ -83,7 +83,7 @@ export function randomTransitionSettings(label: string): {
   const easings = Object.values(easingGroups).flat()
   return {
     transitionEasing: easings[Math.floor(Math.random() * easings.length)] || EASING_DEFAULT,
-    transitionReverse: Math.random() < 0.5 ? 0 : 1,
+    transitionReverse: 0,
     transitionParams: isGLTransition(label) ? randomGLParams(label) : undefined,
   }
 }
