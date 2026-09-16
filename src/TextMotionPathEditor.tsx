@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Eraser, Move, Pencil, Trash2, Play, Pause, Route, Circle, Waves, Zap } from 'lucide-react'
+import { Check, Eraser, Move, Pencil, Trash2, Play, Pause, Route, Circle, Waves, Zap, Star, Diamond, Triangle, GitBranch, Plus, Minus, ArrowUpDown } from 'lucide-react'
 import type { MediaItem } from './mediaItem'
 
 type Point = [number, number]
-type PathType = 'straight' | 'freehand' | 'circle' | 'sine'
+type PathType = 'straight' | 'freehand' | 'circle' | 'sine' | 'star' | 'diamond' | 'triangle' | 'polyline' | 'sine-vertical' | 'bounce'
 type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'smooth'
 
 function clampPct(v: number) {
@@ -131,6 +131,166 @@ function generateSinePoints(fromX: number, fromY: number, toX: number, toY: numb
   return pts
 }
 
+function generateSineVerticalPoints(fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 80): Point[] {
+  const amp = Math.max(0, Math.min(30, amplitude))
+  const freq = Math.max(0.1, Math.min(10, frequency))
+  const pts: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const bx = fromX + (toX - fromX) * p
+    const by = fromY + (toY - fromY) * p
+    const off = amp * Math.sin(freq * 2 * Math.PI * p)
+    pts.push([clampPct(bx), clampPct(by + off)])
+  }
+  return pts
+}
+
+function generateStarPoints(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, points: number, innerRatio: number, rotation: number): Point[] {
+  const n = Math.max(3, Math.min(10, Math.round(points || 5)))
+  const ratio = Math.max(0.2, Math.min(0.85, innerRatio ?? 0.45))
+  let cx: number, cy: number, r: number
+  if (radius != null && radius > 2) {
+    cx = fromX; cy = fromY; r = radius
+  } else {
+    cx = (fromX + toX) / 2; cy = (fromY + toY) / 2
+    const d = Math.hypot(toX - fromX, toY - fromY)
+    r = Math.max(8, d * 0.45)
+  }
+  const rot = (rotation || 0) * Math.PI / 180
+  const pts: Point[] = []
+  const step = Math.PI / n
+  // create closed star polyline: outer, inner alternating, close loop, plus extra to show traversal
+  const vertices: Point[] = []
+  for (let i = 0; i < n * 2; i++) {
+    const ang = rot - Math.PI / 2 + i * step
+    const rad = i % 2 === 0 ? r : r * ratio
+    vertices.push([clampPct(cx + rad * Math.cos(ang)), clampPct(cy + rad * Math.sin(ang))])
+  }
+  vertices.push(vertices[0])
+  // sample along vertices to create smooth path following star outline
+  const perSeg = 12
+  for (let i = 0; i < vertices.length - 1; i++) {
+    const a = vertices[i], b = vertices[i+1]
+    for (let k = 0; k < perSeg; k++) {
+      const t = k / perSeg
+      pts.push([clampPct(a[0] + (b[0]-a[0])*t), clampPct(a[1] + (b[1]-a[1])*t)])
+    }
+  }
+  pts.push(vertices[vertices.length-1])
+  return pts
+}
+
+function generateDiamondPoints(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number): Point[] {
+  let cx: number, cy: number, r: number
+  if (radius != null && radius > 2) {
+    cx = fromX; cy = fromY; r = radius
+  } else {
+    cx = (fromX + toX) / 2; cy = (fromY + toY) / 2
+    const d = Math.hypot(toX - fromX, toY - fromY)
+    r = Math.max(10, d * 0.5)
+  }
+  const rot = (rotation || 0) * Math.PI / 180
+  const base: Point[] = [
+    [cx, cy - r],
+    [cx + r, cy],
+    [cx, cy + r],
+    [cx - r, cy],
+  ].map(([x,y]) => {
+    const dx = x - cx, dy = y - cy
+    const nx = dx * Math.cos(rot) - dy * Math.sin(rot)
+    const ny = dx * Math.sin(rot) + dy * Math.cos(rot)
+    return [clampPct(cx + nx), clampPct(cy + ny)] as Point
+  })
+  base.push(base[0])
+  const pts: Point[] = []
+  const perSeg = 20
+  for (let i = 0; i < base.length - 1; i++) {
+    const a = base[i], b = base[i+1]
+    for (let k = 0; k < perSeg; k++) {
+      const t = k / perSeg
+      pts.push([clampPct(a[0] + (b[0]-a[0])*t), clampPct(a[1] + (b[1]-a[1])*t)])
+    }
+  }
+  pts.push(base[base.length-1])
+  return pts
+}
+
+function generateTrianglePoints(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number): Point[] {
+  let cx: number, cy: number, r: number
+  if (radius != null && radius > 2) {
+    cx = fromX; cy = fromY; r = radius
+  } else {
+    cx = (fromX + toX) / 2; cy = (fromY + toY) / 2
+    const d = Math.hypot(toX - fromX, toY - fromY)
+    r = Math.max(10, d * 0.55)
+  }
+  const rot = (rotation || 0) * Math.PI / 180
+  const vertices: Point[] = []
+  for (let i = 0; i < 3; i++) {
+    const ang = rot - Math.PI/2 + i * (2*Math.PI/3)
+    vertices.push([clampPct(cx + r * Math.cos(ang)), clampPct(cy + r * Math.sin(ang))])
+  }
+  vertices.push(vertices[0])
+  const pts: Point[] = []
+  const perSeg = 24
+  for (let i = 0; i < vertices.length - 1; i++) {
+    const a = vertices[i], b = vertices[i+1]
+    for (let k = 0; k < perSeg; k++) {
+      const t = k / perSeg
+      pts.push([clampPct(a[0] + (b[0]-a[0])*t), clampPct(a[1] + (b[1]-a[1])*t)])
+    }
+  }
+  pts.push(vertices[vertices.length-1])
+  return pts
+}
+
+function generateBouncePoints(fromX: number, fromY: number, toX: number, toY: number, height: number, bounces: number, damping: number, numPerBounce = 28): Point[] {
+  const h = Math.max(0, Math.min(30, height ?? 14))
+  const n = Math.max(1, Math.min(8, Math.round(bounces ?? 4)))
+  const d = Math.max(0, Math.min(0.9, damping ?? 0.35))
+  // linear base from start to end, vertical bounce offset subtracted (upwards is smaller y in %: 0 top, 100 bottom)
+  // bounce height decays: bounce k has amplitude h * (1-d)^k
+  const pts: Point[] = []
+  for (let i = 0; i < n; i++) {
+    const amp = h * Math.pow(1 - d, i)
+    // segment progress range
+    const segStart = i / n
+    const segEnd = (i+1) / n
+    for (let k = 0; k < numPerBounce; k++) {
+      const tSeg = k / numPerBounce // 0..1 within bounce
+      const p = segStart + tSeg * (segEnd - segStart) // global 0..1
+      const bx = fromX + (toX - fromX) * p
+      const byBase = fromY + (toY - fromY) * p
+      // parabola: 4*t*(1-t) peaks at 0.5 => 1. So bounce up (negative y)
+      const parabola = 4 * tSeg * (1 - tSeg)
+      const off = -amp * parabola
+      pts.push([clampPct(bx), clampPct(byBase + off)])
+    }
+  }
+  // ensure end point exactly
+  pts.push([clampPct(toX), clampPct(toY)])
+  return pts
+}
+
+function applySinusUpDown(points: Point[], enabled: boolean, amplitude: number, frequency: number): Point[] {
+  if (!enabled || points.length < 2) return points
+  const amp = Math.max(0, Math.min(20, amplitude ?? 6))
+  if (amp < 0.2) return points
+  const freq = Math.max(0.1, Math.min(10, frequency ?? 2))
+  const total = pathLength(points)
+  if (total < 1e-6) return points
+  // resample with vertical sine offset applied along progress
+  const num = Math.max(points.length, 80)
+  const out: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const base = pointAlongPath(points, p)
+    const off = amp * Math.sin(freq * 2 * Math.PI * p)
+    out.push([clampPct(base[0]), clampPct(base[1] + off)])
+  }
+  return out
+}
+
 function effectivePoints(
   fromX: number, fromY: number, toX: number, toY: number,
   path: Point[] | undefined,
@@ -139,12 +299,34 @@ function effectivePoints(
   circleTurns: number,
   sineAmp: number,
   sineFreq: number,
+  starPoints?: number,
+  starInnerRatio?: number,
+  symbolRotation?: number,
+  sinusEnabled?: boolean,
+  sinusAmp?: number,
+  sinusFreq?: number,
+  bounceHeight?: number,
+  bounceCount?: number,
+  bounceDamping?: number,
 ): Point[] {
-  if (pathType === 'freehand' && path && path.length >= 2) return path
-  if (pathType === 'circle') return generateCirclePoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
-  if (pathType === 'sine') return generateSinePoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
-  if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) return [[fromX, fromY]]
-  return [[fromX, fromY], [toX, toY]]
+  let base: Point[]
+  if ((pathType === 'freehand' || pathType === 'polyline') && path && path.length >= 2) base = path
+  else if (pathType === 'circle') base = generateCirclePoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
+  else if (pathType === 'sine') base = generateSinePoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'sine-vertical') base = generateSineVerticalPoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'star') base = generateStarPoints(fromX, fromY, toX, toY, circleRadius, starPoints ?? 5, starInnerRatio ?? 0.45, symbolRotation ?? 0)
+  else if (pathType === 'diamond') base = generateDiamondPoints(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'triangle') base = generateTrianglePoints(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'bounce') base = generateBouncePoints(fromX, fromY, toX, toY, bounceHeight ?? 14, bounceCount ?? 4, bounceDamping ?? 0.35)
+  else if (pathType === 'polyline' && path && path.length >= 2) base = path
+  else {
+    if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base = [[fromX, fromY]]
+    else base = [[fromX, fromY], [toX, toY]]
+  }
+  if (sinusEnabled) {
+    base = applySinusUpDown(base, true, sinusAmp ?? 6, sinusFreq ?? 2)
+  }
+  return base
 }
 
 type MotionEditorProps = {
@@ -160,6 +342,15 @@ type MotionEditorProps = {
   circleTurns?: number
   sineAmplitude?: number
   sineFrequency?: number
+  starPoints?: number
+  starInnerRatio?: number
+  symbolRotation?: number
+  sinusEnabled?: boolean
+  sinusAmplitude?: number
+  sinusFrequency?: number
+  bounceHeight?: number
+  bounceCount?: number
+  bounceDamping?: number
   onChange: (patch: Partial<MediaItem>) => void
   src?: string
   isVideo?: boolean
@@ -178,6 +369,15 @@ export function TextMotionPathEditor({
   circleTurns = 1,
   sineAmplitude = 8,
   sineFrequency = 2,
+  starPoints = 5,
+  starInnerRatio = 0.45,
+  symbolRotation = 0,
+  sinusEnabled = false,
+  sinusAmplitude = 6,
+  sinusFrequency = 2,
+  bounceHeight = 14,
+  bounceCount = 4,
+  bounceDamping = 0.35,
   onChange,
   src,
   isVideo,
@@ -188,16 +388,16 @@ export function TextMotionPathEditor({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [drawing, setDrawing] = useState(false)
   const [drawPoints, setDrawPoints] = useState<Point[]>([])
-  const [dragging, setDragging] = useState<null | 'from' | 'to'>(null)
+  const [dragging, setDragging] = useState<null | 'from' | 'to' | number>(null)
   const [playing, setPlaying] = useState(true)
   const [progress, setProgress] = useState(0)
 
-  const curPathType: PathType = pathType || (path && path.length >= 2 ? 'freehand' : 'straight')
+  const curPathType: PathType = (pathType as PathType) || (path && path.length >= 2 ? 'freehand' : 'straight')
   const curEasing: Easing = easing || 'linear'
 
   const effectivePath: Point[] = useMemo(() => {
-    return effectivePoints(fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency)
-  }, [fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency])
+    return effectivePoints(fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency, starPoints, starInnerRatio, symbolRotation, sinusEnabled, sinusAmplitude, sinusFrequency, bounceHeight, bounceCount, bounceDamping)
+  }, [fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency, starPoints, starInnerRatio, symbolRotation, sinusEnabled, sinusAmplitude, sinusFrequency, bounceHeight, bounceCount, bounceDamping])
 
   useEffect(() => {
     if (!enabled || !playing) return
@@ -234,6 +434,17 @@ export function TextMotionPathEditor({
       setDrawPoints([pt])
       return
     }
+    // Polyline waypoint hit test
+    if ((curPathType === 'polyline' || curPathType === 'freehand') && path && path.length >= 2) {
+      for (let i = 0; i < path.length; i++) {
+        if (dist(pt, path[i]) < 4.5) {
+          setDragging(i)
+          ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+          e.preventDefault()
+          return
+        }
+      }
+    }
     const nearFrom = dist(pt, [fromX, fromY]) < 6
     const nearTo = dist(pt, [toX, toY]) < 6
     if (nearFrom) {
@@ -250,6 +461,29 @@ export function TextMotionPathEditor({
         setDrawing(true)
         setDrawPoints([pt])
         e.preventDefault()
+      } else if (curPathType === 'polyline') {
+        // add new waypoint at click position (append or insert near segment)
+        const current = path && path.length >= 2 ? path : [[fromX, fromY], [toX, toY]] as Point[]
+        // find closest segment to insert
+        let insertIdx = current.length
+        let bestDist = Infinity
+        for (let i = 0; i < current.length - 1; i++) {
+          const a = current[i], b = current[i+1]
+          // distance from pt to segment
+          const l2 = (b[0]-a[0])**2 + (b[1]-a[1])**2
+          if (l2 === 0) continue
+          let t = ((pt[0]-a[0])*(b[0]-a[0]) + (pt[1]-a[1])*(b[1]-a[1])) / l2
+          t = Math.max(0, Math.min(1, t))
+          const proj: Point = [a[0]+t*(b[0]-a[0]), a[1]+t*(b[1]-a[1])]
+          const d = dist(pt, proj)
+          if (d < bestDist && d < 8) { bestDist = d; insertIdx = i+1 }
+        }
+        const next = [...current]
+        next.splice(insertIdx, 0, pt)
+        onChange({ textMovePath: next.slice(0, 120), textMovePathType: 'polyline', textMoveFromX: next[0][0], textMoveFromY: next[0][1], textMoveToX: next[next.length-1][0], textMoveToY: next[next.length-1][1] })
+        setDragging(insertIdx as any)
+        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+        e.preventDefault()
       }
     }
   }
@@ -263,18 +497,24 @@ export function TextMotionPathEditor({
         if (dist(cur[cur.length-1], pt) < 0.8) return cur
         return [...cur, pt]
       })
-    } else if (dragging) {
+    } else if (dragging !== null) {
       if (dragging === 'from') {
         onChange({ textMoveFromX: pt[0], textMoveFromY: pt[1], textX: pt[0], textY: pt[1] })
-        if (curPathType === 'freehand' && path && path.length >= 2) {
+        if ((curPathType === 'freehand' || curPathType === 'polyline') && path && path.length >= 2) {
           const newPath: Point[] = [[pt[0], pt[1]], ...path.slice(1)]
           onChange({ textMovePath: newPath })
         }
-      } else {
+      } else if (dragging === 'to') {
         onChange({ textMoveToX: pt[0], textMoveToY: pt[1] })
-        if (curPathType === 'freehand' && path && path.length >= 2) {
+        if ((curPathType === 'freehand' || curPathType === 'polyline') && path && path.length >= 2) {
           const newPath: Point[] = [...path.slice(0, -1), [pt[0], pt[1]]]
           onChange({ textMovePath: newPath })
+        }
+      } else if (typeof dragging === 'number') {
+        if (path && path.length >= 2) {
+          const next = [...path]
+          next[dragging] = pt
+          onChange({ textMovePath: next, textMoveFromX: next[0][0], textMoveFromY: next[0][1], textMoveToX: next[next.length-1][0], textMoveToY: next[next.length-1][1] })
         }
       }
     }
@@ -302,6 +542,20 @@ export function TextMotionPathEditor({
       setDrawing(false)
     }
     setDragging(null)
+  }
+
+  const handlePolyAddMid = () => {
+    const current = path && path.length >= 2 ? path : [[fromX, fromY], [toX, toY]] as Point[]
+    const mid: Point = [(current[0][0]+current[current.length-1][0])/2, (current[0][1]+current[current.length-1][1])/2]
+    const idx = Math.floor(current.length/2)
+    const next = [...current]
+    next.splice(idx, 0, mid)
+    onChange({ textMovePath: next, textMovePathType: 'polyline' })
+  }
+  const handlePolyRemove = (idx: number) => {
+    if (!path || path.length <= 2) return
+    const next = path.filter((_, i) => i !== idx)
+    onChange({ textMovePath: next, textMoveFromX: next[0][0], textMoveFromY: next[0][1], textMoveToX: next[next.length-1][0], textMoveToY: next[next.length-1][1] })
   }
 
   const toggleEnabled = (on: boolean) => {
@@ -365,11 +619,17 @@ export function TextMotionPathEditor({
     {enabled && <>
       <div className="motion-type-row">
         <span className="motion-label"><Route size={12}/> Path type</span>
-        <div className="motion-type-buttons">
+        <div className="motion-type-buttons" style={{flexWrap:'wrap'}}>
           <button type="button" className={`btn ghost small ${curPathType==='straight'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'straight' })} title="Straight line"><Move size={12}/> Straight</button>
           <button type="button" className={`btn ghost small ${curPathType==='freehand'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'freehand' })} title="Freehand drawn path"><Pencil size={12}/> Free draw</button>
+          <button type="button" className={`btn ghost small ${curPathType==='polyline'?'active':''}`} onClick={()=>{ const init = path && path.length>=2 ? path : [[fromX,fromY],[toX,toY]] as Point[]; onChange({ textMovePathType: 'polyline', textMovePath: init }) }} title="Multi-point polyline — click to add intermediate points, drag to move"><GitBranch size={12}/> Polyline</button>
           <button type="button" className={`btn ghost small ${curPathType==='circle'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'circle' })} title="Circular path"><Circle size={12}/> Circle</button>
           <button type="button" className={`btn ghost small ${curPathType==='sine'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'sine' })} title="Sinus wave path"><Waves size={12}/> Sinus</button>
+          <button type="button" className={`btn ghost small ${curPathType==='sine-vertical'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'sine-vertical' })} title="Vertical sinus up/down — straight line with vertical wave"><Waves size={12} style={{transform:'rotate(90deg)'}}/> Sine vertical</button>
+          <button type="button" className={`btn ghost small ${curPathType==='star'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'star' })} title="Star-shaped path"><Star size={12}/> Star</button>
+          <button type="button" className={`btn ghost small ${curPathType==='diamond'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'diamond' })} title="Diamond path"><Diamond size={12}/> Diamond</button>
+          <button type="button" className={`btn ghost small ${curPathType==='triangle'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'triangle' })} title="Triangle path"><Triangle size={12}/> Triangle</button>
+          <button type="button" className={`btn ghost small ${curPathType==='bounce'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'bounce' })} title="Bouncy parabolic arcs — each bounce can be damped"><ArrowUpDown size={12}/> Bounce</button>
         </div>
       </div>
 
@@ -389,10 +649,47 @@ export function TextMotionPathEditor({
         <label>Turns <input type="range" min={0.25} max={3} step={0.25} value={circleTurns} onChange={e=>onChange({ textMoveCircleTurns: Number(e.target.value) })} /> <em>{circleTurns}×</em></label>
       </div>}
 
-      {curPathType === 'sine' && <div className="motion-params">
+      {(curPathType === 'sine' || curPathType === 'sine-vertical') && <div className="motion-params">
         <label>Amplitude <input type="range" min={0} max={30} step={1} value={sineAmplitude} onChange={e=>onChange({ textMoveSineAmplitude: Number(e.target.value) })} /> <em>{sineAmplitude}%</em></label>
         <label>Frequency <input type="range" min={0.5} max={6} step={0.5} value={sineFrequency} onChange={e=>onChange({ textMoveSineFrequency: Number(e.target.value) })} /> <em>{sineFrequency} waves</em></label>
       </div>}
+
+      {(curPathType === 'star' || curPathType === 'diamond' || curPathType === 'triangle') && <div className="motion-params">
+        <label>Size <input type="range" min={5} max={40} step={1} value={circleRadius ?? 18} onChange={e=>onChange({ textMoveCircleRadius: Number(e.target.value) })} /> <em>{Math.round(circleRadius ?? 18)}%</em></label>
+        {curPathType === 'star' && <>
+          <label>Points <input type="range" min={3} max={8} step={1} value={starPoints} onChange={e=>onChange({ textMoveStarPoints: Number(e.target.value) })} /> <em>{starPoints}</em></label>
+          <label>Inner <input type="range" min={0.2} max={0.8} step={0.05} value={starInnerRatio} onChange={e=>onChange({ textMoveStarInnerRatio: Number(e.target.value) })} /> <em>{starInnerRatio.toFixed(2)}</em></label>
+        </>}
+        <label>Rotation <input type="range" min={0} max={360} step={5} value={symbolRotation} onChange={e=>onChange({ textMoveSymbolRotation: Number(e.target.value) })} /> <em>{symbolRotation}°</em></label>
+      </div>}
+
+      {curPathType === 'bounce' && <div className="motion-params">
+        <label>Height <input type="range" min={2} max={28} step={1} value={bounceHeight} onChange={e=>onChange({ textMoveBounceHeight: Number(e.target.value) })} /> <em>{bounceHeight}%</em></label>
+        <label>Bounces <input type="range" min={1} max={8} step={1} value={bounceCount} onChange={e=>onChange({ textMoveBounceCount: Number(e.target.value) })} /> <em>{bounceCount}×</em></label>
+        <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={bounceDamping} onChange={e=>onChange({ textMoveBounceDamping: Number(e.target.value) })} /> <em>{bounceDamping.toFixed(2)}{bounceDamping>0.01 ? ' damped' : ' no damp'}</em></label>
+      </div>}
+
+      {curPathType === 'polyline' && <div className="motion-params polyline-params">
+        <span className="polyline-info"><GitBranch size={12}/> {path?.length ?? 2} points — click on canvas to insert, drag points to move</span>
+        <button type="button" className="btn ghost small" onClick={handlePolyAddMid}><Plus size={12}/> Add middle point</button>
+        <button type="button" className="btn ghost small" disabled={!path || path.length<=2} onClick={()=>{ if(path && path.length>2){ const next=path.slice(0,-1); onChange({ textMovePath: next }) } }}><Minus size={12}/> Remove last</button>
+        {path && path.length>2 && <div className="polyline-points-list">
+          {path.map((pt, i) => <span key={i} className="polyline-point-tag">{i===0?'S':i===path.length-1?'E':String(i)}: {Math.round(pt[0])}%,{Math.round(pt[1])}% <button type="button" className="mini-x" onClick={()=>handlePolyRemove(i)} title="Remove this point">×</button></span>)}
+        </div>}
+      </div>}
+
+      <div className="motion-type-row" style={{marginTop:8}}>
+        <label className="check-label" style={{fontSize:'13px'}}>
+          <input type="checkbox" checked={sinusEnabled} onChange={e=>onChange({ textMoveSinusUpDownEnabled: e.target.checked })} />
+          <span><Check size={11}/></span>
+          Sinus up/down overlay <small style={{opacity:.7}}>vertical wave on top of base path</small>
+        </label>
+        {sinusEnabled && <div className="motion-params" style={{marginLeft:12}}>
+          <label>Up/down amp <input type="range" min={0} max={20} step={1} value={sinusAmplitude} onChange={e=>onChange({ textMoveSinusAmplitude: Number(e.target.value) })} /> <em>{sinusAmplitude}%</em></label>
+          <label>Freq <input type="range" min={0.5} max={6} step={0.5} value={sinusFrequency} onChange={e=>onChange({ textMoveSinusFrequency: Number(e.target.value) })} /> <em>{sinusFrequency}</em></label>
+        </div>}
+      </div>
+
 
       <div
         ref={containerRef}
@@ -414,10 +711,11 @@ export function TextMotionPathEditor({
 
         <span className="motion-handle from" style={{ left:`${fromX}%`, top:`${fromY}%` }} title={`Start ${Math.round(fromX)}%, ${Math.round(fromY)}%`}><b>S</b></span>
         <span className="motion-handle to" style={{ left:`${toX}%`, top:`${toY}%` }} title={`End ${Math.round(toX)}%, ${Math.round(toY)}%`}><b>E</b></span>
+        {(curPathType === 'polyline' || (curPathType === 'freehand' && path && path.length>2)) && path && path.map((pt,i)=> i===0 || i===path.length-1 ? null : <span key={i} className="motion-handle waypoint" style={{ left:`${pt[0]}%`, top:`${pt[1]}%`, width:'16px', height:'16px', fontSize:'9px', background:'rgba(90,140,255,0.9)', border:'1px solid white' }} title={`Point ${i}: ${Math.round(pt[0])}%, ${Math.round(pt[1])}% — drag to move`}><b>{i}</b></span>)}
 
         <span className="motion-caption" style={{ left:`${currentPos[0]}%`, top:`${currentPos[1]}%`, ...captionStyle }}>{caption}</span>
 
-        <em className="motion-hint">{drawing ? 'Drawing… release to set path' : curPathType==='freehand' ? 'Draw a path with mouse/finger — S → E' : `${curPathType} · ${curEasing} · drag S/E to adjust`}</em>
+        <em className="motion-hint">{drawing ? 'Drawing… release to set path' : curPathType==='polyline' ? `Polyline · ${path?.length ?? 2} points · click to insert · drag S/E/waypoints${sinusEnabled ? ' · sinus up/down' : ''}` : curPathType==='freehand' ? `Draw a path — S → E · drag waypoints to tweak${sinusEnabled ? ' · sinus up/down' : ''}` : `${curPathType} · ${curEasing}${sinusEnabled ? ' · sinus up/down' : ''} · drag S/E to adjust`}</em>
       </div>
 
       <div className="motion-readout">
@@ -433,7 +731,7 @@ export function TextMotionPathEditor({
         <button type="button" className="btn ghost small danger" onClick={()=>onChange({ textMovePath: undefined, textMovePathType: 'straight', textMoveToX: fromX, textMoveToY: fromY })} title="Make static"><Trash2 size={12}/> Make static</button>
       </div>
 
-      <p className="motion-note"><small>Text moves during its visible window (textStart → textEnd). Duration determines speed (longer = slower). Predefined paths: straight, free draw, circle (radius & turns), sinus (amplitude & frequency). Easing fades speed in/out: linear, fade-in (ease-in), fade-out (ease-out), in-out, smooth cubic.</small></p>
+            <p className="motion-note"><small>Text moves during its visible window (textStart → textEnd). Duration determines speed (longer = slower). Predefined paths: straight, free draw, circle (radius & turns), sinus/bounce (height/damping), star/diamond/triangle/polyline. Damping makes each bounce smaller. Easing fades speed in/out: linear, fade-in (ease-in), fade-out (ease-out), in-out, smooth cubic.</small></p>
     </>}
   </div>
 }

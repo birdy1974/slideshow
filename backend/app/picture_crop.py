@@ -156,6 +156,21 @@ def inscribed_zoom(aspect: float, degrees: float) -> float:
     return max(cos + sin / aspect, aspect * sin + cos)
 
 
+def _quote_filter_value(value: str) -> str:
+    """Quote a filter option value if it contains characters that would split the graph.
+
+    FFmpeg splits filter graphs on ``,`` (next filter), ``;`` (next chain) and
+    ``:`` (next option), and on ``[``/``]`` for link labels. A value like
+    ``min(iw,ih)`` or ``clip(t,0,1)`` would otherwise be broken into separate
+    filters (``No such filter: '0)'``). Wrapping the value in single quotes
+    keeps those characters literal — exactly what ``quote_xfade_value`` does for
+    xfade.
+    """
+    if not any(ch in value for ch in ",:'\\[];"):
+        return value
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def _even_expression(expression: str) -> str:
     """Round an FFmpeg expression down to an even pixel count (yuv420p)."""
     return f"trunc(({expression})/2)*2"
@@ -212,8 +227,8 @@ def crop_filters(crop: dict[str, Any] | None) -> list[str]:
         x, y = f"iw*{_num(rect['x'])}", f"ih*{_num(rect['y'])}"
         w, h = f"iw*{_num(rect['w'])}", f"ih*{_num(rect['h'])}"
     filters.append(
-        f"crop=w={_even_expression(w)}:h={_even_expression(h)}"
-        f":x={_even_expression(x)}:y={_even_expression(y)}"
+        f"crop=w={_quote_filter_value(_even_expression(w))}:h={_quote_filter_value(_even_expression(h))}"
+        f":x={_quote_filter_value(_even_expression(x))}:y={_quote_filter_value(_even_expression(y))}"
     )
     return filters
 

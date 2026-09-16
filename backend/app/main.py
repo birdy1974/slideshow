@@ -29,6 +29,7 @@ from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slu
 from .text_effect_previews import TextEffectPreviewCache
 from .uploads import UploadRejected, store_upload, uploads_status
 from .filmstrips import FilmstripUnavailable, build_filmstrip
+from .video_preview import PreviewUnavailable as VideoPreviewUnavailable, build_video_preview
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -602,6 +603,25 @@ def media_file(root: str = Query(pattern="^(photos|videos|music|uploads)$"), pat
         filename=target.name,
         content_disposition_type="inline",
     )
+
+
+@app.get("/api/media/preview")
+def media_preview(root: str = Query(pattern="^(photos|videos|uploads)$"), path: str = "", width: int = Query(default=640, ge=160, le=1280)) -> FileResponse:
+    """Browser-playable H.264 proxy for a movie the browser cannot decode.
+
+    The original file (e.g. a 640×480 29.97 fps AVI/WMV/MPEG-PS such as the
+    3800 kbps mono 44.1 kHz sample in the bug report) may use a codec that
+    FFmpeg can decode but ``<video>`` cannot.  This endpoint returns a small
+    H.264/AAC MP4 transcoded from the source, cached under the config volume
+    like the filmstrip.  The frontend falls back to it when the native stream
+    errors, so the movie can still be previewed and trimmed.
+    """
+    try:
+        preview = build_video_preview(settings, root, path, width=width)
+    except VideoPreviewUnavailable as exc:
+        status = 404 if "not found" in str(exc).lower() else 422
+        raise HTTPException(status, str(exc)) from exc
+    return FileResponse(preview, media_type="video/mp4", filename=preview.name, content_disposition_type="inline")
 
 
 @app.get("/api/transition-previews/status")

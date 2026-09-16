@@ -289,6 +289,165 @@ def _generate_sine_points(
         pts.append((_clamp(x,0,100), _clamp(y,0,100)))
     return pts
 
+def _generate_sine_vertical_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    amplitude: float, frequency: float, num_points: int = 80
+) -> list[tuple[float,float]]:
+    amp = max(0.0, min(30.0, amplitude))
+    freq = max(0.1, min(10.0, frequency))
+    pts: list[tuple[float,float]] = []
+    for i in range(num_points+1):
+        p = i / num_points
+        bx = from_x + (to_x - from_x) * p
+        by = from_y + (to_y - from_y) * p
+        off = amp * math.sin(freq * 2 * math.pi * p)
+        pts.append((_clamp(bx,0,100), _clamp(by + off,0,100)))
+    return pts
+
+def _generate_star_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, points: float, inner_ratio: float, rotation: float
+) -> list[tuple[float,float]]:
+    n = max(3, min(10, int(round(points or 5))))
+    ratio = max(0.2, min(0.85, inner_ratio if inner_ratio is not None else 0.45))
+    if radius is not None and radius > 2:
+        cx, cy, r = from_x, from_y, radius
+    else:
+        cx = (from_x + to_x) / 2.0
+        cy = (from_y + to_y) / 2.0
+        d = math.hypot(to_x - from_x, to_y - from_y)
+        r = max(8.0, d * 0.45)
+    rot = (rotation or 0.0) * math.pi / 180.0
+    step = math.pi / n
+    vertices: list[tuple[float,float]] = []
+    for i in range(n*2):
+        ang = rot - math.pi/2 + i * step
+        rad = r if i % 2 == 0 else r * ratio
+        vertices.append((_clamp(cx + rad*math.cos(ang),0,100), _clamp(cy + rad*math.sin(ang),0,100)))
+    vertices.append(vertices[0])
+    pts: list[tuple[float,float]] = []
+    per_seg = 12
+    for i in range(len(vertices)-1):
+        a,b = vertices[i], vertices[i+1]
+        for k in range(per_seg):
+            t = k / per_seg
+            pts.append((_clamp(a[0]+(b[0]-a[0])*t,0,100), _clamp(a[1]+(b[1]-a[1])*t,0,100)))
+    pts.append(vertices[-1])
+    return pts
+
+def _generate_diamond_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, rotation: float
+) -> list[tuple[float,float]]:
+    if radius is not None and radius > 2:
+        cx, cy, r = from_x, from_y, radius
+    else:
+        cx = (from_x + to_x) / 2.0
+        cy = (from_y + to_y) / 2.0
+        d = math.hypot(to_x - from_x, to_y - from_y)
+        r = max(10.0, d * 0.5)
+    rot = (rotation or 0.0) * math.pi / 180.0
+    base = [(cx, cy-r), (cx+r, cy), (cx, cy+r), (cx-r, cy)]
+    turned: list[tuple[float,float]] = []
+    for x,y in base:
+        dx, dy = x-cx, y-cy
+        nx = dx*math.cos(rot) - dy*math.sin(rot)
+        ny = dx*math.sin(rot) + dy*math.cos(rot)
+        turned.append((_clamp(cx+nx,0,100), _clamp(cy+ny,0,100)))
+    turned.append(turned[0])
+    pts: list[tuple[float,float]] = []
+    per_seg = 20
+    for i in range(len(turned)-1):
+        a,b = turned[i], turned[i+1]
+        for k in range(per_seg):
+            t = k/per_seg
+            pts.append((_clamp(a[0]+(b[0]-a[0])*t,0,100), _clamp(a[1]+(b[1]-a[1])*t,0,100)))
+    pts.append(turned[-1])
+    return pts
+
+def _generate_triangle_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, rotation: float
+) -> list[tuple[float,float]]:
+    if radius is not None and radius > 2:
+        cx, cy, r = from_x, from_y, radius
+    else:
+        cx = (from_x + to_x) / 2.0
+        cy = (from_y + to_y) / 2.0
+        d = math.hypot(to_x - from_x, to_y - from_y)
+        r = max(10.0, d * 0.55)
+    rot = (rotation or 0.0) * math.pi / 180.0
+    vertices: list[tuple[float,float]] = []
+    for i in range(3):
+        ang = rot - math.pi/2 + i * (2*math.pi/3)
+        vertices.append((_clamp(cx + r*math.cos(ang),0,100), _clamp(cy + r*math.sin(ang),0,100)))
+    vertices.append(vertices[0])
+    pts: list[tuple[float,float]] = []
+    per_seg = 24
+    for i in range(len(vertices)-1):
+        a,b = vertices[i], vertices[i+1]
+        for k in range(per_seg):
+            t = k/per_seg
+            pts.append((_clamp(a[0]+(b[0]-a[0])*t,0,100), _clamp(a[1]+(b[1]-a[1])*t,0,100)))
+    pts.append(vertices[-1])
+    return pts
+
+def _generate_bounce_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    height: float, bounces: float, damping: float, num_per_bounce: int = 28
+) -> list[tuple[float,float]]:
+    h = max(0.0, min(30.0, height if height is not None else 14.0))
+    n = max(1, min(8, int(round(bounces if bounces is not None else 4))))
+    d = max(0.0, min(0.9, damping if damping is not None else 0.35))
+    pts: list[tuple[float,float]] = []
+    for i in range(n):
+        amp = h * ((1 - d) ** i)
+        seg_start = i / n
+        seg_end = (i + 1) / n
+        for k in range(num_per_bounce):
+            t_seg = k / num_per_bounce
+            p = seg_start + t_seg * (seg_end - seg_start)
+            bx = from_x + (to_x - from_x) * p
+            by_base = from_y + (to_y - from_y) * p
+            parabola = 4 * t_seg * (1 - t_seg)
+            off = -amp * parabola
+            pts.append((_clamp(bx,0,100), _clamp(by_base + off,0,100)))
+    pts.append((_clamp(to_x,0,100), _clamp(to_y,0,100)))
+    return pts
+
+def _bouncy_offset(progress: float, height: float, bounces: float, damping: float) -> float:
+    h = max(0.0, min(30.0, height if height is not None else 12.0))
+    if h < 0.1:
+        return 0.0
+    n = max(1, min(8, int(round(bounces if bounces is not None else 3))))
+    d = max(0.0, min(0.95, damping if damping is not None else 0.35))
+    p = max(0.0, min(1.0, progress))
+    idx = min(n - 1, int(math.floor(p * n)))
+    seg_t = (p * n) % 1.0
+    amp = h * ((1 - d) ** idx)
+    parabola = 4 * seg_t * (1 - seg_t)
+    return -amp * parabola
+
+
+def _apply_sinus_updown(points: list[tuple[float,float]], enabled: bool, amplitude: float, frequency: float) -> list[tuple[float,float]]:
+    if not enabled or len(points) < 2:
+        return points
+    amp = max(0.0, min(20.0, amplitude if amplitude is not None else 6.0))
+    if amp < 0.2:
+        return points
+    freq = max(0.1, min(10.0, frequency if frequency is not None else 2.0))
+    total = _path_length(points)
+    if total < 1e-6:
+        return points
+    num = max(len(points), 80)
+    out: list[tuple[float,float]] = []
+    for i in range(num+1):
+        p = i / num
+        base = _point_along_path(points, p)
+        off = amp * math.sin(freq * 2 * math.pi * p)
+        out.append((_clamp(base[0],0,100), _clamp(base[1]+off,0,100)))
+    return out
+
 def _effective_motion_points(
     from_x: float, from_y: float, to_x: float, to_y: float,
     path: list[tuple[float,float]] | None,
@@ -297,22 +456,46 @@ def _effective_motion_points(
     circle_turns: float,
     sine_amp: float,
     sine_freq: float,
+    star_points: float | None = None,
+    star_inner_ratio: float | None = None,
+    symbol_rotation: float | None = None,
+    sinus_enabled: bool = False,
+    sinus_amp: float | None = None,
+    sinus_freq: float | None = None,
+    bounce_height: float | None = None,
+    bounce_count: float | None = None,
+    bounce_damping: float | None = None,
 ) -> list[tuple[float,float]] | None:
-    pt = path_type or "straight"
-    if pt == "freehand" and path and len(path) >= 2:
-        return path
-    if pt == "circle":
-        return _generate_circle_points(from_x, from_y, to_x, to_y, circle_radius, circle_turns)
-    if pt == "sine":
-        return _generate_sine_points(from_x, from_y, to_x, to_y, sine_amp, sine_freq)
-    # straight or fallback
-    if path and len(path) >= 2 and pt == "straight":
-        # if user has drawn path but selected straight, ignore path
-        pass
-    # For straight, if freehand exists but type is straight, use straight
-    if abs(from_x-to_x) < 0.01 and abs(from_y-to_y) < 0.01:
-        return None
-    return [(from_x, from_y), (to_x, to_y)]
+    pt = (path_type or "straight").lower()
+    base: list[tuple[float,float]] | None = None
+    if pt in ("freehand", "polyline") and path and len(path) >= 2:
+        base = path
+    elif pt == "circle":
+        base = _generate_circle_points(from_x, from_y, to_x, to_y, circle_radius, circle_turns)
+    elif pt == "sine":
+        base = _generate_sine_points(from_x, from_y, to_x, to_y, sine_amp, sine_freq)
+    elif pt == "sine-vertical":
+        base = _generate_sine_vertical_points(from_x, from_y, to_x, to_y, sine_amp, sine_freq)
+    elif pt == "star":
+        base = _generate_star_points(from_x, from_y, to_x, to_y, circle_radius, star_points or 5, star_inner_ratio or 0.45, symbol_rotation or 0)
+    elif pt == "diamond":
+        base = _generate_diamond_points(from_x, from_y, to_x, to_y, circle_radius, symbol_rotation or 0)
+    elif pt == "triangle":
+        base = _generate_triangle_points(from_x, from_y, to_x, to_y, circle_radius, symbol_rotation or 0)
+    elif pt == "bounce":
+        base = _generate_bounce_points(from_x, from_y, to_x, to_y, bounce_height or 14, bounce_count or 4, bounce_damping or 0.35)
+    elif pt == "polyline" and path and len(path) >= 2:
+        base = path
+    else:
+        if path and len(path) >= 2 and pt == "straight":
+            pass
+        if abs(from_x-to_x) < 0.01 and abs(from_y-to_y) < 0.01:
+            base = None
+        else:
+            base = [(from_x, from_y), (to_x, to_y)]
+    if base is not None and sinus_enabled:
+        base = _apply_sinus_updown(base, True, sinus_amp or 6, sinus_freq or 2)
+    return base
 
 # --------------------------------------------------------------------------
 # Shared geometry
@@ -352,6 +535,29 @@ class TextGeometry:
     move_circle_turns: float = 1.0
     move_sine_amp: float = 8.0
     move_sine_freq: float = 2.0
+    move_star_points: float = 5.0
+    move_star_inner_ratio: float = 0.45
+    move_symbol_rotation: float = 0.0
+    move_sinus_enabled: bool = False
+    move_sinus_amp: float = 6.0
+    move_sinus_freq: float = 2.0
+    move_bounce_height: float = 14.0
+    move_bounce_count: float = 4.0
+    move_bounce_damping: float = 0.35
+    # In-place bouncy (vertical bounce at fixed position with damping)
+    bouncy_enabled: bool = False
+    bouncy_height: float = 12.0
+    bouncy_bounces: float = 3.0
+    bouncy_damping: float = 0.35
+    # Steady hold at end: text stays at final position for this many seconds at end of text window (title frames, not moving)
+    move_steady_seconds: float = 0.0
+    # Scale / colour animation over hold
+    scale_enabled: bool = False
+    scale_from: float = 1.0
+    scale_to: float = 1.45
+    color_anim_enabled: bool = False
+    color_from: str = "#ffffff"
+    color_to: str = "#ffffff"
 
     def motion_points(self) -> list[tuple[float,float]] | None:
         if not self.move_enabled:
@@ -361,25 +567,52 @@ class TextGeometry:
             self.move_path, self.move_path_type,
             self.move_circle_radius, self.move_circle_turns,
             self.move_sine_amp, self.move_sine_freq,
+            self.move_star_points, self.move_star_inner_ratio, self.move_symbol_rotation,
+            self.move_sinus_enabled, self.move_sinus_amp, self.move_sinus_freq,
+            self.move_bounce_height, self.move_bounce_count, self.move_bounce_damping,
         )
 
     def motion_pos_at(self, t: float) -> tuple[float,float]:
         hold = max(1e-6, self.end - self.start)
-        prog_raw = _clamp((t - self.start) / hold, 0.0, 1.0)
+        # steady tail: motion finishes early and holds final position
+        steady = _clamp(float(self.move_steady_seconds or 0.0), 0.0, max(0.0, hold - 0.05))
+        effective = max(0.05, hold - steady)
+        elapsed = t - self.start
+        if elapsed >= effective:
+            prog_raw = 1.0
+        else:
+            prog_raw = _clamp(elapsed / effective, 0.0, 1.0) if elapsed > 0 else 0.0
         prog = _ease_progress(prog_raw, self.move_easing)
         pts = self.motion_points()
         if not pts:
-            return (self.cx, self.cy)
-        pct = _point_along_path(pts, prog)
-        return (self.width * pct[0] / 100.0, self.height * pct[1] / 100.0)
+            base_x, base_y = self.cx, self.cy
+        else:
+            pct = _point_along_path(pts, prog)
+            base_x, base_y = self.width * pct[0] / 100.0, self.height * pct[1] / 100.0
+        if self.bouncy_enabled:
+            off_pct = _bouncy_offset(prog_raw, self.bouncy_height, self.bouncy_bounces, self.bouncy_damping)
+            base_y = _clamp(base_y + self.height * off_pct / 100.0, 0, self.height)
+        return (base_x, base_y)
 
     def motion_pct_at(self, progress_raw: float) -> tuple[float,float]:
-        """Percent coords at raw progress 0..1 with easing applied."""
-        prog = _ease_progress(max(0.0, min(1.0, progress_raw)), self.move_easing)
+        """Percent coords at raw progress 0..1 with easing applied (respects steady tail)."""
+        hold = max(1e-6, self.end - self.start)
+        steady = _clamp(float(self.move_steady_seconds or 0.0), 0.0, max(0.0, hold - 0.05))
+        effective = max(0.05, hold - steady)
+        # map hold-progress (0..1) to motion progress that finishes at effective
+        raw = max(0.0, min(1.0, progress_raw))
+        prog_raw = 1.0 if raw * hold >= effective else _clamp(raw * hold / effective, 0.0, 1.0) if effective > 1e-9 else 1.0
+        prog = _ease_progress(prog_raw, self.move_easing)
         pts = self.motion_points()
         if not pts:
-            return (self.move_from_x, self.move_from_y)
-        return _point_along_path(pts, prog)
+            y = self.move_from_y
+            x = self.move_from_x
+        else:
+            x, y = _point_along_path(pts, prog)
+        if self.bouncy_enabled:
+            off = _bouncy_offset(prog_raw, self.bouncy_height, self.bouncy_bounces, self.bouncy_damping)
+            y = _clamp(y + off, 0, 100)
+        return (x, y)
 
 def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height: int) -> TextGeometry | None:
     text = str(item.get("text", "")).strip()
@@ -437,7 +670,7 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
     move_to_y = _clamp(_num(item, "textMoveToY", move_from_y), 0.0, 100.0)
     move_path = _parse_move_path(item.get("textMovePath"))
     move_path_type = str(item.get("textMovePathType") or ("freehand" if move_path else "straight")).lower()
-    if move_path_type not in ("straight", "freehand", "circle", "sine"):
+    if move_path_type not in ("straight", "freehand", "circle", "sine", "sine-vertical", "star", "diamond", "triangle", "polyline", "bounce"):
         move_path_type = "freehand" if move_path else "straight"
     move_easing = str(item.get("textMoveEasing") or "linear").lower()
     if move_easing not in ("linear", "ease-in", "ease-out", "ease-in-out", "smooth"):
@@ -453,6 +686,40 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
     circle_turns = _clamp(_num(item, "textMoveCircleTurns", 1.0), 0.1, 4.0)
     sine_amp = _clamp(_num(item, "textMoveSineAmplitude", 8.0), 0.0, 40.0)
     sine_freq = _clamp(_num(item, "textMoveSineFrequency", 2.0), 0.1, 10.0)
+    star_points = _clamp(_num(item, "textMoveStarPoints", 5), 3, 10)
+    star_inner = _clamp(_num(item, "textMoveStarInnerRatio", 0.45), 0.2, 0.85)
+    symbol_rot = _clamp(_num(item, "textMoveSymbolRotation", 0), 0, 360)
+    sinus_en = bool(item.get("textMoveSinusUpDownEnabled"))
+    sinus_amp = _clamp(_num(item, "textMoveSinusAmplitude", 6), 0, 20)
+    sinus_freq = _clamp(_num(item, "textMoveSinusFrequency", 2), 0.1, 10)
+    bounce_h = _clamp(_num(item, "textMoveBounceHeight", 14), 0, 30)
+    bounce_n = _clamp(_num(item, "textMoveBounceCount", 4), 1, 8)
+    bounce_d = _clamp(_num(item, "textMoveBounceDamping", 0.35), 0, 0.9)
+    bouncy_en = bool(item.get("textBouncyEnabled"))
+    bouncy_h = _clamp(_num(item, "textBouncyHeight", 12), 0, 30)
+    bouncy_n = _clamp(_num(item, "textBouncyBounces", 3), 1, 8)
+    bouncy_d = _clamp(_num(item, "textBouncyDamping", 0.35), 0, 0.95)
+    steady_raw = _num(item, "textSteadySeconds", _num(item, "textMotionSteadySeconds", 0))
+    # clamp later after hold is known: here just clamp to 0..60, final clamp in TextGeometry uses hold
+    steady_s = _clamp(steady_raw, 0.0, 60.0)
+    scale_en = bool(item.get("textScaleEnabled"))
+    scale_from = _clamp(_num(item, "textScaleFrom", 1.0), 0.3, 3.0)
+    scale_to = _clamp(_num(item, "textScaleTo", 1.45), 0.3, 3.0)
+    color_en = bool(item.get("textColorAnimEnabled"))
+    color_from_raw = str(item.get("textColorFrom") or colour)
+    color_to_raw = str(item.get("textColorTo") or color_from_raw)
+    # Migration: old default B was #ffcc33 (yellow) while A was white/fontColour — start with B same as A
+    if isinstance(color_to_raw, str) and color_to_raw.lower() == "#ffcc33":
+        try:
+            from_c = color_from_raw.lower() if isinstance(color_from_raw, str) else ""
+            if from_c != "#ffcc33" and re.fullmatch(r"#[0-9a-fA-F]{6}", color_from_raw or ""):
+                color_to_raw = color_from_raw
+            elif not re.fullmatch(r"#[0-9a-fA-F]{6}", color_from_raw or "") and re.fullmatch(r"#[0-9a-fA-F]{6}", colour or "") and colour.lower() != "#ffcc33":
+                color_to_raw = colour
+        except:
+            pass
+    color_from = color_from_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", color_from_raw or "") else colour
+    color_to = color_to_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", color_to_raw or "") else color_from
 
     return TextGeometry(
         width=width, height=height,
@@ -472,6 +739,26 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         move_circle_turns=circle_turns,
         move_sine_amp=sine_amp,
         move_sine_freq=sine_freq,
+        move_star_points=star_points,
+        move_star_inner_ratio=star_inner,
+        move_symbol_rotation=symbol_rot,
+        move_sinus_enabled=sinus_en,
+        move_sinus_amp=sinus_amp,
+        move_sinus_freq=sinus_freq,
+        move_bounce_height=bounce_h,
+        move_bounce_count=bounce_n,
+        move_bounce_damping=bounce_d,
+        bouncy_enabled=bouncy_en,
+        bouncy_height=bouncy_h,
+        bouncy_bounces=bouncy_n,
+        bouncy_damping=bouncy_d,
+        move_steady_seconds=steady_s,
+        scale_enabled=scale_en,
+        scale_from=scale_from,
+        scale_to=scale_to,
+        color_anim_enabled=color_en,
+        color_from=color_from,
+        color_to=color_to,
     )
 
 @dataclass
@@ -542,7 +829,13 @@ def _dt_motion_exprs(g: TextGeometry) -> tuple[str, str] | None:
     if not pts:
         return None
     hold = max(1e-6, g.end - g.start)
-    p_raw = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
+    steady = max(0.0, min(float(getattr(g, 'move_steady_seconds', 0) or 0.0), max(0.0, hold - 0.05)))
+    effective = max(0.05, hold - steady)
+    if steady > 0.01:
+        # motion completes in effective, then holds at 1
+        p_raw = f"if(lt(t,{_n(g.start + effective)}),clip((t-{_n(g.start)})/{_n(effective)},0,1),1)"
+    else:
+        p_raw = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
     p_expr = _eased_dt_expr(p_raw, g.move_easing)
     if len(pts) == 2:
         (fx, fy), (tx, ty) = pts[0], pts[1]
@@ -580,9 +873,84 @@ def _dt_motion_exprs(g: TextGeometry) -> tuple[str, str] | None:
         y_expr = f"if(lt({p_expr},{_n(t1)}),{y_i},{y_expr})"
     return (x_expr, y_expr)
 
+def _dt_bouncy_expr(g: TextGeometry, while_id: str) -> str | None:
+    # Returns ff expression (in pixels, negative up) for in-place bouncy offset, or None if not enabled
+    use_bouncy = g.bouncy_enabled or while_id == "bouncy"
+    if not use_bouncy:
+        return None
+    if while_id == "bouncy":
+        # params from registry while bouncy
+        try:
+            h = float(g.params.get("height", "12") or 12)
+        except: h = 12
+        try:
+            n = int(float(g.params.get("bounces", "3") or 3))
+        except: n = 3
+        try:
+            d = float(g.params.get("damping", "0.35") or 0.35)
+        except: d = 0.35
+    else:
+        h = g.bouncy_height
+        n = int(g.bouncy_bounces)
+        d = g.bouncy_damping
+    n = max(1, min(8, n))
+    h = max(0.0, min(30.0, h))
+    d = max(0.0, min(0.95, d))
+    if h < 0.1:
+        return None
+    hold = max(1e-6, g.end - g.start)
+    steady = max(0.0, min(float(getattr(g, 'move_steady_seconds', 0) or 0.0), max(0.0, hold - 0.05)))
+    effective = max(0.05, hold - steady)
+    if steady > 0.01:
+        p = f"if(lt(t,{_n(g.start + effective)}),clip((t-{_n(g.start)})/{_n(effective)},0,1),1)"
+    else:
+        p = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
+    # Build nested if for bounce index
+    # For each bounce i, amp = h * (1-d)^i  (in percent of screen height)
+    # offset_pct = -amp * 4*segT*(1-segT)
+    # pixel offset = height * offset_pct /100
+    inv_n = 1.0 / n
+    expr = None
+    for i in reversed(range(n)):
+        amp = h * ((1 - d) ** i)
+        amp_px = g.height * amp / 100.0
+        # seg_t = mod(p * n, 1) but for segment i we need t within that segment: u = (p*n - i)
+        # When we branch on p range, we can compute u = p*n - i
+        # parabola = 4*u*(1-u)
+        u = f"({p}*{n}-{i})"
+        parab = f"4*{u}*(1-{u})"
+        off = f"-{_n(amp_px)}*{parab}"
+        if expr is None:
+            expr = off
+        else:
+            thresh = _n((i+1) * inv_n)
+            expr = f"if(lt({p},{thresh}),{off},{expr})"
+    # clamp to 0 outside hold? already p clipped 0..1, expression yields 0 at boundaries because parabola 0
+    return f"({expr})"
+
 def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_: str) -> str:
     motion = _dt_motion_exprs(g)
-    if enter == "Fade" and while_ in ("", "None (static)") and exit_ == "Fade out" and not motion:
+    # fontsize expression for grow/shrink (scale) when using dt
+    hold = max(1e-6, g.end - g.start)
+    fontsize_expr = str(g.size)
+    if g.scale_enabled:
+        # linear scale over hold; dt while effects Grow/Shrink via _dt_offsets already not used, so we handle here for custom scale
+        fontsize_expr = f"({g.size}*({_n(g.scale_from)}+({_n(g.scale_to - g.scale_from)})*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+        # legacy while Grow/Shrink labels also map to custom scale if catalogue chose them
+        if while_ == "Grow" and not g.scale_enabled:
+            fontsize_expr = f"({g.size}*(1+0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+        elif while_ == "Shrink" and not g.scale_enabled:
+            fontsize_expr = f"({g.size}*(1.35-0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+        elif while_ == "Grow & shrink" and not g.scale_enabled:
+            fontsize_expr = f"({g.size}*(1+0.22*sin(2*PI*clip((t-{_n(g.start)})/{_n(max(0.4,g.speed))},0,1)))"
+    else:
+        if while_ == "Grow":
+            fontsize_expr = f"({g.size}*(1+0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+        elif while_ == "Shrink":
+            fontsize_expr = f"({g.size}*(1.35-0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+        elif while_ == "Grow & shrink":
+            fontsize_expr = f"({g.size}*(1+0.22*sin(2*PI*clip((t-{_n(g.start)})/{_n(max(0.4,g.speed))},0,1)))"
+    if enter == "Fade" and while_ in ("", "None (static)") and exit_ == "Fade out" and not motion and not g.scale_enabled:
         fade_in = max(0.01, g.di)
         fade_out = max(0.01, g.do)
         alpha = (
@@ -601,8 +969,15 @@ def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_:
         else:
             x_expr = f"(w-text_w)*{_n(g.cx / g.width)}{dx}"
             y_expr = f"(h-text_h)*{_n(g.cy / g.height)}{dy}"
+    # bouncy in-place (damped) — apply to y whether motion is on or not (uses motion y_expr's base)
+    try:
+        _bouncy_dt2 = _dt_bouncy_expr(g, while_)
+        if _bouncy_dt2:
+            y_expr = f"({y_expr}+{_bouncy_dt2})"
+    except: pass
+    # colour morph via dt not possible; if custom colour morph enabled but we are in dt, fall back to base colour (ASS will handle)
     return (
-        f"drawtext=fontfile='{font}':text='{ff_escape_drawtext(g.text)}':fontsize={g.size}"
+        f"drawtext=fontfile='{font}':text='{ff_escape_drawtext(g.text)}':fontsize={fontsize_expr}"
         f":fontcolor=0x{g.colour[1:]}:alpha='{alpha}':x='{x_expr}':y='{y_expr}'"
         f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}:enable='between(t,{_n(g.start)},{_n(g.end)})'"
     )
@@ -721,7 +1096,37 @@ def _while_tags(g: TextGeometry, while_id: str) -> str:
             half = max(1, period // 2)
             return f"\\t({t0},{t0 + half},\\frz0.8)\\t({t0 + half},{t0 + period},\\frz-0.8)"
         return _loop_tags(g, sway)
+    if while_id == "grow":
+        hold_ms = int(round((g.end - g.start) * 1000))
+        return f"\\fscx100\\fscy100\\t(0,{hold_ms},\\fscx135\\fscy135)"
+    if while_id == "shrink":
+        hold_ms = int(round((g.end - g.start) * 1000))
+        return f"\\fscx135\\fscy135\\t(0,{hold_ms},\\fscx100\\fscy100)"
+    if while_id == "grow-shrink":
+        def gs(cycle: int, t0: int, period: int) -> str:
+            half = max(1, period // 2)
+            return f"\\t({t0},{t0+half},\\fscx135\\fscy135)\\t({t0+half},{t0+period},\\fscx100\\fscy100)"
+        return _loop_tags(g, gs)
+    if while_id == "colour-morph":
+        hold_ms = int(round((g.end - g.start) * 1000))
+        from_c = g.params.get("from", "#ffffff")
+        to_c = g.params.get("to", "#ff5555")
+        return f"\\1c{ass_colour(from_c)}\\t(0,{hold_ms},\\1c{ass_colour(to_c)})"
+    if while_id == "bouncy":
+        # Handled via _structural_while_events (pos-per-tick), no static tags
+        return ""
     return ""
+
+def _scale_color_while_tags(g: TextGeometry) -> str:
+    parts: list[str] = []
+    hold_ms = int(round((g.end - g.start) * 1000))
+    if g.scale_enabled:
+        sf = max(30, min(300, int(round(g.scale_from * 100))))
+        st = max(30, min(300, int(round(g.scale_to * 100))))
+        parts.append(f"\\fscx{sf}\\fscy{sf}\\t(0,{hold_ms},\\fscx{st}\\fscy{st})")
+    if g.color_anim_enabled:
+        parts.append(f"\\1c{ass_colour(g.color_from)}\\t(0,{hold_ms},\\1c{ass_colour(g.color_to)})")
+    return "".join(parts)
 
 def _stagger_loop_tags(g: TextGeometry, count: int, pattern: Callable[[int, int, int, int], str]) -> list[str]:
     hold_ms = int(round((g.end - g.start) * 1000))
@@ -784,6 +1189,51 @@ def _alpha_at(g: TextGeometry, t: float) -> str:
     return "&H00&"
 
 def _structural_while_events(g: TextGeometry, while_id: str) -> list[str]:
+    # Bouncy in-place (damped) while — vertical parabola bounces with decaying amplitude
+    if while_id == "bouncy":
+        hold = g.end - g.start
+        try:
+            h = float(g.params.get("height", "12") or 12)
+        except: h = 12
+        try:
+            n = int(float(g.params.get("bounces", "3") or 3))
+        except: n = 3
+        try:
+            d = float(g.params.get("damping", "0.35") or 0.35)
+        except: d = 0.35
+        n = max(1, min(8, n)); h = max(0.0, min(30.0, h)); d = max(0.0, min(0.95, d))
+        if h < 0.1:
+            mx, my = g.motion_pos_at(g.start) if (g.move_enabled or g.bouncy_enabled) else (g.cx, g.cy)
+            return [_ev(0, g.start, g.end, f"\\an5\\pos({mx:.0f},{my:.0f})", _multiline(g))]
+        tick = max(1.0/24.0, hold / 120.0)
+        events_b: list[str] = []
+        t_cur = g.start
+        while t_cur < g.end - 1e-3:
+            t_next = min(t_cur + tick, g.end)
+            mid = (t_cur + t_next)/2
+            prog = _clamp((mid - g.start)/max(1e-6, hold), 0, 1)
+            off_pct = _bouncy_offset(prog, h, n, d)
+            # combine with motion path position if move enabled (use pct along path at same prog_raw)
+            if g.move_enabled:
+                pts = g.motion_points()
+                if pts:
+                    pct = g.motion_pct_at(prog)
+                    base_x = g.width * pct[0]/100.0
+                    base_y = g.height * pct[1]/100.0 + g.height * off_pct/100.0
+                    base_y = _clamp(base_y, 0, g.height)
+                else:
+                    base_x, base_y = g.cx, g.cy + g.height * off_pct/100.0
+            elif g.bouncy_enabled:
+                # both registry bouncy and item bouncy would double count — registry takes precedence, so use registry params only
+                # but if item also bouncy, we already accounted via registry; avoid double
+                base_x, base_y = g.cx, g.cy + g.height * off_pct/100.0
+            else:
+                base_x, base_y = g.cx, g.cy + g.height * off_pct/100.0
+            base_x = _clamp(base_x, 0, g.width); base_y = _clamp(base_y, 0, g.height)
+            alpha = _alpha_at(g, mid)
+            events_b.append(_ev(0, t_cur, t_next, f"\\an5\\pos({base_x:.0f},{base_y:.0f})\\alpha{alpha}", _multiline(g)))
+            t_cur = t_next
+        return events_b
     hold = g.end - g.start
     tick = max(1.0 / 10.0, hold / 240.0)
     seed = int(g.start * 1000) + len(g.text) * 7919 + sum(ord(ch) for ch in g.text[:24])
@@ -1157,22 +1607,19 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
     if total_len < 1e-6 and len(pts) < 3:
         return []
     hold = g.end - g.start
+    steady = max(0.0, min(float(getattr(g, 'move_steady_seconds', 0) or 0.0), max(0.0, hold - 0.05)))
+    effective = max(0.05, hold - steady) if steady > 0.01 else hold
 
     # If easing is not linear, sample with easing to approximate speed fade
     if g.move_easing != "linear":
-        # Sample many points along eased progress
-        # Use 60 samples for smooth easing
         num_samples = 60
-        # For complex paths with many points, we still sample eased progress along path length
-        # Generate eased progress values
         sampled_pts: list[tuple[float,float]] = []
         for i in range(num_samples+1):
             raw = i / num_samples
             eased = _ease_progress(raw, g.move_easing)
             sampled_pts.append(_point_along_path(pts, eased))
-        # Now create events between sampled points with equal time slices
         events: list[str] = []
-        slice_dur = hold / num_samples
+        slice_dur = effective / num_samples
         for i in range(num_samples):
             t0 = g.start + i * slice_dur
             t1 = t0 + slice_dur
@@ -1188,11 +1635,25 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
             if i == 0 and "\\move(" not in enter_tags:
                 tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + while_tags + f"\\alpha{alpha}"
             if i == num_samples-1 and "\\move(" not in exit_tags:
-                tags += exit_tags
+                # tail steady will be added after loop if needed, so don't add exit yet if steady
+                if steady <= 0.01:
+                    tags += exit_tags
             events.append(_ev(0, t0, t1, tags, body))
+        if steady > 0.01:
+            tail_t0 = g.start + effective
+            tail_mid = (tail_t0 + g.end) / 2
+            alpha = _alpha_at(g, tail_mid)
+            x_end = g.width * pts[-1][0] / 100.0
+            y_end = g.height * pts[-1][1] / 100.0
+            # need bouncy offset? motion_pos handles it but pts already include bounce trajectory? For tail static, use last pt with bouncy at prog 1? bouncy offset at 1 is 0
+            # apply bouncy if enabled: use motion_pos_at for tail pos (handles bouncy)
+            mx, my = g.motion_pos_at(tail_mid)
+            tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + while_tags + exit_tags
+            # include enter_tags if motion had none? already handled
+            events.append(_ev(0, tail_t0, g.end, tags, body))
         return events
 
-    # Linear easing — use original logic with distance-proportional timing
+    # Linear easing — distance-proportional timing
     cum = 0.0
     thresholds = [0.0]
     for i in range(1, len(pts)):
@@ -1201,8 +1662,8 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
         thresholds.append(cum/total_len if total_len>1e-9 else i/(len(pts)-1))
     events: list[str] = []
     for i in range(len(pts)-1):
-        t0 = g.start + hold * thresholds[i]
-        t1 = g.start + hold * thresholds[i+1]
+        t0 = g.start + effective * thresholds[i]
+        t1 = g.start + effective * thresholds[i+1]
         if t1 <= t0 + 1e-3:
             continue
         mid = (t0 + t1)/2
@@ -1221,13 +1682,20 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
                 tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + while_tags
         if i == len(pts)-2:
             if "\\move(" not in exit_tags:
-                tags += exit_tags
+                if steady <= 0.01:
+                    tags += exit_tags
         events.append(_ev(0, t0, t1, tags, body))
+    if steady > 0.01:
+        tail_mid = (g.start + effective + g.end) / 2
+        alpha = _alpha_at(g, tail_mid)
+        mx, my = g.motion_pos_at(tail_mid)
+        tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + while_tags + exit_tags
+        events.append(_ev(0, g.start + effective, g.end, tags, body))
     return events
 
 def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
     enter_id, while_id, exit_id = plan.ids()
-    while_structural = while_id in ("shake", "glitch-flicker", "count-up")
+    while_structural = while_id in ("shake", "glitch-flicker", "count-up", "bouncy")
 
     if while_structural:
         events = _structural_while_events(g, while_id)
@@ -1239,7 +1707,9 @@ def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
     if exit_sliced:
         end_at, tail_events = _sliced_exit_appends(g, exit_id)
 
-    while_tags = "" if while_id in ("none", "karaoke-sweep", "wave", "shimmer") else _while_tags(g, while_id)
+    base_while = "" if while_id in ("none", "karaoke-sweep", "wave", "shimmer") else _while_tags(g, while_id)
+    extra_scale_color = _scale_color_while_tags(g)
+    while_tags = base_while + extra_scale_color
     if while_id == "karaoke-sweep" and enter_id == "typewriter":
         while_id = "none"
     karaoke_tags = ""
@@ -1339,6 +1809,10 @@ def build_text_overlay(
     if g is None:
         return None
     engine = plan_engine(plan)
+    # custom colour morph and scale+colour while need ASS for accurate colour interpolation; force ASS if needed
+    if g.color_anim_enabled and ass_path is not None:
+        engine = "ass"
+        force_ass = True
     if engine == "dt" and (not g.underline or ass_path is None) and not (force_ass and ass_path is not None):
         resolver = font_resolver or (lambda family, bold, italic, fonts: str(fonts))
         font = resolver(g.family, g.bold, g.italic, Path(fonts_dir))

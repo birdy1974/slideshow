@@ -51,12 +51,41 @@ export type MediaItem = {
   textMoveFromX?: number; textMoveFromY?: number;
   textMoveToX?: number; textMoveToY?: number;
   textMovePath?: [number, number][];
-  textMovePathType?: 'straight' | 'freehand' | 'circle' | 'sine';
+  textMovePathType?: 'straight' | 'freehand' | 'circle' | 'sine' | 'star' | 'diamond' | 'triangle' | 'polyline' | 'sine-vertical' | 'bounce';
   textMoveEasing?: 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'smooth';
   textMoveCircleRadius?: number;
   textMoveCircleTurns?: number;
   textMoveSineAmplitude?: number;
   textMoveSineFrequency?: number;
+  // Symbol paths: reuse circleRadius as size, add star inner ratio / rotation
+  textMoveStarPoints?: number;
+  textMoveStarInnerRatio?: number;
+  textMoveSymbolRotation?: number;
+  // Polyline / multi-point: stored in textMovePath, type 'polyline' enables waypoint editing
+  // Sinus up/down: vertical sine wave over the hold
+  textMoveSinusUpDownEnabled?: boolean;
+  textMoveSinusAmplitude?: number;
+  textMoveSinusFrequency?: number;
+  // Bounce trajectory (parabolic arcs, moves from start to end while bouncing)
+  textMoveBounceHeight?: number;
+  textMoveBounceCount?: number;
+  textMoveBounceDamping?: number;
+  // Text scale (grow / shrink) animation over text window
+  textScaleEnabled?: boolean;
+  textScaleFrom?: number;
+  textScaleTo?: number;
+  // Text colour transition from colour1 to colour2 over text window
+  textColorAnimEnabled?: boolean;
+  textColorFrom?: string;
+  textColorTo?: string;
+  // In-place bouncy text (vertical bounce at its position, decays with damping)
+  textBouncyEnabled?: boolean;
+  textBouncyHeight?: number;
+  textBouncyBounces?: number;
+  textBouncyDamping?: number;
+  textBouncyFrequency?: number;
+  // Text frame: keep text steady (not moving) for X seconds at the end of the frame — movement finishes early and holds final position; total text window equals frame duration
+  textSteadySeconds?: number;
 
   // Text frames: optional second background colour reached via an xfade
   // transition that starts `frameTransitionStart` seconds into the frame and

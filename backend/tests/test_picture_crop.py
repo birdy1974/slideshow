@@ -106,8 +106,18 @@ def brute_force_zoom(aspect: float, degrees: float) -> float:
 
 
 def evaluate(expression: str, iw: float, ih: float) -> float:
-    """Evaluate an FFmpeg crop expression with iw/ih substituted."""
-    python = expression.replace("iw", repr(float(iw))).replace("ih", repr(float(ih)))
+    """Evaluate an FFmpeg crop expression with iw/ih substituted.
+
+    FFmpeg values that contained ``,``/``:`` are quoted like ``'trunc((min(iw,ih))...)'``
+    (see ``picture_crop._quote_filter_value``) so that the graph isn't split at
+    the comma. Strip that quoting before substituting ``iw``/``ih``.
+    """
+    expr = expression.strip()
+    if len(expr) >= 2 and expr[0] == "'" and expr[-1] == "'":
+        expr = expr[1:-1].replace("\\'", "'").replace("\\\\", "\\")
+    # Also handle backslash-escaped commas if an alternative escaping is used.
+    expr = expr.replace("\\,", ",").replace("\\:", ":").replace("\\;", ";")
+    python = expr.replace("iw", repr(float(iw))).replace("ih", repr(float(ih)))
     python = python.replace("min", "_min").replace("max", "_max").replace("trunc", "_trunc")
     return eval(python, {"_min": min, "_max": max, "_trunc": lambda value: math.trunc(value)})  # noqa: S307
 
@@ -579,18 +589,18 @@ class SegmentCropTest(unittest.TestCase):
 
     def test_crop_runs_before_the_frame_fit_and_the_zoom(self) -> None:
         chain = self._chain(self._item(crop={"rect": {"x": 0.2, "y": 0.1, "w": 0.6, "h": 0.8}}))
-        self.assertIn("crop=w=trunc", chain)
-        self.assertLess(chain.index("crop=w=trunc"), chain.index("zoompan="), "crop the source, then zoom the result")
-        self.assertLess(chain.index("crop=w=trunc"), chain.index("format=yuv420p"))
+        self.assertRegex(chain, r"crop=w='?trunc")
+        self.assertLess(chain.index("crop=w="), chain.index("zoompan="), "crop the source, then zoom the result")
+        self.assertLess(chain.index("crop=w="), chain.index("format=yuv420p"))
 
     def test_rotation_then_crop_then_fit(self) -> None:
         chain = self._chain(self._item(rotation=90, crop={"rect": {"x": 0, "y": 0.1, "w": 1, "h": 0.8}}))
-        self.assertLess(chain.index("transpose=1"), chain.index("crop=w=trunc"))
+        self.assertLess(chain.index("transpose=1"), chain.index("crop=w="))
 
     def test_straightening_rotates_inside_the_segment(self) -> None:
         chain = self._chain(self._item(crop={"degrees": 4}))
         self.assertIn("rotate=a=", chain)
-        self.assertLess(chain.index("rotate=a="), chain.index("crop=w=trunc"))
+        self.assertLess(chain.index("rotate=a="), chain.index("crop=w="))
 
     def test_untouched_items_add_no_crop(self) -> None:
         baseline = self._chain(self._item())
@@ -598,18 +608,18 @@ class SegmentCropTest(unittest.TestCase):
                      self._item(id=4, crop={"rect": {"x": 0, "y": 0, "w": 1, "h": 1}}),
                      self._item(id=5, crop={"degrees": 0.01}), self._item(id=6, crop="junk")):
             self.assertEqual(baseline, self._chain(item))
-        self.assertNotIn("crop=w=trunc", baseline)
+        self.assertNotIn("crop=w=", baseline)
 
     def test_title_frames_are_never_cropped(self) -> None:
         chain = self._chain({"id": 9, "type": "title", "path": "Generated frame", "duration": 4, "text": "Title",
                              "effect": "None", "transition": "Fade", "transitionTime": 0.5,
                              "frameBackground": "#112233", "crop": {"rect": {"x": 0.2, "y": 0.2, "w": 0.5, "h": 0.5}}})
-        self.assertNotIn("crop=w=trunc", chain)
+        self.assertNotIn("crop=w=", chain)
 
     def test_movies_take_the_same_crop(self) -> None:
         chain = self._chain(self._item(type="video", path="/videos/a.mp4", effect="Original motion",
                                        crop={"rect": {"x": 0.1, "y": 0, "w": 0.8, "h": 1}}))
-        self.assertIn("crop=w=trunc", chain)
+        self.assertRegex(chain, r"crop=w='?trunc")
 
     def test_lasso_switches_to_filter_complex_with_a_mask_input(self) -> None:
         command = self._commands_for([self._item(crop={"rect": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8},
@@ -621,7 +631,7 @@ class SegmentCropTest(unittest.TestCase):
         self.assertIn("alphamerge", graph)
         self.assertIn("overlay=0:0:format=auto", graph)
         # The crop runs before the cut, the fit and the caption after it.
-        self.assertIn("crop=w=trunc", graph.split("[cutpre]")[0])
+        self.assertRegex(graph.split("[cutpre]")[0], r"crop=w='?trunc")
         self.assertIn("drawtext", graph.split("[cutfilled]")[-1])
         # A mask file is written next to the segments and fed in as input 1.
         mask_path = Path(command[command.index("-filter_complex") - 1])
@@ -644,7 +654,7 @@ class SegmentCropTest(unittest.TestCase):
 
     def test_crop_and_look_together(self) -> None:
         chain = self._chain(self._item(crop={"rect": {"x": 0.2, "y": 0.2, "w": 0.6, "h": 0.6}}, filter="mono"))
-        self.assertLess(chain.index("crop=w=trunc"), chain.index("colorchannelmixer="),
+        self.assertLess(chain.index("crop=w="), chain.index("colorchannelmixer="),
                         "filter the cropped picture, not the whole file")
 
 

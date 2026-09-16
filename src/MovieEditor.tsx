@@ -10,7 +10,7 @@ import { ChevronLeft, ChevronRight, Info, Pause, Play, Scissors, X } from 'lucid
 import { TimeField } from './ui'
 import { formatClockPrecise } from './time'
 import type { MediaItem } from './mediaItem'
-import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, serverMovieDuration } from './filmstrip'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 
 // Shortest section a movie can be cut down to.
 const MIN_KEEP = 0.5
@@ -36,8 +36,17 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   const [stripState, setStripState] = useState<'loading' | 'ready' | 'none'>('loading')
   // True once the stage <video> reports it cannot decode the file. The length
   // then comes from the backend probe, and the strip frames from the server
-  // filmstrip (the browser has nothing to draw).
+  // filmstrip (the browser has nothing to draw). After the failure the stage
+  // switches to a browser-playable preview (H.264/AAC) so cutting and playback
+  // work for AVI/WMV/MPEG-PS/AVCHD like the 640×480 29.97 fps sample.
   const [decodeFailed, setDecodeFailed] = useState(false)
+  const previewSrc = (() => {
+    try { return moviePreviewUrl(item, 960) } catch { return src }
+  })()
+  const effectiveSrc = decodeFailed ? previewSrc : src
+  // If the file name marks a container browsers cannot decode (AVI/WMV/MPEG-PS…),
+  // mark it immediately so the strip never tries a browser capture.
+  const serverOnlyByName = /\.(avi|wmv|asf|mpg|mpeg|ts|mts|m2ts|flv|f4v|3gp|3gpp|vob|dav|mxf|mod|tod|divx|mkv)$/i.test(item.name || '')
 
   const total = fileSeconds
   const start = Math.max(0, Math.min(Number(item.trimStart) || 0, total))
@@ -49,7 +58,12 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   // be used to bound the handles.
   useEffect(() => {
     setFileSeconds(0); setPosition(0); setPlaying(false); setDecodeFailed(false)
-  }, [src])
+  }, [src, previewSrc])
+  // Containers like .avi/.wmv/.mpg never fire onLoadedMetadata — declare them
+  // failed immediately so the server probe and preview take over without an 8 s wait.
+  useEffect(() => {
+    if (serverOnlyByName && !decodeFailed) setDecodeFailed(true)
+  }, [serverOnlyByName, decodeFailed, src])
 
   // The browser cannot decode this container (camera AVI and friends): ask
   // FFmpeg for the length so the trim handles and the server filmstrip still
@@ -72,21 +86,25 @@ export function MovieEditor({ item, src, onChange, onClose }: {
     if (!src || !total) return
     let cancelled = false
     void (async () => {
-      const captured = await captureFilmstrip(src, FILMSTRIP_CELLS, total)
+      // For camera AVI/WMV/MPEG-PS the browser has no frames to capture — use
+      // the server sprite immediately. Otherwise try a live canvas capture first.
+      let captured: string | null = null
+      if (!decodeFailed && !serverOnlyByName) captured = await captureFilmstrip(src, FILMSTRIP_CELLS, total)
       if (cancelled) return
       if (captured) { setStrip({ src: captured, kind: 'live' }); setStripState('ready'); return }
+      const url = movieFilmstripUrl(item)
       const ok = await new Promise<boolean>(resolve => {
         const img = new Image()
         img.onload = () => resolve(true)
         img.onerror = () => resolve(false)
-        img.src = movieFilmstripUrl(item)
+        img.src = url
       })
       if (cancelled) return
-      if (ok) { setStrip({ src: movieFilmstripUrl(item), kind: 'server' }); setStripState('ready') }
+      if (ok) { setStrip({ src: url, kind: 'server' }); setStripState('ready') }
       else setStripState('none')
     })()
     return () => { cancelled = true }
-  }, [src, total])
+  }, [src, total, decodeFailed, serverOnlyByName, item.path, item.name])
 
   // Keep playback inside the kept section and stop at OUT.
   useEffect(() => {
@@ -165,7 +183,7 @@ export function MovieEditor({ item, src, onChange, onClose }: {
         <div className="movie-stage">
           <video
             ref={videoRef}
-            src={src}
+            src={effectiveSrc}
             playsInline
             preload="metadata"
             onLoadedMetadata={e => { const d = (e.currentTarget as HTMLVideoElement).duration; if (Number.isFinite(d) && d > 0) setFileSeconds(d) }}

@@ -19,7 +19,7 @@ export type UploadsStatus = { path: string; writable: boolean; reason: string | 
 // Checked by extension because browsers leave `type` empty for many camera
 // files (e.g. .mov/.mkv from a folder pick) — a folder pick also brings
 // sidecars (.xmp, .aae, Thumbs.db) that must be dropped quietly.
-const UPLOAD_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v'])
+const UPLOAD_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.wmv', '.asf', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts', '.flv', '.f4v', '.3gp', '.3gpp', '.vob', '.dav', '.mxf', '.mod', '.tod', '.divx'])
 
 export function isUploadableFile(file: File): boolean {
   if (file.name.startsWith('.')) return false // .DS_Store, ._resource forks

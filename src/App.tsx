@@ -15,7 +15,7 @@ import {
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
-import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, serverMovieDuration } from './filmstrip'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
 import { CropSpriteVideo } from './PictureCropEditor'
 import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilterStyle, type Lookish } from './pictureFilters'
@@ -226,7 +226,24 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   lookItem?: Lookish | MediaItem | null; onLook?: () => void; onCrop?: () => void;
 }) {
   const [failed, setFailed] = useState(false)
-  useEffect(() => setFailed(false), [src])
+  const [usePreview, setUsePreview] = useState(false)
+  const previewSrc = (() => {
+    if (kind !== 'video') return src
+    // When the storyline provides the real item, build the preview from it;
+    // otherwise derive it from the file URL (browser preview without an item).
+    if (lookItem && (lookItem as any).path != null) {
+      try { return moviePreviewUrl(lookItem as any, 960) } catch { /* fallback to URL parse */ }
+    }
+    try {
+      const url = new URL(src, window.location.origin)
+      const root = url.searchParams.get('root')
+      const pathParam = url.searchParams.get('path')
+      if (root && pathParam != null) return `/api/media/preview?root=${root}&path=${pathParam.split('/').map(encodeURIComponent).join('/')}&width=960`
+    } catch { /* ignore */ }
+    return src
+  })()
+  const videoSrc = usePreview ? previewSrc : src
+  useEffect(() => { setFailed(false); setUsePreview(false) }, [src, previewSrc])
   const isVideo = kind === 'video'
   // Crop first, look on top — the renderer's order. A cropped *photo* is shown
   // from one canvas copy; a cropped *movie* keeps playing its own file through a
@@ -277,7 +294,7 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
         {canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
       <div className="lightbox-body">
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
-        : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={src} style={lookView.style} controls autoPlay onError={() => setFailed(true)} />
+        : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={videoSrc} style={lookView.style} controls autoPlay onError={() => { if (!usePreview && previewSrc !== src) setUsePreview(true); else setFailed(true) }} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'title' && titleFrame ? <div className="lightbox-stage title-frame-stage" style={frameBackgroundStyle(titleFrame)}>
             {frameChange && <ColourChangePreview key={`${frameChange.from}-${frameChange.to}-${frameChange.transition}-${frameChange.time}-${frameChange.start}`} change={frameChange} playing={!suspended} />}
@@ -310,25 +327,32 @@ function MovieStrip({ item, onClick, onPointerDown }: { item: MediaItem; onClick
     if (movieStripCache.has(src)) { setStrip(movieStripCache.get(src) ?? null); setFailed(movieStripCache.get(src) === null); return }
     let cancelled = false
     void (async () => {
-      // Length first (browser, then FFmpeg), then frames the same way.
+      // For camera AVI/WMV/MPEG-PS/AVCHD the browser cannot decode the video,
+      // so probing and canvas capture would only waste ~8 s. Go straight to
+      // the server probe and the server-rendered sprite.
+      const serverOnly = /\.(avi|wmv|asf|mpg|mpeg|ts|mts|m2ts|flv|f4v|3gp|3gpp|vob|dav|mxf|mod|tod|divx|mkv)$/i.test(item.name || '')
       let total = 0
-      try {
-        total = await new Promise<number>((resolve) => {
-          const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true; v.src = src
-          const done = (n: number) => { v.removeAttribute('src'); v.load(); resolve(n) }
-          v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : 0)
-          v.onerror = () => done(0)
-          window.setTimeout(() => done(0), 8000)
-        })
-      } catch { total = 0 }
+      if (!serverOnly) {
+        try {
+          total = await new Promise<number>((resolve) => {
+            const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true; v.src = src
+            const done = (n: number) => { v.removeAttribute('src'); v.load(); resolve(n) }
+            v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : 0)
+            v.onerror = () => done(0)
+            window.setTimeout(() => done(0), 8000)
+          })
+        } catch { total = 0 }
+      }
       if (!total) total = await serverMovieDuration(item)
       if (cancelled) return
-      const captured = total > 0 ? await captureFilmstrip(src, FILMSTRIP_CELLS, total) : null
+      let captured: string | null = null
+      if (!serverOnly && total > 0) captured = await captureFilmstrip(src, FILMSTRIP_CELLS, total)
       if (cancelled) return
       let result: { src: string; total: number } | null = captured ? { src: captured, total } : null
       if (!result && total > 0) {
-        const ok = await new Promise<boolean>(resolve => { const img = new Image(); img.onload = () => resolve(true); img.onerror = () => resolve(false); img.src = movieFilmstripUrl(item) })
-        if (ok) result = { src: movieFilmstripUrl(item), total }
+        const url = movieFilmstripUrl(item)
+        const ok = await new Promise<boolean>(resolve => { const img = new Image(); img.onload = () => resolve(true); img.onerror = () => resolve(false); img.src = url })
+        if (ok) result = { src: url, total }
       }
       if (cancelled) return
       movieStripCache.set(src, result)
@@ -353,21 +377,28 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
   onClick?: React.MouseEventHandler; onPointerDown?: React.PointerEventHandler; style?: React.CSSProperties;
 }) {
   const [failed, setFailed] = useState(false)
-  const src = itemThumbUrl(item)
+  const [usePreview, setUsePreview] = useState(false)
+  const origSrc = itemThumbUrl(item)
+  const previewSrc = item.type === 'video' ? moviePreviewUrl(item, 480) : origSrc
+  const src = usePreview ? previewSrc : origSrc
   // A cropped clip is shown from one small canvas copy — the only way a bare
   // <img>/<video> can display a sub-rectangle — so every thumbnail surface
   // (storyline, compact grid, detailed list, filmstrip, media browser) shows
   // the crop without a single extra CSS rule.
   const cropped = useCroppedSource(src, item, 'thumb', item.type === 'video')
-  useEffect(() => setFailed(false), [src])
+  useEffect(() => { setFailed(false); setUsePreview(false) }, [origSrc, previewSrc])
   if (!src) return null
-  if (failed) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
+  if (failed && usePreview) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
+  const handleError = () => {
+    if (item.type === 'video' && !usePreview) setUsePreview(true)
+    else setFailed(true)
+  }
   // Every thumbnail wears the item's picture look and crop, so the storyline
   // shows the same picture the render will produce.
   // draggable=false: the thumbnail must never start its own native drag —
   // the draggable card around it is the drag source, so reordering works
   // from anywhere on the slide, including the middle of the picture.
-  const common = { src: cropped.ready ? cropped.src : src, className, onClick, onPointerDown, onError: () => setFailed(true), draggable: false } as const
+  const common = { src: cropped.ready ? cropped.src : src, className, onClick, onPointerDown, onError: handleError, draggable: false } as const
   const look = { ...style, ...pictureFilterStyle(item) }
   if (item.type === 'video' && !cropped.ready) return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} style={look} />
   // The copy already carries the quarter turn; only the bare file needs CSS to turn it.
@@ -378,15 +409,18 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
 // or unreadable (the backend answers 422 for 0-byte files, so onError fires).
 function BrowserThumb({ root, file }: { root: MediaRoot, file: any }) {
   const [failed, setFailed] = useState(false)
+  const [usePreview, setUsePreview] = useState(false)
   const src = mediaFileUrl(root, file.path)
-  useEffect(() => setFailed(false), [src])
+  const previewSrc = `/api/media/preview?root=${root}&path=${file.path.split('/').map(encodeURIComponent).join('/')}&width=480`
+  const videoSrc = usePreview ? previewSrc : src
+  useEffect(() => { setFailed(false); setUsePreview(false) }, [src, previewSrc])
   if (file.kind === 'directory') return <FolderOpen size={34}/>
   if (file.kind === 'audio') return <Music2 size={34}/>
-  // AVI (notably Motion JPEG from a Casio EX-Z11) is renderable by FFmpeg but
-  // generally not decodable by browser video elements. Avoid a broken preview.
-  if (file.kind === 'video' && /\.avi$/i.test(file.name)) return <><Film size={34}/><span className="video-tag"><Video size={10}/> AVI</span></>
-  if (failed) return <span className="file-thumb-fallback"><ImageOff size={20}/></span>
-  if (file.kind === 'video') return <><video src={src} muted preload="metadata" onError={() => setFailed(true)}/><span className="video-tag"><Video size={10}/> video</span></>
+  if (failed && !usePreview) {
+    // first failure was native; preview will be tried once
+  }
+  if (failed && usePreview) return <span className="file-thumb-fallback"><ImageOff size={20}/></span>
+  if (file.kind === 'video') return <><video src={videoSrc} muted preload="metadata" onError={() => { if (!usePreview) setUsePreview(true); else setFailed(true) }}/><span className="video-tag"><Video size={10}/> video</span></>
   if (file.kind === 'image') return <img src={src} alt={file.name} onError={() => setFailed(true)}/>
   return <ImageIcon size={34}/>
 }
@@ -565,12 +599,100 @@ function generateSinePointsMotion(fromX: number, fromY: number, toX: number, toY
   }
   return pts
 }
-function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number): [number, number][] {
-  if (pathType === 'freehand' && path && path.length >= 2) return path
-  if (pathType === 'circle') return generateCirclePointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
-  if (pathType === 'sine') return generateSinePointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
-  if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) return [[fromX, fromY]]
-  return [[fromX, fromY], [toX, toY]]
+function generateSineVerticalPointsMotion(fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 80): [number, number][] {
+  const amp = Math.max(0, Math.min(30, amplitude))
+  const freq = Math.max(0.1, Math.min(10, frequency))
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) { const p = i / num; const bx = fromX + (toX - fromX)*p; const by = fromY + (toY - fromY)*p; const off = amp * Math.sin(freq*2*Math.PI*p); pts.push([clampPctMotion(bx), clampPctMotion(by+off)]) }
+  return pts
+}
+function generateStarPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, points: number, innerRatio: number, rotation: number, numPerSeg = 12): [number, number][] {
+  const n = Math.max(3, Math.min(10, Math.round(points||5)))
+  const ratio = Math.max(0.2, Math.min(0.85, innerRatio ?? 0.45))
+  let cx:number, cy:number, r:number
+  if (radius!=null && radius>2) { cx=fromX; cy=fromY; r=radius } else { cx=(fromX+toX)/2; cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(8,d*0.45) }
+  const rot=(rotation||0)*Math.PI/180
+  const vertices: [number,number][]=[]
+  const step=Math.PI/n
+  for(let i=0;i<n*2;i++){ const ang=rot - Math.PI/2 + i*step; const rad=i%2===0?r:r*ratio; vertices.push([clampPctMotion(cx+rad*Math.cos(ang)), clampPctMotion(cy+rad*Math.sin(ang))])}
+  vertices.push(vertices[0])
+  const pts:[number,number][]=[]
+  for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<numPerSeg;k++){ const t=k/numPerSeg; pts.push([clampPctMotion(a[0]+(b[0]-a[0])*t), clampPctMotion(a[1]+(b[1]-a[1])*t)]) } }
+  pts.push(vertices[vertices.length-1])
+  return pts
+}
+function generateDiamondPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number): [number, number][] {
+  let cx:number, cy:number, r:number
+  if (radius!=null && radius>2) { cx=fromX; cy=fromY; r=radius } else { cx=(fromX+toX)/2; cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.5) }
+  const rot=(rotation||0)*Math.PI/180
+  const base:[number,number][] = [[cx,cy-r],[cx+r,cy],[cx,cy+r],[cx-r,cy]].map(([x,y])=>{ const dx=x-cx, dy=y-cy; return [clampPctMotion(cx+dx*Math.cos(rot)-dy*Math.sin(rot)), clampPctMotion(cy+dx*Math.sin(rot)+dy*Math.cos(rot))] as [number,number] })
+  base.push(base[0]); const pts:[number,number][]=[]; const perSeg=20; for(let i=0;i<base.length-1;i++){ const a=base[i], b=base[i+1]; for(let k=0;k<perSeg;k++){ const t=k/perSeg; pts.push([clampPctMotion(a[0]+(b[0]-a[0])*t), clampPctMotion(a[1]+(b[1]-a[1])*t)]) } } pts.push(base[base.length-1]); return pts
+}
+function generateTrianglePointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number): [number, number][] {
+  let cx:number, cy:number, r:number
+  if (radius!=null && radius>2) { cx=fromX; cy=fromY; r=radius } else { cx=(fromX+toX)/2; cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.55) }
+  const rot=(rotation||0)*Math.PI/180
+  const vertices:[number,number][]=[]; for(let i=0;i<3;i++){ const ang=rot - Math.PI/2 + i*(2*Math.PI/3); vertices.push([clampPctMotion(cx+r*Math.cos(ang)), clampPctMotion(cy+r*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; const perSeg=24; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<perSeg;k++){ const t=k/perSeg; pts.push([clampPctMotion(a[0]+(b[0]-a[0])*t), clampPctMotion(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts
+}
+function generateBouncePointsMotion(fromX: number, fromY: number, toX: number, toY: number, height: number, bounces: number, damping: number, numPerBounce = 28): [number, number][] {
+  const h = Math.max(0, Math.min(30, height ?? 14))
+  const n = Math.max(1, Math.min(8, Math.round(bounces ?? 4)))
+  const d = Math.max(0, Math.min(0.9, damping ?? 0.35))
+  const pts: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    const amp = h * Math.pow(1 - d, i)
+    const segStart = i / n
+    const segEnd = (i+1)/n
+    for (let k = 0; k < numPerBounce; k++) {
+      const tSeg = k / numPerBounce
+      const p = segStart + tSeg * (segEnd - segStart)
+      const bx = fromX + (toX - fromX) * p
+      const byBase = fromY + (toY - fromY) * p
+      const parabola = 4 * tSeg * (1 - tSeg)
+      const off = -amp * parabola
+      pts.push([clampPctMotion(bx), clampPctMotion(byBase + off)])
+    }
+  }
+  pts.push([clampPctMotion(toX), clampPctMotion(toY)])
+  return pts
+}
+function bouncyOffset(progress: number, height: number, bounces: number, damping: number): number {
+  const h = Math.max(0, Math.min(30, height ?? 12))
+  const n = Math.max(1, Math.min(8, Math.round(bounces ?? 3)))
+  const d = Math.max(0, Math.min(0.95, damping ?? 0.35))
+  if (h < 0.2) return 0
+  const p = Math.max(0, Math.min(1, progress))
+  const bounceIdx = Math.min(n-1, Math.floor(p * n))
+  const segT = (p * n) % 1
+  const amp = h * Math.pow(1 - d, bounceIdx)
+  const parabola = 4 * segT * (1 - segT)
+  return -amp * parabola
+}
+function applySinusUpDownMotion(points: [number,number][], enabled: boolean, amplitude: number, frequency: number): [number,number][] {
+  if (!enabled || points.length<2) return points
+  const amp=Math.max(0,Math.min(20, amplitude ?? 6)); if (amp<0.2) return points
+  const freq=Math.max(0.1,Math.min(10, frequency ?? 2))
+  let total=0; for(let i=1;i<points.length;i++) total+=Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1])
+  if (total<1e-6) return points
+  const out:[number,number][]=[]; const num=Math.max(points.length,80)
+  const pointAlong=(pts:[number,number][], prog:number):[number,number]=>{ if(!pts.length) return [50,50]; if(pts.length===1) return pts[0]; let t=0; for(let i=1;i<pts.length;i++) t+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); let target=t*Math.max(0,Math.min(1,prog)); for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); if(target<=seg){ const tt=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*tt, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*tt] } target-=seg } return pts[pts.length-1] }
+  for(let i=0;i<=num;i++){ const p=i/num; const b=pointAlong(points,p); const off=amp*Math.sin(freq*2*Math.PI*p); out.push([clampPctMotion(b[0]), clampPctMotion(b[1]+off)]) }
+  return out
+}
+function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInnerRatio?: number, symbolRotation?: number, sinusEnabled?: boolean, sinusAmp?: number, sinusFreq?: number, bounceHeight?: number, bounceCount?: number, bounceDamping?: number): [number, number][] {
+  let base: [number, number][]
+  if ((pathType === 'freehand' || pathType === 'polyline') && path && path.length >= 2) base = path
+  else if (pathType === 'circle') base = generateCirclePointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
+  else if (pathType === 'sine') base = generateSinePointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'sine-vertical') base = generateSineVerticalPointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'star') base = generateStarPointsMotion(fromX, fromY, toX, toY, circleRadius, starPoints ?? 5, starInnerRatio ?? 0.45, symbolRotation ?? 0)
+  else if (pathType === 'diamond') base = generateDiamondPointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'triangle') base = generateTrianglePointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'bounce') base = generateBouncePointsMotion(fromX, fromY, toX, toY, bounceHeight ?? 14, bounceCount ?? 4, bounceDamping ?? 0.35)
+  else if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base = [[fromX, fromY]]
+  else base = [[fromX, fromY], [toX, toY]]
+  if (sinusEnabled) base = applySinusUpDownMotion(base, true, sinusAmp ?? 6, sinusFreq ?? 2)
+  return base
 }
 
 
@@ -591,8 +713,12 @@ const safeDuration = (value: number) => Math.max(MIN_CLIP_SECONDS, Number.isFini
 // transition: a text window is always relative to the slide's visible hold,
 // never to the extra transition handle that follows it. This also repairs old
 // projects whose saved values were outside the current draggable range.
-function normalizedTextTiming(item: Pick<MediaItem, 'duration' | 'textStart' | 'textEnd'>) {
-  const duration = safeDuration(item.duration)
+function normalizedTextTiming(item: Pick<MediaItem, 'duration' | 'textStart' | 'textEnd' | 'type' | 'textSteadySeconds'>) {
+  const duration = safeDuration((item as any).duration)
+  // Text frames always show text for whole slide
+  if ((item as any).type === 'title') {
+    return { duration, textStart: 0, textEnd: duration }
+  }
   const minimum = Math.min(MIN_TEXT_SECONDS, duration)
   const rawStart = Number(item.textStart)
   const rawEnd = Number(item.textEnd)
@@ -601,7 +727,14 @@ function normalizedTextTiming(item: Pick<MediaItem, 'duration' | 'textStart' | '
   return { duration, textStart, textEnd }
 }
 function normalizeItemTextTiming(item: MediaItem): MediaItem {
-  return { ...item, ...normalizedTextTiming(item) }
+  const base = { ...item, ...normalizedTextTiming(item as any) }
+  // keep steady tail within hold for title frames (and any item)
+  if (Number.isFinite(Number((item as any).textSteadySeconds))) {
+    const hold = Math.max(0.2, base.textEnd - base.textStart || base.duration || 1)
+    const steady = Math.max(0, Math.min(Number((item as any).textSteadySeconds), Math.max(0, hold - 0.05)))
+    ;(base as any).textSteadySeconds = steady
+  }
+  return base
 }
 // Sanitise the project-wide defaults (typed by the user or read from a saved
 // project) so a bad value can never produce a zero-length clip or transition.
@@ -616,10 +749,13 @@ function resizeClip(item: MediaItem, seconds: number): MediaItem {
   const previous = safeDuration(item.duration)
   const rawEnd = Number(item.textEnd)
   const ranToEnd = !Number.isFinite(rawEnd) || rawEnd >= previous - 1e-6
-  const textEnd = ranToEnd ? duration : clampNumber(rawEnd, MIN_TEXT_SECONDS, duration)
+  const textEnd = (item as any).type === 'title' ? duration : (ranToEnd ? duration : clampNumber(rawEnd, MIN_TEXT_SECONDS, duration))
   const rawStart = Number(item.textStart)
-  const textStart = clampNumber(Number.isFinite(rawStart) ? rawStart : 0, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
-  return { ...item, duration, textStart, textEnd }
+  const textStart = (item as any).type === 'title' ? 0 : clampNumber(Number.isFinite(rawStart) ? rawStart : 0, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
+  const steadyRaw = Number((item as any).textSteadySeconds || 0)
+  const hold = Math.max(0.2, (item as any).type === 'title' ? duration : (textEnd - textStart))
+  const steady = Number.isFinite(steadyRaw) ? Math.max(0, Math.min(steadyRaw, Math.max(0, hold - 0.05))) : 0
+  return { ...item, duration, textStart, textEnd, textSteadySeconds: steady }
 }
 function timelineModel(items: MediaItem[]) {
   const durations = items.map(item => safeDuration(item.duration))
@@ -1290,6 +1426,21 @@ function App() {
         if (!m.textEnter) m.textEnter = m.textFxEnter
         if (!m.textExit) m.textExit = m.textFxExit
         if (!Number.isFinite(Number(m.textFxWhileSpeed)) || !Number(m.textFxWhileSpeed)) m.textFxWhileSpeed = textEffectDefaultSeconds[m.textFxWhile] ?? savedTextDefaults.fxWhileSpeed
+        // Migration: old default for text colour To was #ffcc33 (yellow) while From was white/fontColour.
+        // If B colour is not the same as A colour, start by making B the same as A (no colour change until user picks).
+        if (typeof m.textColorTo === 'string' && m.textColorTo.toLowerCase() === '#ffcc33') {
+          const from = (typeof m.textColorFrom === 'string' && /^#[0-9a-fA-F]{6}$/.test(m.textColorFrom) ? m.textColorFrom : (typeof m.fontColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(m.fontColor) ? m.fontColor : null))
+          if (from && from.toLowerCase() !== '#ffcc33') {
+            m.textColorTo = from
+          } else if (!from) {
+            // no valid From, make both white so they match
+            m.textColorTo = '#ffffff'
+          }
+        }
+        // Also if anim enabled and colours differ due to old default, ensure they start the same
+        if (m.textColorAnimEnabled && typeof m.textColorFrom === 'string' && typeof m.textColorTo === 'string' && m.textColorFrom.toLowerCase() !== m.textColorTo.toLowerCase() && m.textColorTo.toLowerCase() === '#ffcc33') {
+          m.textColorTo = m.textColorFrom
+        }
         // Older projects may contain a caption window that reaches into the
         // following transition. Normalize it on load so the timeline display,
         // persisted snapshot, and renderer all use the same hold boundary.
@@ -1690,19 +1841,25 @@ function App() {
       const src = mediaFileUrl(root, file.path)
       let duration = isVideo ? 10 : slideSeconds
       if (isVideo) {
+        const needsServerOnly = /\.(avi|wmv|asf|mpg|mpeg|ts|mts|m2ts|flv|f4v|3gp|3gpp|vob|dav|mxf|mod|tod|divx|mkv)$/i.test(file.name)
         try {
-          duration = await new Promise<number>((resolve) => {
-            const el = document.createElement('video')
-            el.preload = 'metadata'
-            const done = (value: number) => { el.removeAttribute('src'); el.load(); resolve(value) }
-            el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? Math.max(MIN_CLIP_SECONDS, el.duration) : 10)
-            el.onerror = () => done(0)
-            // Some mounts never fire metadata; don't block the add forever.
-            window.setTimeout(() => done(0), 8000)
-            el.src = src
-          })
-          // AVI from cameras such as the Casio EX-Z11 commonly contains
-          // Motion JPEG and PCM. Browsers cannot probe it, while FFmpeg can.
+          if (!needsServerOnly) {
+            duration = await new Promise<number>((resolve) => {
+              const el = document.createElement('video')
+              el.preload = 'metadata'
+              const done = (value: number) => { el.removeAttribute('src'); el.load(); resolve(value) }
+              el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? Math.max(MIN_CLIP_SECONDS, el.duration) : 10)
+              el.onerror = () => done(0)
+              // Some mounts never fire metadata; don't block the add forever.
+              window.setTimeout(() => done(0), 8000)
+              el.src = src
+            })
+          } else {
+            duration = 0
+          }
+          // AVI/WMV/MPEG-PS/AVCHD (e.g. 640×480 29.97 fps 3800 kbps mono) from cameras
+          // and Windows are renderable by FFmpeg but generally not decodable by
+          // HTMLVideoElement. Use the server ffprobe directly to avoid an 8 s timeout.
           if (duration <= 0) duration = await serverVideoDuration(root, file.path)
           duration = duration > 0 ? Math.max(MIN_CLIP_SECONDS, duration) : 10
         } catch { duration = 10 }
@@ -1780,7 +1937,7 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0 }])
     setPendingTextFrame(id)
     setEditingTextFrame(id)
   }
@@ -2142,7 +2299,7 @@ function App() {
           <input value={projectName} onChange={e=>renameProject(e.target.value)} aria-label="Project name" title="Project name — the filename in the Output pane follows it"/>
           <p>Assemble your media, shape the motion, and export a finished story.</p>
         </div>
-        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a project — from the SQLite list or from a project file on any mounted volume':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={()=>setShowProjectFileSave(true)} title="Choose the folder and filename to save this project to — it is stored in SQLite as well"><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop all running preview and final-render jobs for this project" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop all</button>}</div>
+        <div className="heading-actions"><button className="btn ghost" disabled={!backendOnline} title={backendOnline?'Load a project — from the SQLite list or from a project file on any mounted volume':'Backend is offline'} onClick={()=>setShowProjectLoader(true)}><FolderOpen size={16}/> Load project</button><button className="btn ghost" title="Delete every saved project and temporary file, and forget the measured render speed" onClick={() => setShowClearAllConfirm(true)}><Trash2 size={16}/> Clear all</button><button className="btn ghost" onClick={()=>setShowProjectFileSave(true)} title="Choose the folder and filename to save this project to — it is stored in SQLite as well"><Save size={16}/> Save project</button>{jobRunning && <div className="job-status" title={`${rendering?'MP4 render':'Preview'} · ${progress}%${jobStage?` · ${jobStage}`:''}`}><RefreshCw className="spin" size={14}/><div><span>{rendering?'Rendering':'Preview'} · {progress}%</span><strong>{countdownLabel}</strong></div>{jobStage && <em title={jobStage} style={{maxWidth:'38ch',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'inline-block',verticalAlign:'middle'}}>{jobStage}</em>}</div>}<button className="btn dark" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={15}/>:<Play size={15} fill="currentColor"/>} {previewing?`Building ${progress}%`:'Preview'}</button>{(previewing||rendering)&&<button className="btn ghost stop-job" title="Stop all running preview and final-render jobs for this project" onClick={() => void stopActiveJob()}><Square size={13} fill="currentColor"/> Stop all</button>}</div>
       </section>
 
       <div className="workspace">
@@ -2155,7 +2312,7 @@ function App() {
             <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={15}/> New project</button></div></div>
             <div className="bulk-tools"><button className="btn soft default-text-style-bulk" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect} title="Apply the selected effect to the selection — or to every photo when nothing is selected. “None” removes the Ken Burns motion.">Apply effect</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><button className="random-button text-trans-random" onClick={randomizeTextTransitions} title="Randomize how the text appears and disappears on these photos, from the text-effect catalogue · every photo when nothing is selected"><Shuffle size={13}/> Text effects</button><Select value={bulkFilter} onChange={setBulkFilter} ariaLabel="Picture filter">{LOOK_GROUPS.map(group => <optgroup key={group} label={group}>{LOOK_PRESETS.filter(preset => preset.group === group).map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</optgroup>)}</Select><button onClick={applyBulkFilter} title="Apply this filter to the selection — or to every photo and movie when nothing is selected"><Sparkles size={12}/> Apply filter</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} onOpenGallery={() => setShowTransitionGallery(true)} /><button onClick={applyBulkTransition}>Apply effect</button></div>
 
-            <div className="bulk-bar"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><label className="check-label random-params-toggle" title="When set, randomizing also draws fresh values for every transition parameter — easing, reverse, and the selected transition's size, zoom, colour, smoothness and other registry values. Transition durations are never changed."><input type="checkbox" checked={randomizeParams} onChange={e => setRandomizeParams(e.target.checked)}/><span><Check size={11}/></span> params</label><button className="random-button" title={`Randomize every transition using: ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''} · durations and Ken Burns motion are left untouched`} onClick={() => { randomize(); notify(`Transitions randomized · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters randomized' : ''}`) }}><Shuffle size={14}/> Randomize all</button><button className="random-button" title={`Randomize only the transitions between neighbouring selected slides · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''}`} onClick={randomizeSelectedTransitions}><Shuffle size={14}/> Randomize selected</button><i/><button className="gallery-button" title={`Open a full-screen gallery with a small example of every transition`} onClick={() => setShowTransitionGallery(true)}><LayoutGrid size={14}/> Browse all {totalTransitionCount}</button></div>
+            <div className="bulk-bar"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><label className="check-label random-params-toggle" title="When set, randomizing also draws fresh values for every transition parameter — easing and the selected transition's size, zoom, colour, smoothness and other registry values (reverse is always left unchecked). Transition durations are never changed."><input type="checkbox" checked={randomizeParams} onChange={e => setRandomizeParams(e.target.checked)}/><span><Check size={11}/></span> params</label><button className="random-button" title={`Randomize every transition using: ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''} · durations and Ken Burns motion are left untouched`} onClick={() => { randomize(); notify(`Transitions randomized · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters randomized' : ''}`) }}><Shuffle size={14}/> Randomize all</button><button className="random-button" title={`Randomize only the transitions between neighbouring selected slides · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''}`} onClick={randomizeSelectedTransitions}><Shuffle size={14}/> Randomize selected</button><i/><button className="gallery-button" title={`Open a full-screen gallery with a small example of every transition`} onClick={() => setShowTransitionGallery(true)}><LayoutGrid size={14}/> Browse all {totalTransitionCount}</button></div>
 
             <div className="overview-head"><div><strong>OVERALL TIMELINE</strong><span>Drag selected clips as a group · edit text above each clip · click transitions · videos keep their own rows in story order</span></div><SelectAllSlides allSelected={allSlidesSelected} selectedCount={selectedIds.length} totalCount={media.length} onToggle={toggleAllSlides}/><div className="story-layout"><label>Lines</label><div className="line-count-control"><NumberStepper value={visibleRows} min={1} max={99} step={1} ariaLabel="Timeline lines" onChange={value => setTimelineRows(String(Math.round(value)))} /><button type="button" className={`line-auto ${timelineRows === 'auto' ? 'active' : ''}`} aria-pressed={timelineRows === 'auto'} title={`Use automatic line count · ${autoLineCount} line${autoLineCount === 1 ? '' : 's'}`} onClick={() => setTimelineRows('auto')}>Auto</button></div></div><div className="zoom-controls"><button onClick={() => setTimelineZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={2.4} step={0.1} value={timelineZoom} aria-label="Timeline zoom" onChange={e => setTimelineZoom(Number(e.target.value))}/><span>{Math.round(timelineZoom * 100)}%</span><button onClick={() => setTimelineZoom(z => Math.min(2.4, +(z + .2).toFixed(1)))} title="Zoom in"><ZoomIn size={14}/></button><button className="fit-button" onClick={() => setTimelineZoom(1)} title="Reset zoom to show complete timeline">Fit</button></div></div>
             <div className="timeline-overview">{media.length===0&&<button className="empty-story" onClick={()=>setShowBrowser(true)}><FolderOpen size={22}/><strong>Your storyline is empty</strong><span>Browse the mounted /photos and /videos folders to begin.</span></button>}{timelineLines.map((line, lineIndex) => {
@@ -2545,6 +2702,18 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
     textMoveCircleTurns: item.textMoveCircleTurns ?? 1,
     textMoveSineAmplitude: item.textMoveSineAmplitude ?? 8,
     textMoveSineFrequency: item.textMoveSineFrequency ?? 2,
+    textMoveStarPoints: (item as any).textMoveStarPoints ?? 5,
+    textMoveStarInnerRatio: (item as any).textMoveStarInnerRatio ?? 0.45,
+    textMoveSymbolRotation: (item as any).textMoveSymbolRotation ?? 0,
+    textMoveSinusUpDownEnabled: (item as any).textMoveSinusUpDownEnabled ?? false,
+    textMoveSinusAmplitude: (item as any).textMoveSinusAmplitude ?? 6,
+    textMoveSinusFrequency: (item as any).textMoveSinusFrequency ?? 2,
+    textScaleEnabled: (item as any).textScaleEnabled ?? false,
+    textScaleFrom: (item as any).textScaleFrom ?? 1,
+    textScaleTo: (item as any).textScaleTo ?? 1.45,
+    textColorAnimEnabled: (item as any).textColorAnimEnabled ?? false,
+    textColorFrom: (item as any).textColorFrom || (item.fontColor || defaults.fontColor || '#ffffff'),
+    textColorTo: (item as any).textColorTo || (item as any).textColorFrom || (item.fontColor || defaults.fontColor || '#ffffff'),
   }))
   const [playing, setPlaying] = useState(true)
   const setDraftValue = (change: Partial<MediaItem>) => setDraft(current => ({ ...current, ...change }))
@@ -2587,6 +2756,18 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
     textMoveCircleTurns: draft.textMoveCircleTurns,
     textMoveSineAmplitude: draft.textMoveSineAmplitude,
     textMoveSineFrequency: draft.textMoveSineFrequency,
+    textMoveStarPoints: (draft as any).textMoveStarPoints,
+    textMoveStarInnerRatio: (draft as any).textMoveStarInnerRatio,
+    textMoveSymbolRotation: (draft as any).textMoveSymbolRotation,
+    textMoveSinusUpDownEnabled: (draft as any).textMoveSinusUpDownEnabled,
+    textMoveSinusAmplitude: (draft as any).textMoveSinusAmplitude,
+    textMoveSinusFrequency: (draft as any).textMoveSinusFrequency,
+    textScaleEnabled: (draft as any).textScaleEnabled,
+    textScaleFrom: (draft as any).textScaleFrom,
+    textScaleTo: (draft as any).textScaleTo,
+    textColorAnimEnabled: (draft as any).textColorAnimEnabled,
+    textColorFrom: (draft as any).textColorFrom,
+    textColorTo: (draft as any).textColorTo,
   })
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -2609,6 +2790,8 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
     textDecoration: draft.textUnderline ? 'underline' : 'none',
     textShadow: captionShadow(Boolean(draft.textOutline), Math.min(size, 22)),
   }
+  const scaleEnabled = Boolean((draft as any).textScaleEnabled)
+  const colorAnimEnabled = Boolean((draft as any).textColorAnimEnabled)
   return <div className="modal-backdrop" onMouseDown={onClose}>
     <div className="text-style-modal picture-text-modal" onMouseDown={event => event.stopPropagation()}>
       <div className="modal-head">
@@ -2631,7 +2814,7 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
                 <Move size={13}/><TextFxPreview item={draft} playing={playing}>{captionText}</TextFxPreview>
               </div>
               {draft.textMoveEnabled && (() => {
-                const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2)
+                const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2, (draft as any).textMoveStarPoints, (draft as any).textMoveStarInnerRatio, (draft as any).textMoveSymbolRotation, (draft as any).textMoveSinusUpDownEnabled, (draft as any).textMoveSinusAmplitude, (draft as any).textMoveSinusFrequency, (draft as any).textMoveBounceHeight, (draft as any).textMoveBounceCount, (draft as any).textMoveBounceDamping)
                 const d = pts.map((p,i)=>`${i===0?'M':'L'} ${p[0]} ${p[1]}`).join(' ')
                 return <svg className="picture-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType==='straight' || !draft.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
               })()}
@@ -2653,6 +2836,15 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
               circleTurns={draft.textMoveCircleTurns}
               sineAmplitude={draft.textMoveSineAmplitude}
               sineFrequency={draft.textMoveSineFrequency}
+              starPoints={(draft as any).textMoveStarPoints}
+              starInnerRatio={(draft as any).textMoveStarInnerRatio}
+              symbolRotation={(draft as any).textMoveSymbolRotation}
+              sinusEnabled={(draft as any).textMoveSinusUpDownEnabled}
+              sinusAmplitude={(draft as any).textMoveSinusAmplitude}
+              sinusFrequency={(draft as any).textMoveSinusFrequency}
+              bounceHeight={(draft as any).textMoveBounceHeight}
+              bounceCount={(draft as any).textMoveBounceCount}
+              bounceDamping={(draft as any).textMoveBounceDamping}
               onChange={setDraftValue}
               src={src}
               isVideo={item.type === 'video'}
@@ -2660,6 +2852,34 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
               caption={captionText}
               captionStyle={motionCaptionStyle}
             />
+            <div className="picture-text-scale-color">
+              <FieldLabel>Picture text size / colour while shown</FieldLabel>
+              <label className="check-label" style={{fontSize:'13px', marginBottom:6}}>
+                <input type="checkbox" checked={Boolean((draft as any).textScaleEnabled)} onChange={e=>setDraftValue({ textScaleEnabled: e.target.checked } as any)} />
+                <span><Check size={11}/></span> Grow / shrink {(draft as any).textScaleEnabled && <small style={{opacity:.7}}>{Number((draft as any).textScaleFrom ?? 1).toFixed(2)}× → {Number((draft as any).textScaleTo ?? 1.4).toFixed(2)}×</small>}
+              </label>
+              {(draft as any).textScaleEnabled && <div className="motion-params">
+                <label>From <input type="range" min={0.5} max={2} step={0.05} value={Number((draft as any).textScaleFrom ?? 1)} onChange={e=>setDraftValue({ textScaleFrom: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textScaleFrom ?? 1).toFixed(2)}×</em></label>
+                <label>To <input type="range" min={0.5} max={2.5} step={0.05} value={Number((draft as any).textScaleTo ?? 1.4)} onChange={e=>setDraftValue({ textScaleTo: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textScaleTo ?? 1.4).toFixed(2)}×</em></label>
+              </div>}
+              <label className="check-label" style={{fontSize:'13px', marginTop:8, marginBottom:6}}>
+                <input type="checkbox" checked={Boolean((draft as any).textColorAnimEnabled)} onChange={e=>{ const checked=e.target.checked; if(checked){ const from=(draft as any).textColorFrom || draft.fontColor || '#ffffff'; setDraftValue({ textColorAnimEnabled: true, textColorFrom: from, textColorTo: from } as any)} else setDraftValue({ textColorAnimEnabled: false } as any)}} />
+                <span><Check size={11}/></span> Colour change {(draft as any).textColorAnimEnabled && <small style={{opacity:.7, display:'inline-flex', alignItems:'center', gap:4}}><i style={{width:12,height:12,background:(draft as any).textColorFrom||draft.fontColor,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/><ChevronRight size={10}/><i style={{width:12,height:12,background:(draft as any).textColorTo||((draft as any).textColorFrom||draft.fontColor||'#ffffff'),display:'inline-block',borderRadius:2,border:'1px solid #555'}}/></small>}
+              </label>
+              {(draft as any).textColorAnimEnabled && <div className="motion-params">
+                <label style={{display:'flex',alignItems:'center',gap:6}}>From <input type="color" value={(draft as any).textColorFrom || draft.fontColor || '#ffffff'} onChange={e=>setDraftValue({ textColorFrom: e.target.value } as any)} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{(draft as any).textColorFrom || draft.fontColor}</em></label>
+                <label style={{display:'flex',alignItems:'center',gap:6}}>To <input type="color" value={(draft as any).textColorTo || (draft as any).textColorFrom || draft.fontColor || '#ffffff'} onChange={e=>setDraftValue({ textColorTo: e.target.value } as any)} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{(draft as any).textColorTo || (draft as any).textColorFrom || draft.fontColor}</em></label>
+              </div>}
+              <label className="check-label" style={{fontSize:'13px', marginTop:8, marginBottom:6}}>
+                <input type="checkbox" checked={Boolean((draft as any).textBouncyEnabled)} onChange={e=>setDraftValue({ textBouncyEnabled: e.target.checked } as any)} />
+                <span><Check size={11}/></span> Bouncy {(draft as any).textBouncyEnabled && <small style={{opacity:.7}}>{Number((draft as any).textBouncyHeight ?? 12)}% · {Number((draft as any).textBouncyBounces ?? 3)}× · damp {Number((draft as any).textBouncyDamping ?? 0.35).toFixed(2)}</small>}
+              </label>
+              {(draft as any).textBouncyEnabled && <div className="motion-params">
+                <label>Height <input type="range" min={1} max={26} step={1} value={Number((draft as any).textBouncyHeight ?? 12)} onChange={e=>setDraftValue({ textBouncyHeight: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textBouncyHeight ?? 12)}%</em></label>
+                <label>Bounces <input type="range" min={1} max={8} step={1} value={Number((draft as any).textBouncyBounces ?? 3)} onChange={e=>setDraftValue({ textBouncyBounces: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textBouncyBounces ?? 3)}×</em></label>
+                <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={Number((draft as any).textBouncyDamping ?? 0.35)} onChange={e=>setDraftValue({ textBouncyDamping: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textBouncyDamping ?? 0.35).toFixed(2)}</em></label>
+              </div>}
+            </div>
           </div>
           <div className="picture-text-top-right">
             <div className="fx-section light picture-text-effects">
@@ -2877,19 +3097,71 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
     textDecoration: underline ? 'underline' : 'none',
   }
 
+  const scaleEnabled = Boolean(item.textScaleEnabled)
+  const scaleFrom = Number.isFinite(Number(item.textScaleFrom)) ? Number(item.textScaleFrom) : 1
+  const scaleTo = Number.isFinite(Number(item.textScaleTo)) ? Number(item.textScaleTo) : 1.45
+  const colorAnimEnabled = Boolean(item.textColorAnimEnabled)
+  const colorFrom = (item.textColorFrom && isHex(item.textColorFrom)) ? item.textColorFrom : (color || '#ffffff')
+  const colorTo = (item.textColorTo && isHex(item.textColorTo)) ? item.textColorTo : colorFrom
+
+  const [animProgress, setAnimProgress] = useState(0)
+  useEffect(() => {
+    if (!fxPlaying) return
+    if (!scaleEnabled && !colorAnimEnabled && !enabled) return
+    let raf = 0
+    const start = performance.now()
+    const dur = Math.max(0.6, Number(item.duration) || 5) * 1000
+    const tick = (now: number) => {
+      const elapsed = (now - start) % dur
+      setAnimProgress(elapsed / dur)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [fxPlaying, scaleEnabled, colorAnimEnabled, enabled, item.duration])
+
+  const lerp = (a:number,b:number,t:number)=>a+(b-a)*t
+  const hexToRgb = (hex:string)=>{ const h=hex.replace('#',''); return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)} }
+  const rgbToHex = (r:number,g:number,b:number)=> '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')
+  const lerpHex = (a:string,b:string,t:number)=>{ try{ const ca=hexToRgb(a), cb=hexToRgb(b); return rgbToHex(lerp(ca.r,cb.r,t), lerp(ca.g,cb.g,t), lerp(ca.b,cb.b,t)) } catch{ return a } }
+  const _holdForAnim = Math.max(0.2, Number(item.duration)||5)
+  const _steadyForAnim = Math.max(0, Math.min(Number((item as any).textSteadySeconds||0), Math.max(0, _holdForAnim - 0.05)))
+  const effectiveAnimProgress = _steadyForAnim>0.01 ? (animProgress*_holdForAnim >= (_holdForAnim-_steadyForAnim) ? 1 : Math.max(0,Math.min(1, animProgress*_holdForAnim/Math.max(0.05,_holdForAnim-_steadyForAnim)))) : animProgress
+  const interpolatedScale = scaleEnabled ? lerp(scaleFrom, scaleTo, effectiveAnimProgress) : 1
+  const interpolatedColor = colorAnimEnabled ? lerpHex(colorFrom, colorTo, effectiveAnimProgress) : color
+
+  const easeProg = (p:number, easing:string)=>{ p=Math.max(0,Math.min(1,p)); if(easing==='ease-in') return p*p; if(easing==='ease-out') return 1-(1-p)*(1-p); if(easing==='ease-in-out'){ if(p<0.5) return 2*p*p; return 1-2*(1-p)*(1-p)} if(easing==='smooth'){ if(p<0.5) return 4*p*p*p; return 1-Math.pow(-2*p+2,3)/2 } return p }
+  const movingPos = (()=>{
+    if(!enabled) return null
+    const pts=effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any)||'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, item.textMoveStarPoints, item.textMoveStarInnerRatio, item.textMoveSymbolRotation, item.textMoveSinusUpDownEnabled, item.textMoveSinusAmplitude, item.textMoveSinusFrequency, item.textMoveBounceHeight, item.textMoveBounceCount, item.textMoveBounceDamping)
+    if(!pts.length) return null
+    const eased=easeProg(effectiveAnimProgress, (item.textMoveEasing as any)||'linear'); let total=0; for(let i=1;i<pts.length;i++) total+=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(total<0.001) return pts[0]; let target=total*eased; for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(target<=seg){ const t=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t] as [number,number] } target-=seg } return pts[pts.length-1] })()
+  const _bouncyForTitle = (()=>{
+    const it:any=item as any
+    if(!it.textBouncyEnabled && it.textFxWhile!=='bouncy') return 0
+    const progB = effectiveAnimProgress
+    const h = it.textBouncyEnabled ? (it.textBouncyHeight??12) : Number(it.textFxParams?.height??12)
+    const n = it.textBouncyEnabled ? (it.textBouncyBounces??3) : Number(it.textFxParams?.bounces??3)
+    const d = it.textBouncyEnabled ? (it.textBouncyDamping??0.35) : Number(it.textFxParams?.damping??0.35)
+    const p=Math.max(0,Math.min(1,progB)); const idx=Math.min(Math.max(1,Math.min(8,Math.round(n)))-1, Math.floor(p*Math.max(1,Math.min(8,Math.round(n))))); const segT=(p*Math.max(1,Math.min(8,Math.round(n))))%1; const amp=Math.max(0,Math.min(30,h))*Math.pow(1-Math.max(0,Math.min(0.95,d)), idx); return -amp*4*segT*(1-segT)
+  })()
+  const titleLeft = movingPos ? movingPos[0] : item.textX
+  const titleTop = (movingPos ? movingPos[1] : item.textY) + _bouncyForTitle
+  const titleStyle: React.CSSProperties = { left:`${titleLeft}%`, top:`${titleTop}%`, fontFamily:`'${family}', sans-serif`, fontSize:`${Math.min(size * interpolatedScale, 160)}px`, color: interpolatedColor, fontWeight:bold?700:400, fontStyle:italic?'italic':'normal', textDecoration:underline?'underline':'none' }
+
   return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`}><div className={`frame-editor${layout === 'below' ? ' layout-below' : ''}`}>
     <div className="preview-top"><div><strong>{isNew ? 'New text frame' : 'Text frame editor'}</strong><span>DRAG THE TEXT TO POSITION IT</span></div><div className="frame-head-actions"><div className="frame-layout-toggle" role="group" aria-label="Editor layout"><button type="button" className={layout === 'sidebar' ? 'active' : ''} title="Sidebar layout — controls in a column on the right" onClick={() => setLayout('sidebar')}><PanelRight size={14}/><span>Sidebar</span></button><button type="button" className={layout === 'below' ? 'active' : ''} title="Below layout — bigger preview with the controls arranged in the space beneath the picture" onClick={() => setLayout('below')}><PanelBottom size={14}/><span>Below</span></button></div><button onClick={cancel} title={isNew ? 'Discard this text frame' : 'Cancel changes'}><X size={20}/></button></div></div>
     <div className="frame-editor-body">
       <div className="frame-canvas" style={{background:item.frameBackground}}>
         {change && <ColourChangePreview key={`${change.from}-${change.to}-${change.transition}-${change.time}-${change.start}-${change.hold}`} change={change} playing={bgPlaying} />}
         {enabled && (() => {
-          const pts = effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any) || 'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2)
+          const pts = effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any) || 'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, item.textMoveStarPoints, item.textMoveStarInnerRatio, item.textMoveSymbolRotation, item.textMoveSinusUpDownEnabled, item.textMoveSinusAmplitude, item.textMoveSinusFrequency, item.textMoveBounceHeight, item.textMoveBounceCount, item.textMoveBounceDamping)
           const d = pts.map((p,i)=>`${i===0?'M':'L'} ${p[0]} ${p[1]}`).join(' ')
           return <svg className="frame-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(item.textMovePathType==='straight' || !item.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
         })()}
         {enabled && <><span className="motion-handle from small frame-handle" style={{ left:`${fromX}%`, top:`${fromY}%` }}><b>S</b></span><span className="motion-handle to small frame-handle" style={{ left:`${toX}%`, top:`${toY}%` }}><b>E</b></span></>}
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y, textMoveFromX: enabled ? x : item.textMoveFromX, textMoveFromY: enabled ? y : item.textMoveFromY}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:`'${family}', sans-serif`,fontSize:`${Math.min(size,120)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
-          <Move size={14}/><TextFxPreview item={item} playing={fxPlaying}>{item.text || ' '}</TextFxPreview>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y, textMoveFromX: enabled ? x : item.textMoveFromX, textMoveFromY: enabled ? y : item.textMoveFromY}))} style={titleStyle}>
+          <Move size={14}/><TextFxPreview item={{...item, fontColor: interpolatedColor, fontSize: size * interpolatedScale} as any} playing={fxPlaying}>{item.text || ' '}</TextFxPreview>
         </div>
       </div>
       <aside>
@@ -2906,6 +3178,48 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           <div className="fx-foot"><small>The preview loops a CSS approximation — the MP4 renders the real effect.</small><button type="button" className={`icon-button ${fxPlaying ? 'playing' : ''}`} title={fxPlaying ? 'Pause the previews' : 'Play the previews'} onClick={() => setFxPlaying(p => !p)}>{fxPlaying ? <Pause size={13}/> : <Play size={13}/>}</button></div>
         </div>
 
+        <div className="frame-scale-color">
+          <FieldLabel>Text size animation <small style={{opacity:.7}}>grow / shrink</small></FieldLabel>
+          <label className="check-label" style={{marginBottom:6}}>
+            <input type="checkbox" checked={scaleEnabled} onChange={e=>update({ textScaleEnabled: e.target.checked, textScaleFrom: scaleFrom, textScaleTo: scaleTo })} />
+            <span><Check size={11}/></span> Grow / shrink while shown {scaleEnabled && <small style={{marginLeft:6, opacity:.7}}>{scaleFrom.toFixed(2)}× → {scaleTo.toFixed(2)}×</small>}
+          </label>
+          {scaleEnabled && <div className="motion-params" style={{marginTop:4}}>
+            <label>From <input type="range" min={0.5} max={2} step={0.05} value={scaleFrom} onChange={e=>update({ textScaleFrom: Number(e.target.value) })} /> <em>{scaleFrom.toFixed(2)}×</em></label>
+            <label>To <input type="range" min={0.5} max={2.5} step={0.05} value={scaleTo} onChange={e=>update({ textScaleTo: Number(e.target.value) })} /> <em>{scaleTo.toFixed(2)}×</em></label>
+          </div>}
+          <FieldLabel>Text colour animation <small style={{opacity:.7}}>from → to</small></FieldLabel>
+          <label className="check-label" style={{marginBottom:6}}>
+            <input type="checkbox" checked={colorAnimEnabled} onChange={e=>{ const checked=e.target.checked; const from=colorFrom; const to= checked ? (isHex(colorTo) && colorTo.toLowerCase()===from.toLowerCase() ? colorTo : from) : colorTo; update({ textColorAnimEnabled: checked, textColorFrom: from, textColorTo: to })}} />
+            <span><Check size={11}/></span> Colour change while shown {colorAnimEnabled && <small style={{marginLeft:6, opacity:.7, display:'inline-flex', alignItems:'center', gap:4}}><i style={{width:12,height:12,background:colorFrom,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/><ChevronRight size={10}/><i style={{width:12,height:12,background:colorTo,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/></small>}
+          </label>
+          {colorAnimEnabled && <div className="motion-params" style={{marginTop:4, alignItems:'center'}}>
+            <label style={{display:'flex',alignItems:'center',gap:6}}>From <input type="color" value={colorFrom} onChange={e=>update({ textColorFrom: e.target.value })} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{colorFrom}</em></label>
+            <label style={{display:'flex',alignItems:'center',gap:6}}>To <input type="color" value={colorTo} onChange={e=>update({ textColorTo: e.target.value })} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{colorTo}</em></label>
+            <button type="button" className="btn ghost small" title="Swap colours" onClick={()=>update({ textColorFrom: colorTo, textColorTo: colorFrom })}><RefreshCw size={12}/></button>
+          </div>}
+          {(scaleEnabled || colorAnimEnabled) && <small style={{opacity:.7, marginTop:6, display:'block'}}>Scales and colour-morphs over the frame duration. In the MP4 the whole frame length is used; easing from motion does not affect size/colour.</small>}
+          <FieldLabel>Bouncy text <small style={{opacity:.7}}>damped vertical bounce in place</small></FieldLabel>
+          {(() => {
+            const bouncyEnabled = Boolean((item as any).textBouncyEnabled)
+            const bouncyH = Number((item as any).textBouncyHeight ?? 12)
+            const bouncyN = Number((item as any).textBouncyBounces ?? 3)
+            const bouncyD = Number((item as any).textBouncyDamping ?? 0.35)
+            const bouncyF = Number((item as any).textBouncyFrequency ?? 1)
+            return <>
+              <label className="check-label" style={{marginBottom:6}}>
+                <input type="checkbox" checked={bouncyEnabled} onChange={e=>update({ textBouncyEnabled: e.target.checked, textBouncyHeight: bouncyH, textBouncyBounces: bouncyN, textBouncyDamping: bouncyD, textBouncyFrequency: bouncyF } as any)} />
+                <span><Check size={11}/></span> Bouncy while shown {bouncyEnabled && <small style={{marginLeft:6, opacity:.7}}>{bouncyH}% · {bouncyN}× · damp {bouncyD.toFixed(2)}</small>}
+              </label>
+              {bouncyEnabled && <div className="motion-params" style={{marginTop:4}}>
+                <label>Height <input type="range" min={1} max={26} step={1} value={bouncyH} onChange={e=>update({ textBouncyHeight: Number(e.target.value) } as any)} /> <em>{bouncyH}%</em></label>
+                <label>Bounces <input type="range" min={1} max={8} step={1} value={bouncyN} onChange={e=>update({ textBouncyBounces: Number(e.target.value) } as any)} /> <em>{bouncyN}×</em></label>
+                <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={bouncyD} onChange={e=>update({ textBouncyDamping: Number(e.target.value) } as any)} /> <em>{bouncyD.toFixed(2)}</em></label>
+              </div>}
+            </>
+          })()}
+        </div>
+
         <TextMotionPathEditor
           enabled={enabled}
           fromX={fromX}
@@ -2919,11 +3233,27 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           circleTurns={item.textMoveCircleTurns}
           sineAmplitude={item.textMoveSineAmplitude}
           sineFrequency={item.textMoveSineFrequency}
+          starPoints={item.textMoveStarPoints}
+          starInnerRatio={item.textMoveStarInnerRatio}
+          symbolRotation={item.textMoveSymbolRotation}
+          sinusEnabled={item.textMoveSinusUpDownEnabled}
+          sinusAmplitude={item.textMoveSinusAmplitude}
+          sinusFrequency={item.textMoveSinusFrequency}
+          bounceHeight={item.textMoveBounceHeight}
+          bounceCount={item.textMoveBounceCount}
+          bounceDamping={item.textMoveBounceDamping}
           onChange={update}
           background={item.frameBackground}
           caption={item.text || 'Title'}
           captionStyle={motionCaptionStyle}
         />
+        <div className="frame-steady-row">
+          <FieldLabel>Hold steady at end <small>text stays still for X seconds at the end (movement finishes early)</small></FieldLabel>
+          <div className="motion-params" style={{marginTop:4, alignItems:'center'}}>
+            <label style={{display:'flex',alignItems:'center',gap:8}}>Steady tail <NumberStepper value={Number((item as any).textSteadySeconds || 0)} min={0} max={Math.max(0, Number(item.duration||5)-0.2)} step={0.1} suffix="s" ariaLabel="Hold steady at end" onChange={v=>update({ textSteadySeconds: Math.max(0, Math.min(v, Math.max(0, Number(item.duration||5)-0.2))) } as any)} /> <em>{Number((item as any).textSteadySeconds||0).toFixed(1)}s</em></label>
+            <small style={{opacity:.7, marginLeft:8}}>Text moves for {(Math.max(0, Number(item.duration||5) - Number((item as any).textSteadySeconds||0))).toFixed(1)}s, then holds at end for {Number((item as any).textSteadySeconds||0).toFixed(1)}s. Total text visible {Number(item.duration||5).toFixed(1)}s = slide duration.</small>
+          </div>
+        </div>
 
         <div className="bg-columns">
           <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(item.frameBackground)?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div>
@@ -2937,15 +3267,13 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           <div className="bg-timeline" title="Frame timeline: A · transition · B"><i style={{background:change.from,flex:change.start}}/><i className="mix" style={{background:`linear-gradient(90deg,${change.from},${change.to})`,flex:change.time}}/><i style={{background:change.to,flex:Math.max(0,change.hold-change.start-change.time)}}/></div>
         </div>}
         </div>
-        <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(item.textX)}% · Y {Math.round(item.textY)}%</strong></div>
-        <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the controls. Enable motion path to animate from start to end.</p>
+        <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(item.textX)}% · Y {Math.round(item.textY)}%</strong>{enabled && movingPos && <span style={{marginLeft:8, opacity:.7}}>motion {Math.round(movingPos[0])}%,{Math.round(movingPos[1])}%</span>}{(scaleEnabled || colorAnimEnabled) && <span style={{marginLeft:8, opacity:.7}}>{scaleEnabled ? `${(scaleFrom).toFixed(2)}→${scaleTo.toFixed(2)}×` : ''}{scaleEnabled && colorAnimEnabled ? ' · ' : ''}{colorAnimEnabled ? `${colorFrom}→${colorTo}` : ''}</span>}</div>
+        <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the controls. Enable motion path to animate from start to end. Grow/shrink and colour change run over the whole frame time.</p>
       </aside>
     </div>
     <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50,textMoveFromX:50,textMoveFromY:50})}>Reset position</button><button className="btn ghost" onClick={cancel}>{isNew ? 'Discard' : 'Cancel'}</button><button className="btn dark" onClick={onSave}><Check size={15}/> {isNew ? 'Add to storyline' : 'Save'}</button></div>
   </div></div>
 }
-
-
 function KenBurnsPanel({ item, thumb, onPatch, onClose }: { item: MediaItem; thumb: string | null | undefined; onPatch: (patch: Partial<MediaItem>) => void; onClose: () => void }) {
   const kb = isKenBurns(item.effect)
   const zoom = kenBurnsZoomOf(item)
@@ -3129,7 +3457,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
       setDeleting(false)
     }
   }
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className="file-grid">{entries.map(file=>{
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v,.wmv,.asf,.mpg,.mpeg,.ts,.mts,.m2ts,.flv,.f4v,.3gp,.3gpp,.vob,.dav,.mxf,.mod,.tod,.divx" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className="file-grid">{entries.map(file=>{
   const isDelSelected=deleteSelection.some((x:any)=>x.path===file.path)
   const isSel=selected.some((x:any)=>x.path===file.path)
   return <div className={`file-card ${isSel?'selected':''} ${isDelSelected?'delete-selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}>
@@ -3336,13 +3664,14 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   useEffect(() => {
     if (!playing) return
     const item = media[current]
-    if (!item || !item.textMoveEnabled) {
+    const needs = item && ((item as any).textMoveEnabled || (item as any).textScaleEnabled || (item as any).textColorAnimEnabled || (item as any).textBouncyEnabled || (item as any).textFxWhile === 'bouncy')
+    if (!item || !needs) {
       setMotionProgress(0)
       return
     }
     const start = performance.now()
     const timing = normalizedTextTiming(item)
-    const hold = Math.max(0.2, timing.textEnd - timing.textStart)
+    const hold = Math.max(0.2, (item.type==='title' ? (item.duration || 5) : (timing.textEnd - timing.textStart)) || 1)
     let raf = 0
     const tick = (now: number) => {
       const elapsed = (now - start) / 1000
@@ -3355,7 +3684,11 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   }, [playing, current, media])
 
   const currentItem = media[current]
-  const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
+  const origUrl = currentItem ? itemThumbUrl(currentItem) : ''
+  const previewStageUrl = currentItem?.type === 'video' && currentItem.path ? (() => { try { return moviePreviewUrl(currentItem, 640) } catch { return origUrl } })() : origUrl
+  const [stageUsePreview, setStageUsePreview] = useState(false)
+  useEffect(() => { setStageUsePreview(false); setStageFailed(false) }, [origUrl, previewStageUrl])
+  const currentUrl = stageUsePreview ? previewStageUrl : origUrl
   const stageIsVideo = currentItem?.type === 'video'
   const stageCrop = useCroppedSource(currentUrl, stageIsVideo ? null : currentItem, 'stage', false)
   const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
@@ -3393,58 +3726,45 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
     return p
   }
 
+  const clampM = (v:number)=>Math.max(0,Math.min(100,v))
   const generateCirclePoints = (fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, turns: number, num = 64) => {
     let cx: number, cy: number, r: number
-    if (radius != null && radius > 0) {
-      cx = fromX; cy = fromY; r = radius
-    } else {
-      cx = (fromX + toX) / 2; cy = (fromY + toY) / 2
-      const d = Math.hypot(toX - fromX, toY - fromY)
-      r = d / 2
-      if (r < 1) { r = 15; cx = fromX; cy = fromY }
-    }
+    if (radius != null && radius > 0) { cx = fromX; cy = fromY; r = radius } else { cx = (fromX + toX) / 2; cy = (fromY + toY) / 2; const d = Math.hypot(toX - fromX, toY - fromY); r = d / 2; if (r < 1) { r = 15; cx = fromX; cy = fromY } }
     turns = Math.max(0.1, Math.min(4, turns))
     const pts: [number, number][] = []
     let startAng = 0
     if (radius == null || radius <= 0) startAng = Math.atan2(fromY - cy, fromX - cx)
-    for (let i = 0; i <= num; i++) {
-      const ang = startAng + (i / num) * turns * 2 * Math.PI
-      pts.push([Math.max(0, Math.min(100, cx + r * Math.cos(ang))), Math.max(0, Math.min(100, cy + r * Math.sin(ang)))])
-    }
+    for (let i = 0; i <= num; i++) { const ang = startAng + (i / num) * turns * 2 * Math.PI; pts.push([clampM(cx + r * Math.cos(ang)), clampM(cy + r * Math.sin(ang))]) }
     return pts
   }
-
   const generateSinePoints = (fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 80) => {
-    const amp = Math.max(0, Math.min(40, amplitude))
-    const freq = Math.max(0.1, Math.min(10, frequency))
-    const dx = toX - fromX, dy = toY - fromY
-    const len = Math.hypot(dx, dy)
-    if (len < 1e-6) {
-      const pts: [number, number][] = []
-      for (let i = 0; i <= num; i++) {
-        const p = i / num
-        pts.push([Math.max(0, Math.min(100, fromX + amp * Math.sin(freq * 2 * Math.PI * p))), Math.max(0, Math.min(100, fromY + p*20))])
-      }
-      return pts
-    }
-    const ux = dx / len, uy = dy / len
-    const px = -uy, py = ux
-    const pts: [number, number][] = []
-    for (let i = 0; i <= num; i++) {
-      const p = i / num
-      const bx = fromX + dx * p, by = fromY + dy * p
-      const off = amp * Math.sin(freq * 2 * Math.PI * p)
-      pts.push([Math.max(0, Math.min(100, bx + px * off)), Math.max(0, Math.min(100, by + py * off))])
-    }
-    return pts
+    const amp = Math.max(0, Math.min(40, amplitude)); const freq = Math.max(0.1, Math.min(10, frequency))
+    const dx = toX - fromX, dy = toY - fromY; const len = Math.hypot(dx, dy)
+    if (len < 1e-6) { const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; pts.push([clampM(fromX + amp * Math.sin(freq * 2 * Math.PI * p)), clampM(fromY + p*20)]) } return pts }
+    const ux = dx / len, uy = dy / len; const px = -uy, py = ux; const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; const bx=fromX+dx*p, by=fromY+dy*p; const off=amp*Math.sin(freq*2*Math.PI*p); pts.push([clampM(bx+px*off), clampM(by+py*off)]) } return pts
   }
+  const generateSineVerticalPoints = (fromX:number, fromY:number, toX:number, toY:number, amplitude:number, frequency:number, num=80):[number,number][]=>{ const amp=Math.max(0,Math.min(30,amplitude)); const freq=Math.max(0.1,Math.min(10,frequency)); const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; const bx=fromX+(toX-fromX)*p, by=fromY+(toY-fromY)*p; const off=amp*Math.sin(freq*2*Math.PI*p); pts.push([clampM(bx), clampM(by+off)]) } return pts }
+  const generateStarPoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, points:number, innerRatio:number, rotation:number):[number,number][]=>{ const n=Math.max(3,Math.min(10,Math.round(points||5))); const ratio=Math.max(0.2,Math.min(0.85,innerRatio??0.45)); let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(8,d*0.45)} const rot=(rotation||0)*Math.PI/180; const vertices:[number,number][]=[]; const step=Math.PI/n; for(let i=0;i<n*2;i++){ const ang=rot - Math.PI/2 + i*step; const rad=i%2===0?r:r*ratio; vertices.push([clampM(cx+rad*Math.cos(ang)), clampM(cy+rad*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<12;k++){ const t=k/12; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts }
+  const generateDiamondPoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, rotation:number):[number,number][]=>{ let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.5)} const rot=(rotation||0)*Math.PI/180; const base:[number,number][]=[[cx,cy-r],[cx+r,cy],[cx,cy+r],[cx-r,cy]].map(([x,y])=>{ const dx=x-cx, dy=y-cy; return [clampM(cx+dx*Math.cos(rot)-dy*Math.sin(rot)), clampM(cy+dx*Math.sin(rot)+dy*Math.cos(rot))] as [number,number]}); base.push(base[0]); const pts:[number,number][]=[]; for(let i=0;i<base.length-1;i++){ const a=base[i], b=base[i+1]; for(let k=0;k<20;k++){ const t=k/20; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(base[base.length-1]); return pts }
+  const generateTrianglePoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, rotation:number):[number,number][]=>{ let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.55)} const rot=(rotation||0)*Math.PI/180; const vertices:[number,number][]=[]; for(let i=0;i<3;i++){ const ang=rot - Math.PI/2 + i*(2*Math.PI/3); vertices.push([clampM(cx+r*Math.cos(ang)), clampM(cy+r*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<24;k++){ const t=k/24; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts }
+  const generateBouncePoints = (fromX:number, fromY:number, toX:number, toY:number, height:number, bounces:number, damping:number, numPerBounce=28):[number,number][]=>{ const h=Math.max(0,Math.min(30,height??14)); const n=Math.max(1,Math.min(8,Math.round(bounces??4))); const d=Math.max(0,Math.min(0.9,damping??0.35)); const pts:[number,number][]=[]; for(let i=0;i<n;i++){ const amp=h*Math.pow(1-d,i); const segStart=i/n, segEnd=(i+1)/n; for(let k=0;k<numPerBounce;k++){ const tSeg=k/numPerBounce; const p=segStart+tSeg*(segEnd-segStart); const bx=fromX+(toX-fromX)*p; const byBase=fromY+(toY-fromY)*p; const parabola=4*tSeg*(1-tSeg); const off=-amp*parabola; pts.push([clampM(bx), clampM(byBase+off)] )} } pts.push([clampM(toX), clampM(toY)]); return pts }
+  const bouncyOffsetLocal = (progress:number, height:number, bounces:number, damping:number):number=>{ const h=Math.max(0,Math.min(30,height??12)); const n=Math.max(1,Math.min(8,Math.round(bounces??3))); const d=Math.max(0,Math.min(0.95,damping??0.35)); if(h<0.2) return 0; const p=Math.max(0,Math.min(1,progress)); const idx=Math.min(n-1, Math.floor(p*n)); const segT=(p*n)%1; const amp=h*Math.pow(1-d, idx); const parabola=4*segT*(1-segT); return -amp*parabola }
+  const applySinus = (points:[number,number][], enabled:boolean, amp:number, freq:number):[number,number][]=>{ if(!enabled||points.length<2) return points; const a=Math.max(0,Math.min(20,amp??6)); if(a<0.2) return points; const f=Math.max(0.1,Math.min(10,freq??2)); let total=0; for(let i=1;i<points.length;i++) total+=Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1]); if(total<1e-6) return points; const out:[number,number][]=[]; const num=Math.max(points.length,80); const pointAlong=(pts:[number,number][], prog:number):[number,number]=>{ if(!pts.length) return [50,50]; if(pts.length===1) return pts[0]; let t=0; for(let i=1;i<pts.length;i++) t+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); let target=t*Math.max(0,Math.min(1,prog)); for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(target<=seg){ const tt=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*tt, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*tt] } target-=seg } return pts[pts.length-1] }; for(let i=0;i<=num;i++){ const p=i/num; const b=pointAlong(points,p); const off=a*Math.sin(f*2*Math.PI*p); out.push([clampM(b[0]), clampM(b[1]+off)]) } return out }
 
-  const effectivePoints = (fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number) => {
-    if (pathType === 'freehand' && path && path.length >= 2) return path
-    if (pathType === 'circle') return generateCirclePoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
-    if (pathType === 'sine') return generateSinePoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
-    if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) return [[fromX, fromY]] as [number, number][]
-    return [[fromX, fromY], [toX, toY]] as [number, number][]
+  const effectivePoints = (fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInner?: number, symRot?: number, sinusEn?: boolean, sinusAmp?: number, sinusFreq?: number, bounceH?: number, bounceN?: number, bounceD?: number) => {
+    let base:[number,number][]
+    if ((pathType==='freehand' || pathType==='polyline') && path && path.length>=2) base=path
+    else if (pathType==='circle') base=generateCirclePoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
+    else if (pathType==='sine') base=generateSinePoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
+    else if (pathType==='sine-vertical') base=generateSineVerticalPoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
+    else if (pathType==='star') base=generateStarPoints(fromX, fromY, toX, toY, circleRadius, starPoints??5, starInner??0.45, symRot??0)
+    else if (pathType==='diamond') base=generateDiamondPoints(fromX, fromY, toX, toY, circleRadius, symRot??0)
+    else if (pathType==='triangle') base=generateTrianglePoints(fromX, fromY, toX, toY, circleRadius, symRot??0)
+    else if (pathType==='bounce') base=generateBouncePoints(fromX, fromY, toX, toY, bounceH??14, bounceN??4, bounceD??0.35)
+    else if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base=[[fromX, fromY]] as [number, number][]
+    else base=[[fromX, fromY], [toX, toY]] as [number, number][]
+    if (sinusEn) base=applySinus(base,true,sinusAmp??6, sinusFreq??2)
+    return base
   }
 
   const pointAlongPath = (points: [number, number][], progress: number) => {
@@ -3473,31 +3793,92 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
     const toY = Number.isFinite(Number(item.textMoveToY)) ? Number(item.textMoveToY) : fromY
     const pathType = (item.textMovePathType as any) || (item.textMovePath && item.textMovePath.length>=2 ? 'freehand' : 'straight')
     const easing = (item.textMoveEasing as any) || 'linear'
-    const eased = easeProgress(progressRaw, easing)
-    const pts = effectivePoints(fromX, fromY, toX, toY, item.textMovePath as any, pathType, item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2)
+    // steady tail: motion finishes early and holds final position for textSteadySeconds at end
+    const _holdRaw = (()=>{
+      try{
+        const it:any=item as any
+        const d= Number(it.duration)||5
+        if(it.type==='title') return Math.max(0.2,d)
+        const s= Number(it.textStart); const e= Number(it.textEnd)
+        const st= Number.isFinite(s)? s:0; const en= Number.isFinite(e)? e: d
+        return Math.max(0.2, en - st)
+      } catch{ return 1}
+    })()
+    const _steady = Math.max(0, Math.min(Number((item as any).textSteadySeconds||0), Math.max(0, _holdRaw - 0.05)))
+    const _effective = Math.max(0.05, _holdRaw - _steady)
+    const _progRawMotion = _steady>0.01 ? (progressRaw*_holdRaw >= _effective ? 1 : Math.max(0,Math.min(1, progressRaw*_holdRaw/_effective))) : progressRaw
+    const eased = easeProgress(_progRawMotion, easing)
+    const pts = effectivePoints(fromX, fromY, toX, toY, item.textMovePath as any, pathType, item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, (item as any).textMoveStarPoints, (item as any).textMoveStarInnerRatio, (item as any).textMoveSymbolRotation, (item as any).textMoveSinusUpDownEnabled, (item as any).textMoveSinusAmplitude, (item as any).textMoveSinusFrequency, (item as any).textMoveBounceHeight, (item as any).textMoveBounceCount, (item as any).textMoveBounceDamping)
     return pointAlongPath(pts as any, eased)
   }
 
+  // scale / colour animation helpers for preview stage (same hold progress as motion)
+  const lerpNum = (a:number,b:number,t:number)=>a+(b-a)*t
+  const hexToRgbP = (hex:string)=>{ const h=hex.replace('#',''); return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)} }
+  const rgbToHexP = (r:number,g:number,b:number)=> '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')
+  const lerpHexP = (a:string,b:string,t:number)=>{ try{ const ca=hexToRgbP(a), cb=hexToRgbP(b); return rgbToHexP(lerpNum(ca.r,cb.r,t), lerpNum(ca.g,cb.g,t), lerpNum(ca.b,cb.b,t)) } catch{ return a } }
   const motionPos = getMotionPos(captionItem as any, motionProgress)
   const titleMotionPos = currentItem?.type === 'title' ? getMotionPos(currentItem, motionProgress) : null
 
+  const activeForStyle: any = captionItem || currentItem
+  const scaleEn = activeForStyle ? Boolean(activeForStyle.textScaleEnabled) : false
+  const scaleFrom = activeForStyle ? Number(activeForStyle.textScaleFrom ?? 1) : 1
+  const scaleTo = activeForStyle ? Number(activeForStyle.textScaleTo ?? 1.4) : 1
+  const curScale = scaleEn ? lerpNum(scaleFrom, scaleTo, motionProgress) : 1
+  const colorEn = activeForStyle ? Boolean(activeForStyle.textColorAnimEnabled) : false
+  const colFrom = activeForStyle ? String(activeForStyle.textColorFrom || activeForStyle.fontColor || defaults.fontColor || '#ffffff') : '#ffffff'
+  const colTo = activeForStyle ? String(activeForStyle.textColorTo || activeForStyle.textColorFrom || activeForStyle.fontColor || defaults.fontColor || '#ffffff') : '#ffffff'
+  const curColor = colorEn ? lerpHexP(colFrom, colTo, motionProgress) : undefined
+
+  const getBouncyOff = (it:any):number=>{
+    if(!it) return 0
+    const _holdB = (()=>{
+      try{
+        const d= Number(it.duration)||5
+        if(it.type==='title') return Math.max(0.2,d)
+        const s= Number(it.textStart); const e= Number(it.textEnd)
+        return Math.max(0.2,(Number.isFinite(e)?e:d)-(Number.isFinite(s)?s:0))
+      } catch{ return 1}
+    })()
+    const _steadyB = Math.max(0, Math.min(Number(it.textSteadySeconds||0), Math.max(0, _holdB - 0.05)))
+    const _effectiveB = Math.max(0.05, _holdB - _steadyB)
+    const _progB = _steadyB>0.01 ? (motionProgress*_holdB >= _effectiveB ? 1 : Math.max(0,Math.min(1, motionProgress*_holdB/_effectiveB))) : motionProgress
+    if(it.textBouncyEnabled){
+      return bouncyOffsetLocal(_progB, it.textBouncyHeight ?? 12, it.textBouncyBounces ?? 3, it.textBouncyDamping ?? 0.35)
+    }
+    if(it.textFxWhile === 'bouncy'){
+      const p = it.textFxParams || {}
+      const h = Number(p.height ?? 12)
+      const n = Number(p.bounces ?? 3)
+      const d = Number(p.damping ?? 0.35)
+      return bouncyOffsetLocal(_progB, h, n, d)
+    }
+    return 0
+  }
+  const bouncyOff = getBouncyOff(captionItem as any)
+  const bouncyTitleOff = currentItem?.type === 'title' ? getBouncyOff(currentItem as any) : 0
   const captionPosition = currentItem?.type === 'title'
-    ? { left: `${(titleMotionPos?.x ?? currentItem.textX)}%`, top: `${(titleMotionPos?.y ?? currentItem.textY)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
+    ? { left: `${(titleMotionPos?.x ?? currentItem.textX)}%`, top: `${((titleMotionPos?.y ?? currentItem.textY) + bouncyTitleOff)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
     : captionItem
-      ? { left: `${(motionPos?.x ?? captionItem.textX)}%`, top: `${(motionPos?.y ?? captionItem.textY)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
+      ? { left: `${(motionPos?.x ?? captionItem.textX)}%`, top: `${((motionPos?.y ?? captionItem.textY) + bouncyOff)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
       : undefined
   const captionStyle: React.CSSProperties | undefined = captionItem ? {
-    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min(Number(captionItem.fontSize) || defaults.fontSize, 120)}px`,
-    color: captionItem.fontColor, fontWeight: captionItem.textBold ? 700 : 400,
+    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min((Number(captionItem.fontSize) || defaults.fontSize) * curScale, 160)}px`,
+    color: curColor || captionItem.fontColor, fontWeight: captionItem.textBold ? 700 : 400,
     fontStyle: captionItem.textItalic && !FONTS_WITHOUT_ITALIC.has(captionItem.fontFamily || '') ? 'italic' : 'normal',
-    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min(Number(captionItem.fontSize) || defaults.fontSize, 120)),
-  } : undefined
+    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min((Number(captionItem.fontSize) || defaults.fontSize) * curScale, 160)),
+  } : (currentItem?.type==='title' ? {
+    fontFamily: `'${currentItem.fontFamily}', sans-serif`, fontSize: `${Math.min((Number(currentItem.fontSize) || 48) * curScale, 160)}px`,
+    color: curColor || currentItem.fontColor, fontWeight: (currentItem as any).textBold ? 700 : 400,
+    fontStyle: (currentItem as any).textItalic ? 'italic' : 'normal',
+    textDecoration: (currentItem as any).textUnderline ? 'underline' : 'none',
+  } as any : undefined)
 
   if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={captionItem} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={{...captionItem, fontColor: curColor || captionItem.fontColor, fontSize: (Number(captionItem.fontSize)||defaults.fontSize) * curScale} as any} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 
@@ -3527,7 +3908,7 @@ function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () =>
     const cancelled = job.status==='cancelled'
     return <section className={`panel queue-card ${failed?'is-failed':''} ${cancelled?'is-cancelled':''} ${live(job.status)?'is-live':''}`} key={job.id}>
       <div className="queue-thumb"><img src="/media/coast.jpg"/><span>{live(job.status)?<RefreshCw className="spin" size={15}/>:failed?<AlertTriangle size={15}/>:<Download size={15}/>}</span></div>
-      <div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.size_bytes?` · ${formatFileSize(job.size_bytes)}`:''}{job.error_message?` · ${job.error_message}`:''}</small></div>
+      <div><strong>{job.kind==='preview'?'Proxy preview':'MP4 render'} · {job.id.slice(0,8)}</strong><p>{job.stage} · {Math.round(job.progress)}%</p><small>{new Date(job.created_at).toLocaleString()}{job.size_bytes?` · ${formatFileSize(job.size_bytes)}`:''}</small>{job.error_message ? <pre className="queue-error" style={{whiteSpace:'pre-wrap',wordBreak:'break-word',margin:'4px 0 0',fontSize:'12px',lineHeight:'1.35'}}>{job.error_message}</pre> : null}</div>
       <span className={`status-pill ${job.status}`}>{failed||cancelled?<AlertTriangle size={13}/>:<Check size={13}/>} {job.status}</span>
       {live(job.status)
         ? <button type="button" className="btn soft stop-job" disabled={job.status==='cancelling'} onClick={()=>stopJob(job.id)}><Square size={13} fill="currentColor"/> {job.status==='cancelling'?'Stopping…':'Stop'}</button>
