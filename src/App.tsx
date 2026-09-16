@@ -679,8 +679,12 @@ const safeDuration = (value: number) => Math.max(MIN_CLIP_SECONDS, Number.isFini
 // transition: a text window is always relative to the slide's visible hold,
 // never to the extra transition handle that follows it. This also repairs old
 // projects whose saved values were outside the current draggable range.
-function normalizedTextTiming(item: Pick<MediaItem, 'duration' | 'textStart' | 'textEnd'>) {
-  const duration = safeDuration(item.duration)
+function normalizedTextTiming(item: Pick<MediaItem, 'duration' | 'textStart' | 'textEnd' | 'type' | 'textSteadySeconds'>) {
+  const duration = safeDuration((item as any).duration)
+  // Text frames always show text for whole slide
+  if ((item as any).type === 'title') {
+    return { duration, textStart: 0, textEnd: duration }
+  }
   const minimum = Math.min(MIN_TEXT_SECONDS, duration)
   const rawStart = Number(item.textStart)
   const rawEnd = Number(item.textEnd)
@@ -689,7 +693,14 @@ function normalizedTextTiming(item: Pick<MediaItem, 'duration' | 'textStart' | '
   return { duration, textStart, textEnd }
 }
 function normalizeItemTextTiming(item: MediaItem): MediaItem {
-  return { ...item, ...normalizedTextTiming(item) }
+  const base = { ...item, ...normalizedTextTiming(item as any) }
+  // keep steady tail within hold for title frames (and any item)
+  if (Number.isFinite(Number((item as any).textSteadySeconds))) {
+    const hold = Math.max(0.2, base.textEnd - base.textStart || base.duration || 1)
+    const steady = Math.max(0, Math.min(Number((item as any).textSteadySeconds), Math.max(0, hold - 0.05)))
+    ;(base as any).textSteadySeconds = steady
+  }
+  return base
 }
 // Sanitise the project-wide defaults (typed by the user or read from a saved
 // project) so a bad value can never produce a zero-length clip or transition.
@@ -704,10 +715,13 @@ function resizeClip(item: MediaItem, seconds: number): MediaItem {
   const previous = safeDuration(item.duration)
   const rawEnd = Number(item.textEnd)
   const ranToEnd = !Number.isFinite(rawEnd) || rawEnd >= previous - 1e-6
-  const textEnd = ranToEnd ? duration : clampNumber(rawEnd, MIN_TEXT_SECONDS, duration)
+  const textEnd = (item as any).type === 'title' ? duration : (ranToEnd ? duration : clampNumber(rawEnd, MIN_TEXT_SECONDS, duration))
   const rawStart = Number(item.textStart)
-  const textStart = clampNumber(Number.isFinite(rawStart) ? rawStart : 0, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
-  return { ...item, duration, textStart, textEnd }
+  const textStart = (item as any).type === 'title' ? 0 : clampNumber(Number.isFinite(rawStart) ? rawStart : 0, 0, Math.max(0, textEnd - MIN_TEXT_SECONDS))
+  const steadyRaw = Number((item as any).textSteadySeconds || 0)
+  const hold = Math.max(0.2, (item as any).type === 'title' ? duration : (textEnd - textStart))
+  const steady = Number.isFinite(steadyRaw) ? Math.max(0, Math.min(steadyRaw, Math.max(0, hold - 0.05))) : 0
+  return { ...item, duration, textStart, textEnd, textSteadySeconds: steady }
 }
 function timelineModel(items: MediaItem[]) {
   const durations = items.map(item => safeDuration(item.duration))
@@ -1868,7 +1882,7 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline }])
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0 }])
     setPendingTextFrame(id)
     setEditingTextFrame(id)
   }
@@ -3055,13 +3069,29 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
   const hexToRgb = (hex:string)=>{ const h=hex.replace('#',''); return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)} }
   const rgbToHex = (r:number,g:number,b:number)=> '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')
   const lerpHex = (a:string,b:string,t:number)=>{ try{ const ca=hexToRgb(a), cb=hexToRgb(b); return rgbToHex(lerp(ca.r,cb.r,t), lerp(ca.g,cb.g,t), lerp(ca.b,cb.b,t)) } catch{ return a } }
-  const interpolatedScale = scaleEnabled ? lerp(scaleFrom, scaleTo, animProgress) : 1
-  const interpolatedColor = colorAnimEnabled ? lerpHex(colorFrom, colorTo, animProgress) : color
+  const _holdForAnim = Math.max(0.2, Number(item.duration)||5)
+  const _steadyForAnim = Math.max(0, Math.min(Number((item as any).textSteadySeconds||0), Math.max(0, _holdForAnim - 0.05)))
+  const effectiveAnimProgress = _steadyForAnim>0.01 ? (animProgress*_holdForAnim >= (_holdForAnim-_steadyForAnim) ? 1 : Math.max(0,Math.min(1, animProgress*_holdForAnim/Math.max(0.05,_holdForAnim-_steadyForAnim)))) : animProgress
+  const interpolatedScale = scaleEnabled ? lerp(scaleFrom, scaleTo, effectiveAnimProgress) : 1
+  const interpolatedColor = colorAnimEnabled ? lerpHex(colorFrom, colorTo, effectiveAnimProgress) : color
 
   const easeProg = (p:number, easing:string)=>{ p=Math.max(0,Math.min(1,p)); if(easing==='ease-in') return p*p; if(easing==='ease-out') return 1-(1-p)*(1-p); if(easing==='ease-in-out'){ if(p<0.5) return 2*p*p; return 1-2*(1-p)*(1-p)} if(easing==='smooth'){ if(p<0.5) return 4*p*p*p; return 1-Math.pow(-2*p+2,3)/2 } return p }
-  const movingPos = (()=>{ if(!enabled) return null; const pts=effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any)||'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, item.textMoveStarPoints, item.textMoveStarInnerRatio, item.textMoveSymbolRotation, item.textMoveSinusUpDownEnabled, item.textMoveSinusAmplitude, item.textMoveSinusFrequency, item.textMoveBounceHeight, item.textMoveBounceCount, item.textMoveBounceDamping); if(!pts.length) return null; const eased=easeProg(animProgress, (item.textMoveEasing as any)||'linear'); let total=0; for(let i=1;i<pts.length;i++) total+=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(total<0.001) return pts[0]; let target=total*eased; for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(target<=seg){ const t=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t] as [number,number] } target-=seg } return pts[pts.length-1] })()
+  const movingPos = (()=>{
+    if(!enabled) return null
+    const pts=effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any)||'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, item.textMoveStarPoints, item.textMoveStarInnerRatio, item.textMoveSymbolRotation, item.textMoveSinusUpDownEnabled, item.textMoveSinusAmplitude, item.textMoveSinusFrequency, item.textMoveBounceHeight, item.textMoveBounceCount, item.textMoveBounceDamping)
+    if(!pts.length) return null
+    const eased=easeProg(effectiveAnimProgress, (item.textMoveEasing as any)||'linear'); let total=0; for(let i=1;i<pts.length;i++) total+=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(total<0.001) return pts[0]; let target=total*eased; for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(target<=seg){ const t=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t] as [number,number] } target-=seg } return pts[pts.length-1] })()
+  const _bouncyForTitle = (()=>{
+    const it:any=item as any
+    if(!it.textBouncyEnabled && it.textFxWhile!=='bouncy') return 0
+    const progB = effectiveAnimProgress
+    const h = it.textBouncyEnabled ? (it.textBouncyHeight??12) : Number(it.textFxParams?.height??12)
+    const n = it.textBouncyEnabled ? (it.textBouncyBounces??3) : Number(it.textFxParams?.bounces??3)
+    const d = it.textBouncyEnabled ? (it.textBouncyDamping??0.35) : Number(it.textFxParams?.damping??0.35)
+    const p=Math.max(0,Math.min(1,progB)); const idx=Math.min(Math.max(1,Math.min(8,Math.round(n)))-1, Math.floor(p*Math.max(1,Math.min(8,Math.round(n))))); const segT=(p*Math.max(1,Math.min(8,Math.round(n))))%1; const amp=Math.max(0,Math.min(30,h))*Math.pow(1-Math.max(0,Math.min(0.95,d)), idx); return -amp*4*segT*(1-segT)
+  })()
   const titleLeft = movingPos ? movingPos[0] : item.textX
-  const titleTop = movingPos ? movingPos[1] : item.textY
+  const titleTop = (movingPos ? movingPos[1] : item.textY) + _bouncyForTitle
   const titleStyle: React.CSSProperties = { left:`${titleLeft}%`, top:`${titleTop}%`, fontFamily:`'${family}', sans-serif`, fontSize:`${Math.min(size * interpolatedScale, 160)}px`, color: interpolatedColor, fontWeight:bold?700:400, fontStyle:italic?'italic':'normal', textDecoration:underline?'underline':'none' }
 
   return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`}><div className={`frame-editor${layout === 'below' ? ' layout-below' : ''}`}>
@@ -3162,6 +3192,13 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           caption={item.text || 'Title'}
           captionStyle={motionCaptionStyle}
         />
+        <div className="frame-steady-row">
+          <FieldLabel>Hold steady at end <small>text stays still for X seconds at the end (movement finishes early)</small></FieldLabel>
+          <div className="motion-params" style={{marginTop:4, alignItems:'center'}}>
+            <label style={{display:'flex',alignItems:'center',gap:8}}>Steady tail <NumberStepper value={Number((item as any).textSteadySeconds || 0)} min={0} max={Math.max(0, Number(item.duration||5)-0.2)} step={0.1} suffix="s" ariaLabel="Hold steady at end" onChange={v=>update({ textSteadySeconds: Math.max(0, Math.min(v, Math.max(0, Number(item.duration||5)-0.2))) } as any)} /> <em>{Number((item as any).textSteadySeconds||0).toFixed(1)}s</em></label>
+            <small style={{opacity:.7, marginLeft:8}}>Text moves for {(Math.max(0, Number(item.duration||5) - Number((item as any).textSteadySeconds||0))).toFixed(1)}s, then holds at end for {Number((item as any).textSteadySeconds||0).toFixed(1)}s. Total text visible {Number(item.duration||5).toFixed(1)}s = slide duration.</small>
+          </div>
+        </div>
 
         <div className="bg-columns">
           <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(bg=><button key={bg} className={item.frameBackground===bg?'active':''} style={{background:bg}} onClick={()=>update({frameBackground:bg})}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(item.frameBackground)?item.frameBackground:'#30382a'} onChange={e=>update({frameBackground:e.target.value})}/></div></div>
@@ -3697,7 +3734,21 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
     const toY = Number.isFinite(Number(item.textMoveToY)) ? Number(item.textMoveToY) : fromY
     const pathType = (item.textMovePathType as any) || (item.textMovePath && item.textMovePath.length>=2 ? 'freehand' : 'straight')
     const easing = (item.textMoveEasing as any) || 'linear'
-    const eased = easeProgress(progressRaw, easing)
+    // steady tail: motion finishes early and holds final position for textSteadySeconds at end
+    const _holdRaw = (()=>{
+      try{
+        const it:any=item as any
+        const d= Number(it.duration)||5
+        if(it.type==='title') return Math.max(0.2,d)
+        const s= Number(it.textStart); const e= Number(it.textEnd)
+        const st= Number.isFinite(s)? s:0; const en= Number.isFinite(e)? e: d
+        return Math.max(0.2, en - st)
+      } catch{ return 1}
+    })()
+    const _steady = Math.max(0, Math.min(Number((item as any).textSteadySeconds||0), Math.max(0, _holdRaw - 0.05)))
+    const _effective = Math.max(0.05, _holdRaw - _steady)
+    const _progRawMotion = _steady>0.01 ? (progressRaw*_holdRaw >= _effective ? 1 : Math.max(0,Math.min(1, progressRaw*_holdRaw/_effective))) : progressRaw
+    const eased = easeProgress(_progRawMotion, easing)
     const pts = effectivePoints(fromX, fromY, toX, toY, item.textMovePath as any, pathType, item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, (item as any).textMoveStarPoints, (item as any).textMoveStarInnerRatio, (item as any).textMoveSymbolRotation, (item as any).textMoveSinusUpDownEnabled, (item as any).textMoveSinusAmplitude, (item as any).textMoveSinusFrequency, (item as any).textMoveBounceHeight, (item as any).textMoveBounceCount, (item as any).textMoveBounceDamping)
     return pointAlongPath(pts as any, eased)
   }
@@ -3722,15 +3773,26 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
 
   const getBouncyOff = (it:any):number=>{
     if(!it) return 0
+    const _holdB = (()=>{
+      try{
+        const d= Number(it.duration)||5
+        if(it.type==='title') return Math.max(0.2,d)
+        const s= Number(it.textStart); const e= Number(it.textEnd)
+        return Math.max(0.2,(Number.isFinite(e)?e:d)-(Number.isFinite(s)?s:0))
+      } catch{ return 1}
+    })()
+    const _steadyB = Math.max(0, Math.min(Number(it.textSteadySeconds||0), Math.max(0, _holdB - 0.05)))
+    const _effectiveB = Math.max(0.05, _holdB - _steadyB)
+    const _progB = _steadyB>0.01 ? (motionProgress*_holdB >= _effectiveB ? 1 : Math.max(0,Math.min(1, motionProgress*_holdB/_effectiveB))) : motionProgress
     if(it.textBouncyEnabled){
-      return bouncyOffsetLocal(motionProgress, it.textBouncyHeight ?? 12, it.textBouncyBounces ?? 3, it.textBouncyDamping ?? 0.35)
+      return bouncyOffsetLocal(_progB, it.textBouncyHeight ?? 12, it.textBouncyBounces ?? 3, it.textBouncyDamping ?? 0.35)
     }
     if(it.textFxWhile === 'bouncy'){
       const p = it.textFxParams || {}
       const h = Number(p.height ?? 12)
       const n = Number(p.bounces ?? 3)
       const d = Number(p.damping ?? 0.35)
-      return bouncyOffsetLocal(motionProgress, h, n, d)
+      return bouncyOffsetLocal(_progB, h, n, d)
     }
     return 0
   }

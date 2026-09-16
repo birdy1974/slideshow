@@ -90,6 +90,9 @@ def normalize_text_window(item: dict[str, Any]) -> tuple[float, float]:
     if not math.isfinite(clip_duration):
         clip_duration = 5.0
     clip_duration = max(TEXT_TIMING_MIN_CLIP_SECONDS, clip_duration)
+    # Text frames always show text for the whole slide (spec requirement)
+    if str(item.get("type") or "").lower() == "title":
+        return 0.0, clip_duration
     minimum = min(TEXT_TIMING_MIN_SECONDS, clip_duration)
     start_value = _num(item, "textStart", 0.0)
     start = _clamp(start_value, 0.0, max(0.0, clip_duration - minimum))
@@ -549,6 +552,8 @@ class TextGeometry:
     bouncy_height: float = 12.0
     bouncy_bounces: float = 3.0
     bouncy_damping: float = 0.35
+    # Steady hold at end: text stays at final position for this many seconds at end of text window (title frames, not moving)
+    move_steady_seconds: float = 0.0
     # Scale / colour animation over hold
     scale_enabled: bool = False
     scale_from: float = 1.0
@@ -572,7 +577,14 @@ class TextGeometry:
 
     def motion_pos_at(self, t: float) -> tuple[float,float]:
         hold = max(1e-6, self.end - self.start)
-        prog_raw = _clamp((t - self.start) / hold, 0.0, 1.0)
+        # steady tail: motion finishes early and holds final position
+        steady = _clamp(float(self.move_steady_seconds or 0.0), 0.0, max(0.0, hold - 0.05))
+        effective = max(0.05, hold - steady)
+        elapsed = t - self.start
+        if elapsed >= effective:
+            prog_raw = 1.0
+        else:
+            prog_raw = _clamp(elapsed / effective, 0.0, 1.0) if elapsed > 0 else 0.0
         prog = _ease_progress(prog_raw, self.move_easing)
         pts = self.motion_points()
         if not pts:
@@ -586,8 +598,14 @@ class TextGeometry:
         return (base_x, base_y)
 
     def motion_pct_at(self, progress_raw: float) -> tuple[float,float]:
-        """Percent coords at raw progress 0..1 with easing applied."""
-        prog = _ease_progress(max(0.0, min(1.0, progress_raw)), self.move_easing)
+        """Percent coords at raw progress 0..1 with easing applied (respects steady tail)."""
+        hold = max(1e-6, self.end - self.start)
+        steady = _clamp(float(self.move_steady_seconds or 0.0), 0.0, max(0.0, hold - 0.05))
+        effective = max(0.05, hold - steady)
+        # map hold-progress (0..1) to motion progress that finishes at effective
+        raw = max(0.0, min(1.0, progress_raw))
+        prog_raw = 1.0 if raw * hold >= effective else _clamp(raw * hold / effective, 0.0, 1.0) if effective > 1e-9 else 1.0
+        prog = _ease_progress(prog_raw, self.move_easing)
         pts = self.motion_points()
         if not pts:
             y = self.move_from_y
@@ -595,7 +613,7 @@ class TextGeometry:
         else:
             x, y = _point_along_path(pts, prog)
         if self.bouncy_enabled:
-            off = _bouncy_offset(max(0.0, min(1.0, progress_raw)), self.bouncy_height, self.bouncy_bounces, self.bouncy_damping)
+            off = _bouncy_offset(prog_raw, self.bouncy_height, self.bouncy_bounces, self.bouncy_damping)
             y = _clamp(y + off, 0, 100)
         return (x, y)
 
@@ -684,6 +702,9 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
     bouncy_h = _clamp(_num(item, "textBouncyHeight", 12), 0, 30)
     bouncy_n = _clamp(_num(item, "textBouncyBounces", 3), 1, 8)
     bouncy_d = _clamp(_num(item, "textBouncyDamping", 0.35), 0, 0.95)
+    steady_raw = _num(item, "textSteadySeconds", _num(item, "textMotionSteadySeconds", 0))
+    # clamp later after hold is known: here just clamp to 0..60, final clamp in TextGeometry uses hold
+    steady_s = _clamp(steady_raw, 0.0, 60.0)
     scale_en = bool(item.get("textScaleEnabled"))
     scale_from = _clamp(_num(item, "textScaleFrom", 1.0), 0.3, 3.0)
     scale_to = _clamp(_num(item, "textScaleTo", 1.45), 0.3, 3.0)
@@ -724,6 +745,7 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         bouncy_height=bouncy_h,
         bouncy_bounces=bouncy_n,
         bouncy_damping=bouncy_d,
+        move_steady_seconds=steady_s,
         scale_enabled=scale_en,
         scale_from=scale_from,
         scale_to=scale_to,
@@ -800,7 +822,13 @@ def _dt_motion_exprs(g: TextGeometry) -> tuple[str, str] | None:
     if not pts:
         return None
     hold = max(1e-6, g.end - g.start)
-    p_raw = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
+    steady = max(0.0, min(float(getattr(g, 'move_steady_seconds', 0) or 0.0), max(0.0, hold - 0.05)))
+    effective = max(0.05, hold - steady)
+    if steady > 0.01:
+        # motion completes in effective, then holds at 1
+        p_raw = f"if(lt(t,{_n(g.start + effective)}),clip((t-{_n(g.start)})/{_n(effective)},0,1),1)"
+    else:
+        p_raw = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
     p_expr = _eased_dt_expr(p_raw, g.move_easing)
     if len(pts) == 2:
         (fx, fy), (tx, ty) = pts[0], pts[1]
@@ -864,7 +892,12 @@ def _dt_bouncy_expr(g: TextGeometry, while_id: str) -> str | None:
     if h < 0.1:
         return None
     hold = max(1e-6, g.end - g.start)
-    p = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
+    steady = max(0.0, min(float(getattr(g, 'move_steady_seconds', 0) or 0.0), max(0.0, hold - 0.05)))
+    effective = max(0.05, hold - steady)
+    if steady > 0.01:
+        p = f"if(lt(t,{_n(g.start + effective)}),clip((t-{_n(g.start)})/{_n(effective)},0,1),1)"
+    else:
+        p = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
     # Build nested if for bounce index
     # For each bounce i, amp = h * (1-d)^i  (in percent of screen height)
     # offset_pct = -amp * 4*segT*(1-segT)
@@ -1567,22 +1600,19 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
     if total_len < 1e-6 and len(pts) < 3:
         return []
     hold = g.end - g.start
+    steady = max(0.0, min(float(getattr(g, 'move_steady_seconds', 0) or 0.0), max(0.0, hold - 0.05)))
+    effective = max(0.05, hold - steady) if steady > 0.01 else hold
 
     # If easing is not linear, sample with easing to approximate speed fade
     if g.move_easing != "linear":
-        # Sample many points along eased progress
-        # Use 60 samples for smooth easing
         num_samples = 60
-        # For complex paths with many points, we still sample eased progress along path length
-        # Generate eased progress values
         sampled_pts: list[tuple[float,float]] = []
         for i in range(num_samples+1):
             raw = i / num_samples
             eased = _ease_progress(raw, g.move_easing)
             sampled_pts.append(_point_along_path(pts, eased))
-        # Now create events between sampled points with equal time slices
         events: list[str] = []
-        slice_dur = hold / num_samples
+        slice_dur = effective / num_samples
         for i in range(num_samples):
             t0 = g.start + i * slice_dur
             t1 = t0 + slice_dur
@@ -1598,11 +1628,25 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
             if i == 0 and "\\move(" not in enter_tags:
                 tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + while_tags + f"\\alpha{alpha}"
             if i == num_samples-1 and "\\move(" not in exit_tags:
-                tags += exit_tags
+                # tail steady will be added after loop if needed, so don't add exit yet if steady
+                if steady <= 0.01:
+                    tags += exit_tags
             events.append(_ev(0, t0, t1, tags, body))
+        if steady > 0.01:
+            tail_t0 = g.start + effective
+            tail_mid = (tail_t0 + g.end) / 2
+            alpha = _alpha_at(g, tail_mid)
+            x_end = g.width * pts[-1][0] / 100.0
+            y_end = g.height * pts[-1][1] / 100.0
+            # need bouncy offset? motion_pos handles it but pts already include bounce trajectory? For tail static, use last pt with bouncy at prog 1? bouncy offset at 1 is 0
+            # apply bouncy if enabled: use motion_pos_at for tail pos (handles bouncy)
+            mx, my = g.motion_pos_at(tail_mid)
+            tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + while_tags + exit_tags
+            # include enter_tags if motion had none? already handled
+            events.append(_ev(0, tail_t0, g.end, tags, body))
         return events
 
-    # Linear easing — use original logic with distance-proportional timing
+    # Linear easing — distance-proportional timing
     cum = 0.0
     thresholds = [0.0]
     for i in range(1, len(pts)):
@@ -1611,8 +1655,8 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
         thresholds.append(cum/total_len if total_len>1e-9 else i/(len(pts)-1))
     events: list[str] = []
     for i in range(len(pts)-1):
-        t0 = g.start + hold * thresholds[i]
-        t1 = g.start + hold * thresholds[i+1]
+        t0 = g.start + effective * thresholds[i]
+        t1 = g.start + effective * thresholds[i+1]
         if t1 <= t0 + 1e-3:
             continue
         mid = (t0 + t1)/2
@@ -1631,8 +1675,15 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
                 tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + while_tags
         if i == len(pts)-2:
             if "\\move(" not in exit_tags:
-                tags += exit_tags
+                if steady <= 0.01:
+                    tags += exit_tags
         events.append(_ev(0, t0, t1, tags, body))
+    if steady > 0.01:
+        tail_mid = (g.start + effective + g.end) / 2
+        alpha = _alpha_at(g, tail_mid)
+        mx, my = g.motion_pos_at(tail_mid)
+        tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + while_tags + exit_tags
+        events.append(_ev(0, g.start + effective, g.end, tags, body))
     return events
 
 def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:

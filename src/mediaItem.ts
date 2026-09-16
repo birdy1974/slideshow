@@ -84,6 +84,8 @@ export type MediaItem = {
   textBouncyBounces?: number;
   textBouncyDamping?: number;
   textBouncyFrequency?: number;
+  // Text frame: keep text steady (not moving) for X seconds at the end of the frame — movement finishes early and holds final position; total text window equals frame duration
+  textSteadySeconds?: number;
 
   // Text frames: optional second background colour reached via an xfade
   // transition that starts `frameTransitionStart` seconds into the frame and
