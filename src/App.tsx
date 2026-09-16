@@ -565,12 +565,100 @@ function generateSinePointsMotion(fromX: number, fromY: number, toX: number, toY
   }
   return pts
 }
-function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number): [number, number][] {
-  if (pathType === 'freehand' && path && path.length >= 2) return path
-  if (pathType === 'circle') return generateCirclePointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
-  if (pathType === 'sine') return generateSinePointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
-  if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) return [[fromX, fromY]]
-  return [[fromX, fromY], [toX, toY]]
+function generateSineVerticalPointsMotion(fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 80): [number, number][] {
+  const amp = Math.max(0, Math.min(30, amplitude))
+  const freq = Math.max(0.1, Math.min(10, frequency))
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) { const p = i / num; const bx = fromX + (toX - fromX)*p; const by = fromY + (toY - fromY)*p; const off = amp * Math.sin(freq*2*Math.PI*p); pts.push([clampPctMotion(bx), clampPctMotion(by+off)]) }
+  return pts
+}
+function generateStarPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, points: number, innerRatio: number, rotation: number, numPerSeg = 12): [number, number][] {
+  const n = Math.max(3, Math.min(10, Math.round(points||5)))
+  const ratio = Math.max(0.2, Math.min(0.85, innerRatio ?? 0.45))
+  let cx:number, cy:number, r:number
+  if (radius!=null && radius>2) { cx=fromX; cy=fromY; r=radius } else { cx=(fromX+toX)/2; cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(8,d*0.45) }
+  const rot=(rotation||0)*Math.PI/180
+  const vertices: [number,number][]=[]
+  const step=Math.PI/n
+  for(let i=0;i<n*2;i++){ const ang=rot - Math.PI/2 + i*step; const rad=i%2===0?r:r*ratio; vertices.push([clampPctMotion(cx+rad*Math.cos(ang)), clampPctMotion(cy+rad*Math.sin(ang))])}
+  vertices.push(vertices[0])
+  const pts:[number,number][]=[]
+  for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<numPerSeg;k++){ const t=k/numPerSeg; pts.push([clampPctMotion(a[0]+(b[0]-a[0])*t), clampPctMotion(a[1]+(b[1]-a[1])*t)]) } }
+  pts.push(vertices[vertices.length-1])
+  return pts
+}
+function generateDiamondPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number): [number, number][] {
+  let cx:number, cy:number, r:number
+  if (radius!=null && radius>2) { cx=fromX; cy=fromY; r=radius } else { cx=(fromX+toX)/2; cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.5) }
+  const rot=(rotation||0)*Math.PI/180
+  const base:[number,number][] = [[cx,cy-r],[cx+r,cy],[cx,cy+r],[cx-r,cy]].map(([x,y])=>{ const dx=x-cx, dy=y-cy; return [clampPctMotion(cx+dx*Math.cos(rot)-dy*Math.sin(rot)), clampPctMotion(cy+dx*Math.sin(rot)+dy*Math.cos(rot))] as [number,number] })
+  base.push(base[0]); const pts:[number,number][]=[]; const perSeg=20; for(let i=0;i<base.length-1;i++){ const a=base[i], b=base[i+1]; for(let k=0;k<perSeg;k++){ const t=k/perSeg; pts.push([clampPctMotion(a[0]+(b[0]-a[0])*t), clampPctMotion(a[1]+(b[1]-a[1])*t)]) } } pts.push(base[base.length-1]); return pts
+}
+function generateTrianglePointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number): [number, number][] {
+  let cx:number, cy:number, r:number
+  if (radius!=null && radius>2) { cx=fromX; cy=fromY; r=radius } else { cx=(fromX+toX)/2; cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.55) }
+  const rot=(rotation||0)*Math.PI/180
+  const vertices:[number,number][]=[]; for(let i=0;i<3;i++){ const ang=rot - Math.PI/2 + i*(2*Math.PI/3); vertices.push([clampPctMotion(cx+r*Math.cos(ang)), clampPctMotion(cy+r*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; const perSeg=24; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<perSeg;k++){ const t=k/perSeg; pts.push([clampPctMotion(a[0]+(b[0]-a[0])*t), clampPctMotion(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts
+}
+function generateBouncePointsMotion(fromX: number, fromY: number, toX: number, toY: number, height: number, bounces: number, damping: number, numPerBounce = 28): [number, number][] {
+  const h = Math.max(0, Math.min(30, height ?? 14))
+  const n = Math.max(1, Math.min(8, Math.round(bounces ?? 4)))
+  const d = Math.max(0, Math.min(0.9, damping ?? 0.35))
+  const pts: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    const amp = h * Math.pow(1 - d, i)
+    const segStart = i / n
+    const segEnd = (i+1)/n
+    for (let k = 0; k < numPerBounce; k++) {
+      const tSeg = k / numPerBounce
+      const p = segStart + tSeg * (segEnd - segStart)
+      const bx = fromX + (toX - fromX) * p
+      const byBase = fromY + (toY - fromY) * p
+      const parabola = 4 * tSeg * (1 - tSeg)
+      const off = -amp * parabola
+      pts.push([clampPctMotion(bx), clampPctMotion(byBase + off)])
+    }
+  }
+  pts.push([clampPctMotion(toX), clampPctMotion(toY)])
+  return pts
+}
+function bouncyOffset(progress: number, height: number, bounces: number, damping: number): number {
+  const h = Math.max(0, Math.min(30, height ?? 12))
+  const n = Math.max(1, Math.min(8, Math.round(bounces ?? 3)))
+  const d = Math.max(0, Math.min(0.95, damping ?? 0.35))
+  if (h < 0.2) return 0
+  const p = Math.max(0, Math.min(1, progress))
+  const bounceIdx = Math.min(n-1, Math.floor(p * n))
+  const segT = (p * n) % 1
+  const amp = h * Math.pow(1 - d, bounceIdx)
+  const parabola = 4 * segT * (1 - segT)
+  return -amp * parabola
+}
+function applySinusUpDownMotion(points: [number,number][], enabled: boolean, amplitude: number, frequency: number): [number,number][] {
+  if (!enabled || points.length<2) return points
+  const amp=Math.max(0,Math.min(20, amplitude ?? 6)); if (amp<0.2) return points
+  const freq=Math.max(0.1,Math.min(10, frequency ?? 2))
+  let total=0; for(let i=1;i<points.length;i++) total+=Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1])
+  if (total<1e-6) return points
+  const out:[number,number][]=[]; const num=Math.max(points.length,80)
+  const pointAlong=(pts:[number,number][], prog:number):[number,number]=>{ if(!pts.length) return [50,50]; if(pts.length===1) return pts[0]; let t=0; for(let i=1;i<pts.length;i++) t+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); let target=t*Math.max(0,Math.min(1,prog)); for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); if(target<=seg){ const tt=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*tt, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*tt] } target-=seg } return pts[pts.length-1] }
+  for(let i=0;i<=num;i++){ const p=i/num; const b=pointAlong(points,p); const off=amp*Math.sin(freq*2*Math.PI*p); out.push([clampPctMotion(b[0]), clampPctMotion(b[1]+off)]) }
+  return out
+}
+function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInnerRatio?: number, symbolRotation?: number, sinusEnabled?: boolean, sinusAmp?: number, sinusFreq?: number, bounceHeight?: number, bounceCount?: number, bounceDamping?: number): [number, number][] {
+  let base: [number, number][]
+  if ((pathType === 'freehand' || pathType === 'polyline') && path && path.length >= 2) base = path
+  else if (pathType === 'circle') base = generateCirclePointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
+  else if (pathType === 'sine') base = generateSinePointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'sine-vertical') base = generateSineVerticalPointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'star') base = generateStarPointsMotion(fromX, fromY, toX, toY, circleRadius, starPoints ?? 5, starInnerRatio ?? 0.45, symbolRotation ?? 0)
+  else if (pathType === 'diamond') base = generateDiamondPointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'triangle') base = generateTrianglePointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'bounce') base = generateBouncePointsMotion(fromX, fromY, toX, toY, bounceHeight ?? 14, bounceCount ?? 4, bounceDamping ?? 0.35)
+  else if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base = [[fromX, fromY]]
+  else base = [[fromX, fromY], [toX, toY]]
+  if (sinusEnabled) base = applySinusUpDownMotion(base, true, sinusAmp ?? 6, sinusFreq ?? 2)
+  return base
 }
 
 
@@ -2545,6 +2633,18 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
     textMoveCircleTurns: item.textMoveCircleTurns ?? 1,
     textMoveSineAmplitude: item.textMoveSineAmplitude ?? 8,
     textMoveSineFrequency: item.textMoveSineFrequency ?? 2,
+    textMoveStarPoints: (item as any).textMoveStarPoints ?? 5,
+    textMoveStarInnerRatio: (item as any).textMoveStarInnerRatio ?? 0.45,
+    textMoveSymbolRotation: (item as any).textMoveSymbolRotation ?? 0,
+    textMoveSinusUpDownEnabled: (item as any).textMoveSinusUpDownEnabled ?? false,
+    textMoveSinusAmplitude: (item as any).textMoveSinusAmplitude ?? 6,
+    textMoveSinusFrequency: (item as any).textMoveSinusFrequency ?? 2,
+    textScaleEnabled: (item as any).textScaleEnabled ?? false,
+    textScaleFrom: (item as any).textScaleFrom ?? 1,
+    textScaleTo: (item as any).textScaleTo ?? 1.45,
+    textColorAnimEnabled: (item as any).textColorAnimEnabled ?? false,
+    textColorFrom: (item as any).textColorFrom || (item.fontColor || defaults.fontColor || '#ffffff'),
+    textColorTo: (item as any).textColorTo || '#ffcc33',
   }))
   const [playing, setPlaying] = useState(true)
   const setDraftValue = (change: Partial<MediaItem>) => setDraft(current => ({ ...current, ...change }))
@@ -2587,6 +2687,18 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
     textMoveCircleTurns: draft.textMoveCircleTurns,
     textMoveSineAmplitude: draft.textMoveSineAmplitude,
     textMoveSineFrequency: draft.textMoveSineFrequency,
+    textMoveStarPoints: (draft as any).textMoveStarPoints,
+    textMoveStarInnerRatio: (draft as any).textMoveStarInnerRatio,
+    textMoveSymbolRotation: (draft as any).textMoveSymbolRotation,
+    textMoveSinusUpDownEnabled: (draft as any).textMoveSinusUpDownEnabled,
+    textMoveSinusAmplitude: (draft as any).textMoveSinusAmplitude,
+    textMoveSinusFrequency: (draft as any).textMoveSinusFrequency,
+    textScaleEnabled: (draft as any).textScaleEnabled,
+    textScaleFrom: (draft as any).textScaleFrom,
+    textScaleTo: (draft as any).textScaleTo,
+    textColorAnimEnabled: (draft as any).textColorAnimEnabled,
+    textColorFrom: (draft as any).textColorFrom,
+    textColorTo: (draft as any).textColorTo,
   })
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -2609,6 +2721,8 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
     textDecoration: draft.textUnderline ? 'underline' : 'none',
     textShadow: captionShadow(Boolean(draft.textOutline), Math.min(size, 22)),
   }
+  const scaleEnabled = Boolean((draft as any).textScaleEnabled)
+  const colorAnimEnabled = Boolean((draft as any).textColorAnimEnabled)
   return <div className="modal-backdrop" onMouseDown={onClose}>
     <div className="text-style-modal picture-text-modal" onMouseDown={event => event.stopPropagation()}>
       <div className="modal-head">
@@ -2631,7 +2745,7 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
                 <Move size={13}/><TextFxPreview item={draft} playing={playing}>{captionText}</TextFxPreview>
               </div>
               {draft.textMoveEnabled && (() => {
-                const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2)
+                const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2, (draft as any).textMoveStarPoints, (draft as any).textMoveStarInnerRatio, (draft as any).textMoveSymbolRotation, (draft as any).textMoveSinusUpDownEnabled, (draft as any).textMoveSinusAmplitude, (draft as any).textMoveSinusFrequency, (draft as any).textMoveBounceHeight, (draft as any).textMoveBounceCount, (draft as any).textMoveBounceDamping)
                 const d = pts.map((p,i)=>`${i===0?'M':'L'} ${p[0]} ${p[1]}`).join(' ')
                 return <svg className="picture-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType==='straight' || !draft.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
               })()}
@@ -2653,6 +2767,15 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
               circleTurns={draft.textMoveCircleTurns}
               sineAmplitude={draft.textMoveSineAmplitude}
               sineFrequency={draft.textMoveSineFrequency}
+              starPoints={(draft as any).textMoveStarPoints}
+              starInnerRatio={(draft as any).textMoveStarInnerRatio}
+              symbolRotation={(draft as any).textMoveSymbolRotation}
+              sinusEnabled={(draft as any).textMoveSinusUpDownEnabled}
+              sinusAmplitude={(draft as any).textMoveSinusAmplitude}
+              sinusFrequency={(draft as any).textMoveSinusFrequency}
+              bounceHeight={(draft as any).textMoveBounceHeight}
+              bounceCount={(draft as any).textMoveBounceCount}
+              bounceDamping={(draft as any).textMoveBounceDamping}
               onChange={setDraftValue}
               src={src}
               isVideo={item.type === 'video'}
@@ -2660,6 +2783,34 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
               caption={captionText}
               captionStyle={motionCaptionStyle}
             />
+            <div className="picture-text-scale-color">
+              <FieldLabel>Picture text size / colour while shown</FieldLabel>
+              <label className="check-label" style={{fontSize:'13px', marginBottom:6}}>
+                <input type="checkbox" checked={Boolean((draft as any).textScaleEnabled)} onChange={e=>setDraftValue({ textScaleEnabled: e.target.checked } as any)} />
+                <span><Check size={11}/></span> Grow / shrink {(draft as any).textScaleEnabled && <small style={{opacity:.7}}>{Number((draft as any).textScaleFrom ?? 1).toFixed(2)}× → {Number((draft as any).textScaleTo ?? 1.4).toFixed(2)}×</small>}
+              </label>
+              {(draft as any).textScaleEnabled && <div className="motion-params">
+                <label>From <input type="range" min={0.5} max={2} step={0.05} value={Number((draft as any).textScaleFrom ?? 1)} onChange={e=>setDraftValue({ textScaleFrom: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textScaleFrom ?? 1).toFixed(2)}×</em></label>
+                <label>To <input type="range" min={0.5} max={2.5} step={0.05} value={Number((draft as any).textScaleTo ?? 1.4)} onChange={e=>setDraftValue({ textScaleTo: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textScaleTo ?? 1.4).toFixed(2)}×</em></label>
+              </div>}
+              <label className="check-label" style={{fontSize:'13px', marginTop:8, marginBottom:6}}>
+                <input type="checkbox" checked={Boolean((draft as any).textColorAnimEnabled)} onChange={e=>setDraftValue({ textColorAnimEnabled: e.target.checked } as any)} />
+                <span><Check size={11}/></span> Colour change {(draft as any).textColorAnimEnabled && <small style={{opacity:.7, display:'inline-flex', alignItems:'center', gap:4}}><i style={{width:12,height:12,background:(draft as any).textColorFrom||draft.fontColor,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/><ChevronRight size={10}/><i style={{width:12,height:12,background:(draft as any).textColorTo||'#ffcc33',display:'inline-block',borderRadius:2,border:'1px solid #555'}}/></small>}
+              </label>
+              {(draft as any).textColorAnimEnabled && <div className="motion-params">
+                <label style={{display:'flex',alignItems:'center',gap:6}}>From <input type="color" value={(draft as any).textColorFrom || draft.fontColor || '#ffffff'} onChange={e=>setDraftValue({ textColorFrom: e.target.value } as any)} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{(draft as any).textColorFrom || draft.fontColor}</em></label>
+                <label style={{display:'flex',alignItems:'center',gap:6}}>To <input type="color" value={(draft as any).textColorTo || '#ffcc33'} onChange={e=>setDraftValue({ textColorTo: e.target.value } as any)} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{(draft as any).textColorTo || '#ffcc33'}</em></label>
+              </div>}
+              <label className="check-label" style={{fontSize:'13px', marginTop:8, marginBottom:6}}>
+                <input type="checkbox" checked={Boolean((draft as any).textBouncyEnabled)} onChange={e=>setDraftValue({ textBouncyEnabled: e.target.checked } as any)} />
+                <span><Check size={11}/></span> Bouncy {(draft as any).textBouncyEnabled && <small style={{opacity:.7}}>{Number((draft as any).textBouncyHeight ?? 12)}% · {Number((draft as any).textBouncyBounces ?? 3)}× · damp {Number((draft as any).textBouncyDamping ?? 0.35).toFixed(2)}</small>}
+              </label>
+              {(draft as any).textBouncyEnabled && <div className="motion-params">
+                <label>Height <input type="range" min={1} max={26} step={1} value={Number((draft as any).textBouncyHeight ?? 12)} onChange={e=>setDraftValue({ textBouncyHeight: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textBouncyHeight ?? 12)}%</em></label>
+                <label>Bounces <input type="range" min={1} max={8} step={1} value={Number((draft as any).textBouncyBounces ?? 3)} onChange={e=>setDraftValue({ textBouncyBounces: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textBouncyBounces ?? 3)}×</em></label>
+                <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={Number((draft as any).textBouncyDamping ?? 0.35)} onChange={e=>setDraftValue({ textBouncyDamping: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textBouncyDamping ?? 0.35).toFixed(2)}</em></label>
+              </div>}
+            </div>
           </div>
           <div className="picture-text-top-right">
             <div className="fx-section light picture-text-effects">
@@ -2877,19 +3028,55 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
     textDecoration: underline ? 'underline' : 'none',
   }
 
+  const scaleEnabled = Boolean(item.textScaleEnabled)
+  const scaleFrom = Number.isFinite(Number(item.textScaleFrom)) ? Number(item.textScaleFrom) : 1
+  const scaleTo = Number.isFinite(Number(item.textScaleTo)) ? Number(item.textScaleTo) : 1.45
+  const colorAnimEnabled = Boolean(item.textColorAnimEnabled)
+  const colorFrom = (item.textColorFrom && isHex(item.textColorFrom)) ? item.textColorFrom : (color || '#ffffff')
+  const colorTo = (item.textColorTo && isHex(item.textColorTo)) ? item.textColorTo : '#ffcc33'
+
+  const [animProgress, setAnimProgress] = useState(0)
+  useEffect(() => {
+    if (!fxPlaying) return
+    if (!scaleEnabled && !colorAnimEnabled && !enabled) return
+    let raf = 0
+    const start = performance.now()
+    const dur = Math.max(0.6, Number(item.duration) || 5) * 1000
+    const tick = (now: number) => {
+      const elapsed = (now - start) % dur
+      setAnimProgress(elapsed / dur)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [fxPlaying, scaleEnabled, colorAnimEnabled, enabled, item.duration])
+
+  const lerp = (a:number,b:number,t:number)=>a+(b-a)*t
+  const hexToRgb = (hex:string)=>{ const h=hex.replace('#',''); return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)} }
+  const rgbToHex = (r:number,g:number,b:number)=> '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')
+  const lerpHex = (a:string,b:string,t:number)=>{ try{ const ca=hexToRgb(a), cb=hexToRgb(b); return rgbToHex(lerp(ca.r,cb.r,t), lerp(ca.g,cb.g,t), lerp(ca.b,cb.b,t)) } catch{ return a } }
+  const interpolatedScale = scaleEnabled ? lerp(scaleFrom, scaleTo, animProgress) : 1
+  const interpolatedColor = colorAnimEnabled ? lerpHex(colorFrom, colorTo, animProgress) : color
+
+  const easeProg = (p:number, easing:string)=>{ p=Math.max(0,Math.min(1,p)); if(easing==='ease-in') return p*p; if(easing==='ease-out') return 1-(1-p)*(1-p); if(easing==='ease-in-out'){ if(p<0.5) return 2*p*p; return 1-2*(1-p)*(1-p)} if(easing==='smooth'){ if(p<0.5) return 4*p*p*p; return 1-Math.pow(-2*p+2,3)/2 } return p }
+  const movingPos = (()=>{ if(!enabled) return null; const pts=effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any)||'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, item.textMoveStarPoints, item.textMoveStarInnerRatio, item.textMoveSymbolRotation, item.textMoveSinusUpDownEnabled, item.textMoveSinusAmplitude, item.textMoveSinusFrequency, item.textMoveBounceHeight, item.textMoveBounceCount, item.textMoveBounceDamping); if(!pts.length) return null; const eased=easeProg(animProgress, (item.textMoveEasing as any)||'linear'); let total=0; for(let i=1;i<pts.length;i++) total+=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(total<0.001) return pts[0]; let target=total*eased; for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(target<=seg){ const t=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t] as [number,number] } target-=seg } return pts[pts.length-1] })()
+  const titleLeft = movingPos ? movingPos[0] : item.textX
+  const titleTop = movingPos ? movingPos[1] : item.textY
+  const titleStyle: React.CSSProperties = { left:`${titleLeft}%`, top:`${titleTop}%`, fontFamily:`'${family}', sans-serif`, fontSize:`${Math.min(size * interpolatedScale, 160)}px`, color: interpolatedColor, fontWeight:bold?700:400, fontStyle:italic?'italic':'normal', textDecoration:underline?'underline':'none' }
+
   return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`}><div className={`frame-editor${layout === 'below' ? ' layout-below' : ''}`}>
     <div className="preview-top"><div><strong>{isNew ? 'New text frame' : 'Text frame editor'}</strong><span>DRAG THE TEXT TO POSITION IT</span></div><div className="frame-head-actions"><div className="frame-layout-toggle" role="group" aria-label="Editor layout"><button type="button" className={layout === 'sidebar' ? 'active' : ''} title="Sidebar layout — controls in a column on the right" onClick={() => setLayout('sidebar')}><PanelRight size={14}/><span>Sidebar</span></button><button type="button" className={layout === 'below' ? 'active' : ''} title="Below layout — bigger preview with the controls arranged in the space beneath the picture" onClick={() => setLayout('below')}><PanelBottom size={14}/><span>Below</span></button></div><button onClick={cancel} title={isNew ? 'Discard this text frame' : 'Cancel changes'}><X size={20}/></button></div></div>
     <div className="frame-editor-body">
       <div className="frame-canvas" style={{background:item.frameBackground}}>
         {change && <ColourChangePreview key={`${change.from}-${change.to}-${change.transition}-${change.time}-${change.start}-${change.hold}`} change={change} playing={bgPlaying} />}
         {enabled && (() => {
-          const pts = effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any) || 'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2)
+          const pts = effectiveMotionPoints(fromX, fromY, toX, toY, item.textMovePath as any, (item.textMovePathType as any) || 'straight', item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, item.textMoveStarPoints, item.textMoveStarInnerRatio, item.textMoveSymbolRotation, item.textMoveSinusUpDownEnabled, item.textMoveSinusAmplitude, item.textMoveSinusFrequency, item.textMoveBounceHeight, item.textMoveBounceCount, item.textMoveBounceDamping)
           const d = pts.map((p,i)=>`${i===0?'M':'L'} ${p[0]} ${p[1]}`).join(' ')
           return <svg className="frame-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(item.textMovePathType==='straight' || !item.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
         })()}
         {enabled && <><span className="motion-handle from small frame-handle" style={{ left:`${fromX}%`, top:`${fromY}%` }}><b>S</b></span><span className="motion-handle to small frame-handle" style={{ left:`${toX}%`, top:`${toY}%` }}><b>E</b></span></>}
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y, textMoveFromX: enabled ? x : item.textMoveFromX, textMoveFromY: enabled ? y : item.textMoveFromY}))} style={{left:`${item.textX}%`,top:`${item.textY}%`,fontFamily:`'${family}', sans-serif`,fontSize:`${Math.min(size,120)}px`,color,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none'}}>
-          <Move size={14}/><TextFxPreview item={item} playing={fxPlaying}>{item.text || ' '}</TextFxPreview>
+        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => update({textX:x,textY:y, textMoveFromX: enabled ? x : item.textMoveFromX, textMoveFromY: enabled ? y : item.textMoveFromY}))} style={titleStyle}>
+          <Move size={14}/><TextFxPreview item={{...item, fontColor: interpolatedColor, fontSize: size * interpolatedScale} as any} playing={fxPlaying}>{item.text || ' '}</TextFxPreview>
         </div>
       </div>
       <aside>
@@ -2906,6 +3093,48 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           <div className="fx-foot"><small>The preview loops a CSS approximation — the MP4 renders the real effect.</small><button type="button" className={`icon-button ${fxPlaying ? 'playing' : ''}`} title={fxPlaying ? 'Pause the previews' : 'Play the previews'} onClick={() => setFxPlaying(p => !p)}>{fxPlaying ? <Pause size={13}/> : <Play size={13}/>}</button></div>
         </div>
 
+        <div className="frame-scale-color">
+          <FieldLabel>Text size animation <small style={{opacity:.7}}>grow / shrink</small></FieldLabel>
+          <label className="check-label" style={{marginBottom:6}}>
+            <input type="checkbox" checked={scaleEnabled} onChange={e=>update({ textScaleEnabled: e.target.checked, textScaleFrom: scaleFrom, textScaleTo: scaleTo })} />
+            <span><Check size={11}/></span> Grow / shrink while shown {scaleEnabled && <small style={{marginLeft:6, opacity:.7}}>{scaleFrom.toFixed(2)}× → {scaleTo.toFixed(2)}×</small>}
+          </label>
+          {scaleEnabled && <div className="motion-params" style={{marginTop:4}}>
+            <label>From <input type="range" min={0.5} max={2} step={0.05} value={scaleFrom} onChange={e=>update({ textScaleFrom: Number(e.target.value) })} /> <em>{scaleFrom.toFixed(2)}×</em></label>
+            <label>To <input type="range" min={0.5} max={2.5} step={0.05} value={scaleTo} onChange={e=>update({ textScaleTo: Number(e.target.value) })} /> <em>{scaleTo.toFixed(2)}×</em></label>
+          </div>}
+          <FieldLabel>Text colour animation <small style={{opacity:.7}}>from → to</small></FieldLabel>
+          <label className="check-label" style={{marginBottom:6}}>
+            <input type="checkbox" checked={colorAnimEnabled} onChange={e=>update({ textColorAnimEnabled: e.target.checked, textColorFrom: colorFrom, textColorTo: colorTo })} />
+            <span><Check size={11}/></span> Colour change while shown {colorAnimEnabled && <small style={{marginLeft:6, opacity:.7, display:'inline-flex', alignItems:'center', gap:4}}><i style={{width:12,height:12,background:colorFrom,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/><ChevronRight size={10}/><i style={{width:12,height:12,background:colorTo,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/></small>}
+          </label>
+          {colorAnimEnabled && <div className="motion-params" style={{marginTop:4, alignItems:'center'}}>
+            <label style={{display:'flex',alignItems:'center',gap:6}}>From <input type="color" value={colorFrom} onChange={e=>update({ textColorFrom: e.target.value })} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{colorFrom}</em></label>
+            <label style={{display:'flex',alignItems:'center',gap:6}}>To <input type="color" value={colorTo} onChange={e=>update({ textColorTo: e.target.value })} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{colorTo}</em></label>
+            <button type="button" className="btn ghost small" title="Swap colours" onClick={()=>update({ textColorFrom: colorTo, textColorTo: colorFrom })}><RefreshCw size={12}/></button>
+          </div>}
+          {(scaleEnabled || colorAnimEnabled) && <small style={{opacity:.7, marginTop:6, display:'block'}}>Scales and colour-morphs over the frame duration. In the MP4 the whole frame length is used; easing from motion does not affect size/colour.</small>}
+          <FieldLabel>Bouncy text <small style={{opacity:.7}}>damped vertical bounce in place</small></FieldLabel>
+          {(() => {
+            const bouncyEnabled = Boolean((item as any).textBouncyEnabled)
+            const bouncyH = Number((item as any).textBouncyHeight ?? 12)
+            const bouncyN = Number((item as any).textBouncyBounces ?? 3)
+            const bouncyD = Number((item as any).textBouncyDamping ?? 0.35)
+            const bouncyF = Number((item as any).textBouncyFrequency ?? 1)
+            return <>
+              <label className="check-label" style={{marginBottom:6}}>
+                <input type="checkbox" checked={bouncyEnabled} onChange={e=>update({ textBouncyEnabled: e.target.checked, textBouncyHeight: bouncyH, textBouncyBounces: bouncyN, textBouncyDamping: bouncyD, textBouncyFrequency: bouncyF } as any)} />
+                <span><Check size={11}/></span> Bouncy while shown {bouncyEnabled && <small style={{marginLeft:6, opacity:.7}}>{bouncyH}% · {bouncyN}× · damp {bouncyD.toFixed(2)}</small>}
+              </label>
+              {bouncyEnabled && <div className="motion-params" style={{marginTop:4}}>
+                <label>Height <input type="range" min={1} max={26} step={1} value={bouncyH} onChange={e=>update({ textBouncyHeight: Number(e.target.value) } as any)} /> <em>{bouncyH}%</em></label>
+                <label>Bounces <input type="range" min={1} max={8} step={1} value={bouncyN} onChange={e=>update({ textBouncyBounces: Number(e.target.value) } as any)} /> <em>{bouncyN}×</em></label>
+                <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={bouncyD} onChange={e=>update({ textBouncyDamping: Number(e.target.value) } as any)} /> <em>{bouncyD.toFixed(2)}</em></label>
+              </div>}
+            </>
+          })()}
+        </div>
+
         <TextMotionPathEditor
           enabled={enabled}
           fromX={fromX}
@@ -2919,6 +3148,15 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           circleTurns={item.textMoveCircleTurns}
           sineAmplitude={item.textMoveSineAmplitude}
           sineFrequency={item.textMoveSineFrequency}
+          starPoints={item.textMoveStarPoints}
+          starInnerRatio={item.textMoveStarInnerRatio}
+          symbolRotation={item.textMoveSymbolRotation}
+          sinusEnabled={item.textMoveSinusUpDownEnabled}
+          sinusAmplitude={item.textMoveSinusAmplitude}
+          sinusFrequency={item.textMoveSinusFrequency}
+          bounceHeight={item.textMoveBounceHeight}
+          bounceCount={item.textMoveBounceCount}
+          bounceDamping={item.textMoveBounceDamping}
           onChange={update}
           background={item.frameBackground}
           caption={item.text || 'Title'}
@@ -2937,15 +3175,13 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           <div className="bg-timeline" title="Frame timeline: A · transition · B"><i style={{background:change.from,flex:change.start}}/><i className="mix" style={{background:`linear-gradient(90deg,${change.from},${change.to})`,flex:change.time}}/><i style={{background:change.to,flex:Math.max(0,change.hold-change.start-change.time)}}/></div>
         </div>}
         </div>
-        <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(item.textX)}% · Y {Math.round(item.textY)}%</strong></div>
-        <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the controls. Enable motion path to animate from start to end.</p>
+        <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(item.textX)}% · Y {Math.round(item.textY)}%</strong>{enabled && movingPos && <span style={{marginLeft:8, opacity:.7}}>motion {Math.round(movingPos[0])}%,{Math.round(movingPos[1])}%</span>}{(scaleEnabled || colorAnimEnabled) && <span style={{marginLeft:8, opacity:.7}}>{scaleEnabled ? `${(scaleFrom).toFixed(2)}→${scaleTo.toFixed(2)}×` : ''}{scaleEnabled && colorAnimEnabled ? ' · ' : ''}{colorAnimEnabled ? `${colorFrom}→${colorTo}` : ''}</span>}</div>
+        <p><Info size={13}/> Drag the title on the preview. Choose font, size and weight in the controls. Enable motion path to animate from start to end. Grow/shrink and colour change run over the whole frame time.</p>
       </aside>
     </div>
     <div className="modal-foot"><span>Frame duration: {item.duration}s</span><button className="btn ghost" onClick={()=>update({textX:50,textY:50,textMoveFromX:50,textMoveFromY:50})}>Reset position</button><button className="btn ghost" onClick={cancel}>{isNew ? 'Discard' : 'Cancel'}</button><button className="btn dark" onClick={onSave}><Check size={15}/> {isNew ? 'Add to storyline' : 'Save'}</button></div>
   </div></div>
 }
-
-
 function KenBurnsPanel({ item, thumb, onPatch, onClose }: { item: MediaItem; thumb: string | null | undefined; onPatch: (patch: Partial<MediaItem>) => void; onClose: () => void }) {
   const kb = isKenBurns(item.effect)
   const zoom = kenBurnsZoomOf(item)
@@ -3336,13 +3572,14 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   useEffect(() => {
     if (!playing) return
     const item = media[current]
-    if (!item || !item.textMoveEnabled) {
+    const needs = item && ((item as any).textMoveEnabled || (item as any).textScaleEnabled || (item as any).textColorAnimEnabled || (item as any).textBouncyEnabled || (item as any).textFxWhile === 'bouncy')
+    if (!item || !needs) {
       setMotionProgress(0)
       return
     }
     const start = performance.now()
     const timing = normalizedTextTiming(item)
-    const hold = Math.max(0.2, timing.textEnd - timing.textStart)
+    const hold = Math.max(0.2, (item.type==='title' ? (item.duration || 5) : (timing.textEnd - timing.textStart)) || 1)
     let raf = 0
     const tick = (now: number) => {
       const elapsed = (now - start) / 1000
@@ -3393,58 +3630,45 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
     return p
   }
 
+  const clampM = (v:number)=>Math.max(0,Math.min(100,v))
   const generateCirclePoints = (fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, turns: number, num = 64) => {
     let cx: number, cy: number, r: number
-    if (radius != null && radius > 0) {
-      cx = fromX; cy = fromY; r = radius
-    } else {
-      cx = (fromX + toX) / 2; cy = (fromY + toY) / 2
-      const d = Math.hypot(toX - fromX, toY - fromY)
-      r = d / 2
-      if (r < 1) { r = 15; cx = fromX; cy = fromY }
-    }
+    if (radius != null && radius > 0) { cx = fromX; cy = fromY; r = radius } else { cx = (fromX + toX) / 2; cy = (fromY + toY) / 2; const d = Math.hypot(toX - fromX, toY - fromY); r = d / 2; if (r < 1) { r = 15; cx = fromX; cy = fromY } }
     turns = Math.max(0.1, Math.min(4, turns))
     const pts: [number, number][] = []
     let startAng = 0
     if (radius == null || radius <= 0) startAng = Math.atan2(fromY - cy, fromX - cx)
-    for (let i = 0; i <= num; i++) {
-      const ang = startAng + (i / num) * turns * 2 * Math.PI
-      pts.push([Math.max(0, Math.min(100, cx + r * Math.cos(ang))), Math.max(0, Math.min(100, cy + r * Math.sin(ang)))])
-    }
+    for (let i = 0; i <= num; i++) { const ang = startAng + (i / num) * turns * 2 * Math.PI; pts.push([clampM(cx + r * Math.cos(ang)), clampM(cy + r * Math.sin(ang))]) }
     return pts
   }
-
   const generateSinePoints = (fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 80) => {
-    const amp = Math.max(0, Math.min(40, amplitude))
-    const freq = Math.max(0.1, Math.min(10, frequency))
-    const dx = toX - fromX, dy = toY - fromY
-    const len = Math.hypot(dx, dy)
-    if (len < 1e-6) {
-      const pts: [number, number][] = []
-      for (let i = 0; i <= num; i++) {
-        const p = i / num
-        pts.push([Math.max(0, Math.min(100, fromX + amp * Math.sin(freq * 2 * Math.PI * p))), Math.max(0, Math.min(100, fromY + p*20))])
-      }
-      return pts
-    }
-    const ux = dx / len, uy = dy / len
-    const px = -uy, py = ux
-    const pts: [number, number][] = []
-    for (let i = 0; i <= num; i++) {
-      const p = i / num
-      const bx = fromX + dx * p, by = fromY + dy * p
-      const off = amp * Math.sin(freq * 2 * Math.PI * p)
-      pts.push([Math.max(0, Math.min(100, bx + px * off)), Math.max(0, Math.min(100, by + py * off))])
-    }
-    return pts
+    const amp = Math.max(0, Math.min(40, amplitude)); const freq = Math.max(0.1, Math.min(10, frequency))
+    const dx = toX - fromX, dy = toY - fromY; const len = Math.hypot(dx, dy)
+    if (len < 1e-6) { const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; pts.push([clampM(fromX + amp * Math.sin(freq * 2 * Math.PI * p)), clampM(fromY + p*20)]) } return pts }
+    const ux = dx / len, uy = dy / len; const px = -uy, py = ux; const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; const bx=fromX+dx*p, by=fromY+dy*p; const off=amp*Math.sin(freq*2*Math.PI*p); pts.push([clampM(bx+px*off), clampM(by+py*off)]) } return pts
   }
+  const generateSineVerticalPoints = (fromX:number, fromY:number, toX:number, toY:number, amplitude:number, frequency:number, num=80):[number,number][]=>{ const amp=Math.max(0,Math.min(30,amplitude)); const freq=Math.max(0.1,Math.min(10,frequency)); const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; const bx=fromX+(toX-fromX)*p, by=fromY+(toY-fromY)*p; const off=amp*Math.sin(freq*2*Math.PI*p); pts.push([clampM(bx), clampM(by+off)]) } return pts }
+  const generateStarPoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, points:number, innerRatio:number, rotation:number):[number,number][]=>{ const n=Math.max(3,Math.min(10,Math.round(points||5))); const ratio=Math.max(0.2,Math.min(0.85,innerRatio??0.45)); let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(8,d*0.45)} const rot=(rotation||0)*Math.PI/180; const vertices:[number,number][]=[]; const step=Math.PI/n; for(let i=0;i<n*2;i++){ const ang=rot - Math.PI/2 + i*step; const rad=i%2===0?r:r*ratio; vertices.push([clampM(cx+rad*Math.cos(ang)), clampM(cy+rad*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<12;k++){ const t=k/12; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts }
+  const generateDiamondPoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, rotation:number):[number,number][]=>{ let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.5)} const rot=(rotation||0)*Math.PI/180; const base:[number,number][]=[[cx,cy-r],[cx+r,cy],[cx,cy+r],[cx-r,cy]].map(([x,y])=>{ const dx=x-cx, dy=y-cy; return [clampM(cx+dx*Math.cos(rot)-dy*Math.sin(rot)), clampM(cy+dx*Math.sin(rot)+dy*Math.cos(rot))] as [number,number]}); base.push(base[0]); const pts:[number,number][]=[]; for(let i=0;i<base.length-1;i++){ const a=base[i], b=base[i+1]; for(let k=0;k<20;k++){ const t=k/20; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(base[base.length-1]); return pts }
+  const generateTrianglePoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, rotation:number):[number,number][]=>{ let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.55)} const rot=(rotation||0)*Math.PI/180; const vertices:[number,number][]=[]; for(let i=0;i<3;i++){ const ang=rot - Math.PI/2 + i*(2*Math.PI/3); vertices.push([clampM(cx+r*Math.cos(ang)), clampM(cy+r*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<24;k++){ const t=k/24; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts }
+  const generateBouncePoints = (fromX:number, fromY:number, toX:number, toY:number, height:number, bounces:number, damping:number, numPerBounce=28):[number,number][]=>{ const h=Math.max(0,Math.min(30,height??14)); const n=Math.max(1,Math.min(8,Math.round(bounces??4))); const d=Math.max(0,Math.min(0.9,damping??0.35)); const pts:[number,number][]=[]; for(let i=0;i<n;i++){ const amp=h*Math.pow(1-d,i); const segStart=i/n, segEnd=(i+1)/n; for(let k=0;k<numPerBounce;k++){ const tSeg=k/numPerBounce; const p=segStart+tSeg*(segEnd-segStart); const bx=fromX+(toX-fromX)*p; const byBase=fromY+(toY-fromY)*p; const parabola=4*tSeg*(1-tSeg); const off=-amp*parabola; pts.push([clampM(bx), clampM(byBase+off)] )} } pts.push([clampM(toX), clampM(toY)]); return pts }
+  const bouncyOffsetLocal = (progress:number, height:number, bounces:number, damping:number):number=>{ const h=Math.max(0,Math.min(30,height??12)); const n=Math.max(1,Math.min(8,Math.round(bounces??3))); const d=Math.max(0,Math.min(0.95,damping??0.35)); if(h<0.2) return 0; const p=Math.max(0,Math.min(1,progress)); const idx=Math.min(n-1, Math.floor(p*n)); const segT=(p*n)%1; const amp=h*Math.pow(1-d, idx); const parabola=4*segT*(1-segT); return -amp*parabola }
+  const applySinus = (points:[number,number][], enabled:boolean, amp:number, freq:number):[number,number][]=>{ if(!enabled||points.length<2) return points; const a=Math.max(0,Math.min(20,amp??6)); if(a<0.2) return points; const f=Math.max(0.1,Math.min(10,freq??2)); let total=0; for(let i=1;i<points.length;i++) total+=Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1]); if(total<1e-6) return points; const out:[number,number][]=[]; const num=Math.max(points.length,80); const pointAlong=(pts:[number,number][], prog:number):[number,number]=>{ if(!pts.length) return [50,50]; if(pts.length===1) return pts[0]; let t=0; for(let i=1;i<pts.length;i++) t+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); let target=t*Math.max(0,Math.min(1,prog)); for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(target<=seg){ const tt=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*tt, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*tt] } target-=seg } return pts[pts.length-1] }; for(let i=0;i<=num;i++){ const p=i/num; const b=pointAlong(points,p); const off=a*Math.sin(f*2*Math.PI*p); out.push([clampM(b[0]), clampM(b[1]+off)]) } return out }
 
-  const effectivePoints = (fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number) => {
-    if (pathType === 'freehand' && path && path.length >= 2) return path
-    if (pathType === 'circle') return generateCirclePoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
-    if (pathType === 'sine') return generateSinePoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
-    if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) return [[fromX, fromY]] as [number, number][]
-    return [[fromX, fromY], [toX, toY]] as [number, number][]
+  const effectivePoints = (fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInner?: number, symRot?: number, sinusEn?: boolean, sinusAmp?: number, sinusFreq?: number, bounceH?: number, bounceN?: number, bounceD?: number) => {
+    let base:[number,number][]
+    if ((pathType==='freehand' || pathType==='polyline') && path && path.length>=2) base=path
+    else if (pathType==='circle') base=generateCirclePoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
+    else if (pathType==='sine') base=generateSinePoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
+    else if (pathType==='sine-vertical') base=generateSineVerticalPoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
+    else if (pathType==='star') base=generateStarPoints(fromX, fromY, toX, toY, circleRadius, starPoints??5, starInner??0.45, symRot??0)
+    else if (pathType==='diamond') base=generateDiamondPoints(fromX, fromY, toX, toY, circleRadius, symRot??0)
+    else if (pathType==='triangle') base=generateTrianglePoints(fromX, fromY, toX, toY, circleRadius, symRot??0)
+    else if (pathType==='bounce') base=generateBouncePoints(fromX, fromY, toX, toY, bounceH??14, bounceN??4, bounceD??0.35)
+    else if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base=[[fromX, fromY]] as [number, number][]
+    else base=[[fromX, fromY], [toX, toY]] as [number, number][]
+    if (sinusEn) base=applySinus(base,true,sinusAmp??6, sinusFreq??2)
+    return base
   }
 
   const pointAlongPath = (points: [number, number][], progress: number) => {
@@ -3474,30 +3698,66 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
     const pathType = (item.textMovePathType as any) || (item.textMovePath && item.textMovePath.length>=2 ? 'freehand' : 'straight')
     const easing = (item.textMoveEasing as any) || 'linear'
     const eased = easeProgress(progressRaw, easing)
-    const pts = effectivePoints(fromX, fromY, toX, toY, item.textMovePath as any, pathType, item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2)
+    const pts = effectivePoints(fromX, fromY, toX, toY, item.textMovePath as any, pathType, item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, (item as any).textMoveStarPoints, (item as any).textMoveStarInnerRatio, (item as any).textMoveSymbolRotation, (item as any).textMoveSinusUpDownEnabled, (item as any).textMoveSinusAmplitude, (item as any).textMoveSinusFrequency, (item as any).textMoveBounceHeight, (item as any).textMoveBounceCount, (item as any).textMoveBounceDamping)
     return pointAlongPath(pts as any, eased)
   }
 
+  // scale / colour animation helpers for preview stage (same hold progress as motion)
+  const lerpNum = (a:number,b:number,t:number)=>a+(b-a)*t
+  const hexToRgbP = (hex:string)=>{ const h=hex.replace('#',''); return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)} }
+  const rgbToHexP = (r:number,g:number,b:number)=> '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')
+  const lerpHexP = (a:string,b:string,t:number)=>{ try{ const ca=hexToRgbP(a), cb=hexToRgbP(b); return rgbToHexP(lerpNum(ca.r,cb.r,t), lerpNum(ca.g,cb.g,t), lerpNum(ca.b,cb.b,t)) } catch{ return a } }
   const motionPos = getMotionPos(captionItem as any, motionProgress)
   const titleMotionPos = currentItem?.type === 'title' ? getMotionPos(currentItem, motionProgress) : null
 
+  const activeForStyle: any = captionItem || currentItem
+  const scaleEn = activeForStyle ? Boolean(activeForStyle.textScaleEnabled) : false
+  const scaleFrom = activeForStyle ? Number(activeForStyle.textScaleFrom ?? 1) : 1
+  const scaleTo = activeForStyle ? Number(activeForStyle.textScaleTo ?? 1.4) : 1
+  const curScale = scaleEn ? lerpNum(scaleFrom, scaleTo, motionProgress) : 1
+  const colorEn = activeForStyle ? Boolean(activeForStyle.textColorAnimEnabled) : false
+  const colFrom = activeForStyle ? String(activeForStyle.textColorFrom || activeForStyle.fontColor || defaults.fontColor || '#ffffff') : '#ffffff'
+  const colTo = activeForStyle ? String(activeForStyle.textColorTo || '#ffcc33') : '#ffcc33'
+  const curColor = colorEn ? lerpHexP(colFrom, colTo, motionProgress) : undefined
+
+  const getBouncyOff = (it:any):number=>{
+    if(!it) return 0
+    if(it.textBouncyEnabled){
+      return bouncyOffsetLocal(motionProgress, it.textBouncyHeight ?? 12, it.textBouncyBounces ?? 3, it.textBouncyDamping ?? 0.35)
+    }
+    if(it.textFxWhile === 'bouncy'){
+      const p = it.textFxParams || {}
+      const h = Number(p.height ?? 12)
+      const n = Number(p.bounces ?? 3)
+      const d = Number(p.damping ?? 0.35)
+      return bouncyOffsetLocal(motionProgress, h, n, d)
+    }
+    return 0
+  }
+  const bouncyOff = getBouncyOff(captionItem as any)
+  const bouncyTitleOff = currentItem?.type === 'title' ? getBouncyOff(currentItem as any) : 0
   const captionPosition = currentItem?.type === 'title'
-    ? { left: `${(titleMotionPos?.x ?? currentItem.textX)}%`, top: `${(titleMotionPos?.y ?? currentItem.textY)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
+    ? { left: `${(titleMotionPos?.x ?? currentItem.textX)}%`, top: `${((titleMotionPos?.y ?? currentItem.textY) + bouncyTitleOff)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
     : captionItem
-      ? { left: `${(motionPos?.x ?? captionItem.textX)}%`, top: `${(motionPos?.y ?? captionItem.textY)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
+      ? { left: `${(motionPos?.x ?? captionItem.textX)}%`, top: `${((motionPos?.y ?? captionItem.textY) + bouncyOff)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
       : undefined
   const captionStyle: React.CSSProperties | undefined = captionItem ? {
-    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min(Number(captionItem.fontSize) || defaults.fontSize, 120)}px`,
-    color: captionItem.fontColor, fontWeight: captionItem.textBold ? 700 : 400,
+    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min((Number(captionItem.fontSize) || defaults.fontSize) * curScale, 160)}px`,
+    color: curColor || captionItem.fontColor, fontWeight: captionItem.textBold ? 700 : 400,
     fontStyle: captionItem.textItalic && !FONTS_WITHOUT_ITALIC.has(captionItem.fontFamily || '') ? 'italic' : 'normal',
-    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min(Number(captionItem.fontSize) || defaults.fontSize, 120)),
-  } : undefined
+    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min((Number(captionItem.fontSize) || defaults.fontSize) * curScale, 160)),
+  } : (currentItem?.type==='title' ? {
+    fontFamily: `'${currentItem.fontFamily}', sans-serif`, fontSize: `${Math.min((Number(currentItem.fontSize) || 48) * curScale, 160)}px`,
+    color: curColor || currentItem.fontColor, fontWeight: (currentItem as any).textBold ? 700 : 400,
+    fontStyle: (currentItem as any).textItalic ? 'italic' : 'normal',
+    textDecoration: (currentItem as any).textUnderline ? 'underline' : 'none',
+  } as any : undefined)
 
   if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={captionItem} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={{...captionItem, fontColor: curColor || captionItem.fontColor, fontSize: (Number(captionItem.fontSize)||defaults.fontSize) * curScale} as any} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 
