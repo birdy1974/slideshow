@@ -1731,7 +1731,7 @@ class Renderer:
                 # user's "start at" is shifted by lead_in inside this segment.
                 offset = lead_in + colour_change["start"]
                 graph = (
-                    f"[0:v][1:v]xfade=transition={self.resolve_xfade(colour_change['transition'])}"
+                    f"[0:v][1:v]xfade=transition={quote_xfade_value(self.resolve_xfade(colour_change['transition']))}"
                     f":duration={format_ffmpeg_number(colour_change['time'])}:offset={format_ffmpeg_number(offset)}[bg];"
                     f"[bg]{','.join(filters)}[v]"
                 )
