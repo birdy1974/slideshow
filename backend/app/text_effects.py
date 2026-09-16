@@ -90,9 +90,6 @@ def normalize_text_window(item: dict[str, Any]) -> tuple[float, float]:
     if not math.isfinite(clip_duration):
         clip_duration = 5.0
     clip_duration = max(TEXT_TIMING_MIN_CLIP_SECONDS, clip_duration)
-    # Text frames always show text for the whole slide (spec requirement)
-    if str(item.get("type") or "").lower() == "title":
-        return 0.0, clip_duration
     minimum = min(TEXT_TIMING_MIN_SECONDS, clip_duration)
     start_value = _num(item, "textStart", 0.0)
     start = _clamp(start_value, 0.0, max(0.0, clip_duration - minimum))

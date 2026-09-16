@@ -61,7 +61,7 @@ class UploadsTest(unittest.TestCase):
         with self.assertRaises(UploadRejected):
             sanitized_name("notes.txt")
         with self.assertRaises(UploadRejected):
-            sanitized_name("clip.mpg")
+            sanitized_name("report.pdf")
         with self.assertRaises(UploadRejected):
             sanitized_name("")
 
