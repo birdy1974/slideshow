@@ -345,6 +345,35 @@ def _ui_path(item: dict[str, Any]) -> str:
     return path or name
 
 
+def _slide_stage_label(item: dict[str, Any], index: int, total: int) -> str:
+    """Human-readable '3/12: beach.jpg — /photos/beach.jpg' for progress and logs.
+
+    Title frames have no file; they show the caption instead. The label is kept
+    short (no more than ~64 chars) so the stage column stays readable, yet it
+    always contains the slide number — the single most useful field when a
+    render fails on one clip.
+    """
+    name = str(item.get("name") or item.get("path") or "slide")
+    if item.get("type") == "title":
+        text = str(item.get("text") or "").strip()
+        text = _short_label(text, 28) if text else "Text frame"
+        return f"{index + 1}/{total} — Title “{text}”"
+    label = _short_label(name, 32)
+    via = _ui_path(item)
+    if via and via != name and via != label:
+        # via is already the mounted path; keep it so the user can locate the file
+        return f"{index + 1}/{total}: {label} — {via}"
+    return f"{index + 1}/{total}: {label}"
+
+
+def _transition_stage_label(a: dict[str, Any], b: dict[str, Any], idx: int, total: int, duration: float) -> str:
+    """'2 → 3/12: beach.jpg → sunset.jpg [Dissolve 0.8s]' for timeline progress."""
+    left = _short_label(str(a.get("name") or a.get("path") or f"#{idx + 1}"), 18)
+    right = _short_label(str(b.get("name") or b.get("path") or f"#{idx + 2}"), 18)
+    name = str(a.get("transition") or "Fade")
+    return f"{idx + 1} → {idx + 2}/{total}: {left} → {right} [{name} {format_ffmpeg_number(duration)}s]"
+
+
 def _probe_reason_from_ffprobe(output: str, path: Path) -> str:
     """Pick a short, human-readable reason out of ffprobe's stderr/stdout."""
     for raw in (output or "").splitlines():
@@ -1275,17 +1304,42 @@ class Renderer:
         event.set(); self.db.update_job(job_id, status="cancelling", stage="Stopping FFmpeg")
         return True
 
-    def _cleanup_job_work(self, job_id: str) -> None:
+    def _cleanup_job_work(self, job_id: str, keep_log: bool = False) -> None:
         """Delete a finished job's interim files (segments, soundtrack, ffmpeg.log).
 
         The render output never lives here — previews go to ``preview_dir`` and
         final MP4s go to the user's ``/output`` folder — so it is always safe to
         remove the working directory once a job has stopped running. Scoped to
         the single job so concurrent renders are never disturbed.
+
+        When ``keep_log`` is True (a failed render) the ``ffmpeg.log`` is kept
+        so ``/api/jobs/{id}/log`` and the file-system still show exactly which
+        slide and filter broke — the 2026-09-15 ``No such filter`` class of
+        bugs otherwise erased its own evidence. Only the log is kept.
         """
         work = self.settings.work_dir / job_id
         if not work.exists():
             return
+        if keep_log:
+            log_file = work / "ffmpeg.log"
+            if log_file.exists():
+                try:
+                    # Keep the log where /api/jobs/{id}/log expects it; discard
+                    # the bulky per-slide MP4s that would otherwise fill the NAS.
+                    for child in work.iterdir():
+                        if child.resolve() == log_file.resolve():
+                            continue
+                        try:
+                            if child.is_dir():
+                                shutil.rmtree(child, ignore_errors=True)
+                            else:
+                                child.unlink()
+                        except OSError:
+                            pass
+                    log.info("Kept ffmpeg.log for failed job %s; cleaned other interim files", job_id)
+                    return
+                except Exception as exc:  # pragma: no cover - defensive only
+                    log.warning("Could not preserve log for %s: %s", work, exc)
         try:
             shutil.rmtree(work, ignore_errors=True)
             log.info("Cleaned temporary work dir for job %s", job_id)
@@ -1325,6 +1379,7 @@ class Renderer:
         work = self.settings.work_dir / job_id
         work.mkdir(parents=True, exist_ok=True)
         self.db.update_job(job_id, status="running", stage="Validating media", started_at=utcnow())
+        _run_status = "failed"
         try:
             if not shutil.which(self.settings.ffmpeg_bin):
                 raise RenderError("FFmpeg is not installed or is not available on PATH")
@@ -1336,16 +1391,27 @@ class Renderer:
             except OSError:
                 size_bytes = None
             self.db.update_job(job_id, status="complete", progress=100, stage="Complete", output_path=str(output), size_bytes=size_bytes, finished_at=utcnow())
+            _run_status = "complete"
         except Exception as exc:
-            status = "cancelled" if cancelled.is_set() else "failed"
-            self.db.update_job(job_id, status=status, stage="Cancelled" if cancelled.is_set() else "Failed", error_message=str(exc), finished_at=utcnow())
+            _run_status = "cancelled" if cancelled.is_set() else "failed"
+            status = _run_status
+            if cancelled.is_set():
+                stage_label = "Cancelled"
+            else:
+                # Keep the slide/transition that failed visible in the queue's
+                # stage column even after the running stage is overwritten.
+                first = str(exc).splitlines()[0].strip()[:120] if str(exc).strip() else "Failed"
+                stage_label = first if first.startswith(("Slide", "Hold", "Transition", "Soundtrack", "Joining", "Finalizing")) else f"Failed — {first}" if first != "Failed" else "Failed"
+            self.db.update_job(job_id, status=status, stage=stage_label, error_message=str(exc), finished_at=utcnow())
             log.exception("Render job %s failed", job_id)
         finally:
             self.cancel_events.pop(job_id, None)
             # Temporary files only: the render output (preview in preview_dir,
             # final MP4 in /output) is intentionally preserved. Work dirs are
-            # per-job so concurrent renders stay untouched.
-            self._cleanup_job_work(job_id)
+            # per-job so concurrent renders stay untouched. On failure the
+            # ffmpeg.log is kept — its slide-marked === Slide 2/3 === sections
+            # are the only way to diagnose which filter tripped.
+            self._cleanup_job_work(job_id, keep_log=_run_status == "failed")
             # Prune stale proxy previews, keeping the newest so the preview that
             # just finished (or is being watched) still plays.
             try:
@@ -1490,8 +1556,25 @@ class Renderer:
             bitrate = f"{parse_number(output_settings.get('bitrate', '8'), 8):g}M"
         defaults = project.get("textDefaults", {})
         log_file = work / "ffmpeg.log"
-        progress(1, "Preparing soundtrack" if not fast_preview else "Preparing fast preview")
-        soundtrack = None if fast_preview else self._make_soundtrack(project, work, cancelled, log_file)
+        # Start with an unambiguous job header in both the log file and the
+        # stage column — when a user later pastes ffmpeg.log we can see exactly
+        # which slides/transitions the job held.
+        try:
+            with log_file.open("w", encoding="utf-8") as _lf:
+                _lf.write(f"# render {kind} — {len(media)} slides, {len(self.effective_transitions(media))} transitions\n")
+                for _i, _it in enumerate(media):
+                    _lf.write(f"# slide {_slide_stage_label(_it, _i, len(media))} type={_it.get('type','image')} dur={_it.get('duration')} trans={_it.get('transition','—')}\n")
+        except OSError:
+            pass
+        track_count = len(project.get("soundtrack", {}).get("tracks", [])) if not fast_preview else 0
+        stage0 = f"Preparing soundtrack — {track_count} tracks" if not fast_preview else f"Preparing fast preview — {len(media)} slides"
+        progress(1, stage0)
+        try:
+            soundtrack = None if fast_preview else self._make_soundtrack(project, work, cancelled, log_file)
+        except RenderError as exc:
+            raise RenderError(f"Soundtrack preparation failed — {exc}") from exc
+        if not fast_preview:
+            log.info("Soundtrack ready: %s", soundtrack or "no soundtrack")
         if not fast_preview and project.get("soundtrack",{}).get("policy") == "Fit slideshow to audio":
             # Original movie audio is part of the sound program too.  When it
             # outlasts the music bed, fitting only to the soundtrack would end
@@ -1582,9 +1665,10 @@ class Renderer:
             duration + (transitions[index - 1] if index else 0) + (transitions[index] if index < len(transitions) else 0)
             for index, duration in enumerate(durations)
         ]
-        progress(2, "Normalizing media")
+        progress(2, f"Normalizing media — {len(media)} slides")
         for index, item in enumerate(media):
             if cancelled.is_set(): raise RenderError("Render cancelled by user")
+            slide_label = _slide_stage_label(item, index, len(media))
             duration = segment_durations[index]
             segment = work / f"segment-{index:04d}.mp4"
             kind_name = item.get("type", "image")
@@ -1739,14 +1823,28 @@ class Renderer:
             else:
                 command += ["-vf", ",".join(filters)]
             command += ["-an", "-t", clip_t, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(segment)]
-            self._run_ffmpeg(command, cancelled, log_file)
+            # Live stage shows exactly which slide is being encoded — essential
+            # when a particular photo or codec trips FFmpeg (see 2026-09-15
+            # 'No such filter: 0)' which hid which slide's graph broke).
+            log.info("Encoding slide %s (%s) — segment %ss hold+handles", slide_label, kind_name, format_ffmpeg_number(duration))
+            try:
+                with log_file.open("a", encoding="utf-8") as _lf:
+                    _lf.write(f"\n=== Slide {slide_label} — {kind_name} {format_ffmpeg_number(duration)}s segment start ===\n")
+            except OSError:
+                pass
+            progress(5 + 45 * index / len(media), f"Encoding slide {slide_label} — {kind_name} ({format_ffmpeg_number(duration)}s)")
+            try:
+                self._run_ffmpeg(command, cancelled, log_file)
+            except RenderError as exc:
+                # stage is overwritten to 'Failed' on exit; slide must be in error_message
+                raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
             segments.append(segment)
-            progress(5 + 45 * (index + 1) / len(media), f"Prepared item {index+1} of {len(media)}")
+            progress(5 + 45 * (index + 1) / len(media), f"Prepared slide {slide_label}")
 
         # Transition specs per gap (include easing/params/reverse). We keep resolved names for fallback logging but build filter via build_transition_xfade.
         xfade_names = [self.resolve_xfade(str(media[index].get("transition", "Fade"))) for index in range(len(media) - 1)]
         total_duration = sum(durations) + sum(transitions)
-        progress(55, "Composing transitions and soundtrack")
+        progress(55, f"Composing timeline — {len(media)} slides, {len(transitions)} transitions")
         if kind == "preview":
             target_dir = self.settings.preview_dir
             filename = f"project-{project.get('id','new')}-preview-{uuid.uuid4().hex[:8]}.mp4"
@@ -1887,12 +1985,31 @@ class Renderer:
                 *encode_args_for(encoder, intermediate=True), "-r", str(fps),
                 "-t", format_ffmpeg_number(hold), str(hold_part),
             ]
-            progress(55 + 25 * (index + 1) / len(media), f"Preparing timeline item {index + 1} of {len(media)}")
+            slide_label = _slide_stage_label(media[index], index, len(media))
+            # Timeline hold: stage must name the slide so a failure during the
+            # hold (crop/effects) is instantly attributable. Progress is moved
+            # *before* the ffmpeg call so polling /api/jobs sees it live.
+            hold_stage = f"Hold {slide_label} — {format_ffmpeg_number(hold)}s"
+            try:
+                with log_file.open("a", encoding="utf-8") as _lf:
+                    _lf.write(f"\n=== Hold {slide_label} — {format_ffmpeg_number(hold)}s start ===\n")
+            except OSError:
+                pass
+            if hold > 0.0005:
+                log.info("Timeline hold %s", hold_stage)
+                progress(55 + 25 * index / len(media), hold_stage)
+            else:
+                # Zero-length hold — still advance stage so transition is visible
+                log.info("Skipping zero-length hold %s", slide_label)
+                progress(55 + 25 * index / len(media), f"Hold {slide_label} — skipped (0s)")
             # A zero-length hold (the transition-only preview) must not be
             # rendered or listed at all: concatenating a 0-second clip leaves
             # the join with nothing to start from.
             if hold > 0.0005:
-                run_compose(hold_command, allow_hw_fallback=True)
+                try:
+                    run_compose(hold_command, allow_hw_fallback=True)
+                except RenderError as exc:
+                    raise RenderError(f"Hold {slide_label} failed — {exc}") from exc
                 timeline_parts.append(hold_part)
 
             if index >= len(transitions):
@@ -1923,7 +2040,19 @@ class Renderer:
                 "-map", "[vout]", "-an", *encode_args_for(encoder, intermediate=True),
                 "-r", str(fps), "-t", format_ffmpeg_number(transition), str(transition_part),
             ]
-            run_compose(transition_command, allow_hw_fallback=True)
+            trans_label = _transition_stage_label(media[index], media[index + 1], index, len(media), transition)
+            trans_stage = f"Transition {trans_label}"
+            try:
+                with log_file.open("a", encoding="utf-8") as _lf:
+                    _lf.write(f"\n=== Transition {trans_label} — xfade {xfade_fragment} start ===\n")
+            except OSError:
+                pass
+            log.info("Timeline transition %s — %s", trans_label, xfade_fragment)
+            progress(55 + 25 * (index + 0.5) / len(media), trans_stage)
+            try:
+                run_compose(transition_command, allow_hw_fallback=True)
+            except RenderError as exc:
+                raise RenderError(f"Transition {trans_label} failed — {exc}") from exc
             timeline_parts.append(transition_part)
 
         concat_list = work / "timeline.ffconcat"
@@ -1954,8 +2083,18 @@ class Renderer:
             "-i", str(concat_list), "-map", "0:v:0", "-an", *join_codec,
             "-movflags", "+faststart", "-t", format_ffmpeg_number(total_duration), str(timeline),
         ]
-        progress(82, "Joining timeline")
-        self._run_ffmpeg(concat_command, cancelled, log_file)
+        join_stage = f"Joining timeline — {len(timeline_parts)} parts, {format_ffmpeg_number(total_duration)}s"
+        try:
+            with log_file.open("a", encoding="utf-8") as _lf:
+                _lf.write(f"\n=== {join_stage} start ===\n")
+        except OSError:
+            pass
+        log.info(join_stage)
+        progress(82, join_stage)
+        try:
+            self._run_ffmpeg(concat_command, cancelled, log_file)
+        except RenderError as exc:
+            raise RenderError(f"{join_stage} failed — {exc}") from exc
 
         # Audio is composed after the video timeline is complete. Selected
         # movie audio is delayed to the movie's visible hold start, while the
@@ -2083,8 +2222,19 @@ class Renderer:
         if audio_filter:
             command += ["-filter_complex", audio_filter]
         command += ["-map", "0:v:0", *audio_map, "-c:v", "copy", "-t", format_ffmpeg_number(total_duration), "-movflags", "+faststart", str(output)]
-        run_compose(command, allow_hw_fallback=False)
-        progress(98, "Finalizing MP4")
+        mux_stage = f"Finalizing MP4 — mux {format_ffmpeg_number(total_duration)}s video + {'soundtrack' if soundtrack else 'silence'}"
+        try:
+            with log_file.open("a", encoding="utf-8") as _lf:
+                _lf.write(f"\n=== {mux_stage} start ===\n")
+        except OSError:
+            pass
+        log.info(mux_stage)
+        progress(88, mux_stage)
+        try:
+            run_compose(command, allow_hw_fallback=False)
+        except RenderError as exc:
+            raise RenderError(f"{mux_stage} failed — {exc}") from exc
+        progress(98, "Finalizing MP4 — done")
         return output
 
     def measure_loudness(self, source: Path, target: float, edit_filter: str = "", cancelled: threading.Event | None = None, log_file: Path | None = None) -> dict[str, float] | None:
@@ -2151,10 +2301,15 @@ class Renderer:
         tracks=project.get("soundtrack",{}).get("tracks",[])
         if not tracks: return None
         sources=[]
-        for track in tracks:
-            source=source_path(self.settings, track)
-            if not source.exists(): raise RenderError(f"Soundtrack is missing: {source}")
+        for idx, track in enumerate(tracks):
+            try:
+                source=source_path(self.settings, track)
+            except UnsafePath as exc:
+                raise RenderError(f"Soundtrack track {idx+1}/{len(tracks)} '{_short_label(str(track.get('name') or 'track'))}' — invalid path ({exc}) — {_ui_path(track)}") from exc
+            if not source.exists():
+                raise RenderError(f"Soundtrack track {idx+1}/{len(tracks)} '{_short_label(str(track.get('name') or str(source)))}' is missing — {_ui_path(track) or source}")
             sources.append(source)
+            log.info("Soundtrack track %d/%d: %s — %s", idx+1, len(tracks), _short_label(str(track.get('name') or source.name)), source)
         output=work/"soundtrack.m4a"
         inputs=[]
         for source in sources: inputs += ["-i",str(source)]
@@ -2166,11 +2321,28 @@ class Renderer:
                 # First pass measures the *kept* region (after cut/crop, before
                 # the user's fades so ramps do not skew the reading), second
                 # pass applies a linear gain so every song matches `target`.
-                stats = self.measure_loudness(sources[i], target, edit_filter=track_edit_filter({**tracks[i], "fadeIn": 0, "fadeOut": 0}), cancelled=cancelled, log_file=log_file)
+                try:
+                    stats = self.measure_loudness(sources[i], target, edit_filter=track_edit_filter({**tracks[i], "fadeIn": 0, "fadeOut": 0}), cancelled=cancelled, log_file=log_file)
+                except RenderError as exc:
+                    raise RenderError(f"Soundtrack track {i+1}/{len(sources)} '{_short_label(str(tracks[i].get('name') or sources[i].name))}' loudness probe failed — {exc}") from exc
                 edit += loudnorm_filter(target, stats) + ","
             per_track.append(f"[{i}:a]{edit}aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
         normalized=";".join(per_track)
         concat="".join(f"[a{i}]" for i in range(len(sources)))+f"concat=n={len(sources)}:v=0:a=1[aout]"
         command=[self.settings.ffmpeg_bin,"-hide_banner","-y",*inputs,"-filter_complex",normalized+";"+concat,"-map","[aout]","-vn","-c:a","aac","-b:a","192k",str(output)]
-        self._run_ffmpeg(command,cancelled,log_file)
+        # Fault-finding: log which tracks are stitched before the ffmpeg call
+        try:
+            with log_file.open("a", encoding="utf-8") as _lf:
+                _lf.write(f"\n=== Soundtrack: {len(sources)} tracks concat start ===\n")
+                for _i, _s in enumerate(sources):
+                    _lf.write(f"# track {_i+1}: {_short_label(str(tracks[_i].get('name') or _s.name))} — {_s}\n")
+        except OSError:
+            pass
+        log.info("Soundtrack concat %d tracks → %s", len(sources), output)
+        try:
+            self._run_ffmpeg(command,cancelled,log_file)
+        except RenderError as exc:
+            # Include which tracks were involved so the user can bisect
+            names = ", ".join(_short_label(str(t.get('name') or s.name)) for t, s in zip(tracks, sources))
+            raise RenderError(f"Soundtrack concat ({names}) failed — {exc}") from exc
         return output
