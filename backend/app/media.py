@@ -10,7 +10,7 @@ from typing import Any
 from .config import Settings
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".wmv", ".asf", ".mpg", ".mpeg", ".ts", ".mts", ".m2ts", ".flv", ".f4v", ".3gp", ".3gpp", ".vob", ".dav", ".mxf", ".mod", ".tod", ".divx"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
 # Saved project files (`holiday.slideshow.json`). Listed by the project picker
 # and read/written by app.project_files; never treated as media.

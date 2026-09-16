@@ -15,7 +15,7 @@ import {
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
-import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, serverMovieDuration } from './filmstrip'
+import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
 import { CropSpriteVideo } from './PictureCropEditor'
 import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilterStyle, type Lookish } from './pictureFilters'
@@ -226,7 +226,24 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   lookItem?: Lookish | MediaItem | null; onLook?: () => void; onCrop?: () => void;
 }) {
   const [failed, setFailed] = useState(false)
-  useEffect(() => setFailed(false), [src])
+  const [usePreview, setUsePreview] = useState(false)
+  const previewSrc = (() => {
+    if (kind !== 'video') return src
+    // When the storyline provides the real item, build the preview from it;
+    // otherwise derive it from the file URL (browser preview without an item).
+    if (lookItem && (lookItem as any).path != null) {
+      try { return moviePreviewUrl(lookItem as any, 960) } catch { /* fallback to URL parse */ }
+    }
+    try {
+      const url = new URL(src, window.location.origin)
+      const root = url.searchParams.get('root')
+      const pathParam = url.searchParams.get('path')
+      if (root && pathParam != null) return `/api/media/preview?root=${root}&path=${pathParam.split('/').map(encodeURIComponent).join('/')}&width=960`
+    } catch { /* ignore */ }
+    return src
+  })()
+  const videoSrc = usePreview ? previewSrc : src
+  useEffect(() => { setFailed(false); setUsePreview(false) }, [src, previewSrc])
   const isVideo = kind === 'video'
   // Crop first, look on top — the renderer's order. A cropped *photo* is shown
   // from one canvas copy; a cropped *movie* keeps playing its own file through a
@@ -277,7 +294,7 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
         {canRotate && <span className="lightbox-rotate"><button type="button" title="Rotate 90° counter-clockwise (Shift+R)" aria-label="Rotate counter-clockwise" onClick={() => onRotate!(-90)}><RotateCcw size={18}/></button><button type="button" title="Rotate 90° clockwise (R)" aria-label="Rotate clockwise" onClick={() => onRotate!(90)}><RotateCw size={18}/></button>{turn ? <b title="Rotation applied in the rendered slideshow">{turn}°</b> : null}</span>}{onDelete && <button type="button" className="lightbox-delete" title="Remove from storyline" aria-label="Remove from storyline" onClick={onDelete}><Trash2 size={18}/></button>}<button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div></div>
       <div className="lightbox-body">
       {failed ? <div className="lightbox-error"><ImageOff size={30}/><strong>This file could not be previewed</strong><span>{kind === 'video' ? 'Your browser may not decode this format (including camera AVI). It can still be imported and rendered by FFmpeg.' : 'It is empty, missing, or unreadable on the mounted volume.'}</span></div>
-        : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={src} style={lookView.style} controls autoPlay onError={() => setFailed(true)} />
+        : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={videoSrc} style={lookView.style} controls autoPlay onError={() => { if (!usePreview && previewSrc !== src) setUsePreview(true); else setFailed(true) }} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'title' && titleFrame ? <div className="lightbox-stage title-frame-stage" style={frameBackgroundStyle(titleFrame)}>
             {frameChange && <ColourChangePreview key={`${frameChange.from}-${frameChange.to}-${frameChange.transition}-${frameChange.time}-${frameChange.start}`} change={frameChange} playing={!suspended} />}
@@ -310,25 +327,32 @@ function MovieStrip({ item, onClick, onPointerDown }: { item: MediaItem; onClick
     if (movieStripCache.has(src)) { setStrip(movieStripCache.get(src) ?? null); setFailed(movieStripCache.get(src) === null); return }
     let cancelled = false
     void (async () => {
-      // Length first (browser, then FFmpeg), then frames the same way.
+      // For camera AVI/WMV/MPEG-PS/AVCHD the browser cannot decode the video,
+      // so probing and canvas capture would only waste ~8 s. Go straight to
+      // the server probe and the server-rendered sprite.
+      const serverOnly = /\.(avi|wmv|asf|mpg|mpeg|ts|mts|m2ts|flv|f4v|3gp|3gpp|vob|dav|mxf|mod|tod|divx|mkv)$/i.test(item.name || '')
       let total = 0
-      try {
-        total = await new Promise<number>((resolve) => {
-          const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true; v.src = src
-          const done = (n: number) => { v.removeAttribute('src'); v.load(); resolve(n) }
-          v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : 0)
-          v.onerror = () => done(0)
-          window.setTimeout(() => done(0), 8000)
-        })
-      } catch { total = 0 }
+      if (!serverOnly) {
+        try {
+          total = await new Promise<number>((resolve) => {
+            const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true; v.src = src
+            const done = (n: number) => { v.removeAttribute('src'); v.load(); resolve(n) }
+            v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : 0)
+            v.onerror = () => done(0)
+            window.setTimeout(() => done(0), 8000)
+          })
+        } catch { total = 0 }
+      }
       if (!total) total = await serverMovieDuration(item)
       if (cancelled) return
-      const captured = total > 0 ? await captureFilmstrip(src, FILMSTRIP_CELLS, total) : null
+      let captured: string | null = null
+      if (!serverOnly && total > 0) captured = await captureFilmstrip(src, FILMSTRIP_CELLS, total)
       if (cancelled) return
       let result: { src: string; total: number } | null = captured ? { src: captured, total } : null
       if (!result && total > 0) {
-        const ok = await new Promise<boolean>(resolve => { const img = new Image(); img.onload = () => resolve(true); img.onerror = () => resolve(false); img.src = movieFilmstripUrl(item) })
-        if (ok) result = { src: movieFilmstripUrl(item), total }
+        const url = movieFilmstripUrl(item)
+        const ok = await new Promise<boolean>(resolve => { const img = new Image(); img.onload = () => resolve(true); img.onerror = () => resolve(false); img.src = url })
+        if (ok) result = { src: url, total }
       }
       if (cancelled) return
       movieStripCache.set(src, result)
@@ -353,21 +377,28 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
   onClick?: React.MouseEventHandler; onPointerDown?: React.PointerEventHandler; style?: React.CSSProperties;
 }) {
   const [failed, setFailed] = useState(false)
-  const src = itemThumbUrl(item)
+  const [usePreview, setUsePreview] = useState(false)
+  const origSrc = itemThumbUrl(item)
+  const previewSrc = item.type === 'video' ? moviePreviewUrl(item, 480) : origSrc
+  const src = usePreview ? previewSrc : origSrc
   // A cropped clip is shown from one small canvas copy — the only way a bare
   // <img>/<video> can display a sub-rectangle — so every thumbnail surface
   // (storyline, compact grid, detailed list, filmstrip, media browser) shows
   // the crop without a single extra CSS rule.
   const cropped = useCroppedSource(src, item, 'thumb', item.type === 'video')
-  useEffect(() => setFailed(false), [src])
+  useEffect(() => { setFailed(false); setUsePreview(false) }, [origSrc, previewSrc])
   if (!src) return null
-  if (failed) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
+  if (failed && usePreview) return <span className="thumb-fallback"><ImageOff size={14}/><small>unavailable</small></span>
+  const handleError = () => {
+    if (item.type === 'video' && !usePreview) setUsePreview(true)
+    else setFailed(true)
+  }
   // Every thumbnail wears the item's picture look and crop, so the storyline
   // shows the same picture the render will produce.
   // draggable=false: the thumbnail must never start its own native drag —
   // the draggable card around it is the drag source, so reordering works
   // from anywhere on the slide, including the middle of the picture.
-  const common = { src: cropped.ready ? cropped.src : src, className, onClick, onPointerDown, onError: () => setFailed(true), draggable: false } as const
+  const common = { src: cropped.ready ? cropped.src : src, className, onClick, onPointerDown, onError: handleError, draggable: false } as const
   const look = { ...style, ...pictureFilterStyle(item) }
   if (item.type === 'video' && !cropped.ready) return <video {...common} muted={muted ?? true} preload={preload ?? 'metadata'} style={look} />
   // The copy already carries the quarter turn; only the bare file needs CSS to turn it.
@@ -378,15 +409,18 @@ function MediaThumb({ item, className, muted, preload, onClick, onPointerDown, s
 // or unreadable (the backend answers 422 for 0-byte files, so onError fires).
 function BrowserThumb({ root, file }: { root: MediaRoot, file: any }) {
   const [failed, setFailed] = useState(false)
+  const [usePreview, setUsePreview] = useState(false)
   const src = mediaFileUrl(root, file.path)
-  useEffect(() => setFailed(false), [src])
+  const previewSrc = `/api/media/preview?root=${root}&path=${file.path.split('/').map(encodeURIComponent).join('/')}&width=480`
+  const videoSrc = usePreview ? previewSrc : src
+  useEffect(() => { setFailed(false); setUsePreview(false) }, [src, previewSrc])
   if (file.kind === 'directory') return <FolderOpen size={34}/>
   if (file.kind === 'audio') return <Music2 size={34}/>
-  // AVI (notably Motion JPEG from a Casio EX-Z11) is renderable by FFmpeg but
-  // generally not decodable by browser video elements. Avoid a broken preview.
-  if (file.kind === 'video' && /\.avi$/i.test(file.name)) return <><Film size={34}/><span className="video-tag"><Video size={10}/> AVI</span></>
-  if (failed) return <span className="file-thumb-fallback"><ImageOff size={20}/></span>
-  if (file.kind === 'video') return <><video src={src} muted preload="metadata" onError={() => setFailed(true)}/><span className="video-tag"><Video size={10}/> video</span></>
+  if (failed && !usePreview) {
+    // first failure was native; preview will be tried once
+  }
+  if (failed && usePreview) return <span className="file-thumb-fallback"><ImageOff size={20}/></span>
+  if (file.kind === 'video') return <><video src={videoSrc} muted preload="metadata" onError={() => { if (!usePreview) setUsePreview(true); else setFailed(true) }}/><span className="video-tag"><Video size={10}/> video</span></>
   if (file.kind === 'image') return <img src={src} alt={file.name} onError={() => setFailed(true)}/>
   return <ImageIcon size={34}/>
 }
@@ -1807,19 +1841,25 @@ function App() {
       const src = mediaFileUrl(root, file.path)
       let duration = isVideo ? 10 : slideSeconds
       if (isVideo) {
+        const needsServerOnly = /\.(avi|wmv|asf|mpg|mpeg|ts|mts|m2ts|flv|f4v|3gp|3gpp|vob|dav|mxf|mod|tod|divx|mkv)$/i.test(file.name)
         try {
-          duration = await new Promise<number>((resolve) => {
-            const el = document.createElement('video')
-            el.preload = 'metadata'
-            const done = (value: number) => { el.removeAttribute('src'); el.load(); resolve(value) }
-            el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? Math.max(MIN_CLIP_SECONDS, el.duration) : 10)
-            el.onerror = () => done(0)
-            // Some mounts never fire metadata; don't block the add forever.
-            window.setTimeout(() => done(0), 8000)
-            el.src = src
-          })
-          // AVI from cameras such as the Casio EX-Z11 commonly contains
-          // Motion JPEG and PCM. Browsers cannot probe it, while FFmpeg can.
+          if (!needsServerOnly) {
+            duration = await new Promise<number>((resolve) => {
+              const el = document.createElement('video')
+              el.preload = 'metadata'
+              const done = (value: number) => { el.removeAttribute('src'); el.load(); resolve(value) }
+              el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? Math.max(MIN_CLIP_SECONDS, el.duration) : 10)
+              el.onerror = () => done(0)
+              // Some mounts never fire metadata; don't block the add forever.
+              window.setTimeout(() => done(0), 8000)
+              el.src = src
+            })
+          } else {
+            duration = 0
+          }
+          // AVI/WMV/MPEG-PS/AVCHD (e.g. 640×480 29.97 fps 3800 kbps mono) from cameras
+          // and Windows are renderable by FFmpeg but generally not decodable by
+          // HTMLVideoElement. Use the server ffprobe directly to avoid an 8 s timeout.
           if (duration <= 0) duration = await serverVideoDuration(root, file.path)
           duration = duration > 0 ? Math.max(MIN_CLIP_SECONDS, duration) : 10
         } catch { duration = 10 }
@@ -3417,7 +3457,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
       setDeleting(false)
     }
   }
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className="file-grid">{entries.map(file=>{
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v,.wmv,.asf,.mpg,.mpeg,.ts,.mts,.m2ts,.flv,.f4v,.3gp,.3gpp,.vob,.dav,.mxf,.mod,.tod,.divx" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className="file-grid">{entries.map(file=>{
   const isDelSelected=deleteSelection.some((x:any)=>x.path===file.path)
   const isSel=selected.some((x:any)=>x.path===file.path)
   return <div className={`file-card ${isSel?'selected':''} ${isDelSelected?'delete-selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}>
@@ -3644,7 +3684,11 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   }, [playing, current, media])
 
   const currentItem = media[current]
-  const currentUrl = currentItem ? itemThumbUrl(currentItem) : ''
+  const origUrl = currentItem ? itemThumbUrl(currentItem) : ''
+  const previewStageUrl = currentItem?.type === 'video' && currentItem.path ? (() => { try { return moviePreviewUrl(currentItem, 640) } catch { return origUrl } })() : origUrl
+  const [stageUsePreview, setStageUsePreview] = useState(false)
+  useEffect(() => { setStageUsePreview(false); setStageFailed(false) }, [origUrl, previewStageUrl])
+  const currentUrl = stageUsePreview ? previewStageUrl : origUrl
   const stageIsVideo = currentItem?.type === 'video'
   const stageCrop = useCroppedSource(currentUrl, stageIsVideo ? null : currentItem, 'stage', false)
   const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
@@ -3834,7 +3878,7 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={currentItem.id} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => setStageFailed(true)} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={{...captionItem, fontColor: curColor || captionItem.fontColor, fontSize: (Number(captionItem.fontSize)||defaults.fontSize) * curScale} as any} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={{...captionItem, fontColor: curColor || captionItem.fontColor, fontSize: (Number(captionItem.fontSize)||defaults.fontSize) * curScale} as any} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 

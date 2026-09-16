@@ -32,9 +32,14 @@ export function movieRootAndPath(item: { path: string; name: string }): { root: 
   return { root, relative }
 }
 
+export function moviePreviewUrl(item: { path: string; name: string }, width = 640): string {
+  const { root, relative } = movieRootAndPath(item)
+  return `/api/media/preview?root=${root}&path=${relative.split('/').map(encodeURIComponent).join('/')}&width=${width}`
+}
+
 export function movieFilmstripUrl(item: { path: string; name: string }): string {
   const { root, relative } = movieRootAndPath(item)
-  return `/api/media/filmstrip?root=${root}&path=${encodeURIComponent(relative)}&count=${FILMSTRIP_CELLS}&width=${CELL_WIDTH}`
+  return `/api/media/filmstrip?root=${root}&path=${relative.split('/').map(encodeURIComponent).join('/')}&count=${FILMSTRIP_CELLS}&width=${CELL_WIDTH}`
 }
 
 /** Ask the backend (FFmpeg) for the movie's length when the browser cannot
