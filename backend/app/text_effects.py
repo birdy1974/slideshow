@@ -560,7 +560,7 @@ class TextGeometry:
     scale_to: float = 1.45
     color_anim_enabled: bool = False
     color_from: str = "#ffffff"
-    color_to: str = "#ffcc33"
+    color_to: str = "#ffffff"
 
     def motion_points(self) -> list[tuple[float,float]] | None:
         if not self.move_enabled:
@@ -710,9 +710,19 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
     scale_to = _clamp(_num(item, "textScaleTo", 1.45), 0.3, 3.0)
     color_en = bool(item.get("textColorAnimEnabled"))
     color_from_raw = str(item.get("textColorFrom") or colour)
-    color_to_raw = str(item.get("textColorTo") or "#ffcc33")
+    color_to_raw = str(item.get("textColorTo") or color_from_raw)
+    # Migration: old default B was #ffcc33 (yellow) while A was white/fontColour — start with B same as A
+    if isinstance(color_to_raw, str) and color_to_raw.lower() == "#ffcc33":
+        try:
+            from_c = color_from_raw.lower() if isinstance(color_from_raw, str) else ""
+            if from_c != "#ffcc33" and re.fullmatch(r"#[0-9a-fA-F]{6}", color_from_raw or ""):
+                color_to_raw = color_from_raw
+            elif not re.fullmatch(r"#[0-9a-fA-F]{6}", color_from_raw or "") and re.fullmatch(r"#[0-9a-fA-F]{6}", colour or "") and colour.lower() != "#ffcc33":
+                color_to_raw = colour
+        except:
+            pass
     color_from = color_from_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", color_from_raw or "") else colour
-    color_to = color_to_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", color_to_raw or "") else "#ffcc33"
+    color_to = color_to_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", color_to_raw or "") else color_from
 
     return TextGeometry(
         width=width, height=height,

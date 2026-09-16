@@ -1392,6 +1392,21 @@ function App() {
         if (!m.textEnter) m.textEnter = m.textFxEnter
         if (!m.textExit) m.textExit = m.textFxExit
         if (!Number.isFinite(Number(m.textFxWhileSpeed)) || !Number(m.textFxWhileSpeed)) m.textFxWhileSpeed = textEffectDefaultSeconds[m.textFxWhile] ?? savedTextDefaults.fxWhileSpeed
+        // Migration: old default for text colour To was #ffcc33 (yellow) while From was white/fontColour.
+        // If B colour is not the same as A colour, start by making B the same as A (no colour change until user picks).
+        if (typeof m.textColorTo === 'string' && m.textColorTo.toLowerCase() === '#ffcc33') {
+          const from = (typeof m.textColorFrom === 'string' && /^#[0-9a-fA-F]{6}$/.test(m.textColorFrom) ? m.textColorFrom : (typeof m.fontColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(m.fontColor) ? m.fontColor : null))
+          if (from && from.toLowerCase() !== '#ffcc33') {
+            m.textColorTo = from
+          } else if (!from) {
+            // no valid From, make both white so they match
+            m.textColorTo = '#ffffff'
+          }
+        }
+        // Also if anim enabled and colours differ due to old default, ensure they start the same
+        if (m.textColorAnimEnabled && typeof m.textColorFrom === 'string' && typeof m.textColorTo === 'string' && m.textColorFrom.toLowerCase() !== m.textColorTo.toLowerCase() && m.textColorTo.toLowerCase() === '#ffcc33') {
+          m.textColorTo = m.textColorFrom
+        }
         // Older projects may contain a caption window that reaches into the
         // following transition. Normalize it on load so the timeline display,
         // persisted snapshot, and renderer all use the same hold boundary.
@@ -2658,7 +2673,7 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
     textScaleTo: (item as any).textScaleTo ?? 1.45,
     textColorAnimEnabled: (item as any).textColorAnimEnabled ?? false,
     textColorFrom: (item as any).textColorFrom || (item.fontColor || defaults.fontColor || '#ffffff'),
-    textColorTo: (item as any).textColorTo || '#ffcc33',
+    textColorTo: (item as any).textColorTo || (item as any).textColorFrom || (item.fontColor || defaults.fontColor || '#ffffff'),
   }))
   const [playing, setPlaying] = useState(true)
   const setDraftValue = (change: Partial<MediaItem>) => setDraft(current => ({ ...current, ...change }))
@@ -2808,12 +2823,12 @@ function PictureTextEditor({ item, defaults, src, onSave, onClose }: {
                 <label>To <input type="range" min={0.5} max={2.5} step={0.05} value={Number((draft as any).textScaleTo ?? 1.4)} onChange={e=>setDraftValue({ textScaleTo: Number(e.target.value)} as any)} /> <em>{Number((draft as any).textScaleTo ?? 1.4).toFixed(2)}×</em></label>
               </div>}
               <label className="check-label" style={{fontSize:'13px', marginTop:8, marginBottom:6}}>
-                <input type="checkbox" checked={Boolean((draft as any).textColorAnimEnabled)} onChange={e=>setDraftValue({ textColorAnimEnabled: e.target.checked } as any)} />
-                <span><Check size={11}/></span> Colour change {(draft as any).textColorAnimEnabled && <small style={{opacity:.7, display:'inline-flex', alignItems:'center', gap:4}}><i style={{width:12,height:12,background:(draft as any).textColorFrom||draft.fontColor,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/><ChevronRight size={10}/><i style={{width:12,height:12,background:(draft as any).textColorTo||'#ffcc33',display:'inline-block',borderRadius:2,border:'1px solid #555'}}/></small>}
+                <input type="checkbox" checked={Boolean((draft as any).textColorAnimEnabled)} onChange={e=>{ const checked=e.target.checked; if(checked){ const from=(draft as any).textColorFrom || draft.fontColor || '#ffffff'; setDraftValue({ textColorAnimEnabled: true, textColorFrom: from, textColorTo: from } as any)} else setDraftValue({ textColorAnimEnabled: false } as any)}} />
+                <span><Check size={11}/></span> Colour change {(draft as any).textColorAnimEnabled && <small style={{opacity:.7, display:'inline-flex', alignItems:'center', gap:4}}><i style={{width:12,height:12,background:(draft as any).textColorFrom||draft.fontColor,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/><ChevronRight size={10}/><i style={{width:12,height:12,background:(draft as any).textColorTo||((draft as any).textColorFrom||draft.fontColor||'#ffffff'),display:'inline-block',borderRadius:2,border:'1px solid #555'}}/></small>}
               </label>
               {(draft as any).textColorAnimEnabled && <div className="motion-params">
                 <label style={{display:'flex',alignItems:'center',gap:6}}>From <input type="color" value={(draft as any).textColorFrom || draft.fontColor || '#ffffff'} onChange={e=>setDraftValue({ textColorFrom: e.target.value } as any)} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{(draft as any).textColorFrom || draft.fontColor}</em></label>
-                <label style={{display:'flex',alignItems:'center',gap:6}}>To <input type="color" value={(draft as any).textColorTo || '#ffcc33'} onChange={e=>setDraftValue({ textColorTo: e.target.value } as any)} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{(draft as any).textColorTo || '#ffcc33'}</em></label>
+                <label style={{display:'flex',alignItems:'center',gap:6}}>To <input type="color" value={(draft as any).textColorTo || (draft as any).textColorFrom || draft.fontColor || '#ffffff'} onChange={e=>setDraftValue({ textColorTo: e.target.value } as any)} style={{width:36,height:22,padding:0,border:'none'}} /> <em>{(draft as any).textColorTo || (draft as any).textColorFrom || draft.fontColor}</em></label>
               </div>}
               <label className="check-label" style={{fontSize:'13px', marginTop:8, marginBottom:6}}>
                 <input type="checkbox" checked={Boolean((draft as any).textBouncyEnabled)} onChange={e=>setDraftValue({ textBouncyEnabled: e.target.checked } as any)} />
@@ -3047,7 +3062,7 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
   const scaleTo = Number.isFinite(Number(item.textScaleTo)) ? Number(item.textScaleTo) : 1.45
   const colorAnimEnabled = Boolean(item.textColorAnimEnabled)
   const colorFrom = (item.textColorFrom && isHex(item.textColorFrom)) ? item.textColorFrom : (color || '#ffffff')
-  const colorTo = (item.textColorTo && isHex(item.textColorTo)) ? item.textColorTo : '#ffcc33'
+  const colorTo = (item.textColorTo && isHex(item.textColorTo)) ? item.textColorTo : colorFrom
 
   const [animProgress, setAnimProgress] = useState(0)
   useEffect(() => {
@@ -3135,7 +3150,7 @@ function TextFrameEditor({item,update,onSave,onCancel,isNew=false,onOpenGallery,
           </div>}
           <FieldLabel>Text colour animation <small style={{opacity:.7}}>from → to</small></FieldLabel>
           <label className="check-label" style={{marginBottom:6}}>
-            <input type="checkbox" checked={colorAnimEnabled} onChange={e=>update({ textColorAnimEnabled: e.target.checked, textColorFrom: colorFrom, textColorTo: colorTo })} />
+            <input type="checkbox" checked={colorAnimEnabled} onChange={e=>{ const checked=e.target.checked; const from=colorFrom; const to= checked ? (isHex(colorTo) && colorTo.toLowerCase()===from.toLowerCase() ? colorTo : from) : colorTo; update({ textColorAnimEnabled: checked, textColorFrom: from, textColorTo: to })}} />
             <span><Check size={11}/></span> Colour change while shown {colorAnimEnabled && <small style={{marginLeft:6, opacity:.7, display:'inline-flex', alignItems:'center', gap:4}}><i style={{width:12,height:12,background:colorFrom,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/><ChevronRight size={10}/><i style={{width:12,height:12,background:colorTo,display:'inline-block',borderRadius:2,border:'1px solid #555'}}/></small>}
           </label>
           {colorAnimEnabled && <div className="motion-params" style={{marginTop:4, alignItems:'center'}}>
@@ -3768,7 +3783,7 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   const curScale = scaleEn ? lerpNum(scaleFrom, scaleTo, motionProgress) : 1
   const colorEn = activeForStyle ? Boolean(activeForStyle.textColorAnimEnabled) : false
   const colFrom = activeForStyle ? String(activeForStyle.textColorFrom || activeForStyle.fontColor || defaults.fontColor || '#ffffff') : '#ffffff'
-  const colTo = activeForStyle ? String(activeForStyle.textColorTo || '#ffcc33') : '#ffcc33'
+  const colTo = activeForStyle ? String(activeForStyle.textColorTo || activeForStyle.textColorFrom || activeForStyle.fontColor || defaults.fontColor || '#ffffff') : '#ffffff'
   const curColor = colorEn ? lerpHexP(colFrom, colTo, motionProgress) : undefined
 
   const getBouncyOff = (it:any):number=>{
