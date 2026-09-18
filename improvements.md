@@ -1,3 +1,13 @@
+2026-09-18
+- scale preview picture in pre-view popup so that complete picture is shown. also account for orientation (portrait, landscape)
+- same for Edit picture text popup and New text frame popup. make sure that example reflects the final result (including text size, position, movement, and full picture)
+- in Edit picture text popup and New text frame popup, the  text motion path does not require an own pre-view, you can use the existing preview
+- where possible make the layout of Edit picture text popup and New text frame popup the same (including all motion text options) consider combining them (if it is possible) as only the background picture is different.
+- 
+
+
+---= DONE =---
+
 2026-09-16 — render stops on slide 1 with "No such filter: '0)'" (title frame)
 
 - Reproduced: a 225-slide render dies on the first title slide ("Oma's Verjaardag 2006").
@@ -47,11 +57,6 @@ app.renderer.RenderError: FFmpeg exited with status 8.
 Error : Filter not found
 2026-09-15 23:19:01,514 INFO app.renderer: Cleaned temporary work dir for job 662e5c2e732b4cf69bcb923b03bb7c8d
 INFO:     172.30.0.1:52560 - "GET /api/jobs/662e5c2e732b4cf69bcb923b03bb7c8d HTTP/1.1" 200 OK
-
-
-
-
----= DONE =---
 
 2026-09-13 — DONE (latest batch, all 10 items from previous TODO now implemented)
 
