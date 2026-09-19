@@ -3,7 +3,9 @@
 - same for Edit picture text popup and New text frame popup. make sure that example reflects the final result (including text size, position, movement, and full picture)
 - in Edit picture text popup and New text frame popup, the  text motion path does not require an own pre-view, you can use the existing preview
 - where possible make the layout of Edit picture text popup and New text frame popup the same (including all motion text options) consider combining them (if it is possible) as only the background picture is different.
-- 
+- rotate picture
+- add rotate / squirrel of text
+- add option text from small to large
 
 
 ---= DONE =---
