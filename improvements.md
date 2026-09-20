@@ -1,3 +1,9 @@
+
+
+
+
+---= DONE =---
+
 2026-09-18
 - scale preview picture in pre-view popup so that complete picture is shown. also account for orientation (portrait, landscape)
 - same for Edit picture text popup and New text frame popup. make sure that example reflects the final result (including text size, position, movement, and full picture)
@@ -7,8 +13,6 @@
 - add rotate / squirrel of text
 - add option text from small to large
 
-
----= DONE =---
 
 2026-09-20 — Text animation: "None" enter/exit (instant appear/vanish) + rotation Speed
 - **"None" for Enter and Exit** (edit picture text + text frame popups, and the
