@@ -51,21 +51,24 @@ def text_effect_catalog() -> list[dict[str, Any]]:
     return []
 
 _CATALOG: list[dict[str, Any]] | None = None
-_BY_LABEL: dict[str, dict[str, Any]] | None = None
+_BY_SLOT_LABEL: dict[tuple[str, str], dict[str, Any]] | None = None
 
-def _by_label() -> dict[str, dict[str, Any]]:
-    global _CATALOG, _BY_LABEL
-    if _BY_LABEL is None:
+def _by_label() -> dict[tuple[str, str], dict[str, Any]]:
+    # Keyed by (slot, label): the same label may exist in more than one slot
+    # (both enter and exit offer "None"), so a bare label key would clobber
+    # the other slot's entry.
+    global _CATALOG, _BY_SLOT_LABEL
+    if _BY_SLOT_LABEL is None:
         _CATALOG = text_effect_catalog()
-        _BY_LABEL = {str(entry["label"]): entry for entry in _CATALOG}
-    return _BY_LABEL
+        _BY_SLOT_LABEL = {(str(entry["slot"]), str(entry["label"])): entry for entry in _CATALOG}
+    return _BY_SLOT_LABEL
 
 def effect_for(label: str | None, slot: str) -> dict[str, Any] | None:
     if label:
-        entry = _by_label().get(str(label).strip())
-        if entry and entry.get("slot") == slot:
+        entry = _by_label().get((slot, str(label).strip()))
+        if entry:
             return entry
-    return _by_label().get({"enter": "Fade", "exit": "Fade out", "while": "None (static)"}[slot])
+    return _by_label().get((slot, {"enter": "Fade", "exit": "Fade out", "while": "None (static)"}[slot]))
 
 def _n(value: float) -> str:
     text = f"{float(value):.6f}".rstrip("0").rstrip(".")
@@ -537,6 +540,11 @@ class TextGeometry:
     colour: str
     params: dict[str, str]
     outline: bool = True
+    # Centre mode (text frames): the whole block and every line centre on the
+    # position. drawtext renders one filter per line, each centred on the block
+    # anchor — a single drawtext box would left-align the lines against each
+    # other, which does not match the preview or the libass path (\an5).
+    centered: bool = False
     # Motion
     move_enabled: bool = False
     move_from_x: float = 50.0
@@ -573,6 +581,22 @@ class TextGeometry:
     color_anim_enabled: bool = False
     color_from: str = "#ffffff"
     color_to: str = "#ffffff"
+    # Rotate / squash animation over hold. drawtext cannot turn or squash
+    # glyphs, so a caption with either of these rides a transparent square
+    # layer that is rotated/scaled around its centre (see LayeredText).
+    rotate_enabled: bool = False
+    rotate_from: float = 0.0
+    rotate_to: float = 0.0
+    # Seconds the rotate takes to travel from → to. 0 = the whole window
+    # (historic behaviour); < hold finishes early and holds, > hold is still
+    # travelling when the caption leaves.
+    rotate_speed: float = 0.0
+    squish_enabled: bool = False
+    squish_from: float = 1.0
+    squish_to: float = 1.0
+
+    def wants_transform(self) -> bool:
+        return self.rotate_enabled or self.squish_enabled
 
     def motion_points(self) -> list[tuple[float,float]] | None:
         if not self.move_enabled:
@@ -637,8 +661,12 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         return None
     start, end = normalize_text_window(item)
     hold = end - start
-    di = _clamp(_num(item, "textEnterDuration", 0.5), 0.05, hold * 0.9)
-    do = _clamp(_num(item, "textExitDuration", 0.5), 0.05, hold * 0.9)
+    # "None" enter/exit = the caption appears / vanishes instantly: the
+    # duration fields would otherwise force a (possibly long) fade.
+    enter_label = str(item.get("textFxEnter") or item.get("textEnter") or "").strip()
+    exit_label = str(item.get("textFxExit") or item.get("textExit") or "").strip()
+    di = 0.0 if enter_label == "None" else _clamp(_num(item, "textEnterDuration", 0.5), 0.05, hold * 0.9)
+    do = 0.0 if exit_label == "None" else _clamp(_num(item, "textExitDuration", 0.5), 0.05, hold * 0.9)
     speed_default = 2.0 if item.get("type") == "title" else _num(defaults, "textFxWhileSpeed", 2.0)
     speed = _clamp(_num(item, "textFxWhileSpeed", speed_default), 0.4, 12.0)
     if item.get("type") == "title":
@@ -677,6 +705,7 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
     colour = colour_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", colour_raw or "") else "#ffffff"
     cx = width * _clamp(def_x, 0.0, 100.0) / 100.0
     cy = height * _clamp(def_y, 0.0, 100.0) / 100.0
+    centered = item.get("textCentered") is True
 
     move_enabled = bool(item.get("textMoveEnabled"))
     move_from_x = _clamp(_num(item, "textMoveFromX", def_x), 0.0, 100.0)
@@ -735,6 +764,14 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
             pass
     color_from = color_from_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", color_from_raw or "") else colour
     color_to = color_to_raw if re.fullmatch(r"#[0-9a-fA-F]{6}", color_to_raw or "") else color_from
+    rotate_en = bool(item.get("textRotateEnabled"))
+    rotate_from = _clamp(_num(item, "textRotateFrom", -10.0), -90.0, 90.0)
+    rotate_to = _clamp(_num(item, "textRotateTo", 0.0), -90.0, 90.0)
+    # 0/missing keeps the historic "over the whole window" pacing
+    rotate_speed = _clamp(_num(item, "textRotateSpeed", 0.0), 0.0, 60.0)
+    squish_en = bool(item.get("textSquishEnabled"))
+    squish_from = _clamp(_num(item, "textSquishFrom", 0.5), 0.2, 1.5)
+    squish_to = _clamp(_num(item, "textSquishTo", 1.0), 0.2, 1.5)
 
     return TextGeometry(
         width=width, height=height,
@@ -744,6 +781,7 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         text=text, lines=text.split("\n"),
         family=family, bold=bold, italic=italic, underline=underline, colour=colour, params=params,
         outline=outline,
+        centered=centered,
         move_enabled=move_enabled,
         move_from_x=move_from_x, move_from_y=move_from_y,
         move_to_x=move_to_x, move_to_y=move_to_y,
@@ -774,6 +812,13 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         color_anim_enabled=color_en,
         color_from=color_from,
         color_to=color_to,
+        rotate_enabled=rotate_en,
+        rotate_from=rotate_from,
+        rotate_to=rotate_to,
+        rotate_speed=rotate_speed,
+        squish_enabled=squish_en,
+        squish_from=squish_from,
+        squish_to=squish_to,
     )
 
 @dataclass
@@ -789,10 +834,15 @@ class FxPlan:
 # --------------------------------------------------------------------------
 
 def _dt_alpha(g: TextGeometry) -> str:
+    # di/do of 0 ("None" enter/exit) means the caption appears or vanishes
+    # instantly: the ramp collapses to a constant so the expression never
+    # divides by zero.
     si, ei = g.start + g.di, g.end - g.do
+    fade_in = f"min(1,(t-{_n(g.start)})/{_n(g.di)})" if g.di > 0.01 else "1"
+    fade_out = f"max(0,({_n(g.end)}-t)/{_n(g.do)})" if g.do > 0.01 else "0"
     return (
-        f"if(lt(t,{_n(g.start)}),0,if(lt(t,{_n(si)}),min(1,(t-{_n(g.start)})/{_n(g.di)}),"
-        f"if(lt(t,{_n(ei)}),1,if(lt(t,{_n(g.end)}),max(0,({_n(g.end)}-t)/{_n(g.do)}),0))))"
+        f"if(lt(t,{_n(g.start)}),0,if(lt(t,{_n(si)}),{fade_in},"
+        f"if(lt(t,{_n(ei)}),1,if(lt(t,{_n(g.end)}),{fade_out},0))))"
     )
 
 def _dt_offsets(g: TextGeometry, enter: str, exit_: str, while_: str) -> tuple[str, str]:
@@ -943,28 +993,26 @@ def _dt_bouncy_expr(g: TextGeometry, while_id: str) -> str | None:
     # clamp to 0 outside hold? already p clipped 0..1, expression yields 0 at boundaries because parabola 0
     return f"({expr})"
 
+def _dt_fontsize_expr(g: TextGeometry, while_: str) -> str:
+    """drawtext fontsize expression: custom grow/shrink when enabled, the
+    legacy while Grow/Shrink labels otherwise, plain size when neither."""
+    hold = max(1e-6, g.end - g.start)
+    if g.scale_enabled:
+        # linear scale over hold; dt while effects Grow/Shrink via _dt_offsets
+        # are not used, so the custom scale is what the preview shows
+        return f"({g.size}*({_n(g.scale_from)}+({_n(g.scale_to - g.scale_from)})*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+    if while_ == "Grow":
+        return f"({g.size}*(1+0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+    if while_ == "Shrink":
+        return f"({g.size}*(1.35-0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
+    if while_ == "Grow & shrink":
+        return f"({g.size}*(1+0.22*sin(2*PI*clip((t-{_n(g.start)})/{_n(max(0.4,g.speed))},0,1)))"
+    return str(g.size)
+
 def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_: str) -> str:
     motion = _dt_motion_exprs(g)
     # fontsize expression for grow/shrink (scale) when using dt
-    hold = max(1e-6, g.end - g.start)
-    fontsize_expr = str(g.size)
-    if g.scale_enabled:
-        # linear scale over hold; dt while effects Grow/Shrink via _dt_offsets already not used, so we handle here for custom scale
-        fontsize_expr = f"({g.size}*({_n(g.scale_from)}+({_n(g.scale_to - g.scale_from)})*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
-        # legacy while Grow/Shrink labels also map to custom scale if catalogue chose them
-        if while_ == "Grow" and not g.scale_enabled:
-            fontsize_expr = f"({g.size}*(1+0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
-        elif while_ == "Shrink" and not g.scale_enabled:
-            fontsize_expr = f"({g.size}*(1.35-0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
-        elif while_ == "Grow & shrink" and not g.scale_enabled:
-            fontsize_expr = f"({g.size}*(1+0.22*sin(2*PI*clip((t-{_n(g.start)})/{_n(max(0.4,g.speed))},0,1)))"
-    else:
-        if while_ == "Grow":
-            fontsize_expr = f"({g.size}*(1+0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
-        elif while_ == "Shrink":
-            fontsize_expr = f"({g.size}*(1.35-0.35*clip((t-{_n(g.start)})/{_n(hold)},0,1)))"
-        elif while_ == "Grow & shrink":
-            fontsize_expr = f"({g.size}*(1+0.22*sin(2*PI*clip((t-{_n(g.start)})/{_n(max(0.4,g.speed))},0,1)))"
+    fontsize_expr = _dt_fontsize_expr(g, while_)
     if enter == "Fade" and while_ in ("", "None (static)") and exit_ == "Fade out" and not motion and not g.scale_enabled:
         fade_in = max(0.01, g.di)
         fade_out = max(0.01, g.do)
@@ -972,18 +1020,21 @@ def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_:
             f"if(lt(t,{_n(g.start)}),0,if(lt(t,{_n(g.start + fade_in)}),(t-{_n(g.start)})/{_n(fade_in)},"
             f"if(lt(t,{_n(g.end - fade_out)}),1,if(lt(t,{_n(g.end)}),({_n(g.end)}-t)/{_n(fade_out)},0))))"
         )
-        x_expr = f"(w-text_w)*{_n(g.cx / g.width)}"
-        y_expr = f"(h-text_h)*{_n(g.cy / g.height)}"
+        # Centre mode anchors the block's *centre* at the position (like the
+        # preview and libass); the plain mode anchors the box's top-left corner
+        # at the fraction of the remaining space (historic behaviour).
+        x_expr = f"w*{_n(g.cx / g.width)}" if g.centered else f"(w-text_w)*{_n(g.cx / g.width)}"
+        y_expr = f"h*{_n(g.cy / g.height)}" if g.centered else f"(h-text_h)*{_n(g.cy / g.height)}"
     else:
         alpha = _dt_alpha(g)
         dx, dy = _dt_offsets(g, enter, exit_, while_)
         if motion:
             x_pct, y_pct = motion
-            x_expr = f"(w-text_w)*{x_pct}/100{dx}"
-            y_expr = f"(h-text_h)*{y_pct}/100{dy}"
+            x_expr = f"w*{x_pct}/100{dx}" if g.centered else f"(w-text_w)*{x_pct}/100{dx}"
+            y_expr = f"h*{y_pct}/100{dy}" if g.centered else f"(h-text_h)*{y_pct}/100{dy}"
         else:
-            x_expr = f"(w-text_w)*{_n(g.cx / g.width)}{dx}"
-            y_expr = f"(h-text_h)*{_n(g.cy / g.height)}{dy}"
+            x_expr = f"w*{_n(g.cx / g.width)}{dx}" if g.centered else f"(w-text_w)*{_n(g.cx / g.width)}{dx}"
+            y_expr = f"h*{_n(g.cy / g.height)}{dy}" if g.centered else f"(h-text_h)*{_n(g.cy / g.height)}{dy}"
     # bouncy in-place (damped) — apply to y whether motion is on or not (uses motion y_expr's base)
     try:
         _bouncy_dt2 = _dt_bouncy_expr(g, while_)
@@ -995,6 +1046,27 @@ def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_:
     # commas, colons and apostrophes, and the expressions are full of commas
     # (``clip((t-0)/5,0,1)``). An unquoted comma ends the filter in the
     # graph parser and the rest of the expression is read as filter names.
+    if g.centered:
+        # One drawtext per line, each centred on the block anchor. A single
+        # multi-line drawtext box left-aligns its lines against each other;
+        # centre mode must render the ragged lines centred (as the preview and
+        # libass do). LINE_H keeps the stack in step with _text_bbox.
+        n = len(g.lines)
+        parts = []
+        for i, line in enumerate(g.lines):
+            x = f"({x_expr}-text_w/2)"
+            y = f"({y_expr}+({fontsize_expr}*{LINE_H})*{_n(i - n / 2)})"
+            parts.append(
+                f"drawtext=fontfile={quote_filter_value(font)}"
+                f":text={ff_escape_drawtext(line)}"
+                f":fontsize={quote_filter_value(fontsize_expr)}"
+                f":fontcolor=0x{g.colour[1:]}"
+                f":alpha={quote_filter_value(alpha)}"
+                f":x={quote_filter_value(x)}:y={quote_filter_value(y)}"
+                f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}"
+                f":enable={quote_filter_value(f'between(t,{_n(g.start)},{_n(g.end)})')}"
+            )
+        return ",".join(parts)
     return (
         f"drawtext=fontfile={quote_filter_value(font)}"
         f":text={ff_escape_drawtext(g.text)}"
@@ -1005,6 +1077,113 @@ def _drawtext_filter(g: TextGeometry, font: str, enter: str, exit_: str, while_:
         f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}"
         f":enable={quote_filter_value(f'between(t,{_n(g.start)},{_n(g.end)})')}"
     )
+
+# --------------------------------------------------------------------------
+# Engine 1b — transformed captions (rotate / squash) on a transparent layer
+# --------------------------------------------------------------------------
+# drawtext turns glyphs upright only. A caption that rotates or squashes is
+# therefore drawn on a transparent square layer (text centred on the layer),
+# the layer is scaled and rotated around its centre — which is the text
+# anchor — and the result is overlaid back onto the slide. The slide builder
+# wraps this in a -filter_complex graph; the plain -vf chain cannot express
+# a second source stream.
+
+@dataclass
+class LayeredText:
+    layer_size: int      # square side in px
+    chain: str           # filters between the colour source and [tx]
+    overlay_x: str       # overlay x expression (frame px)
+    overlay_y: str       # overlay y expression (frame px)
+
+def _layer_text_anchor_exprs(g: TextGeometry, est_w: float, est_h: float) -> tuple[str, str]:
+    """Frame-space expressions for the text anchor (the point the layer's
+    centre maps onto). Motion, when set, drives them; otherwise the static
+    position. Non-centred mode pivots on the estimated box centre so the MP4
+    turn matches the preview (the preview element centred on the position)."""
+    cx_pct = g.cx / g.width
+    cy_pct = g.cy / g.height
+    motion = _dt_motion_exprs(g)
+    if motion:
+        x_pct, y_pct = motion
+        if g.centered:
+            return f"W*({x_pct})/100", f"H*({y_pct})/100"
+        return (f"(W-{_n(est_w)})*({x_pct})/100+{_n(est_w / 2)}",
+                f"(H-{_n(est_h)})*({y_pct})/100+{_n(est_h / 2)}")
+    if g.centered:
+        return f"W*{_n(cx_pct)}", f"H*{_n(cy_pct)}"
+    return (f"(W-{_n(est_w)})*{_n(cx_pct)}+{_n(est_w / 2)}",
+            f"(H-{_n(est_h)})*{_n(cy_pct)}+{_n(est_h / 2)}")
+
+def _build_layered_text(g: TextGeometry, font: str, enter: str, exit_: str, while_: str, fps: int, duration: float) -> LayeredText:
+    hold = max(1e-6, g.end - g.start)
+    p = f"clip((t-{_n(g.start)})/{_n(hold)},0,1)"
+    # Text extent estimate (the same CHAR_W/LINE_H the ASS engine uses). The
+    # square must cover the text diagonal at its biggest axis factor so that
+    # no angle or squash can clip it; capped at twice the longer frame side.
+    longest = max((len(line) for line in g.lines), default=1)
+    est_w = longest * g.size * CHAR_W + g.size * 0.4
+    est_h = len(g.lines) * g.size * LINE_H
+    m = 1.0
+    if g.squish_enabled:
+        lo = min(g.squish_from, g.squish_to)
+        m = max(m, abs(g.squish_from), abs(g.squish_to), 1 + (1 - lo) * 0.5)
+    layer = int(math.ceil(2.2 * math.hypot(est_w, est_h) * m))
+    layer = max(64, min(layer, max(g.width, g.height) * 2))
+    if layer % 2:
+        layer += 1
+    chain: list[str] = []
+    f_expr = f"({_n(g.squish_from)}+({_n(g.squish_to - g.squish_from)})*{p})"
+    if g.squish_enabled:
+        # Squash the (still empty) layer first so drawtext rasterises at the
+        # final size; height follows the factor, width compensates slightly.
+        sx_expr = f"(1+(1-({f_expr}))*0.5)"
+        chain.append(
+            f"scale=w={quote_filter_value(f'({layer})*({sx_expr})')}:"
+            f"h={quote_filter_value(f'({layer})*({f_expr})')}:eval=frame"
+        )
+    # The text sits exactly on the layer centre — the rotation pivot.
+    alpha = _dt_alpha(g)
+    fontsize_expr = _dt_fontsize_expr(g, while_)
+    n = len(g.lines)
+    for i, line in enumerate(g.lines):
+        chain.append(
+            f"drawtext=fontfile={quote_filter_value(font)}"
+            f":text={ff_escape_drawtext(line)}"
+            f":fontsize={quote_filter_value(fontsize_expr)}"
+            f":fontcolor=0x{g.colour[1:]}"
+            f":alpha={quote_filter_value(alpha)}"
+            f":x={quote_filter_value('(w/2-text_w/2)')}"
+            f":y={quote_filter_value(f'(h/2+({fontsize_expr}*{LINE_H})*{_n(i - n / 2)})')}"
+            f":shadowcolor=black@0.55:shadowx=2:shadowy=2{_dt_outline(g)}"
+            f":enable={quote_filter_value(f'between(t,{_n(g.start)},{_n(g.end)})')}"
+        )
+    if g.rotate_enabled:
+        # Speed: seconds for the full from → to travel. Unset (0) keeps the
+        # historic whole-window pacing; shorter finishes early and holds,
+        # longer is still travelling when the caption leaves.
+        rot_span = g.rotate_speed if g.rotate_speed > 0.05 else hold
+        p_rot = f"clip((t-{_n(g.start)})/{_n(rot_span)},0,1)"
+        angle = f"(({_n(g.rotate_from)}+({_n(g.rotate_to - g.rotate_from)})*{p_rot})*PI/180)"
+        chain.append(f"rotate={quote_filter_value(angle)}:c=black@0.0")
+    # Anchor + the in-frame-space offsets (enter/exit slides, while drift,
+    # bouncy) belong on the overlay, not in the layer — a 30° tilt must not
+    # turn a "slide from left" into a diagonal slide. dx/dy arrive as
+    # "+(...)" (or empty); bouncy arrives as "(...)" and needs its own plus.
+    ax_expr, ay_expr = _layer_text_anchor_exprs(g, est_w, est_h)
+    dx, dy = _dt_offsets(g, enter, exit_, while_)
+    # Bouncy is a vertical in-place bounce (like the plain path), so it
+    # belongs on the Y overlay only.
+    bouncy = _dt_bouncy_expr(g, while_)
+    extra_x = dx or ""
+    extra_y = (dy or "") + (f"+{bouncy}" if bouncy else "")
+    if g.squish_enabled:
+        sx_expr = f"(1+(1-({f_expr}))*0.5)"
+        overlay_x = f"({ax_expr}){extra_x}-({layer})*({sx_expr})/2"
+        overlay_y = f"({ay_expr}){extra_y}-({layer})*({f_expr})/2"
+    else:
+        overlay_x = f"({ax_expr}){extra_x}-{layer}/2"
+        overlay_y = f"({ay_expr}){extra_y}-{layer}/2"
+    return LayeredText(layer_size=layer, chain=",".join(chain), overlay_x=overlay_x, overlay_y=overlay_y)
 
 def outline_width(g: TextGeometry) -> int:
     return max(1, round(g.size / 16)) if g.outline else 0
@@ -1478,6 +1657,9 @@ def _enter_tags(g: TextGeometry, effect: dict[str, Any]) -> tuple[str, str | Non
     di = ass_ms(g.di)
     tags = ""
     body: str | None = None
+    if enter_id == "none-enter":
+        # Caption is fully visible from the first frame of the event
+        return tags, body
     move_based_enters = {"slide-from-left", "slide-from-right", "slide-from-top", "slide-from-bottom", "rise-settle", "drop-bounce", "slide-overshoot"}
     if g.move_enabled and enter_id in move_based_enters:
         tags += f"\\fad({di},0)"
@@ -1549,6 +1731,9 @@ def _exit_tags(g: TextGeometry, effect: dict[str, Any]) -> str:
     span = int(round((g.end - g.start) * 1000))
     t0 = max(0, span - do)
     move_based_exits = {"slide-out-left", "slide-out-right", "slide-out-top", "slide-out-bottom", "sink-fade"}
+    if exit_id == "none-exit":
+        # Caption is visible to the very last frame; the event simply ends
+        return ""
     if g.move_enabled and exit_id in move_based_exits:
         return f"\\fad(0,{do})"
     if exit_id in ("fade-out", "none"):
@@ -1825,7 +2010,10 @@ def build_text_overlay(
     ass_path: Path | None,
     font_resolver: Callable[[str, bool, bool, Path], str] | None = None,
     force_ass: bool = False,
-) -> str | None:
+    layered_ok: bool = False,
+    layer_fps: int = 30,
+    layer_duration: float = 5.0,
+) -> str | LayeredText | None:
     plan = overlay_plan(item)
     if plan is None:
         return None
@@ -1837,7 +2025,24 @@ def build_text_overlay(
     if g.color_anim_enabled and ass_path is not None:
         engine = "ass"
         force_ass = True
-    if engine == "dt" and (not g.underline or ass_path is None) and not (force_ass and ass_path is not None):
+    dt_path = engine == "dt" and (not g.underline or ass_path is None) and not (force_ass and ass_path is not None)
+    if g.wants_transform() and not (dt_path and layered_ok):
+        # Rotate/squash ride the transparent-layer path; when that path is
+        # unavailable (libass plan, no drawtext, lasso cut-out, colour-change
+        # title) the caption keeps its position and colour and only the turn
+        # is dropped rather than the whole overlay.
+        log.warning("rotate/squash text needs the drawtext layer path — the turn is dropped for this slide")
+        g.rotate_enabled = False
+        g.squish_enabled = False
+    if g.wants_transform():
+        resolver = font_resolver or (lambda family, bold, italic, fonts: str(fonts))
+        font = resolver(g.family, g.bold, g.italic, Path(fonts_dir))
+        return _build_layered_text(
+            g, font,
+            str(plan.enter.get("label")), str(plan.exit_.get("label")), str(plan.while_.get("label")),
+            layer_fps, max(0.1, float(layer_duration)),
+        )
+    if dt_path:
         resolver = font_resolver or (lambda family, bold, italic, fonts: str(fonts))
         font = resolver(g.family, g.bold, g.italic, Path(fonts_dir))
         return _drawtext_filter(

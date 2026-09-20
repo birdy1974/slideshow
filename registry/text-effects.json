@@ -3,6 +3,15 @@
   "comment": "Single source of truth for the dynamic text-effect catalogue (see docs/text-effects-options.md, Option 1: drawtext expressions + libass). Consumed by backend/app/text_effects.py and src/textEffects.ts. slot = which of the three text animation rows the effect belongs to: enter | while | exit. engine = dt (animated drawtext expressions) | ass (per-clip .ass file rendered by libass) | none. label = UI name shown in pickers; NEVER rename a label (saved projects store it). symbol = cheap glyph for timeline chips. seconds = default duration for its slot. params = optional per-effect parameters with defaults.",
   "effects": [
     {
+      "id": "none-enter",
+      "label": "None",
+      "group": "—",
+      "slot": "enter",
+      "engine": "none",
+      "symbol": "∅",
+      "seconds": 0
+    },
+    {
       "id": "fade",
       "label": "Fade",
       "group": "Fades",
@@ -476,6 +485,15 @@
           "default": "0.35"
         }
       ]
+    },
+    {
+      "id": "none-exit",
+      "label": "None",
+      "group": "—",
+      "slot": "exit",
+      "engine": "none",
+      "symbol": "∅",
+      "seconds": 0
     },
     {
       "id": "fade-out",
