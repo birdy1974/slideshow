@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Eraser, Move, Pencil, Trash2, Play, Pause, Route, Circle, Waves, Zap, Star, Diamond, Triangle, GitBranch, Plus, Minus, ArrowUpDown } from 'lucide-react'
 import type { MediaItem } from './mediaItem'
+import { backdropBlurPx, useFrameScale } from './useFrameScale'
 
 type Point = [number, number]
 type PathType = 'straight' | 'freehand' | 'circle' | 'sine' | 'star' | 'diamond' | 'triangle' | 'polyline' | 'sine-vertical' | 'bounce'
@@ -13,6 +14,16 @@ function clampPct(v: number) {
 function dist(a: Point, b: Point) {
   const dx = a[0] - b[0], dy = a[1] - b[1]
   return Math.sqrt(dx*dx + dy*dy)
+}
+
+// The caption's font size arrives in frame pixels (the value the render's drawtext
+// uses, e.g. "48px" on a 1080p frame). Rescale it to this canvas so the moving
+// caption matches the size the picture will have in the final MP4.
+function scaleFrameFont(fontSize: string | number | undefined, frameScale: number): string | number | undefined {
+  if (fontSize == null || frameScale <= 0) return fontSize
+  const n = Number.parseFloat(String(fontSize))
+  if (!Number.isFinite(n) || n <= 0) return fontSize
+  return `${Math.max(4, n * frameScale)}px`
 }
 
 function pathLength(points: Point[]) {
@@ -351,6 +362,13 @@ type MotionEditorProps = {
   bounceHeight?: number
   bounceCount?: number
   bounceDamping?: number
+  // Rotate/squash preview: undefined pair = off. The moving caption tilts and
+  // squashes over the same loop as the path, around its own centre.
+  rotateFrom?: number
+  rotateTo?: number
+  rotateSpeed?: number
+  squishFrom?: number
+  squishTo?: number
   onChange: (patch: Partial<MediaItem>) => void
   src?: string
   isVideo?: boolean
@@ -378,6 +396,11 @@ export function TextMotionPathEditor({
   bounceHeight = 14,
   bounceCount = 4,
   bounceDamping = 0.35,
+  rotateFrom,
+  rotateTo,
+  rotateSpeed,
+  squishFrom,
+  squishTo,
   onChange,
   src,
   isVideo,
@@ -386,6 +409,10 @@ export function TextMotionPathEditor({
   captionStyle,
 }: MotionEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  // Scales frame-pixel font sizes (the value the render uses) onto this canvas.
+  // The canvas only exists while motion is enabled, so the scale ref must be a
+  // callback ref attached alongside the pointer-calculation ref.
+  const { setRef: motionScaleRef, scale: frameScale } = useFrameScale<HTMLDivElement>()
   const [drawing, setDrawing] = useState(false)
   const [drawPoints, setDrawPoints] = useState<Point[]>([])
   const [dragging, setDragging] = useState<null | 'from' | 'to' | number>(null)
@@ -415,6 +442,23 @@ export function TextMotionPathEditor({
 
   const easedProgress = useMemo(() => easeProgress(progress, curEasing), [progress, curEasing])
   const currentPos = useMemo(() => pointAlongPath(effectivePath, easedProgress), [effectivePath, easedProgress])
+  // Rotate/squash the moving caption over the same loop (linear, full window —
+  // the main canvas and the MP4 do the same; the path easing only shapes the
+  // position). Off (undefined) pairs leave the caption untouched.
+  const rotEn = rotateFrom !== undefined && rotateTo !== undefined
+  const sqEn = squishFrom !== undefined && squishTo !== undefined
+  const captionTransform = (rotEn || sqEn)
+    ? (() => {
+        // This canvas loops every 3 s, so that is its "window" for the speed
+        // math (the main canvas and the MP4 use the real text window).
+        const rotProg = rotEn && rotateSpeed && rotateSpeed > 0
+          ? Math.max(0, Math.min(1, (progress * 3) / rotateSpeed))
+          : progress
+        const angle = rotEn ? rotateFrom! + (rotateTo! - rotateFrom!) * rotProg : 0
+        const f = sqEn ? squishFrom! + (squishTo! - squishFrom!) * progress : 1
+        return `translate(-50%,-50%) rotate(${angle.toFixed(2)}deg) scale(${(1 + (1 - f) * 0.5).toFixed(3)}, ${f.toFixed(3)})`
+      })()
+    : undefined
 
   const pctFromEvent = (e: React.PointerEvent | PointerEvent) => {
     const rect = containerRef.current?.getBoundingClientRect()
@@ -692,7 +736,7 @@ export function TextMotionPathEditor({
 
 
       <div
-        ref={containerRef}
+        ref={node => { containerRef.current = node; motionScaleRef(node) }}
         className={`text-motion-canvas ${drawing?'drawing':''} ${dragging?'dragging':''} type-${curPathType}`}
         style={{ background: background || '#222' }}
         onPointerDown={handlePointerDown}
@@ -700,6 +744,7 @@ export function TextMotionPathEditor({
         onPointerUp={handlePointerUp}
         title={drawing ? 'Drawing path — drag to draw, release to finish' : curPathType==='freehand' ? 'Drag start/end handles or draw a freehand path' : 'Drag S/E handles — path preview updates'}
       >
+        {src && !isVideo && <div className="motion-bg-blur" style={{ backgroundImage: `url(${src})`, filter: `blur(${backdropBlurPx(frameScale).toFixed(1)}px) brightness(0.88) saturate(1.2)` }} />}
         {src && (isVideo
           ? <video src={src} muted playsInline autoPlay loop className="motion-bg" />
           : <img src={src} alt="" className="motion-bg" draggable={false} />)}
@@ -713,7 +758,7 @@ export function TextMotionPathEditor({
         <span className="motion-handle to" style={{ left:`${toX}%`, top:`${toY}%` }} title={`End ${Math.round(toX)}%, ${Math.round(toY)}%`}><b>E</b></span>
         {(curPathType === 'polyline' || (curPathType === 'freehand' && path && path.length>2)) && path && path.map((pt,i)=> i===0 || i===path.length-1 ? null : <span key={i} className="motion-handle waypoint" style={{ left:`${pt[0]}%`, top:`${pt[1]}%`, width:'16px', height:'16px', fontSize:'9px', background:'rgba(90,140,255,0.9)', border:'1px solid white' }} title={`Point ${i}: ${Math.round(pt[0])}%, ${Math.round(pt[1])}% — drag to move`}><b>{i}</b></span>)}
 
-        <span className="motion-caption" style={{ left:`${currentPos[0]}%`, top:`${currentPos[1]}%`, ...captionStyle }}>{caption}</span>
+        <span className="motion-caption" style={{ left:`${currentPos[0]}%`, top:`${currentPos[1]}%`, ...captionStyle, fontSize: scaleFrameFont(captionStyle.fontSize, frameScale), ...(captionTransform ? { transform: captionTransform } : {}) }}>{caption}</span>
 
         <em className="motion-hint">{drawing ? 'Drawing… release to set path' : curPathType==='polyline' ? `Polyline · ${path?.length ?? 2} points · click to insert · drag S/E/waypoints${sinusEnabled ? ' · sinus up/down' : ''}` : curPathType==='freehand' ? `Draw a path — S → E · drag waypoints to tweak${sinusEnabled ? ' · sinus up/down' : ''}` : `${curPathType} · ${curEasing}${sinusEnabled ? ' · sinus up/down' : ''} · drag S/E to adjust`}</em>
       </div>

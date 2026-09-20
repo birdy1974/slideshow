@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react'
 import {
   cropPaintPlan, normalizeCrop, normalizeRotation,
+  FULL_CROP, DEFAULT_FEATHER,
   type Cropish, type Intrinsic, type ResolvedCrop,
 } from './pictureCrop'
 
@@ -192,7 +193,10 @@ function paintFromVideo(src: string, crop: ResolvedCrop, rotation: number, tier:
 export function useCroppedSource(src: string, item?: Cropish | null, tier: CropTier = 'thumb', isVideo = false) {
   const crop = normalizeCrop(item)
   const rotation = normalizeRotation(item?.rotation)
-  const key = crop ? `${src}|r${rotation}|${JSON.stringify(crop)}` : ''
+  // A quarter turn alone (no crop rectangle) also earns a copy: CSS can turn
+  // the element, but not the box it sits in — and surfaces without a CSS
+  // fallback (the picture-text editor canvas) need the turned pixels.
+  const key = crop || rotation ? `${src}|r${rotation}|${crop ? JSON.stringify(crop) : 'full'}` : ''
   const [, refresh] = useState(0)
   useEffect(() => {
     if (!key) return
@@ -200,11 +204,11 @@ export function useCroppedSource(src: string, item?: Cropish | null, tier: CropT
     const unsubscribe = subscribe(workKey, () => refresh(value => value + 1))
     // Re-derived inside the effect so `item`'s changing identity (every render
     // creates a fresh object) cannot retrigger the work; `key` covers the crop.
-    const resolved = normalizeCrop(item)
-    if (resolved && !caches[tier].has(key)) void build(workKey, key, tier, src, resolved, rotation, isVideo)
+    const resolved: ResolvedCrop = crop ?? { rect: { ...FULL_CROP }, degrees: 0, lasso: null, feather: DEFAULT_FEATHER }
+    if (!caches[tier].has(key)) void build(workKey, key, tier, src, resolved, rotation, isVideo)
     return unsubscribe
   }, [key, tier, src, rotation, isVideo])  // eslint-disable-line react-hooks/exhaustive-deps
-  if (!key || !crop) return { src, cropped: false, ready: true, rotationApplied: false }
+  if (!key) return { src, cropped: false, ready: true, rotationApplied: false }
   const entry = caches[tier].get(key)
   // The copy already carries the quarter turn, so callers must not rotate twice.
   return { src: entry ? entry.url : src, cropped: true, ready: !!entry, rotationApplied: !!entry }

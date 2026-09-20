@@ -27,7 +27,7 @@ from .filter_values import quote_filter_value
 from .media import UnsafePath, mounted_path, source_path
 from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
 from .picture_filters import picture_look
-from .text_effects import build_text_overlay, normalize_text_window, overlay_plan, plan_engine
+from .text_effects import LayeredText, build_text_overlay, normalize_text_window, overlay_plan, plan_engine
 
 log = logging.getLogger(__name__)
 
@@ -1478,7 +1478,8 @@ class Renderer:
                     self._drawtext_supported = True
             return self._drawtext_supported
 
-    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None, lead_in: float = 0.0) -> str | None:
+    def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None, lead_in: float = 0.0,
+                     transform_blocked: bool = False, layer_fps: int = 30, layer_duration: float = 5.0) -> str | LayeredText | None:
         """Dispatch to the dual text-effect engine (backend/app/text_effects.py).
 
         ``textStart``/``textEnd`` are what the storyline handles set: seconds
@@ -1530,8 +1531,14 @@ class Renderer:
             log.error("FFmpeg build has neither 'drawtext' nor 'ass' — captions cannot be drawn")
             return None
         # No drawtext (stock builds): route everything through libass.
+        # Rotate/squash captions need the drawtext layer path: with drawtext
+        # missing, or when the slide's graph is already filter_complex
+        # (transform_blocked: lasso cut-out / colour-change title), the turn
+        # degrades inside build_text_overlay.
         return build_text_overlay(item, defaults, width, height, self.settings.fonts_dir, ass_path, font_file,
-                                  force_ass=has_ass and not has_drawtext)
+                                  force_ass=has_ass and not has_drawtext,
+                                  layered_ok=has_drawtext and not transform_blocked,
+                                  layer_fps=layer_fps, layer_duration=layer_duration)
 
     def render(self, project: dict[str, Any], kind: str, work: Path, cancelled: threading.Event, progress: Callable[[float,str],None]) -> Path:
         media = list(project.get("media", []))
@@ -1793,14 +1800,20 @@ class Renderer:
                 look = picture_look(item, width, height)
                 if look:
                     filters.append(look)
-            text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass", lead_in=lead_in)
-            if text_filter: filters.append(text_filter)
-            filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
+            # Graph shape of this slide is decided before the caption: a
+            # rotate/squash caption needs the plain chain plus a second
+            # (transparent colour-source) stream, which the lasso and
+            # colour-change graphs below cannot share.
             colour_change = frame_colour_change(item) if kind_name == "title" else None
+            cut_out = lasso_plan(crop)
+            text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass", lead_in=lead_in,
+                                            transform_blocked=cut_out is not None or colour_change is not None,
+                                            layer_fps=fps, layer_duration=duration)
+            if isinstance(text_filter, str) and text_filter: filters.append(text_filter)
+            filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
             # A lasso cut-out needs the mask as a second input, which -vf cannot
             # express: the hole is filled by compositing a blurred copy of the
             # same picture through the mask (see picture_crop.lasso_graph).
-            cut_out = lasso_plan(crop)
             if cut_out is not None:
                 mask_path = work / f"mask-{index:04d}.pgm"
                 mask_path.write_bytes(lasso_mask_pgm(cut_out["points"]))
@@ -1817,6 +1830,19 @@ class Renderer:
                     f"[0:v][1:v]xfade=transition={quote_xfade_value(self.resolve_xfade(colour_change['transition']))}"
                     f":duration={format_ffmpeg_number(colour_change['time'])}:offset={format_ffmpeg_number(offset)}[bg];"
                     f"[bg]{','.join(filters)}[v]"
+                )
+                command += ["-filter_complex", graph, "-map", "[v]"]
+            elif isinstance(text_filter, LayeredText):
+                # Rotate/squash caption: the text rides a transparent square
+                # layer, scaled and rotated around its centre (the text
+                # anchor), and overlaid back. The layer's own time base is
+                # normalised to match the base stream like every other chain.
+                layer = text_filter
+                graph = (
+                    f"[0:v]{','.join(filters)}[base];"
+                    f"color=c=black@0.0:s={layer.layer_size}x{layer.layer_size}:r={fps}:d={clip_t}"
+                    f",format=rgba,{layer.chain},settb=AVTB,setpts=PTS-STARTPTS[tx];"
+                    f"[base][tx]overlay=x={quote_filter_value(layer.overlay_x)}:y={quote_filter_value(layer.overlay_y)}[v]"
                 )
                 command += ["-filter_complex", graph, "-map", "[v]"]
             else:

@@ -74,6 +74,22 @@ export type MediaItem = {
   textScaleEnabled?: boolean;
   textScaleFrom?: number;
   textScaleTo?: number;
+  // Text rotation (tilt) animation over text window, degrees clockwise.
+  // The text turns around its own centre; 0 = flat. The MP4 draws the
+  // caption on a transparent layer and rotates it, so it works with any
+  // font size (drawtext itself cannot rotate glyphs).
+  textRotateEnabled?: boolean;
+  textRotateFrom?: number;
+  textRotateTo?: number;
+  // Seconds the tilt takes to travel from → to. Missing/0 = the whole text
+  // window (the default); shorter finishes early and holds, longer is still
+  // travelling when the caption leaves.
+  textRotateSpeed?: number;
+  // Text squash animation over text window. Factor 1 = normal, < 1 squashes
+  // flat and wide (height shrinks, width compensates), > 1 stretches tall.
+  textSquishEnabled?: boolean;
+  textSquishFrom?: number;
+  textSquishTo?: number;
   // Text colour transition from colour1 to colour2 over text window
   textColorAnimEnabled?: boolean;
   textColorFrom?: string;
@@ -84,6 +100,8 @@ export type MediaItem = {
   textBouncyBounces?: number;
   textBouncyDamping?: number;
   textBouncyFrequency?: number;
+  // Text frame: centre the whole text block on its position and centre every line on the others — at 50/50 the text sits in the middle of the frame
+  textCentered?: boolean;
   // Text frame: keep text steady (not moving) for X seconds at the end of the frame — movement finishes early and holds final position; total text window equals frame duration
   textSteadySeconds?: number;
 

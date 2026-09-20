@@ -293,7 +293,8 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
         <span className="chip-name text-effect-label">{value.replace(' (static)', '')}</span>
         <ChevronDown size={13} />
       </button>
-      {showSeconds && onSecondsChange && seconds !== undefined && <input
+      {/* "None" has no duration — hide the seconds field for it */}
+      {showSeconds && onSecondsChange && seconds !== undefined && value !== 'None' && <input
         type="number"
         className="text-effect-seconds"
         aria-label={slot === 'while' ? 'Effect loop period' : 'Effect duration'}

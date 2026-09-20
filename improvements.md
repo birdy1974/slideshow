@@ -10,6 +10,222 @@
 
 ---= DONE =---
 
+2026-09-20 — Text animation: "None" enter/exit (instant appear/vanish) + rotation Speed
+- **"None" for Enter and Exit** (edit picture text + text frame popups, and the
+  per-clip chips on the storyline list): the caption appears fully visible on
+  the first frame of its window / stays visible until the last frame — no fade,
+  no slide, no offset. The default stays Fade in / Fade out; items without the
+  field behave exactly as before. "None" is offered first in the picker under a
+  "—" group (symbol ∅) and the seconds field is hidden for it in the editor,
+  the chip and the timeline popover (there is no duration to set).
+  - registry/text-effects.json: `none-enter` / `none-exit` entries (engine
+    "none", 0 s) — single source of truth for the picker, symbols and the
+    backend, so the app and the MP4 renderer agree.
+  - Backend: "None" forces the enter/exit duration to 0 (the saved seconds are
+    ignored), the drawtext alpha expression collapses the ramp to a constant
+    (no divide-by-zero), the ASS path emits no \fad for that side, and the
+    quick preview's keyframes start/end at full opacity.
+  - backend text_effects: effect lookups are now keyed by (slot, label) — the
+    same label may exist in more than one slot (both enter and exit offer
+    "None"); a bare label key would have clobbered one slot's entry.
+- **Speed for the text rotation** (next to From/To in the same popups):
+  seconds the tilt takes to travel from → to. Unset = the whole text window
+  (the previous behaviour, shown as "…s · window"); shorter finishes early and
+  holds the final angle; longer is still turning when the caption leaves.
+  - Live canvas, motion-path editor caption (its 3 s loop is the window) and
+    the low-res stage preview all use the same pacing.
+  - MP4: the layered-text rotate expression uses clip((t−start)/speed, 0, 1)
+    instead of the whole-window progress, so the rendered tilt matches the
+    preview exactly (captions keep their textStart offset).
+- Verified: backend unit checks (di/do forced to 0, alpha expression safe, ASS
+  tags empty for None, rotate span per speed incl. caption offset, plan stays
+  on the drawtext engine), 17/17 headless UI checks across 3 runs (picker
+  order, chip symbol, seconds hidden, preview keyframes + runtime opacity,
+  speed slider default/label, canvas tilt finishing early and holding —
+  sampled in-page over whole loops), and a save→SQLite round trip of
+  enter/exit "None" + rotate speed through the real API.
+
+2026-09-19 — Text frame / picture text: rotate and squash the text while shown
+- New options in the Text animation block (Text frame editor and Edit picture
+  text share the same controls, next to Grow/shrink):
+  - **Rotate while shown** — the caption tilts from one angle to another
+    (−90°…90°, default −10° → 0°, i.e. "settle straight in") around its own
+    centre over the visible text window.
+  - **Squash while shown** — one factor from → to (0.2×…1.5×, default 0.5× →
+    1×): <1 goes flat & wide (height shrinks, width compensates by half the
+    deficit, like a stamp press), 1 is normal, >1 stretches tall.
+- The live canvas preview loops both over the hold (same window and steady-tail
+  handling as size/colour), the motion-path editor's moving caption tilts and
+  squashes along its path too, and the low-resolution stage preview applies
+  the same transform.
+- The MP4 renders it for real: drawtext cannot turn or squash glyphs, so a
+  caption with either transform is drawn on a transparent square layer (text
+  centred on the layer = the rotation pivot), the layer is scaled with
+  per-frame expressions (eval=frame) and rotated around its centre, then
+  overlaid back onto the slide at the text anchor — motion paths, enter/exit
+  slide offsets and the bouncy bounce all keep working and stay in frame
+  space (a tilted caption still slides horizontally). The layer size covers
+  the text diagonal at its largest axis factor so nothing clips.
+- Graceful degradation (caption keeps everything except the turn): libass
+  plans (underline, colour morph, ASS-only effects), FFmpeg builds without
+  drawtext, lasso cut-out slides and colour-change title slides (their graphs
+  are already filter_complex).
+- Verified headless: controls + live transform matrix on the canvas (rotate
+  and squash compose, values animate over the loop), slider updates, state
+  persisted through Save project → SQLite, and backend unit checks of the
+  generated layer graph (layer size, scale/rotate/drawtext chain, overlay
+  anchor expressions with and without motion, centred/non-centred, degraded
+  paths).
+
+2026-09-19 — Photo preview popup: rotate picture, as a first-class option next to Crop & Filters
+- The preview popup already turned photos (R / Shift+R and two small icons in
+  the header's far corner, applied via CSS or a crop-time canvas copy), but the
+  control was easy to miss and half the preview surfaces showed the un-turned
+  file. It is now a labelled **Rotate** button in the same row as Filters and
+  Crop: click = 90° clockwise, the little counter-clockwise button stays
+  beside it, and the button reads "Rotate · 90°/180°/270°" with the active
+  highlight while a turn is applied (plain "Rotate" at 0°).
+- useCroppedSource now also builds a canvas copy for *turn-only* photos (no
+  crop rectangle): an identity crop + quarter turn through the existing
+  cropPaintPlan geometry. Every surface that shows a rotated photo now uses
+  the same turned pixels instead of CSS-rotating an element box: the photo
+  text editor canvas (previously showed the un-turned file, and a CSS turn
+  cannot seat a portrait photo unclipped in the 16:9 canvas), the Preview
+  stage, thumbnails and the lightbox itself (which keeps its CSS-rotated
+  placeholder until the copy is ready, then swaps — with no double turn).
+- Removed the `transition: rotate .2s` on the lightbox photo: when the turned
+  copy arrived, the element animated 90°→0° and the picture visibly wobbled
+  for a couple of frames (verified by pixel-sampling screenshots).
+- The turn still reaches the render exactly as before (renderer.py applies
+  transpose before the crop rectangle and frame fit), and the crop editor
+  confirms it: for a turned photo the stage, the kept-pixel readout
+  (4000 × 2250) and the "in the slideshow frame" result all work in the
+  turned coordinates.
+- Verified headless: button row order (Filters · Crop · Rotate · ⟲), 90→180→270→0
+  cycling, R and Shift+R shortcuts, turned proxy in the lightbox and in the
+  picture-text editor canvas (straight to the pixel), crop popup regression
+  on a rotated photo, and picture-text editor without rotation unchanged.
+
+2026-09-19 — Text frame popup: new "Centre text in frame" option (multi-line)
+- Multi-line frame text did not look centred in the render: drawtext draws its
+  lines left-aligned against each other inside one box (only the libass path,
+  \an5\pos, centres the block and its lines), and the editor canvas even
+  collapsed the lines (white-space:nowrap) so the preview disagreed with both.
+- New "Centre text in frame" toggle in the text-frame editor (under the frame
+  text). When on, the whole block centres on its position and every line
+  centres on the others; at position 50 / 50 the text sits in the middle of
+  the frame. Off = the previous behaviour (single-line captions unaffected at
+  50/50 either way).
+- Renderer (text_effects.py): TextGeometry gains `centered` (item field
+  `textCentered`). In centred mode the drawtext path emits ONE drawtext per
+  line — each line x = anchor − text_w/2 (its own width), y = anchor +
+  (fontsize×1.3)×(i − n/2) — so ragged lines centre on the same point and the
+  line spacing follows the animated fontsize (grow/shrink) and stays in step
+  with the existing LINE_H estimate. The anchor is the block centre
+  (w×pct / h×pct), matching the preview and libass; slide/slide-out offsets,
+  motion paths, bouncy and scale all apply to the anchor, so everything else
+  keeps working. The libass path already centred correctly — no change there.
+  Image/video captions (and frames with the toggle off) are byte-identical to
+  before.
+- Previews now show the true line layout in both states: the editor canvas
+  frame caption is always pre-wrap (lines visible) with text-align left
+  (off) / center (on); line-height 1.3 in the editor canvas and lightbox
+  matches the renderer's LINE_H. The lightbox frame caption follows the
+  toggle too. Font sample shows the first line only.
+- Verified: backend unit checks (per-line filter shape, offsets −1.5/−0.5/+0.5
+  for 3 lines, motion/slide/bouncy/scale combinations, underline→ASS routing,
+  image path unchanged); headless UI (toggle switches canvas alignment live,
+  lightbox reflects the saved state, picture editor has no toggle and its
+  caption stays centred as before).
+
+2026-09-19 — Edit picture text / New text frame popups: combined into one editor
+- The two popups were separate components (PictureTextEditor in a light 2-column
+  modal, TextFrameEditor in a dark canvas-left/sidebar-right editor) with
+  overlapping but not identical controls. They are now ONE `TextEditor`
+  component in App.tsx with a `mode` prop ('picture' | 'frame'); the
+  frame editor's layout is the shared base (dark chrome, 1380px,
+  canvas left / controls right with the same Sidebar|Below layout toggle,
+  remembered in localStorage `textFrameLayout`).
+- What differs per mode, exactly as requested: the canvas background — a
+  photo (`contain` over the blurred backdrop, like the render) or a video
+  (`cover`, like the render) for pictures vs. the frame colour /
+  Colour A→B transition for text frames — plus the mode-specific control
+  groups. Picture mode: "Show text on this picture" toggle, caption outline,
+  caption timing (show for / start at). Frame mode: Colour A/B + transition.
+- All other controls are shared in one order: caption/Frame text, font family,
+  font size, text colour, formatting, text animation (enter / while shown /
+  exit), grow/shrink, colour change + swap, bouncy text, the full motion-path
+  editor (path shapes, speed, direction, loop, position readout), "Hold
+  steady at end" (previously picture-only), position readout and
+  Reset position (now also for pictures), info line and footer.
+- State semantics per mode: picture mode edits a local draft and assembles
+  one explicit patch on "Save picture text" (Escape/Cancel discards the
+  draft; "Caption hidden · settings kept" status as before). Frame mode
+  patches the item live (required for the stacked lightbox live preview) and
+  Cancel reverts from the captured original; a new frame is discarded on
+  Cancel.
+- The picture-mode canvas now runs the same animation loop as the frame
+  canvas: the caption animates along its motion path at true frame scale
+  (fontSize × boxHeight/1080, incl. grow/shrink and colour change) instead of
+  the old static mini-preview.
+- Fixed while combining: the old picture save() never persisted
+  textBouncyEnabled/textBouncyStrength/textSteadySeconds/textMoveBounce*/textMoveLoop
+  (they were in the draft but dropped from the patch) — saving now includes
+  the whole text-effect set.
+- Verified headless: picture mode draft→Save round-trip (timeline shows the
+  saved caption, reopening the editor restores it), Esc discards, Sidebar|Below
+  toggle, frame mode live caption + live Colour A/B, stacked editor live-
+  updating the lightbox behind it and reverting on Cancel.
+
+2026-09-19 — Edit picture text / New text frame popups: examples now reflect the final result
+- The picture-text and text-frame editor previews used `object-fit:cover` (cropped
+  picture) and fixed screen-pixel font sizes (`min(size, 120)`/`min(size, 22)`), so
+  the examples did not match the rendered MP4.
+- What the render actually does (renderer.py / text_effects.py): photos are never
+  cropped — `fit_frame_filter` shows the whole picture (force_original_aspect_ratio
+  = decrease) over a blurred, dimmed cover copy (gblur + eq=brightness=-0.12,
+  saturation=1.2); videos cover-crop to fill the frame; drawtext fontsize is in
+  *frame* pixels and textX/textY are percents of the 16:9 frame.
+- New src/useFrameScale.ts: callback-ref hook returning boxHeight/1080 (the
+  frame-px → preview-px ratio for any 16:9 stage) plus backdropBlurPx(), the CSS
+  blur equal to the renderer's effective gblur at the preview size.
+- Edit picture text popup (`.picture-text-preview`): photos now `contain` over a
+  blurred/dimmed cover backdrop (matching the render); videos stay `cover` (the
+  render cover-crops videos). The removed `.picture-text-preview-shade` gradient
+  does not exist in the final render. Caption font = fontSize × boxHeight/1080.
+- Text frame popup (`.frame-canvas`): caption font = fontSize × (grow/shrink scale)
+  × boxHeight/1080, so the title renders at the same size relative to the frame as
+  the MP4, in both sidebar and "below" layouts.
+- Motion path canvases (`.text-motion-canvas` in both popups): photos `contain`
+  over the blurred backdrop, and the moving caption's frame-pixel font size is
+  rescaled onto the canvas (the canvas only mounts when motion is enabled, which
+  is why useFrameScale is a callback ref, not a useRef effect).
+- Lightbox title-frame preview: caption font now frame-scaled too (was
+  min(fontSize, 120) screen px).
+- Verified in headless Chrome: portrait photo in the picture-text editor shows the
+  complete picture over the blurred backdrop; measured caption sizes match
+  fontSize × boxHeight/1080 exactly in all four preview boxes (e.g. 48px frame
+  font → 12.44px in the 280px editor preview, 16.44px in the 370px motion canvas,
+  28.44px in the 640px lightbox stage); video `cover` and the photo lightbox from
+  2026-09-19 unchanged.
+
+2026-09-19 — photo preview popup (lightbox) cropped portrait/square pictures
+- Bug: `.lightbox-stage` is a grid with an explicit height but no explicit row
+  template, so the implicit auto row was content-sized. The photo's
+  `max-height:100%` resolves against the grid area, which was indefinite, so the
+  browser ignored it — a portrait photo (e.g. 2250x4000) got a 958x1703 box in a
+  958x640 stage and the stage's `overflow:hidden` clipped the top and bottom.
+  Landscape only looked right by luck (its constrained width already produced a
+  shorter box).
+- Fix: `.lightbox-stage` gets `grid-template-rows:minmax(0,1fr)` so the row fills
+  the stage and the percentage max-height resolves against the real stage height.
+  Photos now fit aspect-preserved (whole picture visible) in every orientation.
+- Verified in headless Chrome: landscape/portrait/square at 0/90/180/270deg in a
+  1440x900 viewport plus a 390x844 phone viewport — all boxes fit the stage.
+  Videos, audio, and title frames don't use in-flow stage children (videos/audio
+  sit directly in `.lightbox-body`, title-frame caption and colour-change layer
+  are absolutely positioned), so they are unaffected.
+
 2026-09-16 — render stops on slide 1 with "No such filter: '0)'" (title frame)
 
 - Reproduced: a 225-slide render dies on the first title slide ("Oma's Verjaardag 2006").
