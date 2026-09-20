@@ -21,6 +21,13 @@ picker (`src/textEffects.ts`) and the renderer's engine
 (`backend/app/text_effects.py`) — so labels, glyphs and defaults can never
 drift. Saved projects store labels, never indexes; unknown labels degrade to
 the slot default exactly like unknown transition labels degrade to Fade.
+Labels are unique across **all three** slots — the GUI's symbol / seconds /
+param maps and the preview cache's filenames (`/api/text-effects/<slug>.mp4`)
+key on the bare label — so the "no animation" entries read `None` (enter),
+`None (static)` (while) and `None (hold)` (exit), displayed as plain "None"
+outside the picker list. A rename therefore needs both alias tables updated:
+`_LEGACY_LABELS` in `backend/app/text_effects.py` and `LEGACY_ALIAS` in
+`src/textEffects.ts`.
 
 ## The two render engines
 

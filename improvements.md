@@ -25,9 +25,19 @@
     ignored), the drawtext alpha expression collapses the ramp to a constant
     (no divide-by-zero), the ASS path emits no \fad for that side, and the
     quick preview's keyframes start/end at full opacity.
-  - backend text_effects: effect lookups are now keyed by (slot, label) — the
-    same label may exist in more than one slot (both enter and exit offer
-    "None"); a bare label key would have clobbered one slot's entry.
+  - Catalogue labels stay unique across all three slots — the GUI keys its
+    symbol / seconds / param maps by bare label and the preview cache names its
+    MP4s after a slug of it, so a repeated label collides (the exit slot's
+    preview was silently dropped) — hence "None" (enter) and **"None (hold)"**
+    (exit); chips, tiles and the quick preview display both as plain "None" and
+    hide the seconds field for either (`isStaticTextEffect`). Projects saved
+    with the old bare "None" on the exit side keep rendering untouched:
+    `_LEGACY_LABELS` in backend/app/text_effects.py and `LEGACY_ALIAS` in
+    src/textEffects.ts map it onto "None (hold)", and effect lookups are keyed
+    by (slot, label) so a label can never resolve to another slot's entry. The
+    instant-appear/vanish check now asks the resolved entry's engine ("none")
+    instead of comparing the raw label, and the registry test asserts unique
+    labels, ids *and* preview slugs.
 - **Speed for the text rotation** (next to From/To in the same popups):
   seconds the tilt takes to travel from → to. Unset = the whole text window
   (the previous behaviour, shown as "…s · window"); shorter finishes early and

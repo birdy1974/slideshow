@@ -6,8 +6,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
 import {
-  allTextEffects, textEffectGroupsFor, textEffectParams, textEffectPreviewUrl,
-  textEffectSlug, textEffectSymbol, type TextEffectSlot,
+  allTextEffects, isStaticTextEffect, textEffectDisplayName, textEffectGroupsFor,
+  textEffectParams, textEffectPreviewUrl, textEffectSlug, textEffectSymbol,
+  type TextEffectSlot,
 } from './textEffects'
 
 // ---------------------------------------------------------------------------
@@ -131,11 +132,11 @@ function EffectTile({
         onLoadedData={() => setLoaded(true)}
         onError={() => setBroken(true)}
       />}
-      {(!showVideo || !loaded) && <span className="effect-fallback"><i className="effect-fallback-text">{textEffectSymbol(label)} {label.replace(' (static)', '')}</i></span>}
+      {(!showVideo || !loaded) && <span className="effect-fallback"><i className="effect-fallback-text">{textEffectSymbol(label)} {textEffectDisplayName(label)}</i></span>}
       {showVideo && !loaded && <span className="tile-loading"><Loader2 size={12} className="spin" /></span>}
       {state === 'failed' && <span className="tile-flag failed" title={error || 'Example could not be rendered'}>failed</span>}
     </span>
-    <span className="tile-name"><i className="tile-symbol" aria-hidden>{textEffectSymbol(label)}</i>{label.replace(' (static)', '')}</span>
+    <span className="tile-name"><i className="tile-symbol" aria-hidden>{textEffectSymbol(label)}</i>{textEffectDisplayName(label)}</span>
   </div>
 }
 
@@ -290,11 +291,11 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
         onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) } }}
       >
         <i className="chip-symbol text-effect-symbol" aria-hidden>{textEffectSymbol(value)}</i>
-        <span className="chip-name text-effect-label">{value.replace(' (static)', '')}</span>
+        <span className="chip-name text-effect-label">{textEffectDisplayName(value)}</span>
         <ChevronDown size={13} />
       </button>
-      {/* "None" has no duration — hide the seconds field for it */}
-      {showSeconds && onSecondsChange && seconds !== undefined && value !== 'None' && <input
+      {/* The "None" effects have no duration — hide the seconds field for them */}
+      {showSeconds && onSecondsChange && seconds !== undefined && !isStaticTextEffect(value) && <input
         type="number"
         className="text-effect-seconds"
         aria-label={slot === 'while' ? 'Effect loop period' : 'Effect duration'}
@@ -337,7 +338,7 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
         <div className="browser-tabs">
           <button type="button" className="active" disabled>{slotTitle[slot]} <b>{total}</b></button>
           <i />
-          <span className="browser-current" title="Currently selected">Current: <b>{value.replace(' (static)', '')}</b></span>
+          <span className="browser-current" title="Currently selected">Current: <b>{textEffectDisplayName(value)}</b></span>
         </div>
 
         <div className="browser-body">

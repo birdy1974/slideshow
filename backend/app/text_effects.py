@@ -53,10 +53,21 @@ def text_effect_catalog() -> list[dict[str, Any]]:
 _CATALOG: list[dict[str, Any]] | None = None
 _BY_SLOT_LABEL: dict[tuple[str, str], dict[str, Any]] | None = None
 
+# Labels are unique across the whole catalogue — the GUI keys its symbol /
+# seconds / param maps by bare label and the preview cache names its MP4s after
+# a slug of it — so the three "no animation" entries each carry their own name:
+# "None" (enter), "None (static)" (while) and "None (hold)" (exit). Projects
+# saved while enter and exit were both called "None" keep rendering as they did
+# through this table.
+# Keyed by the lowercased old label, like the frontend's LEGACY_ALIAS regexes.
+_LEGACY_LABELS: dict[tuple[str, str], str] = {
+    ("exit", "none"): "None (hold)",
+    ("while", "none"): "None (static)",
+}
+
 def _by_label() -> dict[tuple[str, str], dict[str, Any]]:
-    # Keyed by (slot, label): the same label may exist in more than one slot
-    # (both enter and exit offer "None"), so a bare label key would clobber
-    # the other slot's entry.
+    # Keyed by (slot, label): a lookup must never pick up another slot's entry,
+    # even if the registry ever repeats a label.
     global _CATALOG, _BY_SLOT_LABEL
     if _BY_SLOT_LABEL is None:
         _CATALOG = text_effect_catalog()
@@ -64,11 +75,19 @@ def _by_label() -> dict[tuple[str, str], dict[str, Any]]:
     return _BY_SLOT_LABEL
 
 def effect_for(label: str | None, slot: str) -> dict[str, Any] | None:
+    index = _by_label()
     if label:
-        entry = _by_label().get((slot, str(label).strip()))
+        raw = str(label).strip()
+        entry = index.get((slot, raw)) or index.get((slot, _LEGACY_LABELS.get((slot, raw.lower()), "")))
         if entry:
             return entry
-    return _by_label().get((slot, {"enter": "Fade", "exit": "Fade out", "while": "None (static)"}[slot]))
+    return index.get((slot, {"enter": "Fade", "exit": "Fade out", "while": "None (static)"}[slot]))
+
+def is_static_effect(label: str | None, slot: str) -> bool:
+    """True for the "no animation" entries (engine ``none``): the caption is
+    simply there, so its side has no duration to ramp over."""
+    entry = effect_for(label, slot)
+    return str((entry or {}).get("engine", "")) == "none"
 
 def _n(value: float) -> str:
     text = f"{float(value):.6f}".rstrip("0").rstrip(".")
@@ -661,12 +680,12 @@ def _geometry(item: dict[str, Any], defaults: dict[str, Any], width: int, height
         return None
     start, end = normalize_text_window(item)
     hold = end - start
-    # "None" enter/exit = the caption appears / vanishes instantly: the
-    # duration fields would otherwise force a (possibly long) fade.
-    enter_label = str(item.get("textFxEnter") or item.get("textEnter") or "").strip()
-    exit_label = str(item.get("textFxExit") or item.get("textExit") or "").strip()
-    di = 0.0 if enter_label == "None" else _clamp(_num(item, "textEnterDuration", 0.5), 0.05, hold * 0.9)
-    do = 0.0 if exit_label == "None" else _clamp(_num(item, "textExitDuration", 0.5), 0.05, hold * 0.9)
+    # "None" enter/exit (engine "none") = the caption appears / vanishes
+    # instantly: the duration fields would otherwise force a (possibly long)
+    # fade. Resolved through the catalogue, so the legacy plain "None" on the
+    # exit side still counts as instant.
+    di = 0.0 if is_static_effect(item.get("textFxEnter") or item.get("textEnter"), "enter") else _clamp(_num(item, "textEnterDuration", 0.5), 0.05, hold * 0.9)
+    do = 0.0 if is_static_effect(item.get("textFxExit") or item.get("textExit"), "exit") else _clamp(_num(item, "textExitDuration", 0.5), 0.05, hold * 0.9)
     speed_default = 2.0 if item.get("type") == "title" else _num(defaults, "textFxWhileSpeed", 2.0)
     speed = _clamp(_num(item, "textFxWhileSpeed", speed_default), 0.4, 12.0)
     if item.get("type") == "title":
