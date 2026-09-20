@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.transition_previews import slugify
 from app.text_effects import (
     FxPlan,
     TextGeometry,
@@ -79,6 +80,16 @@ class CatalogTests(unittest.TestCase):
         labels = [entry["label"] for entry in text_effect_catalog()]
         self.assertEqual(len(labels), len(set(labels)))
 
+    def test_ids_and_preview_slugs_are_unique(self):
+        catalog = text_effect_catalog()
+        ids = [entry["id"] for entry in catalog]
+        self.assertEqual(len(ids), len(set(ids)))
+        # The GUI keys its symbol/seconds/param maps by bare label and names the
+        # cached example clips after a slug of it, so two labels that slugify the
+        # same would share one preview file (the exit slot's preview vanished).
+        slugs = [slugify(entry["label"]) for entry in catalog]
+        self.assertEqual(len(slugs), len(set(slugs)), [s for s in slugs if slugs.count(s) > 1])
+
     def test_known_and_unknown_labels(self):
         self.assertEqual(effect_for("Typewriter", "enter")["id"], "typewriter")
         # Unknown / wrong-slot labels degrade to the slot default.
@@ -87,6 +98,60 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(effect_for("Nope", "enter")["id"], "fade")
         self.assertEqual(effect_for("Nope", "while")["id"], "none")
         self.assertEqual(effect_for("Nope", "exit")["id"], "fade-out")
+
+
+class StaticNoneTests(unittest.TestCase):
+    """The three "no animation" entries — "None" (enter), "None (static)"
+    (while), "None (hold)" (exit). Labels have to be unique across the whole
+    catalogue, and projects saved while enter *and* exit were both called
+    "None" must keep rendering exactly as they did."""
+
+    def test_each_slot_resolves_its_own_none(self):
+        self.assertEqual(effect_for("None", "enter")["id"], "none-enter")
+        self.assertEqual(effect_for("None (static)", "while")["id"], "none")
+        self.assertEqual(effect_for("None (hold)", "exit")["id"], "none-exit")
+
+    def test_the_legacy_bare_none_still_resolves(self):
+        self.assertEqual(effect_for("None", "exit")["id"], "none-exit")
+        self.assertEqual(effect_for("None", "while")["id"], "none")
+        self.assertEqual(effect_for(" none ", "exit")["id"], "none-exit")
+        # "None" stays the enter entry, not an alias of something else.
+        self.assertEqual(effect_for("None", "enter")["id"], "none-enter")
+
+    def test_a_static_side_forces_its_duration_to_zero(self):
+        for label in ("None (hold)", "None"):
+            with self.subTest(label):
+                geometry = _geometry(title_item(textFxExit=label, textExitDuration=0.6), {}, 1920, 1080)
+                self.assertEqual(0.0, geometry.do)
+        geometry = _geometry(title_item(textFxEnter="None", textEnterDuration=0.8), {}, 1920, 1080)
+        self.assertEqual(0.0, geometry.di)
+        # A real effect keeps the saved seconds.
+        self.assertEqual(0.6, _geometry(title_item(textFxExit="Fade out", textExitDuration=0.6), {}, 1920, 1080).do)
+
+    def test_both_spellings_render_the_same_ass(self):
+        tmp = Path(tempfile.mkdtemp())
+        docs = []
+        for label in ("None (hold)", "None"):
+            path = tmp / "clip.ass"
+            overlay = build_text_overlay(
+                title_item(textFxEnter="Pop in", textFxExit=label), {}, 1280, 720, Path("/fonts"), path,
+            )
+            self.assertIsNotNone(overlay)
+            doc = path.read_text(encoding="utf-8")
+            self.assertNotIn("\\fad(0,", doc)  # nothing fades out
+            docs.append(doc)
+        self.assertEqual(docs[0], docs[1])
+
+    def test_both_spellings_render_the_same_drawtext(self):
+        overlays = [
+            build_text_overlay(title_item(textFxExit=label), {}, 1920, 1080, Path("/fonts"), None)
+            for label in ("None (hold)", "None")
+        ]
+        for overlay in overlays:
+            self.assertIsNotNone(overlay)
+            # The outgoing ramp collapsed to a constant: no divide-by-zero.
+            self.assertIn("if(lt(t,5),0,0)", overlay)
+        self.assertEqual(overlays[0], overlays[1])
 
 
 class HelperTests(unittest.TestCase):
