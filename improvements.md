@@ -1,4 +1,10 @@
-
+2026-09-23
+- check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
+- add / edit text frame: on popup window delete "Bouncy text" as this option is also available in the "Enable text motion path"
+- add / edit text frame: on popup window in case "Same as A" is disabled by user make custom color B the same as custom color A (for initialization, user can change it afterwards)
+- check https://jitter.video/templates/text/ and advise if we can integrate the text motion in the application
+- check [https://jitter.video/templates/text/](https://github.com/LeiQiaoZhi/Easy-Text-Effects-for-Unity) and advise if we can integrate the text motion in the application
+- check [https://jitter.video/templates/text/](https://prismic.io/blog/css-text-animations) and advise if we can integrate the text motion in the application
 
 
 
