@@ -30,6 +30,7 @@ from app.text_effects import (
     plan_engine,
     text_effect_catalog,
     _geometry,
+    _merge_fades,
 )
 
 
@@ -428,8 +429,10 @@ class NoDrawtextBuildTests(unittest.TestCase):
     def test_legacy_fades_route_through_libass_when_forced(self):
         overlay, doc = self.overlay(title_item())
         self.assertTrue(overlay.startswith("ass=filename="), overlay)
-        self.assertIn("\\fad(800,0)", doc)
-        self.assertIn("\\fad(0,600)", doc)
+        # libass honours only the first \\fad of an event, so the enter and the
+        # exit fade must arrive as ONE tag (two tags lost the fade-out).
+        self.assertIn("\\fad(800,600)", doc)
+        self.assertEqual(1, doc.count("\\fad("), doc)
 
     def test_without_force_the_drawtext_path_is_unchanged(self):
         overlay, _ = self.overlay(title_item(), force=False)
@@ -448,11 +451,217 @@ class NoDrawtextBuildTests(unittest.TestCase):
     def test_move_enter_keeps_only_the_fade_of_a_move_exit(self):
         _, doc = self.overlay(title_item(textFxEnter="Slide from left", textFxExit="Slide out right"))
         self.assertEqual(1, doc.count("\\move("), doc)
-        self.assertIn("\\fad(0,600)", doc)
+        # The exit's fade is kept on purpose, merged with the slide's own fade-in.
+        self.assertIn("\\fad(800,600)", doc)
+        self.assertEqual(1, doc.count("\\fad("), doc)
 
     def test_while_effects_compose_with_forced_ass(self):
         _, doc = self.overlay(title_item(textFxWhile="Gentle float"))
         self.assertIn("\\fscy103", doc)
+
+
+class FadeMergeTests(unittest.TestCase):
+    """libass applies only the FIRST \\fad of an event and ignores the rest.
+
+    The enter and exit builders each emit their own fade, so an event that got
+    both (the default Fade / Fade out with any libass While effect, a slide
+    enter with a degraded move exit, or every caption on an FFmpeg build
+    without drawtext) silently lost its exit fade: the text stayed fully
+    visible and popped off on the last frame. _ev() now merges them.
+    """
+
+    def doc(self, **overrides) -> str:
+        item = title_item(**overrides)
+        return build_ass_document(_geometry(item, {}, 1280, 720), overlay_plan(item))
+
+    def test_merge_keeps_the_longest_in_and_out_at_the_first_position(self):
+        self.assertEqual(_merge_fades("\\an5\\fad(800,0)\\blur2\\fad(0,600)"), "\\an5\\fad(800,600)\\blur2")
+        self.assertEqual(_merge_fades("\\fad(400,0)\\fad(900,0)\\fad(0,300)"), "\\fad(900,300)")
+
+    def test_blocks_without_a_second_fade_are_untouched(self):
+        for tags in ("\\an5\\pos(640,360)", "\\an5\\fad(800,0)\\blur2",
+                     # the 7-argument \\fade is a different tag and never merged
+                     "\\fade(255,0,255,0,100,200,300)\\fad(0,600)"):
+            with self.subTest(tags):
+                self.assertEqual(_merge_fades(tags), tags)
+
+    def test_exit_fade_survives_libass_while_effects(self):
+        for while_fx in ("Neon glow", "Pulse", "Wave", "Slow zoom", "Colour cycle"):
+            with self.subTest(while_fx):
+                doc = self.doc(textFxWhile=while_fx)
+                self.assertIn("\\fad(800,600)", doc)
+
+    def test_no_event_carries_two_fades_for_any_enter_exit_pair(self):
+        catalog = text_effect_catalog()
+        enters = [e["label"] for e in catalog if e["slot"] == "enter"]
+        exits = [e["label"] for e in catalog if e["slot"] == "exit"]
+        # static (plain libass path), a tag-based loop and a frame-sliced one
+        whiles = ("None (static)", "Neon glow", "Shake")
+        offenders = []
+        for enter in enters:
+            for exit_ in exits:
+                for while_fx in whiles:
+                    doc = self.doc(textFxEnter=enter, textFxWhile=while_fx, textFxExit=exit_)
+                    if any(line.count("\\fad(") > 1 for line in doc.splitlines() if line.startswith("Dialogue:")):
+                        offenders.append(f"{enter} + {while_fx} + {exit_}")
+        self.assertEqual([], offenders[:12], f"{len(offenders)} combinations still carry two \\fad tags")
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is not installed")
+    def test_libass_really_fades_the_text_out(self):
+        """Render with the real libass: near the end the caption must be dimmer."""
+        ffmpeg = str(shutil.which("ffmpeg"))
+        filters = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+        if not re.search(r"^\s*\S+\s+ass\s", filters, re.M):
+            self.skipTest("this FFmpeg build has no ass (libass) filter")
+        fonts = Path(__file__).resolve().parents[2] / "public" / "fonts"
+        work = Path(tempfile.mkdtemp())
+        ass = work / "fade.ass"
+        ass.write_text(self.doc(textFxWhile="Neon glow"), encoding="utf-8")
+
+        def mean_luma(at: float) -> float:
+            frame = subprocess.run(
+                [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "color=c=black:s=640x360:r=25:d=5",
+                 "-vf", f"ass=filename={ass}:fontsdir={fonts}", "-ss", str(at),
+                 "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                capture_output=True, timeout=120,
+            ).stdout
+            self.assertTrue(frame, "FFmpeg produced no frame")
+            return sum(frame) / len(frame)
+
+        held, fading = mean_luma(2.5), mean_luma(4.8)
+        self.assertGreater(held, 1.0, "the caption did not render at all")
+        # 0.2 s before the end of a 0.6 s fade-out the text is at ~1/3 opacity;
+        # with the ignored second \\fad it was still at 100 % here.
+        self.assertLess(fading, held * 0.6, (held, fading))
+
+
+class SlicedTimingTests(unittest.TestCase):
+    """Effects that cut the text window into consecutive events.
+
+    Typewriter + caret / Decrypted scramble (one event per step), Typewriter
+    delete / Scramble out (tail events) and motion paths (one event per path
+    segment). libass times \t, \move and \fad from each event's own start or
+    end, so tags written for the whole window must be re-timed per slice, and
+    an exit may only sit on the event that really runs to the end.
+    """
+
+    def events(self, **overrides) -> list[str]:
+        item = title_item(**overrides)
+        doc = build_ass_document(_geometry(item, {}, 1280, 720), overlay_plan(item))
+        return [line for line in doc.splitlines() if line.startswith("Dialogue:")]
+
+    def test_typing_steps_do_not_fade_out_before_the_end(self):
+        for enter in ("Typewriter + caret", "Decrypted scramble"):
+            with self.subTest(enter):
+                events = self.events(textFxEnter=enter, textFxExit="Fade out")
+                self.assertGreater(len(events), 3)
+                for line in events[:-1]:
+                    self.assertNotIn("\\fad(", line, "an early step must not carry the exit fade")
+                self.assertIn("\\fad(0,600)", events[-1])
+
+    def test_a_sliced_exit_does_not_fade_the_text_before_it(self):
+        for enter, fade in (("Fade", "\\fad(800,0)"), ("Pop in", None)):
+            with self.subTest(enter):
+                events = self.events(textFxEnter=enter, textFxExit="Typewriter delete")
+                body = events[0]
+                self.assertNotRegex(body, r"\\fad\(\d+,[1-9]\d*\)", "no fade-out before the delete")
+                if fade:
+                    self.assertIn(fade, body)
+                self.assertGreater(len(events), 3, "the delete steps are still there")
+
+    def test_loops_continue_across_typing_steps(self):
+        events = self.events(textFxEnter="Typewriter + caret", textFxWhile="Pulse")
+        first = re.search(r"\\t\((-?\d+),", events[0])
+        self.assertEqual("0", first.group(1))
+        for line in events[1:]:
+            start = cs(line.split(",")[1]) * 10          # ms since the window start (0)
+            match = re.search(r"\\t\((-?\d+),", line)
+            self.assertIsNotNone(match, line)
+            self.assertEqual(-start, int(match.group(1)), "the pulse continues, it does not restart")
+
+    def test_motion_path_loops_continue_across_segments(self):
+        events = self.events(textFxEnter="Fade", textFxWhile="Pulse", textFxExit="Fade out",
+                             textMoveEnabled=True, textMovePathType="circle",
+                             textMoveFromX=40, textMoveFromY=50, textMoveToX=60, textMoveToY=50)
+        self.assertGreater(len(events), 10)
+        restarting = [line for line in events if re.search(r"\\t\(0,\d+,\\fscx", line)]
+        self.assertEqual(1, len(restarting), "only the first segment starts the pulse at 0")
+
+    def test_the_exit_on_the_last_typing_step_is_retimed_to_that_step(self):
+        events = self.events(textFxEnter="Typewriter + caret", textFxExit="Pop out")
+        last = events[-1]
+        parts = last.split(",")
+        duration_ms = (cs(parts[2]) - cs(parts[1])) * 10
+        match = re.search(r"\\t\((-?\d+),(-?\d+),\\fscx0\\fscy0", last)
+        self.assertIsNotNone(match, last)
+        self.assertEqual(duration_ms, int(match.group(2)), "the pop-out ends with the event")
+        self.assertEqual(duration_ms - 600, int(match.group(1)))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is not installed")
+    def test_libass_renders_typing_at_full_strength_and_no_dip_before_a_delete(self):
+        ffmpeg = str(shutil.which("ffmpeg"))
+        filters = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+        if not re.search(r"^\s*\S+\s+ass\s", filters, re.M):
+            self.skipTest("this FFmpeg build has no ass (libass) filter")
+        fonts = Path(__file__).resolve().parents[2] / "public" / "fonts"
+        work = Path(tempfile.mkdtemp())
+
+        def luma(item: dict, at: float) -> float:
+            ass = work / "t.ass"
+            ass.write_text(build_ass_document(_geometry(item, {}, 640, 360), overlay_plan(item)), encoding="utf-8")
+            frame = subprocess.run(
+                [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "color=c=black:s=640x360:r=25:d=5",
+                 "-vf", f"ass=filename={ass}:fontsdir={fonts}", "-ss", str(at),
+                 "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                capture_output=True, timeout=120,
+            ).stdout
+            return sum(frame) / max(1, len(frame))
+
+        # Mid-typing (0.55 s, 7 of 10 letters) the typed text must be exactly as
+        # bright as with no exit at all: every step used to carry the 600 ms
+        # exit fade and sat between 13 % and 0 % opacity.
+        typing = dict(text="Dear diary", textFxEnter="Typewriter + caret")
+        self.assertGreater(luma(title_item(**typing, textFxExit="Fade out"), 0.55),
+                           0.9 * luma(title_item(**typing, textFxExit="None (hold)"), 0.55))
+        # Just before the delete starts (4.4 s) the text must still be at full
+        # strength; it used to fade to ~17 % and pop back to be deleted.
+        delete = title_item(text="Dear diary", textFxEnter="Wipe from left", textFxExit="Typewriter delete")
+        self.assertGreater(luma(delete, 4.3), 0.9 * luma(delete, 2.5))
+
+
+class HiddenLineTests(unittest.TestCase):
+    """Per-letter effects draw the whole line in every event (so libass lays
+    it out identically) with everything but one letter at alpha FF."""
+
+    @staticmethod
+    def visible_letters(text: str) -> str:
+        visible, out, i = True, [], 0
+        while i < len(text):
+            if text[i] == "{":
+                j = text.index("}", i)
+                alphas = re.findall(r"\\alpha&H([0-9A-F]{2})&", text[i + 1:j])
+                if alphas:                       # last one wins (a \t target included)
+                    visible = alphas[-1] != "FF"
+                i = j + 1
+            elif text.startswith("\\N", i):
+                i += 2
+            else:
+                if visible and text[i] != " ":
+                    out.append(text[i])
+                i += 1
+        return "".join(out)
+
+    def test_each_letter_event_shows_exactly_one_letter(self):
+        text = "Summer, slowly.\nTwo"
+        for enter in ("Split rise · chars", "Split from centre"):
+            with self.subTest(enter):
+                item = title_item(text=text, textFxEnter=enter)
+                doc = build_ass_document(_geometry(item, {}, 1280, 720), overlay_plan(item))
+                shown = [self.visible_letters(e["text"]) for e in parse_events(doc)]
+                self.assertTrue(all(len(s) == 1 for s in shown), shown)
+                self.assertEqual(sorted(text.replace(" ", "").replace("\n", "")), sorted("".join(shown)))
 
 
 class RendererIntegrationTests(unittest.TestCase):

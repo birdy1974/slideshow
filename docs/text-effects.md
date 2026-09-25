@@ -2,7 +2,11 @@
 
 Date: 2026-09-11 · Status: **implemented** (advice history in
 [text-effects-options.md](text-effects-options.md), catalogue of record in
-`registry/text-effects.json`)
+`registry/text-effects.json`). Next step proposed in
+[text-motion-references.md](text-motion-references.md) (2026-09-25): stackable
+effects (any number per slot, composed per channel), a GUI aligned with the
+transition browser, and 22 new effects from the Jitter / Prismic / GitHub
+references.
 
 Every text in the app — standalone title frames and captions on pictures — has
 three animation slots, saved with the project and rendered for real into the
@@ -78,7 +82,15 @@ render. No Dockerfile change was needed.
 ### Composition rules
 
 * Tag-based effects stack: enter tags + while tags + exit tags share one
-  override block (e.g. Pop in + Neon glow + Wipe out left).
+  override block (e.g. Pop in + Neon glow + Wipe out left). libass honours
+  only the first `\fad` of an event, so `_ev()` merges the enter and exit
+  fades into one `\fad(in,out)` (2026-09-25: before that the exit fade was
+  silently lost with any libass While effect).
+* Effects cut into consecutive events (typing steps, motion-path segments)
+  re-time the window-wide loop and exit tags per slice (`_shift_tag_times`),
+  so a Pulse keeps pulsing along a path; only the last typing step carries
+  the exit, and a sliced exit (Typewriter delete, Scramble out) is the only
+  exit: the text before it no longer fades out first (2026-09-25).
 * The frame-sliced "while" effects (Shake, Glitch flicker, Count up) own the
   whole timeline — they draw stepped enter/exit fades themselves, so the other
   two slots demote to fades.
@@ -89,7 +101,13 @@ render. No Dockerfile change was needed.
   cannot stack).
 * Multi-line text: `\N` between lines; per-character effects keep the layout
   by rendering the full text with exactly one visible unit (the hidden-line
-  trick), so everything stays centred with zero glyph measuring.
+  trick), so everything stays centred with zero glyph measuring. (Until
+  2026-09-25 the text after the visible unit was not hidden again, so Split
+  rise / Split from centre drew every remaining letter once per event.)
+* Known structural limits (one effect per slot, body conflicts such as
+  Typewriter + Wave, transforms only on the drawtext path) and the proposed
+  stack/compositor that removes them: see
+  [text-motion-references.md](text-motion-references.md) §4–§5.
 
 ## GUI
 

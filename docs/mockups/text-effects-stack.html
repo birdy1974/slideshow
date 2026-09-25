@@ -1,0 +1,1149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Text animation: stack editor (mock-up)</title>
+<!--
+  Working mock-up for docs/text-motion-references.md, not wired to the app.
+
+  * Stack editor: three lanes (Enter / While shown / Exit), any number of
+    layers per lane, each with its own unit (text, line, word, letter),
+    timing, order, intensity and parameters.
+  * Effect browser: the app's transition browser (same classes, same
+    anatomy: search, tabs, category rail, tiles, star, footer) with the two
+    tabs that are missing for text today (Recent, Presets) and badges for the
+    unit, approximations and conflicts. Hovering a tile previews it ON TOP of
+    the current stack; "Open full gallery" mirrors TransitionGallery.
+  * Live preview + mini timeline: rendered by text-motion-core.js, the
+    JavaScript twin of the Python compositor that produces the MP4
+    (docs/demo/check_twin_engines.py proves both give the same numbers).
+
+  Serve from the repository root so the fonts in public/fonts load:
+      python3 -m http.server 8000   ->  http://localhost:8000/docs/mockups/text-effects-stack.html
+-->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+/* Caption fonts: the same files libass renders with (public/fonts). */
+@font-face{font-family:'Montserrat';font-weight:700;src:url('../../public/fonts/Montserrat-Bold.ttf')}
+@font-face{font-family:'Anton';font-weight:400;src:url('../../public/fonts/Anton-Regular.ttf')}
+@font-face{font-family:'Bebas Neue';font-weight:400;src:url('../../public/fonts/BebasNeue-Regular.ttf')}
+@font-face{font-family:'Playfair Display';font-weight:700;src:url('../../public/fonts/PlayfairDisplay-Bold.ttf')}
+@font-face{font-family:'Caveat';font-weight:700;src:url('../../public/fonts/Caveat-Bold.ttf')}
+@font-face{font-family:'Oswald';font-weight:700;src:url('../../public/fonts/Oswald-Bold.ttf')}
+
+:root{font-family:'DM Sans',system-ui,sans-serif;color:#242622;background:#f2f1ed;--ink:#20231f;--muted:#74776f;--line:#deddd7;--cream:#f8f7f3;--lime:#c9ed6d;--green:#57782e;--orange:#e57945;--blue:#617f96;--amber:#b7791f}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh}
+button{font:inherit;cursor:pointer}
+input,select,textarea{font:inherit}
+
+/* ---------- page chrome ---------- */
+.topbar{height:52px;display:flex;align-items:center;gap:14px;padding:0 22px;background:#fbfbf9;border-bottom:1px solid var(--line)}
+.topbar b{font:800 15px Manrope;letter-spacing:-.2px}
+.topbar .tag{font:800 8px Manrope;letter-spacing:.8px;text-transform:uppercase;background:#efeafd;color:#5c47a8;border-radius:4px;padding:3px 6px}
+.topbar .hint{margin-left:auto;font-size:11px;color:var(--muted)}
+.layout{display:grid;grid-template-columns:minmax(430px,480px) minmax(0,1fr);gap:18px;padding:18px 22px;align-items:start}
+@media(max-width:1100px){.layout{grid-template-columns:1fr}.transition-browser{width:min(640px,96vw)}}
+.topbar a{font:700 11px Manrope;color:#3e5224;text-decoration:none;border:1px solid #cfd9bb;background:#eef3e4;border-radius:6px;padding:5px 9px}
+
+/* ---------- editor panel (the unified text editor popup) ---------- */
+.panel{background:#fbfbf9;border:1px solid #d7d8d1;border-radius:12px;box-shadow:0 8px 24px #1c1f1812}
+.panel>header{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #e7e7e2}
+.panel>header h2{margin:0;font:800 13px Manrope}
+.panel>header small{color:var(--muted);font-size:10px}
+.panel section{padding:12px 14px;border-bottom:1px solid #ecece7}
+.panel section:last-child{border-bottom:0}
+.sec-title{display:flex;align-items:center;gap:8px;margin:0 0 9px}
+.sec-title h3{margin:0;font:800 10px Manrope;letter-spacing:.9px;text-transform:uppercase;color:#5f635b}
+.sec-title .grow{flex:1}
+.row{display:flex;gap:8px;align-items:center}
+.field{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:600;color:#5f635b}
+.field input,.field select,.field textarea{height:30px;border:1px solid #d7d8d1;border-radius:6px;background:#fff;padding:0 8px;font-size:12px;color:#2c2f29}
+.field textarea{height:44px;padding:6px 8px;resize:vertical;line-height:1.3}
+.field input[type=color]{padding:2px;width:40px}
+.btn{height:28px;border:1px solid #d7d8d1;background:#fff;border-radius:6px;padding:0 10px;font:700 10px Manrope;color:#3b3e37;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{border-color:#b9bcb2}
+.btn.dark{background:#22251f;border-color:#22251f;color:#fff}
+.btn.dark b{color:var(--lime)}
+.btn.ghost{border-color:transparent;background:none}
+
+/* preset chip = transition-chip look */
+.transition-chip{height:30px;min-width:0;border:1px solid #d9dad4;background:#fff;border-radius:6px;display:flex;align-items:center;gap:7px;padding:0 8px;text-align:left;color:#2c2f29}
+.transition-chip:hover{border-color:#aeb2a6}
+.chip-symbol{width:19px;height:19px;flex:0 0 19px;border-radius:4px;background:#dfe7d3;color:#4e6531;display:grid;place-items:center;font:700 10px Manrope;font-style:normal}
+.chip-name{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip-kind{font:800 7px Manrope;letter-spacing:.6px;color:#5c47a8;background:#efeafd;border-radius:3px;padding:2px 4px;font-style:normal;flex:0 0 auto}
+
+/* ---------- lanes ---------- */
+.lanes{display:flex;flex-direction:column;gap:9px}
+.lane{border:1px solid #e1e2dc;border-radius:9px;background:#fff}
+.lane>header{display:flex;align-items:center;gap:8px;padding:7px 9px;border-bottom:1px solid #efefea}
+.lane>header strong{font:800 9px Manrope;letter-spacing:.9px;color:#4e5249}
+.lane>header .count{font:800 8px Manrope;color:#a3a79c}
+.lane>header .spanlbl{margin-left:auto;font:700 9px Manrope;color:#8b8e86}
+.lane .dot{width:8px;height:8px;border-radius:50%}
+.lane.in .dot{background:#8fbf4a}.lane.hold .dot{background:#617f96}.lane.out .dot{background:#e57945}
+.layer-list{display:flex;flex-direction:column}
+.layer{display:grid;grid-template-columns:14px 22px minmax(0,1fr) auto auto 26px 26px 26px;gap:5px;align-items:center;padding:5px 7px;border-top:1px solid #f1f1ec;background:#fff}
+.layer:first-child{border-top:0}
+.layer.dragging{opacity:.4}
+.layer.drop{box-shadow:inset 0 2px 0 #8fbf4a}
+.layer.muted .name,.layer.muted .chip-symbol{opacity:.4}
+.layer.lost{background:#fff8ec}
+.grip{cursor:grab;color:#b5b8ae;font-size:11px;text-align:center;user-select:none}
+.layer .name{border:0;background:none;padding:3px 4px;border-radius:5px;text-align:left;font-size:11px;font-weight:700;color:#2c2f29;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.layer .name:hover{background:#f1f3ec}
+.layer .name small{font-weight:600;color:#9a9d95;margin-left:4px}
+.unit-badge{font:800 8px Manrope;letter-spacing:.4px;color:#4e6531;background:#eef3e4;border:1px solid #dbe5c9;border-radius:4px;padding:2px 5px;white-space:nowrap}
+.time-badge{font:700 9px Manrope;color:#6b6f66;white-space:nowrap}
+.icon{width:24px;height:24px;border:0;background:none;border-radius:5px;display:grid;place-items:center;color:#80847b;font-size:12px}
+.icon:hover{background:#f0f1ec;color:#22251f}
+.icon.on{background:#22251f;color:#fff}
+.conflict{grid-column:3 / -1;font:700 9px Manrope;color:#9a5b12;background:#fff1d6;border:1px solid #f1d49d;border-radius:4px;padding:2px 6px;justify-self:start}
+.params{grid-column:1 / -1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding:8px 6px 4px 36px}
+.params .field input,.params .field select{height:26px;font-size:11px}
+.params .field input[type=range]{padding:0;height:26px}
+.lane-add{display:flex;gap:6px;padding:6px 8px;border-top:1px dashed #e6e7e1}
+.lane-add button{border:1px dashed #cfd2c7;background:#fafaf7;border-radius:6px;height:26px;padding:0 10px;font:700 10px Manrope;color:#5f635b}
+.lane-add button:hover{border-style:solid;border-color:#8fbf4a;color:#22251f}
+.empty-lane{padding:8px 10px;font-size:10px;color:#9a9d95}
+.warnings{display:flex;flex-direction:column;gap:5px;margin-top:9px}
+.warnings div{font-size:10px;color:#7a4b0e;background:#fff5e3;border:1px solid #f1d8a8;border-radius:6px;padding:6px 8px}
+details.model{margin-top:2px}
+details.model summary{cursor:pointer;font:800 10px Manrope;letter-spacing:.6px;color:#5f635b;text-transform:uppercase}
+details.model pre{margin:8px 0 0;max-height:220px;overflow:auto;background:#22251f;color:#e7ecd9;border-radius:8px;padding:10px;font:500 10.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ---------- preview ---------- */
+.preview{display:flex;flex-direction:column;gap:12px;min-width:0}
+.stage-wrap{background:#fbfbf9;border:1px solid #d7d8d1;border-radius:12px;padding:12px;box-shadow:0 8px 24px #1c1f1812}
+.stage{position:relative;width:100%;max-width:900px;aspect-ratio:16/9;margin:0 auto;border-radius:8px;overflow:hidden;
+  background:radial-gradient(120% 90% at 30% 20%,#4b6a57 0%,#26372f 45%,#141a17 100%);container-type:inline-size}
+.stage .photo{position:absolute;inset:0;background:
+  radial-gradient(40% 30% at 75% 70%,#e5794533,transparent 70%),
+  radial-gradient(30% 25% at 20% 80%,#c9ed6d22,transparent 70%),
+  linear-gradient(180deg,#0000 55%,#0008)}
+.scene{position:absolute;left:0;top:0;width:640px;height:360px;transform-origin:0 0}
+.scene .u{position:absolute;inset:0;pointer-events:none}
+.scene .g,.scene .clone{position:absolute;display:block;text-align:center;white-space:pre;transform-origin:50% 50%;will-change:transform,opacity}
+.scene .box{position:absolute;border-radius:3px}
+.scene .caret{position:absolute;white-space:pre;transform:translate(-50%,-50%)}
+.stage .candidate{position:absolute;left:10px;top:10px;font:800 9px Manrope;letter-spacing:.5px;color:#22251f;background:var(--lime);border-radius:4px;padding:3px 7px;display:none}
+.stage .candidate.show{display:block}
+.transport{display:flex;align-items:center;gap:10px;margin-top:10px}
+.transport .time{font:700 11px Manrope;color:#5f635b;min-width:92px}
+.transport input[type=range]{flex:1}
+
+/* ---------- mini timeline ---------- */
+.timeline{position:relative;margin-top:10px;border:1px solid #e1e2dc;border-radius:9px;background:#fff;padding:6px 10px 8px 92px;user-select:none}
+.tl-ruler{position:relative;height:16px;border-bottom:1px solid #ececE6;cursor:pointer}
+.tl-ruler span{position:absolute;top:1px;font:700 8px Manrope;color:#a3a79c;transform:translateX(-50%)}
+.tl-lane{position:relative;height:22px;border-bottom:1px dashed #f0f0eb}
+.tl-lane:last-child{border-bottom:0}
+.tl-lane>label{position:absolute;left:-84px;top:5px;font:800 8px Manrope;letter-spacing:.7px;color:#6b6f66;width:78px}
+.tl-bar{position:absolute;top:3px;height:16px;border-radius:4px;font:700 8px/16px Manrope;color:#fff;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
+.tl-bar.in{background:#8fbf4a}.tl-bar.hold{background:#7d97aa}.tl-bar.out{background:#e57945}
+.tl-bar.muted{opacity:.35}
+.tl-bar .handle{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize;background:#0002}
+.tl-bar .handle.r{right:0}.tl-bar .handle.l{left:0}
+.tl-bar.stack2{top:12px;height:9px;font-size:0}
+.tl-playhead{position:absolute;top:0;bottom:0;width:2px;background:#22251f;pointer-events:none}
+.tl-note{font-size:9px;color:#9a9d95;margin-top:6px}
+
+/* ---------- storyline chip ---------- */
+.storyline{display:flex;gap:10px;align-items:stretch;background:#fbfbf9;border:1px solid #d7d8d1;border-radius:12px;padding:10px 12px}
+.storyline .clip{width:150px;border:1px solid #d9dad4;border-radius:8px;background:#fff;overflow:hidden}
+.storyline .thumb{height:70px;background:radial-gradient(120% 90% at 30% 20%,#4b6a57,#1a231f);display:grid;place-items:center;color:#fff;font:800 13px Manrope}
+.storyline .chips{display:flex;gap:4px;padding:6px}
+.storyline .chips .transition-chip{height:26px;flex:1}
+.storyline .explain{font-size:11px;color:#5f635b;line-height:1.45;align-self:center}
+.storyline .explain b{color:#22251f}
+
+/* ---------- effect browser (same anatomy as the transition browser) ---------- */
+.transition-browser{position:fixed;z-index:60;display:flex;flex-direction:column;background:#fbfbf9;border:1px solid #c9cbc3;border-radius:11px;box-shadow:0 18px 48px #1c1f1833,0 2px 6px #1c1f181a;overflow:hidden;width:640px;height:470px}
+.transition-browser[hidden]{display:none}
+.transition-browser>header{display:flex;align-items:center;gap:8px;padding:10px 11px;border-bottom:1px solid #e7e7e2;background:#f5f5f1}
+.transition-browser>header .mode{font:800 9px Manrope;letter-spacing:.6px;color:#5f635b;text-transform:uppercase;white-space:nowrap}
+.browser-search{flex:1;display:flex;align-items:center;gap:7px;height:31px;border:1px solid #d7d8d1;background:#fff;border-radius:6px;padding:0 8px}
+.browser-search input{flex:1;min-width:0;border:0;outline:0;font-size:12px;background:none}
+.browser-search span{color:#9a9d95;font-size:12px}
+.browser-close{border:0;background:none;color:#80847b;font-size:16px;width:26px;height:26px;border-radius:5px}
+.browser-close:hover{background:#ebece6}
+.browser-tabs{display:flex;align-items:center;gap:5px;padding:8px 11px;border-bottom:1px solid #e7e7e2;background:#fbfbf9;flex-wrap:wrap}
+.browser-tabs button{height:26px;border:1px solid #dedfd9;background:#fff;border-radius:20px;padding:0 11px;display:inline-flex;align-items:center;gap:5px;font:600 10px Manrope;color:#5f635b}
+.browser-tabs button b{font:800 9px Manrope;color:#9a9d95}
+.browser-tabs button:hover{border-color:#c3c6bd}
+.browser-tabs button.active{background:#22251f;border-color:#22251f;color:#fff}
+.browser-tabs button.active b{color:#c9ed6d}
+.browser-tabs button:disabled{opacity:.35;cursor:not-allowed}
+.browser-body{flex:1;min-height:0;display:grid;grid-template-columns:150px minmax(0,1fr)}
+.browser-groups{border-right:1px solid #e7e7e2;overflow-y:auto;padding:7px 7px 10px;background:#f6f6f2}
+.browser-groups button{width:100%;border:0;background:none;text-align:left;padding:5px 7px;border-radius:5px;font-size:10px;font-weight:600;color:#5f635b;display:flex;align-items:center;gap:6px}
+.browser-groups button b{margin-left:auto;font:800 8px Manrope;color:#a8aca3}
+.browser-groups button:hover{background:#eceee6}
+.browser-groups button.active{background:#dfe9ca;color:#3e5224}
+.browser-grid{height:100%;overflow-y:auto;padding:10px 12px 16px}
+.browser-grid section{margin:0 0 6px}
+.browser-grid section>strong{display:block;font:700 8px Manrope;letter-spacing:1px;color:#8b8e86;text-transform:uppercase;margin:6px 0 6px 2px}
+.tile-row{display:flex;flex-wrap:wrap;gap:8px}
+.browser-empty{padding:30px;text-align:center;color:#9a9d95;font-size:11px}
+.transition-tile{width:132px;cursor:pointer;border-radius:7px;padding:0;border:2px solid transparent;background:none;outline:0;position:relative}
+.transition-tile .tile-stage{position:relative;display:block;width:100%;aspect-ratio:16/9;border-radius:6px;overflow:hidden;background:#20231f;border:1px solid #d7d8d1}
+.transition-tile:hover .tile-stage{border-color:#9aa173}
+.transition-tile.active .tile-stage{border-color:#22251f;box-shadow:0 0 0 2px #c9ed6d}
+.transition-tile.dim{opacity:.45}
+.tile-name{display:block;margin-top:4px;font-size:9px;font-weight:600;color:#5f635b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;line-height:1.25}
+.tile-symbol{display:inline-block;margin-right:4px;font-style:normal;color:#8a8f7c}
+.tile-star{position:absolute;top:3px;right:3px;z-index:3;width:19px;height:19px;border:0;border-radius:4px;background:#00000059;color:#ffffffb0;display:grid;place-items:center;opacity:0;transition:opacity .12s;font-size:11px}
+.transition-tile:hover .tile-star,.tile-star.on{opacity:1}
+.tile-star:hover{background:#000000a6;color:#ffd35c}
+.tile-star.on{color:#ffd35c}
+.tile-unit{position:absolute;top:3px;left:3px;z-index:3;font:800 7px Manrope;letter-spacing:.4px;color:#e9f3d6;background:#2d3a1ccc;border-radius:3px;padding:2px 4px}
+.tile-flag{position:absolute;z-index:3;bottom:3px;left:3px;padding:1px 4px;border-radius:3px;background:#5b4a1fe6;color:#ffe6b0;font:700 7px Manrope;letter-spacing:.4px;max-width:92%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile-flag.approx{left:auto;right:3px;background:#3c3f37e6;color:#e8eadf}
+.tile-scene{position:absolute;left:0;top:0;width:640px;height:360px;transform-origin:0 0;pointer-events:none}
+.browser-foot{display:flex;align-items:center;gap:10px;padding:8px 11px;border-top:1px solid #e7e7e2;background:#f5f5f1;font-size:10px;color:#6b6f66}
+.browser-foot .grow{flex:1}
+.browser-foot label{display:flex;align-items:center;gap:5px}
+
+/* ---------- full gallery (mirrors TransitionGallery) ---------- */
+.modal-backdrop{position:fixed;inset:0;background:#30322d99;backdrop-filter:blur(3px);z-index:70;display:grid;place-items:center;padding:24px}
+.modal-backdrop[hidden]{display:none}
+.gallery{width:min(1180px,96vw);height:min(760px,92vh);background:#fafaf7;border-radius:14px;box-shadow:0 22px 60px #15161255;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);overflow:hidden}
+.gallery>header{grid-column:1 / -1;display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #e7e7e2;background:#f5f5f1}
+.gallery>header h2{margin:0;font:800 14px Manrope}
+.gallery .g-left{display:flex;flex-direction:column;gap:10px;padding:14px;border-right:1px solid #e7e7e2;min-height:0}
+.gallery .g-left .stage{max-width:none}
+.gallery .details{background:#fff;border:1px solid #e1e2dc;border-radius:9px;padding:10px 12px;font-size:11px;color:#4e5249;line-height:1.5;overflow:auto}
+.gallery .details h4{margin:0 0 4px;font:800 13px Manrope;color:#22251f}
+.gallery .details .meta{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
+.gallery .details .meta span{font:700 8px Manrope;letter-spacing:.4px;background:#f0f1ec;border-radius:3px;padding:2px 6px;color:#5f635b}
+.gallery .g-right{display:flex;flex-direction:column;min-height:0}
+.gallery .g-right .transition-browser{position:static;width:auto;height:auto;flex:1;border:0;border-radius:0;box-shadow:none}
+.gallery .g-right .transition-browser>header{display:none}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <b>Slideshow</b><span class="tag">Mock-up</span>
+  <span style="font-size:12px;color:#5f635b">Text editor → Text animation: stackable effects (proposal)</span>
+  <span class="hint">Live preview uses the same engine as the render prototype · effects: <span id="fx-count">–</span></span>
+  <a href="../demo/text-motion-stack-demo.mp4" target="_blank" rel="noopener">▶ Rendered demo (libass MP4)</a>
+</div>
+
+<div class="layout">
+  <!-- ======================= editor ======================= -->
+  <div class="panel" id="editor">
+    <header><h2>Edit text</h2><small>title card · 4.0 s</small></header>
+    <section>
+      <div class="sec-title"><h3>Text</h3></div>
+      <div class="field"><textarea id="text-input"></textarea></div>
+      <div class="row" style="margin-top:8px">
+        <label class="field" style="flex:1">Font<select id="font-input"></select></label>
+        <label class="field" style="width:120px">Size<input id="size-input" type="range" min="28" max="120"></label>
+        <label class="field">Colour<input id="colour-input" type="color"></label>
+      </div>
+    </section>
+    <section>
+      <div class="sec-title">
+        <h3>Text animation</h3><span class="grow"></span>
+        <button class="transition-chip" id="preset-chip" title="Presets = saved stacks"><i class="chip-symbol">★</i><span class="chip-name" id="preset-name">Custom stack</span><i class="chip-kind">PRESET</i></button>
+        <button class="btn" id="save-preset" title="Save the current stack as a preset">Save</button>
+      </div>
+      <div class="lanes" id="lanes"></div>
+      <div class="warnings" id="warnings"></div>
+    </section>
+    <section>
+      <details class="model"><summary>Data model (saved in the project)</summary><pre id="model"></pre></details>
+    </section>
+  </div>
+
+  <!-- ======================= preview ======================= -->
+  <div class="preview">
+    <div class="stage-wrap">
+      <div class="stage" id="stage"><div class="photo"></div><div class="candidate" id="candidate-flag"></div></div>
+      <div class="transport">
+        <button class="btn dark" id="play">❚❚ Pause</button>
+        <input type="range" id="scrub" min="0" max="1000" value="0">
+        <span class="time" id="time">0.00 / 4.00 s</span>
+      </div>
+      <div class="timeline" id="timeline"></div>
+      <div class="tl-note">Drag a bar's inner edge to change its duration. Loops (While shown) run for the whole window and keep running during Enter and Exit.</div>
+    </div>
+    <div class="storyline">
+      <div class="clip"><div class="thumb">Title card</div><div class="chips" id="story-chips"></div></div>
+      <div class="explain"><b>Storyline / detailed list:</b> the Enter and Exit chips keep their size. They show the first layer's symbol plus <b>+N</b> for the rest of that lane, and the tooltip lists the whole stack. <b>Randomize</b> picks curated presets instead of single effects, so random stacks always look intentional.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= effect browser popover ======================= -->
+<div class="transition-browser text-effect-browser" id="browser" hidden></div>
+
+<!-- ======================= full gallery ======================= -->
+<div class="modal-backdrop" id="gallery" hidden>
+  <div class="gallery">
+    <header><h2>Text effects gallery</h2><span style="font-size:11px;color:#6b6f66" id="g-mode"></span><span style="flex:1"></span><button class="browser-close" id="g-close">✕</button></header>
+    <div class="g-left">
+      <div class="stage" id="g-stage"><div class="photo"></div><div class="candidate" id="g-candidate"></div></div>
+      <div class="details" id="g-details"></div>
+    </div>
+    <div class="g-right" id="g-right"></div>
+  </div>
+</div>
+
+<script src="text-motion-core.js"></script>
+<!-- Snapshot of docs/demo/text-motion-effects.json, used when the page is opened
+     from disk (file:// cannot fetch). When served, the live file is fetched.
+     Re-sync: python3 docs/demo/check_twin_engines.py --sync-mockup -->
+<script type="application/json" id="effects-snapshot">{"$comment":["Prototype of a declarative text-effect registry (registry v2) for docs/text-motion-references.md.","Every effect is data, not code: per-channel keyframe tracks over the effect's local time u in [0,1].","The SAME file is interpreted by two engines: text_motion_stack.py (Python -> libass/ASS for the MP4)","and the JavaScript twin in docs/mockups/text-effects-stack.html (live preview). That is what keeps","preview and render identical and what makes effects stackable: channels are composed, not overwritten.","","phase    in | hold | out           (lane in the GUI: Enter / While shown / Exit)","unit     char | word | line | text (what one animated 'piece' is; users may override per layer)","duration seconds per unit (in/out) or loop period (hold)","stagger  seconds between units (in/out) or phase offset between units (hold)","order    forward | reverse | center | edges | random","loop     hold only: loop | pingpong | once (once = stretched over the whole text window)","tracks   channel -> [[u, value, easing?], ...] or a generator {sine|noise|flicker|path}","         values: number | '#rrggbb' | 'base' (colour below this layer) | {'rand':[a,b]} per unit","channels opacity, scale, sx, sy, fill (multiply) | x, y, blur, spacing, line (em, add) |","         rz, rx, ry (degrees, add) | skew (shear, add) | glow, depth, rgb, orbit (max) |","         colour (folded in stack order) | clip [l,t,r,b] of the unit box (intersected, only while the effect runs)","copies   extra drawn copies: glow | trail | extrude | mirror | rgb | shadow | box","content  at most ONE per phase: scramble | flap | count | countdown  (exclusive channel)","caret    typewriter caret that follows the last visible letter"],"effects":[{"id":"fade-in","label":"Fade","phase":"in","category":"Fade & blur","unit":"text","duration":0.6,"source":"App (existing)","tracks":{"opacity":[[0,0],[1,1,"outQuad"]]}},{"id":"blur-in","label":"Blur in","phase":"in","category":"Fade & blur","unit":"text","duration":0.8,"source":"App (existing) · Prismic 'melting blur'","tracks":{"opacity":[[0,0],[1,1,"outQuad"]],"blur":[[0,0.22],[1,0,"outCubic"]]}},{"id":"rise-in","label":"Rise in","phase":"in","category":"Slide & rise","unit":"text","duration":0.7,"source":"App (existing: Rise & settle, simplified)","tracks":{"opacity":[[0,0],[0.6,1]],"y":[[0,0.7],[1,0,"outCubic"]]}},{"id":"slide-in-left","label":"Slide from left","phase":"in","category":"Slide & rise","unit":"text","duration":0.6,"source":"App (existing)","tracks":{"opacity":[[0,0],[0.5,1]],"x":[[0,-2.6],[1,0,"outCubic"]]}},{"id":"pop-in","label":"Pop in","phase":"in","category":"Zoom & pop","unit":"text","duration":0.6,"source":"App (existing) · Animate.css bounceIn","tracks":{"opacity":[[0,0],[0.3,1]],"scale":[[0,0.2],[0.62,1.14,"outCubic"],[1,1,"inOutSine"]]}},{"id":"zoom-down-in","label":"Zoom down","phase":"in","category":"Zoom & pop","unit":"text","duration":0.7,"source":"App (existing)","tracks":{"opacity":[[0,0],[0.5,1]],"scale":[[0,2.6],[1,1,"outCubic"]],"blur":[[0,0.15],[1,0]]}},{"id":"typewriter","label":"Typewriter","phase":"in","category":"Type & code","unit":"char","duration":0.01,"stagger":0.07,"source":"App (existing) · TypeIt","tracks":{"opacity":[[0,0],[1,1]]}},{"id":"typewriter-caret","label":"Typewriter + caret","phase":"in","category":"Type & code","unit":"char","duration":0.01,"stagger":0.07,"source":"App (existing) · TypeIt / Prismic typewriter","tracks":{"opacity":[[0,0],[1,1]]},"caret":{"char":"|","blink":1.0}},{"id":"scramble-in","label":"Decrypt scramble","phase":"in","category":"Type & code","unit":"char","duration":0.7,"stagger":0.04,"source":"App (existing) · use-scramble / Jitter 'Text Scramble'","tracks":{"opacity":[[0,0],[0.01,1]],"colour":[[0,"#8cf5c4"],[1,"base","inQuad"]]},"content":{"type":"scramble","rate":18,"charset":"ABCDEFGHJKLMNPQRSTUVWXYZ0123456789#%&*+"}},{"id":"split-rise","label":"Split rise · letters","phase":"in","category":"Letters & words","unit":"char","duration":0.5,"stagger":0.04,"source":"App (existing) · motion.dev splitText + stagger","tracks":{"opacity":[[0,0],[0.5,1]],"y":[[0,0.6],[1,0,"outBack"]]}},{"id":"blurry-spin","label":"Blurry spin","phase":"in","category":"3D & flip","unit":"word","duration":0.9,"stagger":0.14,"source":"Jitter · Blurry Text Spin","tracks":{"opacity":[[0,0],[0.5,1]],"blur":[[0,0.3],[1,0,"outCubic"]],"ry":[[0,-90],[1,0,"outCubic"]],"scale":[[0,0.6],[1,1,"outCubic"]]}},{"id":"sliding-reveal","label":"Sliding reveal","phase":"in","category":"Mask & wipe","unit":"line","duration":0.75,"stagger":0.12,"source":"Jitter · Sliding Text Reveal","tracks":{"y":[[0,1.1],[1,0,"outQuart"]],"clip":[[0,[-0.05,0,1.05,1]],[1,[-0.05,0,1.05,1]]]}},{"id":"snappy-stretch","label":"Snappy stretch","phase":"in","category":"Letters & words","unit":"char","duration":0.55,"stagger":0.035,"source":"Jitter · Snappy Text Stretch","tracks":{"opacity":[[0,0],[0.15,1]],"sx":[[0,3.0],[0.55,0.82,"outCubic"],[1,1,"inOutSine"]],"sy":[[0,0.35],[0.55,1.12,"outCubic"],[1,1,"inOutSine"]]}},{"id":"tracking-in","label":"Tracking in","phase":"in","category":"Letters & words","unit":"text","duration":0.9,"source":"Animista · tracking-in-expand (via Prismic)","tracks":{"opacity":[[0,0],[0.6,1]],"spacing":[[0,-0.45],[1,0,"outCubic"]],"blur":[[0,0.08],[1,0]]}},{"id":"flip-3d","label":"3D flip · letters","phase":"in","category":"3D & flip","unit":"char","duration":0.6,"stagger":0.05,"source":"Prismic · 3D text spin / Animista flip-in","tracks":{"opacity":[[0,0],[0.35,1]],"rx":[[0,-95],[1,0,"outBack"]]}},{"id":"cascade-drop","label":"Cascade drop","phase":"in","category":"Letters & words","unit":"char","duration":0.8,"stagger":0.045,"order":"center","source":"Jitter · Cascading Text / motion.dev stagger({from:'center'})","tracks":{"opacity":[[0,0],[0.15,1]],"y":[[0,-1.5],[1,0,"outBounce"]]}},{"id":"departures-flap","label":"Departures board","phase":"in","category":"Type & code","unit":"char","duration":0.9,"stagger":0.05,"source":"Jitter · Departures Board","tracks":{"opacity":[[0,0],[0.01,1]]},"content":{"type":"flap","flips":9,"charset":"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"},"copies":[{"type":"box","colour":"#20242e","split":"#0b0d12","pad":[0.07,0.05]}]},{"id":"glitch-reveal","label":"Glitch reveal","phase":"in","category":"Glitch & retro","unit":"char","duration":0.55,"stagger":0.025,"order":"random","source":"Jitter · Glitchy Text Reveal","tracks":{"opacity":{"flicker":{"rate":18,"on":0.35,"low":0,"ramp":"up"}},"x":{"noise":{"amp":0.08,"rate":16},"env":[[0,1],[1,0]]},"rgb":[[0,1],[1,0,"inQuad"]]},"copies":[{"type":"rgb","dx":0.06,"colours":["#ff2a6d","#05d9e8"]}]},{"id":"type-trail","label":"Type trail","phase":"in","category":"Depth & copies","unit":"text","duration":0.9,"source":"Jitter · Type Trail","tracks":{"opacity":[[0,0],[0.2,1]],"x":[[0,-2.2],[1,0,"outCubic"]],"scale":[[0,0.55],[1,1,"outBack"]],"rz":[[0,-12],[1,0,"outBack"]]},"copies":[{"type":"trail","count":5,"delay":0.05,"alpha":0.5,"colour":"#8f73ff"}]},{"id":"extrude-in","label":"Text extrusion","phase":"in","category":"Depth & copies","unit":"text","duration":1.0,"source":"Jitter · Text Extrusion / Prismic 3D glowing text","tracks":{"opacity":[[0,0],[0.2,1]],"depth":[[0,0],[1,1,"outCubic"]],"y":[[0,0.3],[1,0,"outCubic"]]},"copies":[{"type":"extrude","count":10,"dx":0.012,"dy":0.014,"colour":"#6a4de0","shade":0.6}]},{"id":"outline-draw","label":"Outline → fill","phase":"in","category":"Light & colour","unit":"char","duration":0.9,"stagger":0.07,"source":"Prismic · variable-font draw-in (approximation) / tegaki handwriting","tracks":{"opacity":[[0,0],[0.05,1]],"line":[[0,0.035],[0.6,0.035],[1,0]],"fill":[[0,0],[0.45,0],[1,1,"inOutSine"]]}},{"id":"flicker-in","label":"Flicker in","phase":"in","category":"Light & colour","unit":"text","duration":0.9,"source":"App (existing) · Prismic neon","tracks":{"opacity":{"flicker":{"rate":16,"on":0.3,"low":0.08,"ramp":"up"}}}},{"id":"wipe-in","label":"Wipe from left","phase":"in","category":"Mask & wipe","unit":"text","duration":0.7,"source":"App (existing)","tracks":{"clip":[[0,[0,-0.3,0,1.3]],[1,[0,-0.3,1.02,1.3],"inOutCubic"]]}},{"id":"drop-bounce","label":"Drop & bounce · words","phase":"in","category":"Slide & rise","unit":"word","duration":0.8,"stagger":0.12,"source":"Jitter · Bouncy Words","tracks":{"opacity":[[0,0],[0.1,1]],"y":[[0,-1.8],[1,0,"outBounce"]]}},{"id":"tilted-snap","label":"Tilted snap","phase":"in","category":"Zoom & pop","unit":"word","duration":0.6,"stagger":0.1,"source":"Jitter · Tilted Text Snap","tracks":{"opacity":[[0,0],[0.2,1]],"rz":[[0,-28],[0.6,6,"outCubic"],[1,0,"inOutSine"]],"sx":[[0,1.4],[0.6,0.95],[1,1]],"y":[[0,0.5],[0.6,-0.05],[1,0]]}},{"id":"elastic-in","label":"Elastic letters","phase":"in","category":"Letters & words","unit":"char","duration":0.9,"stagger":0.04,"source":"Jitter · Elastic Text","tracks":{"opacity":[[0,0],[0.1,1]],"sy":[[0,0.05],[1,1,"outElastic"]],"sx":[[0,1.6],[1,1,"outElastic"]]}},{"id":"pulse","label":"Pulse","phase":"hold","category":"Zoom & pop","unit":"text","duration":2.0,"loop":"loop","source":"App (existing) · Prismic heartbeat","tracks":{"scale":[[0,1],[0.5,1.1,"inOutSine"],[1,1,"inOutSine"]]}},{"id":"wave","label":"Wave","phase":"hold","category":"Letters & words","unit":"char","duration":1.4,"stagger":0.09,"loop":"loop","source":"App (existing) · Prismic wavy text","tracks":{"y":{"sine":{"amp":0.16}}}},{"id":"float","label":"Gentle float","phase":"hold","category":"Motion","unit":"text","duration":3.0,"loop":"loop","source":"App (existing)","tracks":{"y":{"sine":{"amp":0.07}}}},{"id":"slow-zoom","label":"Slow zoom","phase":"hold","category":"Zoom & pop","unit":"text","loop":"once","source":"App (existing)","tracks":{"scale":[[0,1],[1,1.08]]}},{"id":"tilt","label":"Tilt (rotate)","phase":"hold","category":"Motion","unit":"text","loop":"once","source":"App (existing rotate toggle)","tracks":{"rz":[[0,-10],[1,10]]}},{"id":"shake","label":"Shake","phase":"hold","category":"Glitch & retro","unit":"text","duration":1.0,"loop":"loop","source":"App (existing)","tracks":{"x":{"noise":{"amp":0.035,"rate":22}},"y":{"noise":{"amp":0.035,"rate":22,"seed":7}}}},{"id":"shimmer","label":"Shimmer","phase":"hold","category":"Light & colour","unit":"char","duration":2.2,"stagger":0.06,"loop":"loop","source":"App (existing) · Prismic shadow paint","tracks":{"colour":[[0,"base"],[0.1,"#ffffff","inOutSine"],[0.22,"base","inOutSine"],[1,"base"]]}},{"id":"neon-glow","label":"Neon glow","phase":"hold","category":"Light & colour","unit":"text","duration":1.8,"loop":"loop","source":"App (existing) · Prismic neon / city lights","params":{"colour":"#ff3fd1"},"tracks":{"glow":[[0,0.7],[0.5,1,"inOutSine"],[1,0.7,"inOutSine"]]},"copies":[{"type":"glow","colour":"$colour","bord":0.07,"blur":0.16}]},{"id":"rainbow-wave","label":"Rainbow wave","phase":"hold","category":"Light & colour","unit":"char","duration":2.4,"stagger":0.08,"loop":"loop","source":"Prismic · rainbow / gradient text (per-letter approximation)","tracks":{"colour":[[0,"#ff5f6d"],[0.25,"#ffc371"],[0.5,"#47e891"],[0.75,"#4fa3ff"],[1,"#ff5f6d"]]}},{"id":"breathe","label":"Breathe (weight)","phase":"hold","category":"Light & colour","unit":"text","duration":2.4,"loop":"loop","source":"Prismic · variable-font breathe (approximation: outline in the fill colour)","tracks":{"line":[[0,0],[0.5,0.03,"inOutSine"],[1,0,"inOutSine"]],"spacing":[[0,0],[0.5,0.02,"inOutSine"],[1,0,"inOutSine"]]}},{"id":"dancing-shadow","label":"Dancing shadow","phase":"hold","category":"Depth & copies","unit":"text","duration":2.0,"loop":"loop","source":"Prismic · dancing shadow","tracks":{"orbit":[[0,0],[1,1]]},"copies":[{"type":"shadow","radius":0.06,"colours":["#ff4f8b","#3fd0ff"]}]},{"id":"mirror","label":"Mirror reflection","phase":"hold","category":"Depth & copies","unit":"text","loop":"once","source":"Jitter · Text Mirror Effect","tracks":{},"copies":[{"type":"mirror","gap":0.06,"alpha":0.3,"blur":0.03}]},{"id":"rgb-split","label":"CRT / RGB split","phase":"hold","category":"Glitch & retro","unit":"text","duration":1.0,"loop":"loop","source":"Jitter · CRT Effect / Prismic glitch","tracks":{"rgb":{"noise":{"amp":0.5,"rate":7},"base":0.55},"opacity":{"flicker":{"rate":11,"on":0.9,"low":0.72}},"skew":{"noise":{"amp":0.05,"rate":5,"seed":3}}},"copies":[{"type":"rgb","dx":0.035,"colours":["#ff2a6d","#05d9e8"]}]},{"id":"motion-path","label":"Motion path","phase":"hold","category":"Motion","unit":"text","loop":"once","source":"App (existing motion path editor)","params":{"points":[[40,50],[60,50]]},"tracks":{"path":{"path":{}}}},{"id":"count-up","label":"Count up","phase":"hold","category":"Numbers & words","unit":"text","loop":"once","source":"App (existing) · Jitter Counter","params":{"from":0,"to":2026,"prefix":"","suffix":"","separator":""},"tracks":{},"content":{"type":"count","easing":"outCubic"}},{"id":"countdown","label":"Countdown","phase":"hold","category":"Numbers & words","unit":"text","loop":"once","source":"Jitter · Countdown","params":{"from":3},"tracks":{},"content":{"type":"countdown"}},{"id":"fade-out","label":"Fade out","phase":"out","category":"Fade & blur","unit":"text","duration":0.6,"source":"App (existing)","tracks":{"opacity":[[0,1],[1,0,"inQuad"]]}},{"id":"blur-out","label":"Blur out","phase":"out","category":"Fade & blur","unit":"text","duration":0.7,"source":"App (existing)","tracks":{"opacity":[[0,1],[1,0]],"blur":[[0,0],[1,0.22,"inCubic"]]}},{"id":"sink-out","label":"Sink & fade","phase":"out","category":"Slide & rise","unit":"text","duration":0.6,"source":"App (existing)","tracks":{"opacity":[[0,1],[1,0]],"y":[[0,0],[1,0.5,"inCubic"]]}},{"id":"pop-out","label":"Pop out","phase":"out","category":"Zoom & pop","unit":"text","duration":0.5,"source":"App (existing)","tracks":{"scale":[[0,1],[0.35,1.12,"outQuad"],[1,0,"inBack"]],"opacity":[[0,1],[0.6,1],[1,0]]}},{"id":"delete","label":"Typewriter delete","phase":"out","category":"Type & code","unit":"char","duration":0.01,"stagger":0.05,"order":"reverse","source":"App (existing) · TypeIt delete","tracks":{"opacity":[[0,1],[1,0]]},"caret":{"char":"|","blink":1.0}},{"id":"split-out","label":"Split out · letters","phase":"out","category":"Letters & words","unit":"char","duration":0.45,"stagger":0.03,"source":"App (existing)","tracks":{"opacity":[[0,1],[1,0]],"y":[[0,0],[1,-0.6,"inCubic"]]}},{"id":"wipe-out","label":"Wipe out right","phase":"out","category":"Mask & wipe","unit":"text","duration":0.6,"source":"App (existing)","tracks":{"clip":[[0,[-0.02,-0.3,1.02,1.3]],[1,[1.02,-0.3,1.02,1.3],"inOutCubic"]]}},{"id":"flicker-out","label":"Flicker out","phase":"out","category":"Light & colour","unit":"text","duration":0.8,"source":"New · mirror of the app's Flicker in (Prismic neon)","tracks":{"opacity":{"flicker":{"rate":16,"on":0.8,"low":0,"ramp":"down"}}}},{"id":"mask-out","label":"Slide out of mask","phase":"out","category":"Mask & wipe","unit":"line","duration":0.6,"stagger":0.1,"source":"Jitter · Sliding Text Reveal (reverse)","tracks":{"y":[[0,0],[1,-1.1,"inQuart"]],"clip":[[0,[-0.05,0,1.05,1]],[1,[-0.05,0,1.05,1]]]}},{"id":"letter-burst","label":"Letter burst","phase":"out","category":"Letters & words","unit":"char","duration":0.9,"stagger":0.012,"order":"random","source":"Prismic · letter burst","tracks":{"x":[[0,0],[1,{"rand":[-3.2,3.2]},"outCubic"]],"y":[[0,0],[1,{"rand":[-2.6,1.4]},"outCubic"]],"rz":[[0,0],[1,{"rand":[-160,160]},"outCubic"]],"scale":[[0,1],[1,{"rand":[0.4,1.6]}]],"opacity":[[0,1],[0.55,1],[1,0]]}},{"id":"zoom-out","label":"Zoom out & blur","phase":"out","category":"Zoom & pop","unit":"text","duration":0.7,"source":"New · mirror of the app's Zoom down (Animate.css zoomOut)","tracks":{"scale":[[0,1],[1,2.2,"inCubic"]],"opacity":[[0,1],[1,0,"inQuad"]],"blur":[[0,0],[1,0.2]]}}]}</script>
+<script>
+'use strict'
+const TM = window.TextMotion
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const PHASES = [
+  { id: 'in', label: 'Enter', tab: 'Enter' },
+  { id: 'hold', label: 'While shown', tab: 'While shown' },
+  { id: 'out', label: 'Exit', tab: 'Exit' }
+]
+const UNIT_LABEL = { text: 'Text', line: 'Line', word: 'Word', char: 'Letter' }
+const UNIT_SHORT = { text: 'T', line: 'LN', word: 'W', char: 'CH' }
+const SYMBOL = {
+  'Fade & blur': '◐', 'Slide & rise': '↗', 'Zoom & pop': '⊕', 'Letters & words': 'Aa', 'Type & code': 'T|',
+  '3D & flip': '⟲', 'Mask & wipe': '▤', 'Light & colour': '✦', 'Glitch & retro': '▚', 'Depth & copies': '❏',
+  'Numbers & words': '#', 'Motion': '∿'
+}
+const FONTS = [
+  { family: 'Montserrat', weight: 700 }, { family: 'Anton', weight: 400 }, { family: 'Bebas Neue', weight: 400 },
+  { family: 'Playfair Display', weight: 700 }, { family: 'Caveat', weight: 700 }, { family: 'Oswald', weight: 700 }
+]
+const STAGE_W = 640, STAGE_H = 360, FPS = 25
+
+// Curated presets = saved stacks (the same ones the demo MP4 renders).
+const PRESETS = [
+  { name: 'Kinetic pop', text: "Let's go!", font: 'Anton', size: 84, colour: '#ffe45e', stack: [
+    { effect: 'pop-in', unit: 'char', stagger: 0.05 }, { effect: 'wave' }, { effect: 'pop-out', unit: 'char', stagger: 0.03, order: 'reverse' }] },
+  { name: 'Cinematic title', text: 'THE LAST\nSUMMER', font: 'Playfair Display', size: 60, colour: '#ffffff', stack: [
+    { effect: 'tracking-in', duration: 1.8 }, { effect: 'blur-in', unit: 'char', stagger: 0.04, order: 'center' }, { effect: 'slow-zoom' }, { effect: 'fade-out', duration: 0.8 }] },
+  { name: 'Neon sign', text: 'OPEN LATE', font: 'Montserrat', size: 62, colour: '#ffe6fa', stack: [
+    { effect: 'flicker-in' }, { effect: 'neon-glow' }, { effect: 'flicker-out' }] },
+  { name: 'Memo typewriter', text: 'Dear diary,\nday one.', font: 'Caveat', size: 64, colour: '#f5e9c9', stack: [
+    { effect: 'typewriter-caret', stagger: 0.08 }, { effect: 'delete', stagger: 0.045 }] },
+  { name: 'Headline slam', text: 'BREAKING', font: 'Bebas Neue', size: 104, colour: '#ffffff', stack: [
+    { effect: 'drop-bounce', unit: 'char', stagger: 0.04, order: 'center', intensity: 0.7 }, { effect: 'shake', intensity: 0.5 }, { effect: 'rgb-split' }, { effect: 'wipe-out' }] },
+  { name: 'Lower third', text: 'Anna & Tom\nAmsterdam · 2026', font: 'Montserrat', size: 40, colour: '#f2c14e', stack: [
+    { effect: 'sliding-reveal' }, { effect: 'shimmer' }, { effect: 'mask-out' }] },
+  { name: 'Departures', text: 'GATE 42', font: 'Bebas Neue', size: 84, colour: '#ffd66b', stack: [
+    { effect: 'departures-flap' }, { effect: 'fade-out' }] },
+  { name: 'Retro glitch', text: 'CRT 1986', font: 'Montserrat', size: 60, colour: '#ffffff', stack: [
+    { effect: 'glitch-reveal' }, { effect: 'rgb-split' }, { effect: 'flicker-out' }] },
+  { name: 'Rainbow wave', text: 'Rainbow', font: 'Montserrat', size: 72, colour: '#ffffff', stack: [
+    { effect: 'split-rise' }, { effect: 'rainbow-wave' }, { effect: 'wave', intensity: 0.6 }, { effect: 'letter-burst' }] },
+  { name: 'Year counter', text: '0', font: 'Anton', size: 96, colour: '#ffffff', stack: [
+    { effect: 'pop-in' }, { effect: 'count-up', params: { from: 1990, to: 2026 } }, { effect: 'extrude-in' }, { effect: 'zoom-out' }] }
+]
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let EFFECTS = {}
+let EFFECT_LIST = []
+let uid = 1
+// localStorage throws in sandboxed frames and for some file:// pages; fall back
+// to memory so the mock-up always runs (favourites/recent/presets per session).
+const store = (() => {
+  try {
+    const ls = window.localStorage
+    ls.setItem('tfx-probe', '1'); ls.removeItem('tfx-probe')
+    return ls
+  } catch (err) {
+    const mem = new Map()
+    return { getItem: k => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)) }
+  }
+})()
+const state = {
+  text: "Let's go!", font: 'Anton', size: 84, colour: '#ffe45e', duration: 4.0,
+  stack: [], preset: 'Kinetic pop', openParams: null,
+  playing: true, t: 0,
+  favourites: new Set(JSON.parse(store.getItem('tfx-fav') || '["wave","neon-glow","pop-in"]')),
+  recent: JSON.parse(store.getItem('tfx-recent') || '["typewriter-caret","fade-out"]'),
+  myPresets: JSON.parse(store.getItem('tfx-presets') || '[]'),
+  browser: null,          // {mode:'add'|'replace', phase, layerId, tab, group, query, host:'popover'|'gallery'}
+  candidate: null         // effect id previewed on top of the stack
+}
+function saveLocal () {
+  store.setItem('tfx-fav', JSON.stringify([...state.favourites]))
+  store.setItem('tfx-recent', JSON.stringify(state.recent.slice(0, 12)))
+  store.setItem('tfx-presets', JSON.stringify(state.myPresets))
+}
+const withIds = stack => stack.map(l => ({ id: uid++, ...JSON.parse(JSON.stringify(l)) }))
+
+// ---------------------------------------------------------------------------
+// Small DOM helper
+// ---------------------------------------------------------------------------
+function h (tag, attrs, ...kids) {
+  const el = document.createElement(tag)
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue
+    if (k === 'class') el.className = v
+    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v)
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v)
+    else if (k === 'html') el.innerHTML = v
+    else el.setAttribute(k, v === true ? '' : v)
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : String(kid))
+  return el
+}
+const fmt = s => (Math.round(s * 100) / 100).toFixed(2)
+
+// ---------------------------------------------------------------------------
+// Layout: canvas measurement (prefix widths keep kerning), line height = size
+// like libass. Produces the same unit structure the Python engine uses.
+// ---------------------------------------------------------------------------
+const measureCtx = (() => { try { return document.createElement('canvas').getContext('2d') } catch (e) { return null } })()
+function advances (line, fontCss, size) {
+  const out = []
+  if (measureCtx) {
+    measureCtx.font = fontCss
+    let prev = 0
+    for (let i = 0; i < line.length; i++) {
+      const w = measureCtx.measureText(line.slice(0, i + 1)).width
+      out.push(w - prev); prev = w
+    }
+    if (out.length && out.every(v => v === 0)) out.fill(size * 0.58)   // no layout engine (tests)
+    return out
+  }
+  return Array.from(line, ch => ch === ' ' ? size * 0.28 : size * 0.58)
+}
+function layoutUnits (text, font, size, cx, cy) {
+  const f = FONTS.find(x => x.family === font) || FONTS[0]
+  const fontCss = `${f.weight} ${size}px "${f.family}"`
+  const lines = text.split('\n')
+  const lh = size
+  const top = cy - lh * lines.length / 2
+  const units = { char: [], word: [], line: [], text: [] }
+  const widths = lines.map(l => advances(l, fontCss, size).reduce((a, b) => a + b, 0))
+  units.text.push({ index: 0, text, cx, cy, w: Math.max(0, ...widths), h: lh * lines.length, anc: { text: 0 }, col: 0, ncol: 1 })
+  lines.forEach((line, li) => {
+    const adv = advances(line, fontCss, size)
+    const width = adv.reduce((a, b) => a + b, 0)
+    const left = cx - width / 2
+    const lcy = top + (li + 0.5) * lh
+    units.line.push({ index: li, text: line, cx, cy: lcy, w: width, h: lh, anc: { line: li, text: 0 }, col: 0, ncol: 1 })
+    let pen = 0
+    let word = []
+    const closeWord = () => {
+      if (!word.length) return
+      const [i0, p0] = word[0], [i1, p1] = word[word.length - 1]
+      const x0 = left + p0, x1 = left + p1 + adv[i1]
+      const wi = units.word.length
+      units.word.push({ index: wi, text: line.slice(i0, i1 + 1), cx: (x0 + x1) / 2, cy: lcy, w: x1 - x0, h: lh, anc: { word: wi, line: li, text: 0 }, col: 0, ncol: 1 })
+      for (const [ci] of word) Object.assign(units.char[charIds[ci]].anc, { word: wi, line: li, text: 0 })
+      word = []
+    }
+    const charIds = {}
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (ch === ' ') closeWord()
+      else {
+        const idx = units.char.length
+        units.char.push({ index: idx, text: ch, cx: left + pen + adv[i] / 2, cy: lcy, w: adv[i], h: lh, anc: { char: idx }, col: i, ncol: line.length })
+        charIds[i] = idx
+        word.push([i, pen])
+      }
+      pen += adv[i]
+    }
+    closeWord()
+  })
+  return { units, fontCss, family: f.family, weight: f.weight }
+}
+
+// ---------------------------------------------------------------------------
+// Scene: DOM for one caption, updated every frame from TextMotion.evaluate()
+// ---------------------------------------------------------------------------
+function createScene (host, cap) {
+  const lay = layoutUnits(cap.text, cap.font, cap.size, cap.cx, cap.cy)
+  const ctx = TM.compile(cap.stack, lay.units, { size: cap.size, colour: cap.colour, start: 0, end: cap.duration, frameW: STAGE_W, frameH: STAGE_H }, EFFECTS)
+  const root = h('div', { class: cap.tile ? 'tile-scene' : 'scene' })
+  const em = cap.size
+  const copies = []
+  ctx.stack.forEach(L => (L.fx.copies || []).forEach(spec => copies.push({ L, spec })))
+  const trails = copies.filter(c => c.spec.type === 'trail')
+  const mirror = copies.find(c => c.spec.type === 'mirror')
+  const box = copies.find(c => c.spec.type === 'box')
+  const caretOn = ctx.stack.some(L => L.fx.caret) && ctx.gran === 'char'
+  const font = { fontFamily: `"${lay.family}"`, fontWeight: lay.weight, fontSize: em + 'px', lineHeight: em + 'px' }
+  const items = ctx.units[ctx.gran].map(e => {
+    const layer = h('div', { class: 'u' })
+    const place = el => Object.assign(el.style, font, { left: (e.cx - e.w / 2 - em) + 'px', top: (e.cy - e.h / 2) + 'px', width: (e.w + 2 * em) + 'px', height: e.h + 'px' })
+    const it = { e, layer, clones: [] }
+    if (box) {
+      const [pw, ph] = box.spec.pad
+      it.box = h('div', { class: 'box', style: { left: (e.cx - e.w / 2 - pw * em) + 'px', top: (e.cy - e.h * 0.43) + 'px', width: (e.w + 2 * pw * em) + 'px', height: (e.h * 0.86) + 'px',
+        background: `linear-gradient(${box.spec.colour} 0 48.5%, ${box.spec.split} 48.5% 51.5%, ${box.spec.colour} 51.5%)` } })
+      layer.append(it.box)
+    }
+    if (mirror) { it.mirror = h('span', { class: 'clone' }); place(it.mirror); layer.append(it.mirror) }
+    for (const tr of trails) for (let k = tr.spec.count; k >= 1; k--) {
+      const c = h('span', { class: 'clone' }); place(c); layer.append(c); it.clones.push({ el: c, k, spec: tr.spec })
+    }
+    it.g = h('span', { class: 'g' }); place(it.g); layer.append(it.g)
+    root.append(layer)
+    return it
+  })
+  let caret = null
+  if (caretOn) { caret = h('span', { class: 'caret', style: { ...font, color: cap.colour } }, '|'); root.append(caret) }
+  host.append(root)
+  const mirrorAxis = cap.cy + em * cap.text.split('\n').length / 2
+  const scene = { root, ctx, items, caret, em, copies, mirror, mirrorAxis, cap, lastCount: -1, lastChange: 0 }
+  fit(scene, host)
+  return scene
+}
+
+function fit (scene, host) {
+  const w = host.clientWidth || STAGE_W
+  scene.root.style.transform = `scale(${w / STAGE_W})`
+}
+
+const cssColour = (c, a = 1) => `rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a})`
+function styleGlyph (el, e, s, em, extra) {
+  const T = s.tot
+  const op = Math.max(0, Math.min(1, T.opacity * (extra.alpha == null ? 1 : extra.alpha)))
+  const dx = s.x - e.cx + (extra.dx || 0)
+  const dy = (extra.y != null ? extra.y : s.y) - e.cy
+  let tf = `translate(${dx.toFixed(2)}px,${dy.toFixed(2)}px)`
+  const rx = T.rx + (extra.rx || 0)
+  if (rx || T.ry) tf += ` perspective(${(em * 9).toFixed(0)}px) rotateX(${(-rx).toFixed(2)}deg) rotateY(${T.ry.toFixed(2)}deg)`
+  if (T.rz) tf += ` rotate(${(-T.rz).toFixed(2)}deg)`
+  const sy = T.scale * T.sy * (extra.sy || 1)
+  tf += ` scale(${(T.scale * T.sx).toFixed(4)},${sy.toFixed(4)})`
+  if (T.skew) tf += ` skewX(${(Math.atan(T.skew) * 180 / Math.PI).toFixed(2)}deg)`
+  el.style.transform = tf
+  el.style.opacity = op.toFixed(3)
+  const blur = (T.blur + (extra.blur || 0)) * em * 0.55
+  el.style.filter = blur > 0.05 ? `blur(${blur.toFixed(2)}px)` : 'none'
+  const colour = extra.colour || s.colour
+  const fill = Math.max(0, Math.min(1, T.fill))
+  el.style.color = cssColour(colour, fill)
+  const line = Math.max(0, T.line * em)
+  el.style.webkitTextStroke = line > 0.05 ? `${line.toFixed(2)}px ${cssColour(colour)}` : ''
+  el.style.textShadow = extra.shadow || 'none'
+  const txt = s.text
+  if (el.textContent !== txt) el.textContent = txt
+}
+
+function renderScene (scene, t) {
+  const { ctx, em } = scene
+  let lastVisible = null
+  let visibleCount = 0
+  for (const it of scene.items) {
+    const s = TM.evaluate(ctx, it.e, t)
+    // copies drawn as CSS text-shadows (glow, extrusion, dancing shadow, RGB split)
+    const shadows = []
+    for (const { L, spec } of scene.copies) {
+      if (spec.type === 'glow' && s.tot.glow > 0.01) {
+        const col = spec.colour.startsWith('$') ? L.param(spec.colour.slice(1)) : spec.colour
+        const r = spec.blur * em * s.tot.glow
+        shadows.push(`0 0 ${(r * 0.6).toFixed(1)}px ${col}`, `0 0 ${(r * 1.4).toFixed(1)}px ${col}`)
+      } else if (spec.type === 'extrude' && s.tot.depth > 0.01) {
+        const base = TM.rgb(spec.colour)
+        for (let k = 1; k <= spec.count; k++) {
+          const shade = 1 - (spec.shade || 0.5) * k / spec.count
+          shadows.push(`${(k * spec.dx * em * s.tot.depth).toFixed(1)}px ${(k * spec.dy * em * s.tot.depth).toFixed(1)}px 0 ${cssColour(base.map(c => c * shade))}`)
+        }
+      } else if (spec.type === 'shadow') {
+        spec.colours.forEach((c, i) => {
+          const a = 2 * Math.PI * (s.tot.orbit + i / spec.colours.length)
+          shadows.push(`${(spec.radius * em * Math.cos(a)).toFixed(1)}px ${(spec.radius * em * Math.sin(a)).toFixed(1)}px 0 ${c}`)
+        })
+      } else if (spec.type === 'rgb' && s.tot.rgb > 0.01) {
+        const d = spec.dx * em * s.tot.rgb
+        shadows.push(`${(-d).toFixed(1)}px 0 0 ${spec.colours[0]}d9`, `${d.toFixed(1)}px 0 0 ${spec.colours[1]}d9`)
+      }
+    }
+    styleGlyph(it.g, it.e, s, em, { shadow: shadows.join(',') || 'none' })
+    // clip: absolute rectangle on the full-stage wrapper (a mask does not move with the text)
+    if (s.clip) {
+      const [x0, y0, x1, y1] = s.clip
+      it.layer.style.clipPath = `inset(${Math.max(0, y0).toFixed(1)}px ${Math.max(0, STAGE_W - x1).toFixed(1)}px ${Math.max(0, STAGE_H - y1).toFixed(1)}px ${Math.max(0, x0).toFixed(1)}px)`
+    } else it.layer.style.clipPath = ''
+    if (it.box) it.box.style.opacity = Math.max(0, Math.min(1, s.tot.opacity)).toFixed(3)
+    if (it.mirror) {
+      const spec = scene.mirror.spec
+      styleGlyph(it.mirror, it.e, s, em, { y: 2 * (scene.mirrorAxis + spec.gap * em) - s.y, rx: 180, alpha: spec.alpha, blur: spec.blur, sy: 0.9 })
+    }
+    for (const c of it.clones) {
+      const sk = TM.evaluate(ctx, it.e, t - c.k * c.spec.delay)
+      styleGlyph(c.el, it.e, sk, em, { alpha: c.spec.alpha * (1 - (c.k - 1) / c.spec.count), colour: TM.rgb(c.spec.colour) })
+    }
+    if (s.tot.opacity > 0.5) { lastVisible = { e: it.e, s }; visibleCount++ }
+  }
+  if (scene.caret) {
+    if (visibleCount !== scene.lastCount) { scene.lastCount = visibleCount; scene.lastChange = t }
+    const first = ctx.units.char[0]
+    const x = lastVisible ? lastVisible.s.x + lastVisible.e.w / 2 + 0.07 * em : first.cx - first.w / 2
+    const y = lastVisible ? lastVisible.s.y : first.cy
+    const typing = (t - scene.lastChange) < 0.35 && t > 0.001
+    const on = typing || ((t - scene.lastChange) % 1) < 0.5
+    Object.assign(scene.caret.style, { left: x + 'px', top: y + 'px', opacity: on ? 1 : 0 })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main preview
+// ---------------------------------------------------------------------------
+let mainScene = null
+let galleryScene = null
+function captionFor (stack) {
+  return { text: state.text, font: state.font, size: state.size, colour: state.colour, cx: STAGE_W / 2, cy: STAGE_H / 2,
+    duration: state.duration, stack }
+}
+function activeStack () {
+  const base = state.stack.map(({ id, ...l }) => l)
+  if (!state.candidate) return base
+  const b = state.browser
+  if (b && b.mode === 'replace') return state.stack.map(({ id, ...l }) => id === b.layerId ? { effect: state.candidate } : l)
+  return base.concat([{ effect: state.candidate }])
+}
+function rebuildPreview () {
+  const stage = document.getElementById('stage')
+  if (mainScene) mainScene.root.remove()
+  mainScene = createScene(stage, captionFor(activeStack()))
+  const flag = document.getElementById('candidate-flag')
+  flag.classList.toggle('show', !!state.candidate)
+  if (state.candidate) flag.textContent = (state.browser && state.browser.mode === 'replace' ? 'Previewing swap → ' : 'Previewing + ') + EFFECTS[state.candidate].label
+  renderWarnings(mainScene.ctx)
+  if (!document.getElementById('gallery').hidden) rebuildGalleryStage()
+}
+function rebuildGalleryStage () {
+  const stage = document.getElementById('g-stage')
+  if (galleryScene) galleryScene.root.remove()
+  galleryScene = createScene(stage, captionFor(activeStack()))
+  const flag = document.getElementById('g-candidate')
+  flag.classList.toggle('show', !!state.candidate)
+  if (state.candidate) flag.textContent = 'Previewing + ' + EFFECTS[state.candidate].label
+}
+
+// ---------------------------------------------------------------------------
+// Editor: lanes
+// ---------------------------------------------------------------------------
+function renderLanes () {
+  const host = document.getElementById('lanes')
+  host.textContent = ''
+  const ctx = mainScene ? mainScene.ctx : null
+  const conflicts = ctx && !state.candidate ? ctx.conflicts : {}
+  const units = mainScene ? mainScene.ctx.units : null
+  for (const ph of PHASES) {
+    const layers = state.stack.filter(l => EFFECTS[l.effect].phase === ph.id)
+    const spanS = units && layers.length ? Math.max(...layers.map(l => TM.span(l, units, EFFECTS))) : 0
+    const list = h('div', { class: 'layer-list' })
+    if (!layers.length) list.append(h('div', { class: 'empty-lane' }, ph.id === 'hold' ? 'Static while shown.' : ph.id === 'in' ? 'Appears instantly.' : 'Disappears instantly.'))
+    for (const l of layers) list.append(layerRow(l, conflicts[state.stack.indexOf(l)], units))
+    host.append(h('div', { class: `lane ${ph.id}` },
+      h('header', null, h('span', { class: 'dot' }), h('strong', null, ph.label.toUpperCase()), h('span', { class: 'count' }, layers.length || ''),
+        h('span', { class: 'spanlbl' }, ph.id === 'hold' ? (layers.length ? 'whole window' : '') : (layers.length ? fmt(spanS) + ' s' : ''))),
+      list,
+      h('div', { class: 'lane-add' },
+        h('button', { onclick: ev => openBrowser({ mode: 'add', phase: ph.id, anchor: ev.currentTarget }) }, '+ Add ' + (ph.id === 'hold' ? 'loop' : ph.label.toLowerCase()) + ' effect'))))
+  }
+  renderModel()
+  renderStoryChips()
+}
+
+function layerRow (l, conflict, units) {
+  const fx = EFFECTS[l.effect]
+  const unit = l.unit || fx.unit
+  const dur = l.duration != null ? l.duration : fx.duration
+  const open = state.openParams === l.id
+  const row = h('div', { class: `layer${l.muted ? ' muted' : ''}${conflict ? ' lost' : ''}`, draggable: 'true', 'data-id': l.id },
+    h('span', { class: 'grip', title: 'Drag to reorder (order matters for colour: the top layer wins)' }, '⋮⋮'),
+    h('i', { class: 'chip-symbol' }, SYMBOL[fx.category] || '•'),
+    h('button', { class: 'name', title: 'Swap for another effect', onclick: ev => openBrowser({ mode: 'replace', phase: fx.phase, layerId: l.id, anchor: ev.currentTarget }) },
+      fx.label, h('small', null, fx.category)),
+    h('span', { class: 'unit-badge', title: 'Animated unit' }, UNIT_LABEL[unit]),
+    h('span', { class: 'time-badge' }, fx.phase === 'hold' ? ((l.loop || fx.loop) === 'once' ? 'once' : '↻ ' + fmt(dur || 1) + ' s') : fmt(dur) + ' s'),
+    h('button', { class: `icon${open ? ' on' : ''}`, title: 'Timing & parameters', onclick: () => { state.openParams = open ? null : l.id; renderLanes() } }, '⚙'),
+    h('button', { class: 'icon', title: l.muted ? 'Unmute' : 'Mute (keep in the stack, skip in preview and render)', onclick: () => { l.muted = !l.muted; changed({ custom: true }) } }, l.muted ? '◌' : '◉'),
+    h('button', { class: 'icon', title: 'Remove', onclick: () => { state.stack = state.stack.filter(x => x !== l); changed({ custom: true }) } }, '✕'))
+  if (conflict) row.append(h('span', { class: 'conflict' }, '⚠ ' + conflict))
+  if (open) row.append(paramsPanel(l, fx, units))
+  // drag & drop reorder inside a lane
+  row.addEventListener('dragstart', ev => { ev.dataTransfer.setData('text/plain', String(l.id)); row.classList.add('dragging') })
+  row.addEventListener('dragend', () => row.classList.remove('dragging'))
+  row.addEventListener('dragover', ev => { ev.preventDefault(); row.classList.add('drop') })
+  row.addEventListener('dragleave', () => row.classList.remove('drop'))
+  row.addEventListener('drop', ev => {
+    ev.preventDefault(); row.classList.remove('drop')
+    const from = state.stack.find(x => String(x.id) === ev.dataTransfer.getData('text/plain'))
+    if (!from || from === l || EFFECTS[from.effect].phase !== fx.phase) return
+    state.stack.splice(state.stack.indexOf(from), 1)
+    state.stack.splice(state.stack.indexOf(l), 0, from)
+    changed({ custom: true })
+  })
+  return row
+}
+
+function paramsPanel (l, fx, units) {
+  // number/select inputs fire `change` (full re-render is fine); sliders and
+  // colour pickers fire `input` continuously, so they only refresh the preview
+  // (re-rendering the lanes would replace the slider under the pointer).
+  const set = (k, v, full = true) => {
+    if (v === '' || v == null || Number.isNaN(v)) delete l[k]; else l[k] = v
+    if (full) changed({ custom: true }); else refresh()
+  }
+  const num = (label, key, dflt, step, min, max) => h('label', { class: 'field' }, label,
+    h('input', { type: 'number', step, min, max, value: l[key] != null ? l[key] : dflt, onchange: ev => set(key, ev.target.value === '' ? null : Number(ev.target.value)) }))
+  const panel = h('div', { class: 'params' },
+    h('label', { class: 'field' }, 'Unit', h('select', { onchange: ev => set('unit', ev.target.value === fx.unit ? null : ev.target.value) },
+      ...['text', 'line', 'word', 'char'].map(u => h('option', { value: u, selected: (l.unit || fx.unit) === u }, UNIT_LABEL[u] + (u === fx.unit ? ' (default)' : ''))))),
+    fx.phase === 'hold' && (l.loop || fx.loop) === 'once' ? h('label', { class: 'field' }, 'Timing', h('input', { value: 'whole window', disabled: true }))
+      : num(fx.phase === 'hold' ? 'Period (s)' : 'Duration / unit (s)', 'duration', fx.duration, 0.05, 0.01, 10),
+    num(fx.phase === 'hold' ? 'Phase offset (s)' : 'Stagger (s)', 'stagger', fx.stagger || 0, 0.01, 0, 2),
+    h('label', { class: 'field' }, 'Order', h('select', { onchange: ev => set('order', ev.target.value) },
+      ...['forward', 'reverse', 'center', 'edges', 'random'].map(o => h('option', { value: o, selected: (l.order || fx.order || 'forward') === o }, o)))),
+    num('Delay (s)', 'delay', 0, 0.05, 0, 5),
+    h('label', { class: 'field' }, h('span', { class: 'ilabel' }, `Intensity ${Math.round((l.intensity == null ? 1 : l.intensity) * 100)} %`),
+      h('input', { type: 'range', min: 0, max: 2, step: 0.05, value: l.intensity == null ? 1 : l.intensity,
+        oninput: ev => { set('intensity', Number(ev.target.value), false); ev.target.parentElement.querySelector('.ilabel').textContent = `Intensity ${Math.round(Number(ev.target.value) * 100)} %` },
+        onchange: () => renderLanes() })))
+  for (const [k, v] of Object.entries(fx.params || {})) {
+    if (k === 'points') continue
+    const cur = l.params && k in l.params ? l.params[k] : v
+    const input = /^#[0-9a-f]{6}$/i.test(String(v))
+      ? h('input', { type: 'color', value: cur, oninput: ev => { l.params = { ...(l.params || {}), [k]: ev.target.value }; refresh() } })
+      : h('input', { value: cur, onchange: ev => { const n = Number(ev.target.value); l.params = { ...(l.params || {}), [k]: Number.isNaN(n) || ev.target.value === '' ? ev.target.value : n }; changed({ custom: true }) } })
+    panel.append(h('label', { class: 'field' }, k, input))
+  }
+  if (fx.id === 'motion-path') panel.append(h('label', { class: 'field', style: { gridColumn: '1 / -1' } }, 'Path', h('input', { value: 'edited on the preview canvas (existing motion-path editor)', disabled: true })))
+  return panel
+}
+
+function renderWarnings (ctx) {
+  const host = document.getElementById('warnings')
+  host.textContent = ''
+  if (state.candidate) return
+  for (const w of ctx.warnings) host.append(h('div', null, '⚠ ' + w))
+}
+
+function renderModel () {
+  const stack = state.stack.map(({ id, ...l }) => {
+    const fx = EFFECTS[l.effect]
+    return { phase: fx.phase, ...l }
+  })
+  document.getElementById('model').textContent =
+    '// MediaItem (payload_json / item_json: lossless, no SQL migration)\n' +
+    JSON.stringify({ textFx: stack }, null, 2) +
+    '\n\n// Legacy fields map to single layers when a project is opened:\n' +
+    '// textFxEnter/While/Exit -> one layer each (label -> id)\n' +
+    '// textScale*/textRotate*/textSquish*/textColorAnim*/textBouncy* -> While layers\n' +
+    '// textMove* -> the "motion-path" While layer (canvas editor unchanged)'
+}
+
+function renderStoryChips () {
+  const host = document.getElementById('story-chips')
+  host.textContent = ''
+  for (const ph of [PHASES[0], PHASES[2]]) {
+    const layers = state.stack.filter(l => EFFECTS[l.effect].phase === ph.id && !l.muted)
+    const first = layers[0]
+    const tip = state.stack.map(l => `${EFFECTS[l.effect].phase.toUpperCase()}: ${EFFECTS[l.effect].label}${l.muted ? ' (muted)' : ''}`).join('\n')
+    host.append(h('button', { class: 'transition-chip', title: tip },
+      h('i', { class: 'chip-symbol' }, first ? (SYMBOL[EFFECTS[first.effect].category] || '•') : '–'),
+      h('span', { class: 'chip-name' }, first ? EFFECTS[first.effect].label : 'None'),
+      layers.length > 1 ? h('i', { class: 'chip-kind' }, '+' + (layers.length - 1)) : null))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Timeline
+// ---------------------------------------------------------------------------
+function renderTimeline () {
+  const host = document.getElementById('timeline')
+  host.textContent = ''
+  const units = mainScene.ctx.units
+  const D = state.duration
+  const ruler = h('div', { class: 'tl-ruler', onclick: ev => { const r = ev.currentTarget.getBoundingClientRect(); seek((ev.clientX - r.left) / r.width * D) } })
+  for (let s = 0; s <= D + 1e-6; s += 0.5) ruler.append(h('span', { style: { left: (s / D * 100) + '%' } }, s % 1 === 0 ? s + ' s' : '·'))
+  host.append(ruler)
+  for (const ph of PHASES) {
+    const lane = h('div', { class: 'tl-lane' }, h('label', null, ph.label.toUpperCase()))
+    const layers = state.stack.filter(l => EFFECTS[l.effect].phase === ph.id)
+    layers.forEach((l, i) => {
+      const fx = EFFECTS[l.effect]
+      const sp = Math.min(D, TM.span(l, units, EFFECTS))
+      const delay = l.delay || 0
+      let a, b
+      if (ph.id === 'in') { a = delay; b = Math.min(D, sp) }
+      else if (ph.id === 'out') { a = Math.max(0, D - sp); b = D - delay }
+      else { a = delay; b = D }
+      const bar = h('div', { class: `tl-bar ${ph.id}${l.muted ? ' muted' : ''}${i > 0 ? ' stack2' : ''}`, title: `${fx.label}: ${fmt(a)} → ${fmt(b)} s`,
+        style: { left: (a / D * 100) + '%', width: Math.max(0.6, (b - a) / D * 100) + '%', top: i > 0 ? (3 + Math.min(i, 2) * 6) + 'px' : null } }, fx.label)
+      if (ph.id !== 'hold') {
+        const handle = h('div', { class: 'handle ' + (ph.id === 'in' ? 'r' : 'l'), title: 'Drag to change the duration' })
+        handle.addEventListener('pointerdown', ev => dragDuration(ev, l, ph.id, host))
+        bar.append(handle)
+      }
+      lane.append(bar)
+    })
+    host.append(lane)
+  }
+  host.append(h('div', { class: 'tl-playhead', id: 'playhead' }))
+  positionPlayhead()
+}
+function dragDuration (ev, l, phase, host) {
+  ev.preventDefault(); ev.stopPropagation()
+  const lanes = host.querySelector('.tl-ruler').getBoundingClientRect()
+  const units = mainScene.ctx.units
+  const fx = EFFECTS[l.effect]
+  const move = e2 => {
+    const t = Math.max(0, Math.min(state.duration, (e2.clientX - lanes.left) / lanes.width * state.duration))
+    const total = phase === 'in' ? t : state.duration - t
+    const cur = l.duration != null ? l.duration : fx.duration
+    const rest = TM.span(l, units, EFFECTS) - cur          // delay + stagger part
+    l.duration = Math.max(0.05, Math.round((total - rest) * 20) / 20)
+    refresh()
+  }
+  const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); changed({ custom: true }) }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+function positionPlayhead () {
+  const ph = document.getElementById('playhead')
+  if (!ph) return
+  const ruler = document.querySelector('.tl-ruler')
+  ph.style.left = (92 + ruler.clientWidth * Math.min(1, state.t / state.duration)) + 'px'
+}
+
+// ---------------------------------------------------------------------------
+// Effect browser (popover + gallery host)
+// ---------------------------------------------------------------------------
+let tileScenes = []
+let hoverTile = null
+function openBrowser ({ mode, phase, layerId, anchor, host = 'popover', tab }) {
+  state.browser = { mode, phase, layerId, tab: tab || phase || 'all', group: 'all', query: '', host, autoplay: state.browser ? state.browser.autoplay : false }
+  const el = document.getElementById('browser')
+  if (host === 'popover') {
+    el.hidden = false
+    const r = anchor.getBoundingClientRect()
+    const left = Math.min(window.innerWidth - 650, Math.max(10, r.left))
+    const top = r.bottom + 480 > window.innerHeight ? Math.max(10, r.top - 476) : r.bottom + 6
+    Object.assign(el.style, { left: left + 'px', top: top + 'px' })
+  }
+  renderBrowser()
+}
+function closeBrowser () {
+  document.getElementById('browser').hidden = true
+  if (document.getElementById('gallery').hidden) state.browser = null
+  setCandidate(null)
+}
+function browserItems () {
+  const b = state.browser
+  const q = b.query.trim().toLowerCase()
+  let items
+  if (b.tab === 'presets') {
+    items = PRESETS.map(p => ({ preset: p, category: 'Curated looks' })).concat(state.myPresets.map(p => ({ preset: p, category: 'My presets' })))
+    if (q) items = items.filter(i => i.preset.name.toLowerCase().includes(q))
+    return items
+  }
+  items = EFFECT_LIST.filter(fx => fx.id !== 'motion-path')
+  if (b.tab === 'in' || b.tab === 'hold' || b.tab === 'out') items = items.filter(fx => fx.phase === b.tab)
+  if (b.tab === 'fav') items = items.filter(fx => state.favourites.has(fx.id))
+  if (b.tab === 'recent') items = state.recent.map(id => EFFECTS[id]).filter(Boolean)
+  if (b.mode === 'replace') items = items.filter(fx => fx.phase === b.phase)
+  if (q) items = items.filter(fx => (fx.label + ' ' + fx.category + ' ' + fx.source).toLowerCase().includes(q))
+  return items
+}
+function renderBrowser () {
+  const b = state.browser
+  if (!b) return
+  const el = b.host === 'gallery' ? document.getElementById('g-right').firstElementChild : document.getElementById('browser')
+  el.textContent = ''
+  tileScenes = []
+  const counts = {
+    all: EFFECT_LIST.length - 1,
+    in: EFFECT_LIST.filter(f => f.phase === 'in').length,
+    hold: EFFECT_LIST.filter(f => f.phase === 'hold' && f.id !== 'motion-path').length,
+    out: EFFECT_LIST.filter(f => f.phase === 'out').length,
+    fav: state.favourites.size, recent: state.recent.length, presets: PRESETS.length + state.myPresets.length
+  }
+  const tabs = [['all', 'All'], ['in', 'Enter'], ['hold', 'While shown'], ['out', 'Exit'], ['fav', '★'], ['recent', 'Recent'], ['presets', 'Presets']]
+  const modeLabel = b.tab === 'presets' ? 'Presets · replace the stack'
+    : b.mode === 'replace' ? 'Swap effect' : `Add to ${(PHASES.find(p => p.id === b.phase) || { label: 'stack' }).label}`
+  el.append(h('header', null,
+    h('span', { class: 'mode' }, modeLabel),
+    h('label', { class: 'browser-search' }, h('span', null, '⌕'),
+      h('input', { placeholder: 'Search effects, sources…', value: b.query, oninput: ev => { b.query = ev.target.value; renderGrid(el) } })),
+    h('button', { class: 'browser-close', title: 'Close (Esc)', onclick: closeBrowser }, '✕')))
+  el.append(h('div', { class: 'browser-tabs' }, ...tabs.map(([id, label]) => h('button', {
+    class: b.tab === id ? 'active' : '', disabled: b.mode === 'replace' && ['in', 'hold', 'out'].includes(id) && id !== b.phase || (b.mode === 'replace' && id === 'presets'),
+    onclick: () => { b.tab = id; b.group = 'all'; renderBrowser() }
+  }, label, h('b', null, counts[id])))))
+  el.append(h('div', { class: 'browser-body' }, h('div', { class: 'browser-groups' }), h('div', { class: 'browser-grid-wrap' }, h('div', { class: 'browser-grid' }))))
+  el.append(h('div', { class: 'browser-foot' },
+    h('span', { class: 'browser-count' }),
+    h('span', { class: 'grow' }),
+    h('label', null, h('input', { type: 'checkbox', checked: b.autoplay, onchange: ev => { b.autoplay = ev.target.checked } }), 'Autoplay tiles'),
+    b.host === 'popover' ? h('button', { class: 'btn', onclick: openGallery }, 'Open full gallery ⤢') : null))
+  renderGrid(el)
+}
+function renderGrid (el) {
+  const b = state.browser
+  const items = browserItems()
+  const groupsHost = el.querySelector('.browser-groups')
+  const grid = el.querySelector('.browser-grid')
+  groupsHost.textContent = ''; grid.textContent = ''
+  tileScenes = []
+  const byGroup = new Map()
+  for (const it of items) { const g = it.category; if (!byGroup.has(g)) byGroup.set(g, []); byGroup.get(g).push(it) }
+  groupsHost.append(h('button', { class: b.group === 'all' ? 'active' : '', onclick: () => { b.group = 'all'; renderGrid(el) } }, 'All', h('b', null, items.length)))
+  for (const [g, list] of byGroup) groupsHost.append(h('button', { class: b.group === g ? 'active' : '', onclick: () => { b.group = g; renderGrid(el) } },
+    h('span', { class: 'tile-symbol' }, SYMBOL[g] || '★'), g, h('b', null, list.length)))
+  el.querySelector('.browser-count').textContent = b.tab === 'presets' ? `${items.length} presets` : `${items.length} effects · all stackable`
+  if (!items.length) { grid.append(h('div', { class: 'browser-empty' }, b.tab === 'fav' ? 'Star effects to collect them here.' : 'No effect matches.')); return }
+  for (const [g, list] of byGroup) {
+    if (b.group !== 'all' && b.group !== g) continue
+    const row = h('div', { class: 'tile-row' })
+    for (const it of list) row.append(it.preset ? presetTile(it.preset) : effectTile(it))
+    grid.append(h('section', null, h('strong', null, g), row))
+  }
+}
+function conflictFor (fx) {
+  // What adding this effect would do to the current stack, shown on the tile.
+  const b = state.browser
+  if (!fx.content) {
+    const whole = state.stack.find(l => EFFECTS[l.effect].content && ['count', 'countdown'].includes(EFFECTS[l.effect].content.type))
+    if (whole && (fx.unit !== 'text')) return `whole text (${EFFECTS[whole.effect].label})`
+    return null
+  }
+  const clash = state.stack.find(l => l.id !== b.layerId && EFFECTS[l.effect].content && EFFECTS[l.effect].phase === fx.phase)
+  if (clash) return `replaces ${EFFECTS[clash.effect].label}`
+  if (['count', 'countdown'].includes(fx.content.type) && state.stack.some(l => (l.unit || EFFECTS[l.effect].unit) !== 'text')) return 'runs on the whole text'
+  return null
+}
+function sampleStackFor (fx) {
+  // A tile shows the effect alone, framed by the gentlest partner so it loops.
+  if (fx.phase === 'in') return [{ effect: fx.id }, { effect: 'fade-out', duration: 0.3 }]
+  if (fx.phase === 'out') return [{ effect: 'fade-in', duration: 0.2 }, { effect: fx.id }]
+  return [{ effect: 'fade-in', duration: 0.2 }, { effect: fx.id }, { effect: 'fade-out', duration: 0.2 }]
+}
+function tileText (fx) {
+  if (fx.content && fx.content.type === 'count') return '0'
+  if (fx.content && fx.content.type === 'countdown') return '3'
+  if (fx.unit === 'line') return 'Two\nlines'
+  return fx.category === 'Type & code' ? 'Type' : 'Text'
+}
+function effectTile (fx) {
+  const b = state.browser
+  const fav = state.favourites.has(fx.id)
+  const conflict = conflictFor(fx)
+  const approx = /approx/i.test(fx.source)
+  const stage = h('span', { class: 'tile-stage' })
+  const tile = h('button', { class: 'transition-tile', title: `${fx.label}\n${fx.source}` },
+    stage,
+    h('span', { class: 'tile-name' }, h('i', { class: 'tile-symbol' }, SYMBOL[fx.category] || '•'), fx.label))
+  stage.append(h('span', { class: 'tile-unit' }, UNIT_SHORT[fx.unit] || 'T'))
+  if (conflict) stage.append(h('span', { class: 'tile-flag', title: conflict }, conflict))
+  if (approx) stage.append(h('span', { class: 'tile-flag approx', title: 'Approximation of the reference (see docs)' }, '≈'))
+  stage.append(h('button', { class: `tile-star${fav ? ' on' : ''}`, title: fav ? 'Remove from favourites' : 'Add to favourites',
+    onclick: ev => { ev.stopPropagation(); fav ? state.favourites.delete(fx.id) : state.favourites.add(fx.id); saveLocal(); renderBrowser() } }, fav ? '★' : '☆'))
+  const cap = { text: tileText(fx), font: 'Montserrat', size: 92, colour: '#ffffff', cx: STAGE_W / 2, cy: STAGE_H / 2, duration: 2.4, stack: sampleStackFor(fx), tile: true }
+  queueTile(stage, cap, tile)
+  tile.addEventListener('mouseenter', () => { hoverTile = tile; setCandidate(fx.id); showDetails(fx) })
+  tile.addEventListener('mouseleave', () => { if (hoverTile === tile) hoverTile = null; setCandidate(null) })
+  tile.addEventListener('click', () => pickEffect(fx.id))
+  if (b.mode === 'replace') {
+    const cur = state.stack.find(l => l.id === b.layerId)
+    if (cur && cur.effect === fx.id) tile.classList.add('active')
+  }
+  return tile
+}
+function presetTile (p) {
+  const stage = h('span', { class: 'tile-stage' })
+  const tile = h('button', { class: 'transition-tile', title: p.stack.map(l => `${EFFECTS[l.effect].phase}: ${EFFECTS[l.effect].label}`).join('\n') },
+    stage, h('span', { class: 'tile-name' }, h('i', { class: 'tile-symbol' }, '★'), p.name))
+  stage.append(h('span', { class: 'tile-unit' }, p.stack.length + ' layers'))
+  const cap = { text: p.text.split('\n')[0], font: p.font, size: Math.min(110, p.size * 1.3), colour: p.colour, cx: STAGE_W / 2, cy: STAGE_H / 2, duration: 2.8, stack: p.stack, tile: true }
+  queueTile(stage, cap, tile)
+  tile.addEventListener('click', () => applyPreset(p))
+  return tile
+}
+function queueTile (stage, cap, tile) {
+  // Tiles are built lazily (after the popover is on screen) and rendered at a
+  // representative moment; the hovered tile (or all, with Autoplay) animates.
+  const entry = { stage, cap, tile, scene: null, t0: performance.now() / 1000 }
+  tileScenes.push(entry)
+  requestAnimationFrame(() => {
+    try { entry.scene = createScene(stage, cap); fit(entry.scene, stage); renderScene(entry.scene, cap.duration * 0.55) } catch (err) { console.error(err) }
+  })
+}
+function setCandidate (id) {
+  if (state.candidate === id) return
+  state.candidate = id
+  rebuildPreview()
+  renderLanes()
+}
+function pickEffect (id) {
+  const b = state.browser
+  const fx = EFFECTS[id]
+  if (b.mode === 'replace') {
+    const l = state.stack.find(x => x.id === b.layerId)
+    if (l) { l.effect = id; delete l.unit; delete l.duration; delete l.stagger; delete l.order; delete l.params }
+  } else {
+    // insert after the last layer of the same phase (stack order = lane order)
+    const lastIdx = state.stack.map(l => EFFECTS[l.effect].phase).lastIndexOf(fx.phase)
+    state.stack.splice(lastIdx + 1, 0, { id: uid++, effect: id })
+  }
+  state.recent = [id, ...state.recent.filter(x => x !== id)].slice(0, 12)
+  saveLocal()
+  state.candidate = null
+  if (!document.getElementById('gallery').hidden) { changed({ custom: true }); renderBrowser() } else { closeBrowser(); changed({ custom: true }) }
+}
+function applyPreset (p) {
+  Object.assign(state, { text: p.text, font: p.font, size: p.size, colour: p.colour, preset: p.name })
+  state.stack = withIds(p.stack)
+  state.candidate = null
+  syncInputs()
+  closeBrowser(); closeGallery()
+  changed()
+}
+function showDetails (fx) {
+  const host = document.getElementById('g-details')
+  if (!host || document.getElementById('gallery').hidden) return
+  const tracks = Object.keys(fx.tracks || {})
+  host.textContent = ''
+  host.append(h('h4', null, fx.label),
+    h('div', null, fx.source),
+    h('div', { class: 'meta' },
+      h('span', null, (PHASES.find(p => p.id === fx.phase) || {}).label),
+      h('span', null, 'unit: ' + UNIT_LABEL[fx.unit]),
+      ...tracks.map(t => h('span', null, t)),
+      ...(fx.copies || []).map(c => h('span', null, 'copies: ' + c.type)),
+      fx.content ? h('span', null, 'content: ' + fx.content.type + ' (exclusive)') : null,
+      /approx/i.test(fx.source) ? h('span', null, '≈ approximation') : h('span', null, 'exact in the render')),
+    h('div', null, fx.content ? 'Rewrites the text: only one text-rewriting effect per phase; everything else still stacks.' : 'Combines with every other effect: channels are composed, not overwritten.'),
+    h('div', { class: 'row', style: { marginTop: '8px' } },
+      h('button', { class: 'btn dark', onclick: () => { state.browser.mode = 'add'; pickEffect(fx.id) } }, `Add to ${(PHASES.find(p => p.id === fx.phase) || {}).label}`)))
+}
+function openGallery () {
+  const b = state.browser
+  document.getElementById('browser').hidden = true
+  const g = document.getElementById('gallery')
+  g.hidden = false
+  const right = document.getElementById('g-right')
+  right.textContent = ''
+  right.append(h('div', { class: 'transition-browser text-effect-browser' }))
+  b.host = 'gallery'
+  document.getElementById('g-mode').textContent = b.mode === 'replace' ? 'Swap: pick an effect' : 'Hover to preview on top of the current stack · click to add'
+  document.getElementById('g-details').textContent = 'Hover a tile to see what it animates and how it combines.'
+  rebuildGalleryStage()
+  renderBrowser()
+}
+function closeGallery () {
+  document.getElementById('gallery').hidden = true
+  if (galleryScene) { galleryScene.root.remove(); galleryScene = null }
+  if (state.browser && state.browser.host === 'gallery') state.browser = null
+  setCandidate(null)
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+/** Re-render everything; `custom` marks the stack as edited (no longer a preset). */
+function changed ({ custom = false } = {}) {
+  if (custom) state.preset = null
+  rebuildPreview()
+  renderLanes()
+  renderTimeline()
+  document.getElementById('preset-name').textContent = state.preset || 'Custom stack'
+}
+/** Light refresh while a slider/colour/timeline handle is being dragged. */
+function refresh () {
+  state.preset = null
+  document.getElementById('preset-name').textContent = 'Custom stack'
+  rebuildPreview()
+  renderTimeline()
+  renderModel()
+  renderStoryChips()
+}
+function syncInputs () {
+  document.getElementById('text-input').value = state.text
+  document.getElementById('font-input').value = state.font
+  document.getElementById('size-input').value = state.size
+  document.getElementById('colour-input').value = state.colour
+}
+function seek (t) { state.t = Math.max(0, Math.min(state.duration, t)); frameOnce() }
+function frameOnce () {
+  if (mainScene) renderScene(mainScene, state.t)
+  if (galleryScene) renderScene(galleryScene, state.t)
+  document.getElementById('scrub').value = String(Math.round(state.t / state.duration * 1000))
+  document.getElementById('time').textContent = `${fmt(state.t)} / ${fmt(state.duration)} s`
+  positionPlayhead()
+}
+let last = null
+function loop (now) {
+  const dt = last == null ? 0 : (now - last) / 1000
+  last = now
+  if (state.playing) {
+    state.t += dt
+    if (state.t > state.duration + 0.6) state.t = 0          // short pause, then loop
+  }
+  frameOnce()
+  const tNow = now / 1000
+  const b = state.browser
+  for (const tile of tileScenes) {
+    if (!tile.scene) continue
+    const live = (b && b.autoplay) || hoverTile === tile.tile
+    if (live) renderScene(tile.scene, ((tNow - tile.t0) % (tile.cap.duration + 0.5)))
+  }
+  requestAnimationFrame(loop)
+}
+
+async function loadEffects () {
+  try {
+    const res = await fetch('../demo/text-motion-effects.json', { cache: 'no-store' })
+    if (res.ok) return await res.json()
+  } catch (err) { /* opened from disk: fall back to the snapshot */ }
+  return JSON.parse(document.getElementById('effects-snapshot').textContent)
+}
+
+async function init () {
+  const data = await loadEffects()
+  EFFECT_LIST = data.effects
+  EFFECTS = Object.fromEntries(EFFECT_LIST.map(e => [e.id, e]))
+  document.getElementById('fx-count').textContent = `${EFFECT_LIST.length} in the prototype registry`
+  const fontSel = document.getElementById('font-input')
+  for (const f of FONTS) fontSel.append(h('option', { value: f.family }, f.family))
+  try { await Promise.all(FONTS.map(f => document.fonts.load(`${f.weight} 40px "${f.family}"`))) } catch (err) { /* offline: fallback fonts */ }
+  applyPreset(PRESETS[0])
+  document.getElementById('text-input').addEventListener('input', ev => { state.text = ev.target.value || ' '; changed() })
+  fontSel.addEventListener('change', ev => { state.font = ev.target.value; changed() })
+  document.getElementById('size-input').addEventListener('input', ev => { state.size = Number(ev.target.value); changed() })
+  document.getElementById('colour-input').addEventListener('input', ev => { state.colour = ev.target.value; changed() })
+  document.getElementById('play').addEventListener('click', ev => {
+    state.playing = !state.playing
+    ev.currentTarget.textContent = state.playing ? '❚❚ Pause' : '▶ Play'
+  })
+  document.getElementById('scrub').addEventListener('input', ev => { state.playing = false; document.getElementById('play').textContent = '▶ Play'; seek(Number(ev.target.value) / 1000 * state.duration) })
+  document.getElementById('preset-chip').addEventListener('click', ev => openBrowser({ mode: 'add', phase: null, anchor: ev.currentTarget, tab: 'presets' }))
+  document.getElementById('save-preset').addEventListener('click', () => {
+    const name = prompt('Name for this preset', state.preset ? state.preset + ' (mine)' : 'My stack')
+    if (!name) return
+    state.myPresets.push({ name, text: state.text, font: state.font, size: state.size, colour: state.colour, stack: state.stack.map(({ id, ...l }) => l) })
+    state.preset = name
+    saveLocal(); changed()
+  })
+  document.getElementById('g-close').addEventListener('click', closeGallery)
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') { closeBrowser(); closeGallery() } })
+  document.addEventListener('mousedown', ev => {
+    const el = document.getElementById('browser')
+    if (!el.hidden && !el.contains(ev.target) && !ev.target.closest('.lane-add,.layer .name,#preset-chip')) closeBrowser()
+  })
+  window.addEventListener('resize', () => { if (mainScene) fit(mainScene, document.getElementById('stage')); if (galleryScene) fit(galleryScene, document.getElementById('g-stage')); positionPlayhead() })
+  requestAnimationFrame(loop)
+}
+init()
+</script>
+</body>
+</html>

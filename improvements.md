@@ -2,14 +2,33 @@
 - check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
 - add / edit text frame: on popup window delete "Bouncy text" as this option is also available in the "Enable text motion path"
 - add / edit text frame: on popup window in case "Same as A" is disabled by user make custom color B the same as custom color A (for initialization, user can change it afterwards)
-- check the below references and advise if we can integrate the text motion in the application
-- https://jitter.video/templates/text/ 
-- https://github.com/LeiQiaoZhi/Easy-Text-Effects-for-Unity
-- https://prismic.io/blog/css-text-animations
-- https://github.com/topics/text-animations?o=desc&s=stars
+
+2026-09-25
+- text effects: decide on the options in docs/text-motion-references.md §9 (stackable effects, GUI aligned with the transition browser), then implement phases P1–P4
 
 
 ---= DONE =---
+
+2026-09-25 — Text motion references: advice, stackable effects, GUI proposal (+ 5 combination fixes)
+- check the below references and advise if we can integrate the text motion in the application
+  (https://jitter.video/templates/text/, https://github.com/LeiQiaoZhi/Easy-Text-Effects-for-Unity,
+  https://prismic.io/blog/css-text-animations, https://github.com/topics/text-animations?o=desc&s=stars)
+  - **Advice:** docs/text-motion-references.md: integrate the motion, not the code (the MP4 is
+    libass). Of 42 reviewed effects, 28 are exact in libass, 7 approximations, 7 not possible. Includes
+    the combination audit, the proposed effect stack + channel compositor (one declarative registry,
+    Python and JS engines), the GUI aligned with the transition browser (★ / Recent / Presets / full
+    gallery, Enter/While/Exit lanes, hover = preview on top of the stack, mini timeline, presets),
+    phasing and the decisions to take.
+  - **Examples:** docs/demo/text-motion-stack-demo.mp4 (+ poster): today vs stack side by side,
+    20 new effects from the references, 6 presets, all rendered by libass.
+    docs/mockups/text-effects-stack.html: interactive GUI mock-up whose preview runs the JS twin engine.
+  - **Preview = render, proven:** docs/demo/check_twin_engines.py compares Python and JS on
+    7,777 unit-frames (max difference 1e-13).
+  - **Fixed** in backend/app/text_effects.py (+12 tests, 413 OK): exit fade lost with libass While
+    effects (libass keeps only the first \fad); Typewriter + caret / Decrypted scramble dim during
+    the reveal; text faded out before Typewriter delete / Scramble out; loops restarting in every
+    slice (motion path + Pulse, typing + loops); Split rise / Split from centre drawing every
+    remaining letter in every event.
 
 2026-09-18
 - scale preview picture in pre-view popup so that complete picture is shown. also account for orientation (portrait, landscape)
