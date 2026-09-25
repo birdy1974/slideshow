@@ -1,12 +1,24 @@
 2026-09-23
 - check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
-- check https://jitter.video/templates/text/ and advise if we can integrate the text motion in the application
 - check [https://jitter.video/templates/text/](https://github.com/LeiQiaoZhi/Easy-Text-Effects-for-Unity) and advise if we can integrate the text motion in the application
 - check [https://jitter.video/templates/text/](https://prismic.io/blog/css-text-animations) and advise if we can integrate the text motion in the application
 
 
 
 ---= DONE =---
+
+2026-09-25 — Advice: Jitter text templates (https://jitter.video/templates/text/)
+- Full write-up: docs/jitter-text-motion-advice.md (advice only, nothing built yet).
+- Jitter itself can't be integrated: no public API, templates are edited only
+  in Jitter's editor, and clean or transparent exports need paid plans.
+- Recommended: rebuild the motion styles natively as new text effects in the
+  registry (they render into the MP4 and stay editable). Proposed first batch:
+  Snap stretch, Mask slide-up reveal (+ exit), Cascade by lines/words, Blur
+  spin in, Motion-blur slide. Second batch: Echo trail, Bouncy words,
+  Split-flap board, Marquee loop.
+- Alternative: an "overlay clip" layer so a transparent WebM/MOV exported from
+  Jitter can be placed on a slide (exact look, but the text is baked in).
+- Out of scope: morphs, blend-mode looks and UI scene templates.
 
 2026-09-25 — Text frame popup: unticking "Same as A" starts Colour B as a copy of Colour A
 - New text frame / Text frame editor: when "Same as A" is unticked, Colour B
