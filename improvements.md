@@ -1,13 +1,50 @@
 2026-09-23
 - check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
-- add / edit text frame: on popup window delete "Bouncy text" as this option is also available in the "Enable text motion path"
-- add / edit text frame: on popup window in case "Same as A" is disabled by user make custom color B the same as custom color A (for initialization, user can change it afterwards)
-
-2026-09-25
-- text effects: decide on the options in docs/text-motion-references.md §9 (stackable effects, GUI aligned with the transition browser), then implement phases P1–P4
 
 
 ---= DONE =---
+
+2026-09-25 — Stacked text effects implemented (P1–P4), 29 new fonts, text synced to the colour A → B background
+- implement everything, add new font (especially handwritten fonts) and integrate with the color transitions background
+  - **Read as:** all of docs/text-motion-references.md §8 (P1–P4) with the recommended option of every §9
+    decision; "color transitions background" = the text frame's Colour A → Colour B transition.
+  - **Engine:**
+    - backend/app/text_motion.py compiles a stack of layers (MediaItem.textFx) to libass.
+    - Channels multiply, add or take the max; colours fold; clips intersect; text-rewriting effects are
+      exclusive per lane, with a badge.
+    - Letters are drawn in line, so kerning, ligatures and script joins survive.
+    - HarfBuzz (uharfbuzz) + fontTools; `Kerning: yes`.
+    - src/textMotionCore.ts is the twin for the live preview (Python vs TypeScript compared on every effect).
+  - **Registry v2** (registry/text-motion.json): 129 effects and 19 presets, stored by id.
+    - All v1 effects and the former toggles, now While layers.
+    - The Jitter and Prismic/copies batches, handwriting effects, background-sync effects.
+    - Word-range targeting.
+  - **GUI** (aligned with the transitions GUI):
+    - Enter / While shown / Exit lanes.
+    - A browser with search, tabs, category rail with counts, live tiles, ★ / Recent / Presets, hover = preview on
+      top of the stack, and conflict badges.
+    - Full gallery, mini timeline with a background lane, saved presets (per browser).
+    - Storyline chips "symbol +N"; Randomize picks presets.
+  - **Colour A → B:**
+    - The text can follow the frame transition with its exact shape and timing (Follow / Swap / Arrive / Leave /
+      Pulse); any layer can be timed to it; colours can be "readable on B".
+    - The stage paints the change with the same geometry and clock.
+    - Four colour presets (Sunrise card, Colour wipe, Ink swap, Reveal with colour).
+  - **Fonts:** 29 new families (14 handwriting, 13 script, 2 typewriter; 49 in total), built by
+    scripts/build_fonts.py into registry/fonts.json with licences.
+    - The font picker draws every font in its own face.
+    - There is never a faux bold or italic.
+  - **Migration:** old projects convert on load (textFx only is written). The backend mirror
+    legacy_to_stack() is checked against the browser code.
+  - **Examples:** docs/demo/text-motion-production.mp4 + poster, rendered through Renderer.render
+    (docs/demo/make_text_motion_production_demo.py).
+  - **Tests:** tests/test_text_motion.py (+30, including a burnt-in pixel check of the colour-following text),
+    444 OK. Docs: docs/text-motion.md.
+- add / edit text frame (2026-09-23): delete "Bouncy text" as it duplicates the text motion options.
+  **Done:** the toggles are gone. Bouncy (like grow/shrink, rotate, squash, colour change) is one While
+  effect, and the motion path section toggles the Motion path layer.
+- add / edit text frame (2026-09-23): when "Same as A" is unticked, start colour B as a copy of colour A.
+  **Done.**
 
 2026-09-25 — Text motion references: advice, stackable effects, GUI proposal (+ 5 combination fixes)
 - check the below references and advise if we can integrate the text motion in the application

@@ -2,3 +2,9 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 pydantic==2.11.7
 python-multipart==0.0.20
+# Stacked text effects (app/text_motion.py): HarfBuzz shaping gives the exact
+# per-letter advances libass draws with (kerning, ligatures, script joins);
+# fontTools reads the metrics of fonts that are not in registry/fonts.json.
+# Both ship manylinux wheels for CPython 3.13 on x86_64 and aarch64.
+uharfbuzz==0.56.2
+fonttools==4.66.0

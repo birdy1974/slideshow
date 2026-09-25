@@ -1,8 +1,11 @@
 # Text motion references: integration advice, a GUI that scales, stackable effects
 
-Date: 2026-09-25 · Status: **advisory + working prototype**. Five combination
-bugs found during the audit are **fixed on this branch** (with tests); the
-architecture and GUI below are proposals awaiting decisions (see the end).
+Date: 2026-09-25 · Status: **implemented**. All four phases shipped the same
+day with the recommended option for every decision in §9 (plus 29 new fonts
+and the colour A → B integration). What was built, and how, is in
+[text-motion.md](text-motion.md). This document stays as the advice and design
+record. The prototype files under `docs/demo/` and `docs/mockups/` predate the
+production engine (`backend/app/text_motion.py`, `src/textMotionCore.ts`).
 
 Request (improvements.md, 2026-09-23): *"check the below references and advise
 if we can integrate the text motion in the application. also propose better gui
@@ -397,15 +400,18 @@ effect (the demo builds it from captions), word-range targeting.
 
 ## 8. Phasing
 
-| Phase | Content | Size |
-|---|---|---|
-| P0 (done) | five timing fixes + tests; prototype, demo, mock-up, twin check | – |
-| P1 | registry v2 + `backend/app/text_motion.py` behind a flag; convert the 72 effects; golden tests; `uharfbuzz`; `Kerning: yes`; drawtext legacy path untouched | M |
-| P2 | `textFx` data model + legacy mapping; `src/textMotion.ts` preview replacing `TextFxPreview` | M |
-| P3 | lanes + browser (★/Recent/Presets) + conflict badges; toggles → While layers; storyline chips; randomize presets | M–L |
-| P4 | full gallery, mini timeline, saved presets; new effects batch 1 (Jitter), batch 2 (Prismic/copies); word-range targeting | M |
+| Phase | Content | Size | Status |
+|---|---|---|---|
+| P0 | five timing fixes + tests; prototype, demo, mock-up, twin check | – | done |
+| P1 | registry v2 + `backend/app/text_motion.py` behind a flag; convert the 72 effects; golden tests; `uharfbuzz`; `Kerning: yes`; drawtext legacy path untouched | M | done: the "flag" is the item's `textFx` field (items without it keep the v1 engine) |
+| P2 | `textFx` data model + legacy mapping; `src/textMotion.ts` preview replacing `TextFxPreview` | M | done: the twin is `src/textMotionCore.ts` + `src/textMotionScene.ts` |
+| P3 | lanes + browser (★/Recent/Presets) + conflict badges; toggles → While layers; storyline chips; randomize presets | M–L | done |
+| P4 | full gallery, mini timeline, saved presets; new effects batch 1 (Jitter), batch 2 (Prismic/copies); word-range targeting | M | done: 129 effects and 19 presets |
+| + | 29 new fonts (handwriting, script, typewriter) with a font picker; text effects synced to the colour A → B frame background | – | done |
 
 ## 9. Decisions needed
+
+*Taken 2026-09-25: the recommended option for all ten ("implement everything").*
 
 1. **Architecture:** A: stack + compositor + declarative registry **[recommended]**;
    D: keep single slots and patch.
@@ -431,8 +437,9 @@ effect (the demo builds it from captions), word-range targeting.
 ```bash
 python3 -m venv ~/.venv && . ~/.venv/bin/activate
 pip install -r backend/requirements.txt uharfbuzz fonttools imageio-ffmpeg
-cd backend && python -m unittest discover -s tests && cd ..         # 413 OK
+cd backend && python -m unittest discover -s tests && cd ..         # 413 OK then; 444 OK after the implementation
 python3 docs/demo/make_text_motion_stack_demo.py                    # MP4 + poster (FFmpeg with libass)
+python3 docs/demo/make_text_motion_production_demo.py               # the shipped engine, through Renderer.render
 python3 docs/demo/check_twin_engines.py                             # Python vs JS (needs node)
 python3 -m http.server 8000   # then open /docs/mockups/text-effects-stack.html
 ```

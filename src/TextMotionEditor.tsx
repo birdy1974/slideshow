@@ -131,7 +131,7 @@ export function TextMotionEditor({ stack, onChange, caption, windowSeconds, word
       {PHASES.map(ph => {
         const layers = layersOf(stack, ph.id)
         return <div key={ph.id} className={`tme-lane ${ph.id}`}>
-          <header><span className="dot" /><strong>{ph.label.toUpperCase()}</strong><span className="count">{layers.length || ''}</span><span className="span">{laneSpan(ph.id)}</span></header>
+          <header><span className="dot" /><strong>{ph.label.toUpperCase()}</strong>{layers.length > 0 && <span className="count">{layers.length}</span>}<span className="span">{laneSpan(ph.id)}</span></header>
           <div className="tme-layers">
             {!layers.length && <div className="tme-empty">{ph.empty}</div>}
             {layers.map(layer => {
@@ -259,6 +259,10 @@ function LayerParams({ layer, fx, hasBg, isFrame, wordCount, onPatch, onParam, o
 // ---------------------------------------------------------------------------
 // Mini timeline
 // ---------------------------------------------------------------------------
+const LANE_PHASES: Phase[] = ['in', 'hold', 'out']
+const LANE_ROW = 11
+const laneHeight = (layers: number) => 20 + Math.max(0, layers - 1) * LANE_ROW
+
 export function TextMotionTimeline({ stack, onChange, clock, duration, start, end, bg, playing, onPlaying, light = false }: {
   stack: TextFxLayer[]
   onChange?: (stack: TextFxLayer[]) => void
@@ -306,6 +310,8 @@ export function TextMotionTimeline({ stack, onChange, clock, duration, start, en
     window.addEventListener('pointermove', mm)
     window.addEventListener('pointerup', up)
   }
+  // A lane grows by one thin row per extra layer, so stacked bars never hide each other.
+  const rows = LANE_PHASES.map(ph => layersOf(stack, ph))
   const ticks: number[] = []
   const step = D > 12 ? 2 : D > 6 ? 1 : 0.5
   for (let s = 0; s <= D + 1e-6; s += step) ticks.push(s)
@@ -323,7 +329,7 @@ export function TextMotionTimeline({ stack, onChange, clock, duration, start, en
     else if (phase === 'out') { b = we - delay; a = b - (synced && layer.duration == null ? we - ws : sp - delay) }
     else { a = ws + delay; b = Math.min(we, ws + sp) }
     return <div key={layer.id} className={`tl-bar ${phase}${layer.muted ? ' muted' : ''}${i > 0 ? ' stacked' : ''}`} title={`${fx.label}: ${fmt(a)} → ${fmt(b)} s${synced ? ' · timed to the colour change' : ''}`}
-      style={{ left: pctOf(a), width: `${Math.max(0.8, (b - a) / D * 100)}%`, top: i > 0 ? 3 + Math.min(i, 3) * 5 : undefined }}>
+      style={{ left: pctOf(a), width: `${Math.max(0.8, (b - a) / D * 100)}%`, top: i > 0 ? 19 + (i - 1) * LANE_ROW : undefined }}>
       <span>{fx.symbol} {fx.label}</span>
       {phase !== 'hold' && onChange && <i className={`handle ${phase === 'in' ? 'r' : 'l'}`} title="Drag to change the duration" onPointerDown={e => drag(e, layer, phase)} />}
     </div>
@@ -338,7 +344,7 @@ export function TextMotionTimeline({ stack, onChange, clock, duration, start, en
       <div className="tl-labels">
         <span />
         {bg && <label>BACKGROUND</label>}
-        <label>ENTER</label><label>WHILE SHOWN</label><label>EXIT</label>
+        {(['ENTER', 'WHILE SHOWN', 'EXIT']).map((name, k) => <label key={name} style={{ height: laneHeight(rows[k].length) }}>{name}</label>)}
       </div>
       <div className="tl-tracks">
         <div ref={rulerRef} className="tl-ruler" onPointerDown={seek}>
@@ -350,7 +356,7 @@ export function TextMotionTimeline({ stack, onChange, clock, duration, start, en
           <i style={{ left: pctOf(bg.start), width: `${bg.time / D * 100}%`, background: `linear-gradient(90deg, ${bg.from}, ${bg.to})` }} className="mix"><span>{bg.transition}</span></i>
           <i style={{ left: pctOf(bg.start + bg.time), right: 0, background: bg.to }} />
         </div>}
-        {(['in', 'hold', 'out'] as Phase[]).map(ph => <div key={ph} className="tl-lane">{layersOf(stack, ph).map((l, i) => bar(l, i, ph))}</div>)}
+        {LANE_PHASES.map((ph, k) => <div key={ph} className="tl-lane" style={{ height: laneHeight(rows[k].length) }}>{rows[k].map((l, i) => bar(l, i, ph))}</div>)}
         <div ref={headRef} className="tl-playhead" />
       </div>
     </div>

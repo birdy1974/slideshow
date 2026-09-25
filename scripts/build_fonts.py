@@ -9,7 +9,7 @@ One catalogue drives three consumers that must never drift apart:
   rendered MP4 use identical typography.
 * ``registry/fonts.json`` - family -> group, files per style, licence and the
   vertical metrics both text engines need (backend/app/text_motion.py sizes
-  libass fonts from ``usWinAscent + usWinDescent``; src/textMotion.ts uses the
+  libass fonts from ``usWinAscent + usWinDescent``; src/textMotionScene.ts uses the
   same numbers to put the browser baseline where libass puts it).
 * ``src/fonts.css``       - generated ``@font-face`` rules.
 

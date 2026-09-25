@@ -42,7 +42,7 @@ catalogue) expose that change to the stack: ``bg`` effects follow its exact
 shape and timing (wipes, slides, circles ... reproduced from FFmpeg's xfade
 maths, a crossfade otherwise) and any layer can be timed to it (``sync``).
 
-``src/textMotion.ts`` is the JavaScript twin of this module (the live
+``src/textMotionCore.ts`` is the JavaScript twin of this module (the live
 preview); ``tests/test_text_motion_twin.py`` runs both on the same input and
 compares every channel.
 """
@@ -119,7 +119,7 @@ def legacy_index() -> dict[tuple[str, str], str]:
 
 
 # ============================================================================
-# Maths shared with src/textMotion.ts (keep both in step)
+# Maths shared with src/textMotionCore.ts (keep both in step)
 # ============================================================================
 
 LEVEL_ORDER = ("char", "word", "line", "text")      # finest -> coarsest (groups sit after "word")
@@ -733,7 +733,7 @@ def region_contains(region: dict[str, Any], x: float, y: float) -> bool:
 
 
 # ============================================================================
-# Compilation (shared semantics with src/textMotion.ts)
+# Compilation (shared semantics with src/textMotionCore.ts)
 # ============================================================================
 
 
@@ -1154,7 +1154,7 @@ def _content(ctx: Ctx, L: _L, e: Unit, u: float, tl: float, t: float, useed: int
 
 def evaluate(ctx: Ctx, e: Unit, t: float) -> dict[str, Any]:
     """Composed state of unit ``e`` (at level ctx.gran, or a coarser level for
-    box copies) at time t. Identical to evaluate() in src/textMotion.ts."""
+    box copies) at time t. Identical to evaluate() in src/textMotionCore.ts."""
     cap = ctx.cap
     em = cap.em
     start_rank = _level_rank(e.level)
@@ -2190,6 +2190,34 @@ def stack_fallback_fields(item: dict[str, Any]) -> dict[str, Any]:
 
 _V1_DEFAULTS = {"enter": "Fade", "while": "None (static)", "exit": "Fade out"}
 _V1_NONE = {"enter": ("none",), "while": ("none (static)", "none"), "exit": ("none (hold)", "none")}
+# normalizeTextEffect() of src/textEffects.ts: very old projects stored xfade
+# names ("Wipe left", "Slide up", ...) in textEnter / textExit; the v1 editor
+# showed them as their text equivalents, so the migration maps them the same
+# way (anything else falls back to the slot default).
+_V1_ALIASES: tuple[tuple[re.Pattern[str], Callable[[str], str]], ...] = (
+    (re.compile(r"^none$", re.I), lambda slot: {"exit": "None (hold)", "while": "None (static)"}.get(slot, "None")),
+    (re.compile(r"wipe.*(left|\u2190)", re.I), lambda slot: "Wipe from left"),
+    (re.compile(r"wipe.*(right|\u2192)", re.I), lambda slot: "Wipe from right"),
+    (re.compile(r"wipe.*(up|\u2191)", re.I), lambda slot: "Wipe from top"),
+    (re.compile(r"wipe.*(down|\u2193)", re.I), lambda slot: "Wipe from bottom"),
+    (re.compile(r"slide.*(left|\u2190)", re.I), lambda slot: "Slide from left"),
+    (re.compile(r"slide.*(right|\u2192)", re.I), lambda slot: "Slide from right"),
+    (re.compile(r"slide.*(up|\u2191)", re.I), lambda slot: "Slide from bottom"),
+    (re.compile(r"slide.*(down|\u2193)", re.I), lambda slot: "Slide from top"),
+    (re.compile(r"^fade", re.I), lambda slot: "Fade out" if slot == "exit" else "Fade"),
+)
+
+
+def _v1_label(label: str, slot: str) -> str:
+    """The v1 catalogue label a stored v1 label stood for (normalizeTextEffect)."""
+    from .text_effects import _by_label
+    raw = label.strip()
+    if (slot, raw) in _by_label():
+        return raw
+    for pattern, resolve in _V1_ALIASES:
+        if pattern.search(raw):
+            return resolve(slot)
+    return _V1_DEFAULTS[slot]
 
 
 def legacy_to_stack(item: dict[str, Any], defaults: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -2212,7 +2240,8 @@ def legacy_to_stack(item: dict[str, Any], defaults: dict[str, Any] | None = None
         key = label.strip().lower()
         if key in _V1_NONE[slot]:
             return
-        eid = idx.get((slot, key)) or idx.get((slot, _V1_DEFAULTS[slot].lower()))
+        eid = (idx.get((slot, key)) or idx.get((slot, _v1_label(label, slot).strip().lower()))
+               or idx.get((slot, _V1_DEFAULTS[slot].lower())))
         if eid:
             stack.append({"effect": eid, **extra})
 

@@ -1368,7 +1368,9 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .tl-bar span{pointer-events:none}
 .tl-bar.in{background:#739c3a}.tl-bar.hold{background:#5f7a8e}.tl-bar.out{background:#c7643a}
 .tl-bar.muted{opacity:.35}
-.tl-bar.stacked{height:8px;font-size:0;opacity:.85}
+.tl-bar.stacked{height:9px;font:700 6.5px/9px Manrope;padding:0 4px}
+/* further layers of a lane sit on their own thin rows, in a lighter tint */
+.tl-bar.in.stacked{background:#8fb656}.tl-bar.hold.stacked{background:#7d9bb0}.tl-bar.out.stacked{background:#d77a51}
 .tl-bar .handle{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize;background:#0003}
 .tl-bar .handle.r{right:0}.tl-bar .handle.l{left:0}
 .tl-playhead{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#f4f6f0;box-shadow:0 0 4px #000a;pointer-events:none}
@@ -1386,7 +1388,9 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .text-motion-tile.dim{opacity:.5}
 .tile-unit{position:absolute;top:3px;left:3px;z-index:3;font:800 7px Manrope;letter-spacing:.4px;color:#e9f3d6;background:#2d3a1ccc;border-radius:3px;padding:2px 4px;pointer-events:none}
 .tile-flag.approx{left:auto;right:3px;background:#3c3f37e6;color:#e8eadf}
-.text-effect-gallery{width:min(1240px,97vw);height:min(820px,94vh)}
+/* opened from inside the (dark) frame editor: reset the inherited light text colour */
+.text-effect-gallery{width:min(1240px,97vw);height:min(820px,94vh);color:#2c2f29}
+.text-effect-gallery .preview-top button{color:#6b7065}
 .text-effect-gallery-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:14px;padding:12px 16px 14px}
 .gallery-left{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto}
 .gallery-motion-stage{width:100%;aspect-ratio:16/9;border-radius:9px;background:#1b1e19}
@@ -1425,5 +1429,5 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .font-list button{width:100%;display:flex;align-items:center;gap:12px;border:0;background:none;border-radius:7px;padding:6px 8px;text-align:left;color:#22251f}
 .font-list button:hover{background:#eef1e7}
 .font-list button.active{background:#dfe9ca}
-.font-sample{flex:1;min-width:0;font-size:21px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.35}
+.font-list .font-sample{flex:1;min-width:0;margin:0;padding:0;border:0;border-radius:0;opacity:1;font-size:21px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.35}
 .font-meta{flex:none;font:700 9px Manrope;color:#7d8178;white-space:nowrap}

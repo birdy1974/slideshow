@@ -2,7 +2,7 @@
  "version": 2,
  "$comment": [
   "Registry v2 of the stackable text effects (docs/text-motion-references.md). Single source of truth for",
-  "backend/app/text_motion.py (Python -> libass, the MP4) and src/textMotion.ts (the live preview): both engines",
+  "backend/app/text_motion.py (Python -> libass, the MP4) and src/textMotionCore.ts (the live preview): both engines",
   "interpret the same data with the same maths, so preview and render agree, and effects stack because channels",
   "are COMPOSED, never overwritten. Projects store effect ids (never labels): never change an id.",
   "",

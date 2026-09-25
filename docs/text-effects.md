@@ -1,12 +1,23 @@
 # Dynamic text effects — implemented (Option 1: drawtext expressions + libass)
 
-Date: 2026-09-11 · Status: **implemented** (advice history in
-[text-effects-options.md](text-effects-options.md), catalogue of record in
-`registry/text-effects.json`). Next step proposed in
-[text-motion-references.md](text-motion-references.md) (2026-09-25): stackable
-effects (any number per slot, composed per channel), a GUI aligned with the
-transition browser, and 22 new effects from the Jitter / Prismic / GitHub
-references.
+Date: 2026-09-11 · Status: **superseded on 2026-09-25 by
+[text-motion.md](text-motion.md)**: stacked effects (any number per lane,
+composed per channel), `MediaItem.textFx`, registry v2
+(`registry/text-motion.json`, 129 effects + presets) and a GUI aligned with the
+transition browser. Advice history is in
+[text-effects-options.md](text-effects-options.md) and
+[text-motion-references.md](text-motion-references.md).
+
+What remains of the system below:
+
+* `registry/text-effects.json` and `backend/app/text_effects.py` still render
+  items that have **no** `textFx`. Those are projects never opened in the new
+  editor; the editor migrates every item on load.
+* The v1 labels are the migration source: `legacy` in registry v2,
+  `migrateLegacyTextFx()` in `src/textFx.ts`, `legacy_to_stack()` in
+  `backend/app/text_motion.py`.
+* The v1 fields (`textFxEnter`, `textFxWhile`, `textFxExit`, the toggles) are
+  no longer written.
 
 Every text in the app — standalone title frames and captions on pictures — has
 three animation slots, saved with the project and rendered for real into the

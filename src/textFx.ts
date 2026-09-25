@@ -136,16 +136,18 @@ export function normalizeTextFx(raw: unknown): TextFxLayer[] {
     if (!EFFECTS[e.effect]) continue
     const layer: TextFxLayer = { id: typeof e.id === 'string' && e.id ? e.id : newLayerId(), effect: e.effect }
     if (['char', 'word', 'line', 'text'].includes(e.unit)) layer.unit = e.unit
-    for (const [key, lo, hi] of [['duration', 0.01, 120], ['delay', 0, 120], ['stagger', 0, 1], ['intensity', 0, 3]] as const) {
+    for (const [key, lo, hi] of [['duration', 0.02, 120], ['delay', 0, 120], ['stagger', 0, 1], ['intensity', 0, 3]] as const) {
       const v = Number(e[key])
-      if (e[key] !== undefined && e[key] !== null && e[key] !== '' && Number.isFinite(v)) (layer as any)[key] = Math.max(lo, Math.min(hi, v))
+      if (e[key] === undefined || e[key] === null || e[key] === '' || !Number.isFinite(v)) continue
+      if (key === 'duration' && v <= 0) continue   // like parse_stack(): no duration = the effect's default
+      ;(layer as any)[key] = Math.max(lo, Math.min(hi, v))
     }
     if (['forward', 'reverse', 'center', 'edges', 'random'].includes(e.order)) layer.order = e.order
     if (['loop', 'pingpong', 'once'].includes(e.loop)) layer.loop = e.loop
     if (e.params && typeof e.params === 'object' && !Array.isArray(e.params)) layer.params = { ...e.params }
     if (e.muted === true) layer.muted = true
     if (e.sync === 'bg') layer.sync = 'bg'
-    if (Array.isArray(e.range) && e.range.length === 2 && e.range.every((v: unknown) => Number.isInteger(v) && (v as number) >= 0)) layer.range = [e.range[0], e.range[1]]
+    if (Array.isArray(e.range) && e.range.length === 2 && e.range.every((v: unknown) => Number.isInteger(v) && (v as number) >= 0)) layer.range = [Math.min(e.range[0], e.range[1]), Math.max(e.range[0], e.range[1])]
     out.push(layer)
   }
   return out
