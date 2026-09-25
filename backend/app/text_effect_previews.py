@@ -13,8 +13,12 @@ Storage layout (all below ``Settings.config_dir``)::
         manifest.json          status per effect slug
         <slug>.mp4             one clip per effect (enter/while/exit slot)
 
-The slug is a slug of the friendly label ("Split fade · chars" ->
-``split-fade-chars``), the same rule the frontend applies.
+The slug is the effect id of registry/text-motion.json (registry v2), which
+is what projects store. Every example is rendered by the stacking engine
+(``text_motion.py``) as a small stack around the effect: a plain fade in /
+out where the effect leaves a lane empty, and - for the effects that follow a
+text frame's colour change - the card's background changes colour with a
+wipe, so the example shows the interplay.
 """
 
 from __future__ import annotations
@@ -29,12 +33,12 @@ from typing import Any
 
 from .config import Settings
 from .renderer import Renderer, format_ffmpeg_number
-from .text_effects import build_text_overlay, effect_for, overlay_plan
-from .transition_previews import PreviewUnavailable, slugify
+from .text_motion import BgChange, build_text_motion_overlay, motion_registry
+from .transition_previews import PreviewUnavailable
 
 log = logging.getLogger(__name__)
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 # Example geometry: small like the transition previews (65 clips must fit on a
 # NAS volume), large enough to read 40 px text.
@@ -44,6 +48,9 @@ RENDER_TIMEOUT = 60
 
 EXAMPLE_TEXT = "Summer, slowly.\nEvery word matters"
 EXAMPLE_BACKGROUND = "0x242B21"   # matches the app's #242B21 title-card green
+EXAMPLE_BACKGROUND_B = "0xE9C46A" # colour B for the background-sync examples
+BG_TRANSITION = "wiperight"
+BG_START, BG_TIME = 1.0, 1.0
 CARD_FONT_SIZE = 44               # in 640x360 playres
 CARD_TEXT_X, CARD_TEXT_Y = 50.0, 50.0
 
@@ -67,20 +74,14 @@ class TextEffectPreviewCache:
 
     def catalogue(self) -> list[dict[str, Any]]:
         """Every effect the UI offers, in registry order."""
-        from .text_effects import text_effect_catalog
         items: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for entry in text_effect_catalog():
-            slug = slugify(str(entry["label"]))
-            if slug in seen:
-                continue
-            seen.add(slug)
+        for entry in motion_registry()["effects"]:
             items.append({
-                "label": str(entry["label"]),
-                "slug": slug,
-                "slot": str(entry["slot"]),
-                "kind": str(entry.get("engine", "ass")),
-                "params": {str(p.get("name")): str(p.get("default")) for p in (entry.get("params") or []) if p.get("name")},
+                "label": str(entry.get("label")),
+                "slug": str(entry["id"]),
+                "slot": {"in": "enter", "hold": "while", "out": "exit"}.get(str(entry.get("phase")), "while"),
+                "kind": "stack",
+                "needsBg": bool(entry.get("needsBg")),
             })
         return items
 
@@ -172,81 +173,62 @@ class TextEffectPreviewCache:
 
     def _item_for(self, entry: dict[str, Any]) -> dict[str, Any]:
         """A synthetic title-frame item that shows exactly this effect."""
-        slot, label = entry["slot"], entry["label"]
-        params = entry.get("params") or {}
-        speed = 1.6
-        item: dict[str, Any] = {
+        slot = entry["slot"]
+        stack: list[dict[str, Any]] = []
+        if slot != "enter":
+            stack.append({"effect": "fade", "duration": 0.3})
+        stack.append({"effect": entry["slug"]})
+        if slot != "exit":
+            stack.append({"effect": "fade-out", "duration": 0.4})
+        if entry["slug"] == "count-up":
+            stack[1]["params"] = {"from": 0, "to": 2026}
+        return {
             "type": "title",
-            "text": EXAMPLE_TEXT,
+            "text": "2026" if entry["slug"] in ("count-up",) else EXAMPLE_TEXT,
             "duration": DURATION,
             "textStart": 0.0,
             "textEnd": DURATION,
             "textX": CARD_TEXT_X,
             "textY": CARD_TEXT_Y,
+            "textCentered": True,
             "fontSize": CARD_FONT_SIZE * (1920 / WIDTH),  # renderer scales by width/1920
             "fontColor": "#F4F6F0",
             "fontFamily": "Montserrat",
             "textBold": True,
             "textItalic": False,
-            "textFxWhileSpeed": speed,
+            "textFx": stack,
         }
-        enter_default = effect_for("Fade", "enter")
-        exit_default = effect_for("Fade out", "exit")
-        while_default = effect_for("None (static)", "while")
-        if slot == "enter":
-            item["textFxEnter"] = label
-            item["textEnterDuration"] = 1.0
-            item["textFxExit"] = exit_default.get("label")
-            item["textExitDuration"] = 0.4
-            item["textFxWhile"] = while_default.get("label")
-        elif slot == "while":
-            item["textFxEnter"] = enter_default.get("label")
-            item["textEnterDuration"] = 0.3
-            item["textFxExit"] = exit_default.get("label")
-            item["textExitDuration"] = 0.4
-            item["textFxWhile"] = label
-            item["textFxWhileSpeed"] = float(entry["params"].get("speed", 1.6)) if entry["params"].get("speed") else 1.6
-        else:
-            item["textFxEnter"] = enter_default.get("label")
-            item["textEnterDuration"] = 0.3
-            item["textFxExit"] = label
-            item["textExitDuration"] = 0.9
-            item["textFxWhile"] = while_default.get("label")
-        if params:
-            item["textFxParams"] = params
-        # Count up reads nicer with a year range on the example card.
-        if str(entry["label"]) == "Count up":
-            item["textFxParams"] = {"from": "0", "to": "100"}
-        return item
 
     def _render(self, entry: dict[str, Any]) -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
         if not self.renderer.capabilities().get("ffmpeg"):
             raise PreviewUnavailable("FFmpeg is not installed")
+        if not self.renderer.ass_filter_supported():
+            raise PreviewUnavailable("This FFmpeg build has no libass (ass filter)")
         item = self._item_for(entry)
-        plan = overlay_plan(item)
-        if plan is None:  # pragma: no cover - the example text is a constant
-            raise PreviewUnavailable("No example text")
-        # The overlay engine writes the .ass document itself; give it the job
-        # file layout used by real renders.
+        bg = None
+        if entry.get("needsBg"):
+            bg = BgChange("#" + EXAMPLE_BACKGROUND[2:], "#" + EXAMPLE_BACKGROUND_B[2:], BG_TRANSITION, BG_START, BG_TIME)
         ass_path = self.root / f"{entry['slug']}.ass"
-        overlay = build_text_overlay(
-            item, {}, WIDTH, HEIGHT, self.settings.fonts_dir, ass_path, self.renderer_font,
-            force_ass=self.force_ass(),
-        )
+        overlay = build_text_motion_overlay(item, {}, WIDTH, HEIGHT, FPS, 0.0, DURATION, self.settings.fonts_dir, ass_path, bg)
         if not overlay:
             raise PreviewUnavailable("Could not build the text overlay")
         target = self.path_for(entry["slug"])
         tmp = target.with_suffix(".mp4.part")
+        clip = format_ffmpeg_number(DURATION)
+        if bg is not None:
+            source = ["-f", "lavfi", "-i", f"color=c={EXAMPLE_BACKGROUND}:s={WIDTH}x{HEIGHT}:r={FPS}:d={clip}",
+                      "-f", "lavfi", "-i", f"color=c={EXAMPLE_BACKGROUND_B}:s={WIDTH}x{HEIGHT}:r={FPS}:d={clip}"]
+            graph = (f"[0:v][1:v]xfade=transition={BG_TRANSITION}:duration={format_ffmpeg_number(BG_TIME)}"
+                     f":offset={format_ffmpeg_number(BG_START)},{overlay},format=yuv420p[v]")
+            video = ["-filter_complex", graph, "-map", "[v]"]
+        else:
+            source = ["-f", "lavfi", "-i", f"color=c={EXAMPLE_BACKGROUND}:s={WIDTH}x{HEIGHT}:r={FPS}:d={clip}"]
+            video = ["-vf", f"{overlay},format=yuv420p"]
         command = [
-            self.settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i",
-            f"color=c={EXAMPLE_BACKGROUND}:s={WIDTH}x{HEIGHT}:r={FPS}:d={format_ffmpeg_number(DURATION)}",
-            "-vf", f"{overlay},format=yuv420p",
-            "-t", format_ffmpeg_number(DURATION),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
-            "-f", "mp4", str(tmp),
+            self.settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", *source, *video,
+            "-t", clip, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", "-f", "mp4", str(tmp),
         ]
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=RENDER_TIMEOUT)
@@ -277,9 +259,9 @@ class TextEffectPreviewCache:
         from .renderer import font_file
         return font_file(family, bold, italic, fonts_dir)
 
-    def ensure(self, label: str) -> Path:
-        """Return the cached clip for ``label``, rendering it on first use."""
-        slug = slugify(label)
+    def ensure(self, slug: str) -> Path:
+        """Return the cached clip for an effect id, rendering it on first use."""
+        slug = str(slug or "").strip()
         cached = self.path_for(slug)
         if cached.exists():
             return cached
@@ -314,7 +296,7 @@ class TextEffectPreviewCache:
                 if self._build_stop.is_set():
                     break
                 try:
-                    self.ensure(entry["label"])
+                    self.ensure(entry["slug"])
                 except PreviewUnavailable:
                     pass
                 except Exception:  # noqa: BLE001 - one bad clip must not stop the pass
