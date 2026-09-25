@@ -2659,6 +2659,38 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
   </div></div>
 }
 
+// The old in-place "Bouncy text" option (textBouncy*) was removed from the text
+// popup: a Bounce motion path with start = end is the same damped vertical
+// bounce. Converts an item that still has it switched on; null = nothing to do.
+// With a plain straight motion the in-place bounce rode on top of the line,
+// which is exactly the Bounce path from start to end. Any other path type
+// cannot express the extra bounce, so it is dropped there (the path wins).
+// Never-reopened items keep rendering the legacy bounce (backend unchanged).
+function legacyBouncyToMotionPath(item: MediaItem): Partial<MediaItem> | null {
+  if (!item.textBouncyEnabled) return null
+  const off: Partial<MediaItem> = { textBouncyEnabled: false }
+  const moving = Boolean(item.textMoveEnabled)
+  const type = item.textMovePathType || (item.textMovePath && item.textMovePath.length >= 2 ? 'freehand' : 'straight')
+  if (moving && type !== 'straight') return off
+  const x = Number.isFinite(Number(item.textX)) ? Number(item.textX) : 50
+  const y = Number.isFinite(Number(item.textY)) ? Number(item.textY) : 50
+  const num = (v: unknown, fallback: number) => Number.isFinite(Number(v)) ? Number(v) : fallback
+  return {
+    ...off,
+    textMoveEnabled: true,
+    textMovePathType: 'bounce',
+    textMovePath: undefined,
+    textMoveEasing: moving ? item.textMoveEasing : 'linear',
+    textMoveFromX: moving ? num(item.textMoveFromX, x) : x,
+    textMoveFromY: moving ? num(item.textMoveFromY, y) : y,
+    textMoveToX: moving ? num(item.textMoveToX, x) : x,
+    textMoveToY: moving ? num(item.textMoveToY, y) : y,
+    textMoveBounceHeight: Math.max(2, Math.min(28, Math.round(num(item.textBouncyHeight, 12)))),
+    textMoveBounceCount: Math.max(1, Math.min(8, Math.round(num(item.textBouncyBounces, 3)))),
+    textMoveBounceDamping: Math.max(0, Math.min(0.85, num(item.textBouncyDamping, 0.35))),
+  }
+}
+
 // One editor for both caption styles — "Edit picture text" (the overlay drawn
 // on a photo/video) and text frames ("New text frame" / "Text frame editor").
 // The layout is shared: a 16:9 preview canvas (left, or on top in the "below"
@@ -2687,7 +2719,11 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
 }) {
   const isFrame = mode === 'frame'
   const dd = defaults ?? { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, fxEnter: 'Fade', fxWhile: 'None (static)', fxExit: 'Fade out', fxWhileSpeed: 2 }
-  const [draft, setDraft] = useState<MediaItem>(() => isFrame ? item : (() => {
+  // Legacy "Bouncy text" (in-place bounce) is no longer offered in the popup —
+  // the motion path's Bounce type covers it. Items that still carry it are
+  // converted on open so the user can see / change / switch it off there.
+  const legacyBouncy = useRef(legacyBouncyToMotionPath(item)).current
+  const [draft, setDraft] = useState<MediaItem>(() => isFrame ? (legacyBouncy ? { ...item, ...legacyBouncy } : item) : (() => {
     const initialTiming = normalizedTextTiming(item)
     return {
       ...item,
@@ -2740,6 +2776,7 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
       textColorAnimEnabled: (item as any).textColorAnimEnabled ?? false,
       textColorFrom: (item as any).textColorFrom || (item.fontColor || dd.fontColor || '#ffffff'),
       textColorTo: (item as any).textColorTo || (item as any).textColorFrom || (item.fontColor || dd.fontColor || '#ffffff'),
+      ...(legacyBouncy ?? {}),
     }
   })())
   const [fxPlaying, setFxPlaying] = useState(true)
@@ -2755,6 +2792,9 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   const canvasPhoto = useCroppedSource(src || '', isFrame || item.type === 'video' ? null : item, 'stage', false)
   // Frame mode only: the item as it was when the editor opened (for "Cancel").
   const original = useRef(item)
+  // Frame mode edits the storyline item live: push the legacy-bouncy
+  // conversion once so the item matches what the editor shows (Cancel reverts).
+  useEffect(() => { if (isFrame && legacyBouncy) livePatch?.(legacyBouncy) }, [])
 
   const apply = (change: Partial<MediaItem>) => {
     setDraft(current => ({ ...current, ...change }))
@@ -3041,25 +3081,6 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
               <button type="button" className="btn ghost small" title="Swap colours" onClick={() => apply({ textColorFrom: colorTo, textColorTo: colorFrom } as any)}><RefreshCw size={12}/></button>
             </div>}
             {(scaleEnabled || colorAnimEnabled || rotateEnabled || squishEnabled) && <small style={{ opacity: .7, marginTop: 6, display: 'block' }}>Size, rotate, squash and colour-morph run over the visible text duration. In the MP4 the full window is used; easing from motion does not affect them.</small>}
-            <FieldLabel>Bouncy text <small style={{ opacity: .7 }}>damped vertical bounce in place</small></FieldLabel>
-            {(() => {
-              const bouncyEnabled = Boolean((draft as any).textBouncyEnabled)
-              const bouncyH = Number((draft as any).textBouncyHeight ?? 12)
-              const bouncyN = Number((draft as any).textBouncyBounces ?? 3)
-              const bouncyD = Number((draft as any).textBouncyDamping ?? 0.35)
-              const bouncyF = Number((draft as any).textBouncyFrequency ?? 1)
-              return <>
-                <label className="check-label" style={{ marginBottom: 6 }}>
-                  <input type="checkbox" checked={bouncyEnabled} onChange={e => apply({ textBouncyEnabled: e.target.checked, textBouncyHeight: bouncyH, textBouncyBounces: bouncyN, textBouncyDamping: bouncyD, textBouncyFrequency: bouncyF } as any)} />
-                  <span><Check size={11}/></span> Bouncy while shown {bouncyEnabled && <small style={{ marginLeft: 6, opacity: .7 }}>{bouncyH}% · {bouncyN}× · damp {bouncyD.toFixed(2)}</small>}
-                </label>
-                {bouncyEnabled && <div className="motion-params" style={{ marginTop: 4 }}>
-                  <label>Height <input type="range" min={1} max={26} step={1} value={bouncyH} onChange={e => apply({ textBouncyHeight: Number(e.target.value) } as any)} /> <em>{bouncyH}%</em></label>
-                  <label>Bounces <input type="range" min={1} max={8} step={1} value={bouncyN} onChange={e => apply({ textBouncyBounces: Number(e.target.value) } as any)} /> <em>{bouncyN}×</em></label>
-                  <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={bouncyD} onChange={e => apply({ textBouncyDamping: Number(e.target.value) } as any)} /> <em>{bouncyD.toFixed(2)}</em></label>
-                </div>}
-              </>
-            })()}
           </div>
           <TextMotionPathEditor
             enabled={enabled}

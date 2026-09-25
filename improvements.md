@@ -1,6 +1,5 @@
 2026-09-23
 - check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
-- add / edit text frame: on popup window delete "Bouncy text" as this option is also available in the "Enable text motion path"
 - add / edit text frame: on popup window in case "Same as A" is disabled by user make custom color B the same as custom color A (for initialization, user can change it afterwards)
 - check https://jitter.video/templates/text/ and advise if we can integrate the text motion in the application
 - check [https://jitter.video/templates/text/](https://github.com/LeiQiaoZhi/Easy-Text-Effects-for-Unity) and advise if we can integrate the text motion in the application
@@ -9,6 +8,28 @@
 
 
 ---= DONE =---
+
+2026-09-25 — Text popups: removed the separate "Bouncy text" option
+- Edit picture text / New text frame / Text frame editor no longer show the
+  "Bouncy text · Bouncy while shown" block under Text animation. The same
+  damped bounce is available from "Enable text motion path" → **Bounce**
+  (Height / Bounces / Damping); with start = end it bounces in place.
+- Existing projects: an item that still has the old in-place bounce switched
+  on is converted when its popup opens, so the setting appears in the motion
+  path panel and can be changed or turned off there:
+  - no motion path → motion path on, type Bounce, start = end = the text
+    position, linear easing, height / bounces / damping copied over;
+  - straight motion path → type Bounce from the same start to the same end
+    (the old bounce rode on top of the straight line, which is what the Bounce
+    path draws);
+  - any other path type (circle, sine, star, freehand, …) → the old extra
+    bounce is dropped, as a path cannot also carry it.
+  Text frames apply the conversion to the storyline item live (Cancel reverts
+  it); picture captions write it on Save. Items that are never reopened keep
+  rendering exactly as before — the renderer and preview still understand the
+  old `textBouncy*` fields; only the popup control is gone.
+- The "Bouncy" *While shown* effect in the effect picker is a separate effect
+  and has not changed.
 
 2026-09-18
 - scale preview picture in pre-view popup so that complete picture is shown. also account for orientation (portrait, landscape)
