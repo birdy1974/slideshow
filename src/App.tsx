@@ -3041,25 +3041,10 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
               <button type="button" className="btn ghost small" title="Swap colours" onClick={() => apply({ textColorFrom: colorTo, textColorTo: colorFrom } as any)}><RefreshCw size={12}/></button>
             </div>}
             {(scaleEnabled || colorAnimEnabled || rotateEnabled || squishEnabled) && <small style={{ opacity: .7, marginTop: 6, display: 'block' }}>Size, rotate, squash and colour-morph run over the visible text duration. In the MP4 the full window is used; easing from motion does not affect them.</small>}
-            <FieldLabel>Bouncy text <small style={{ opacity: .7 }}>damped vertical bounce in place</small></FieldLabel>
-            {(() => {
-              const bouncyEnabled = Boolean((draft as any).textBouncyEnabled)
-              const bouncyH = Number((draft as any).textBouncyHeight ?? 12)
-              const bouncyN = Number((draft as any).textBouncyBounces ?? 3)
-              const bouncyD = Number((draft as any).textBouncyDamping ?? 0.35)
-              const bouncyF = Number((draft as any).textBouncyFrequency ?? 1)
-              return <>
-                <label className="check-label" style={{ marginBottom: 6 }}>
-                  <input type="checkbox" checked={bouncyEnabled} onChange={e => apply({ textBouncyEnabled: e.target.checked, textBouncyHeight: bouncyH, textBouncyBounces: bouncyN, textBouncyDamping: bouncyD, textBouncyFrequency: bouncyF } as any)} />
-                  <span><Check size={11}/></span> Bouncy while shown {bouncyEnabled && <small style={{ marginLeft: 6, opacity: .7 }}>{bouncyH}% · {bouncyN}× · damp {bouncyD.toFixed(2)}</small>}
-                </label>
-                {bouncyEnabled && <div className="motion-params" style={{ marginTop: 4 }}>
-                  <label>Height <input type="range" min={1} max={26} step={1} value={bouncyH} onChange={e => apply({ textBouncyHeight: Number(e.target.value) } as any)} /> <em>{bouncyH}%</em></label>
-                  <label>Bounces <input type="range" min={1} max={8} step={1} value={bouncyN} onChange={e => apply({ textBouncyBounces: Number(e.target.value) } as any)} /> <em>{bouncyN}×</em></label>
-                  <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={bouncyD} onChange={e => apply({ textBouncyDamping: Number(e.target.value) } as any)} /> <em>{bouncyD.toFixed(2)}</em></label>
-                </div>}
-              </>
-            })()}
+            {Boolean((draft as any).textBouncyEnabled) && <div className="motion-params" style={{ marginTop: 8, alignItems: 'center' }}>
+              <small style={{ opacity: .8 }}>This text uses the old "Bouncy text" option. Use the motion path's Bounce type instead.</small>
+              <button type="button" className="btn ghost small" onClick={() => apply({ textBouncyEnabled: false } as any)}>Turn off</button>
+            </div>}
           </div>
           <TextMotionPathEditor
             enabled={enabled}
