@@ -30,8 +30,18 @@ import { backdropBlurPx, useFrameScale } from './useFrameScale'
 import { TransitionGallery } from './TransitionGallery'
 import { totalTransitionCount } from './transitionCatalog'
 import { TransitionChip } from './TransitionPicker'
-import { TextEffectChip } from './TextEffectPicker'
-import { DEFAULT_ENTER, DEFAULT_EXIT, DEFAULT_WHILE, WHILE_SPEED_DEFAULT, allTextEffects, isStaticTextEffect, normalizeTextEffect, textEffectDefaultSeconds, textEffectParams, textEffectSymbol, type TextEffectSlot } from './textEffects'
+import { normalizeTextEffect } from './textEffects'
+import {
+  EFFECTS, PRESETS, defaultTextFx, hasMotionPath, laneChip, layersOf, legacyToStack, migrateLegacyTextFx, newLayerId, normalizeTextFx, withIds,
+  type MotionPreset, type TextFxLayer,
+} from './textFx'
+import { TextMotionEditor, TextMotionTimeline, presetForRandom } from './TextMotionEditor'
+import { TextEffectBrowser, type BrowserCaption } from './TextEffectBrowser'
+import { MotionStage, useMotionClock } from './TextMotionStage'
+import { FRAME_H, FRAME_W, type Prepared, type SceneInput } from './textMotionScene'
+import type { BgChange } from './textMotionCore'
+import { FontPicker } from './FontPicker'
+import { FONT_GROUPS, FONTS_WITHOUT_BOLD, FONTS_WITHOUT_ITALIC, fontStack } from './fonts'
 import { EasingSelect, GLParamControls, RandomScopeSelect, pickRandomTransition, randomScopeLabels, randomTransitionSettings } from './transitionControls'
 import type { RandomScope } from './transitionControls'
 import { EASING_DEFAULT, getGLParams, isGLTransition, transitionPreviewUrl, transitionSymbol } from './transitionCatalog'
@@ -230,7 +240,7 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   const [usePreview, setUsePreview] = useState(false)
   // Title-frame caption size: frame pixels × boxHeight/1080, matching drawtext.
   // The stage only exists for title frames, so a callback ref is required.
-  const { setRef: titleStageRef, scale: titleFrameScale } = useFrameScale<HTMLDivElement>()
+  const { setRef: titleStageRef } = useFrameScale<HTMLDivElement>()
   const previewSrc = (() => {
     if (kind !== 'video') return src
     // When the storyline provides the real item, build the preview from it;
@@ -279,7 +289,6 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
   const canCrop = kind === 'image' && !!onCrop
   // Text frames preview as the frame itself: background colours (with the
   // A→B change looping like in the editor) and the caption at its position.
-  const frameChange = kind === 'title' && titleFrame ? frameColourChange(titleFrame) : null
   const turnedByProxy = cropped.rotationApplied || lookView.rotationBaked
   const cropNote = hasCrop(lookItem) ? cropSummary(lookItem) : '' 
   // Storyline navigation lives inside the picture: the whole left half steps
@@ -301,8 +310,7 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
         : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={videoSrc} style={lookView.style} controls autoPlay onError={() => { if (!usePreview && previewSrc !== src) setUsePreview(true); else setFailed(true) }} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'title' && titleFrame ? <div className="lightbox-stage title-frame-stage" ref={titleStageRef} style={frameBackgroundStyle(titleFrame)}>
-            {frameChange && <ColourChangePreview key={`${frameChange.from}-${frameChange.to}-${frameChange.transition}-${frameChange.time}-${frameChange.start}`} change={frameChange} playing={!suspended} />}
-            <span className="title-frame-caption" style={{ left: `${titleFrame.textX}%`, top: `${titleFrame.textY}%`, fontFamily: `'${titleFrame.fontFamily || 'Montserrat'}', sans-serif`, fontSize: `${Math.max(4, (titleFrame.fontSize ?? 48) * titleFrameScale)}px`, color: titleFrame.fontColor || '#ffffff', fontWeight: (titleFrame.textBold ?? true) ? 700 : 400, fontStyle: titleFrame.textItalic ? 'italic' : 'normal', textDecoration: titleFrame.textUnderline ? 'underline' : 'none', textAlign: titleFrame.textCentered ? 'center' : 'left' }}>{titleFrame.text}</span>
+            <FrameMotionPreview item={titleFrame} playing={!suspended} />
           </div>
         : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${!turnedByProxy && (turn === 90 || turn === 270) ? 'turned' : ''}`} style={{ ...(turnedByProxy ? undefined : rotationStyle(turn)), ...lookView.style }} src={lookView.src} alt={title} onError={() => setFailed(true)} /></div>}
       {lookView.vignette && <i className="look-vignette" style={lookView.vignette}/>}
@@ -511,9 +519,6 @@ function frameColourChange(item: MediaItem) {
   return { from: item.frameBackground, to: item.frameBackground2, transition: item.frameTransition || 'Fade', time, start, hold }
 }
 // CSS approximation of the FFmpeg transition for editor/thumbnail previews.
-function quickTransitionClass(name: string) {
-  return /left/i.test(name) ? 'from-left' : /right/i.test(name) ? 'from-right' : /up/i.test(name) ? 'from-up' : /down/i.test(name) ? 'from-down' : /circle|radial/i.test(name) ? 'from-circle' : 'fade'
-}
 // Static gradient chip for thumbnails: A on the left, B on the right.
 function frameBackgroundStyle(item: MediaItem): React.CSSProperties {
   const change = frameColourChange(item)
@@ -817,40 +822,9 @@ function probeMediaDuration(src: string, kind: 'audio' | 'video' = 'audio'): Pro
   })
 }
 
-// Bundled fonts (public/fonts, OFL/Apache licensed). Keep in sync with
-// FONT_FILES in backend/app/renderer.py so the render matches the preview.
-const FONT_GROUPS: Record<string, string[]> = {
-  "Sans-serif": [
-    "Montserrat",
-    "Open Sans",
-    "Roboto",
-    "Lato",
-    "Poppins",
-    "Raleway",
-    "Nunito",
-    "Source Sans 3",
-    "Oswald",
-    "DejaVu Sans"
-  ],
-  "Serif": [
-    "Playfair Display",
-    "Merriweather",
-    "Lora",
-    "Cormorant Garamond"
-  ],
-  "Display & script": [
-    "Bebas Neue",
-    "Anton",
-    "Pacifico",
-    "Dancing Script",
-    "Caveat",
-    "Great Vibes"
-  ]
-}
-const FONT_FAMILIES = Object.values(FONT_GROUPS).flat()
-// Families with no italic cut: the browser would synthesise a slant that FFmpeg
-// cannot, so the italic toggle is disabled for them.
-const FONTS_WITHOUT_ITALIC = new Set(["Oswald", "Bebas Neue", "Anton", "Pacifico", "Dancing Script", "Caveat", "Great Vibes"])
+// Bundled fonts: registry/fonts.json via src/fonts.ts (FONT_GROUPS,
+// FONTS_WITHOUT_ITALIC, FONTS_WITHOUT_BOLD) — the same catalogue the renderer
+// resolves, so the preview and the MP4 always use the same file.
 const FONT_SAMPLE = 'The quick brown fox · Zomer 2026 · 0123456789'
 
 function parsePresetNumber(label: string, fallback: number) {
@@ -1037,6 +1011,38 @@ function TimelineRuler({ start, duration, zoom, audioLength }: { start:number, d
   })}<b title={`This row ends at ${formatTimecode(end)}`}>{formatTimecode(end)}</b><em title="Timeline zoom">{Math.round(zoom*100)}%</em>{audioLength && <span className="audio-length-indicator" title="Total soundtrack time"><Music2 size={10}/> {audioLength}</span>}</div>
 }
 
+// Enter / Exit lanes as one chip: the storyline, the detailed list and the
+// multi-select inspector set the lane's first effect (the rest of the lane
+// stays) and the duration of all its layers.
+function setLaneEffect(stack: TextFxLayer[], phase: 'in' | 'out', effectId: string): TextFxLayer[] {
+  const idx = stack.findIndex(l => EFFECTS[l.effect]?.phase === phase)
+  if (idx >= 0) return stack.map((l, i) => (i === idx ? { id: l.id, effect: effectId } : l))
+  const layer: TextFxLayer = { id: newLayerId(), effect: effectId }
+  return phase === 'in' ? [layer, ...stack] : [...stack, layer]
+}
+function setLaneDuration(stack: TextFxLayer[], phase: 'in' | 'out', seconds: number): TextFxLayer[] {
+  return stack.map(l => (EFFECTS[l.effect]?.phase === phase ? { ...l, duration: Math.max(0.05, seconds) } : l))
+}
+function browserCaptionFor(item: MediaItem): BrowserCaption {
+  const change = frameColourChange(item)
+  return {
+    text: item.text || 'Text', family: item.fontFamily || 'Montserrat', bold: item.textBold ?? true, italic: item.textItalic ?? false,
+    colour: item.fontColor || '#ffffff', isFrame: item.type === 'title', background: item.type === 'title' ? item.frameBackground : undefined,
+    bgChange: change ? { colourB: change.to, transition: change.transition } : null,
+  }
+}
+function LaneEffectChip({ item, phase, onPick, onStack }: { item: MediaItem; phase: 'in' | 'out'; onPick: (effectId: string) => void; onStack?: (stack: TextFxLayer[]) => void }) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null)
+  const chip = laneChip(item.textFx, phase)
+  return <>
+    <button type="button" className={`transition-chip lane-chip${anchor ? ' open' : ''}`} title={chip.title} onClick={e => setAnchor(e.currentTarget.getBoundingClientRect())}>
+      <i className="chip-symbol">{chip.symbol}</i><span className="chip-name">{chip.label}</span>{chip.more > 0 && <i className="chip-kind">+{chip.more}</i>}<ChevronDown size={12} />
+    </button>
+    {anchor && <TextEffectBrowser request={{ mode: 'add', phase }} anchor={anchor} stack={item.textFx || []} caption={browserCaptionFor(item)}
+      onPick={id => { onPick(id); setAnchor(null) }} onPreset={p => { onStack?.(withIds(p.layers)); setAnchor(null) }} onClose={() => setAnchor(null)} />}
+  </>
+}
+
 function TimelineTextBox({ item, update, selected, onSelect, onEdit }: { item: MediaItem, update: (change: Partial<MediaItem>) => void, selected: string[], onSelect: (edge:'enter'|'exit')=>void, onEdit?: () => void }) {
   const { duration, textStart, textEnd } = normalizedTextTiming(item)
   const changeTiming = (edge: 'start'|'end', event: React.PointerEvent) => {
@@ -1060,11 +1066,11 @@ function TimelineTextBox({ item, update, selected, onSelect, onEdit }: { item: M
   const left = textStart / duration * 100
   const width = Math.max(3, (textEnd - textStart) / duration * 100)
   return <div className="timed-text clickable" style={{left:`${left}%`,width:`${width}%`}} onClick={e => { if (e.target === e.currentTarget) { e.preventDefault(); e.stopPropagation(); onEdit?.() } }} title={item.type === 'title' ? `Click to edit text frame · “${item.text}”` : `Click to edit text settings — drag handles to change start/stop timing`}>
-    <button className={`text-transition enter ${selected.includes(`${item.id}-enter`)?'selected':''}`} title={`Appear: ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={e => { e.preventDefault(); e.stopPropagation(); onSelect('enter') }} onPointerDown={e => e.stopPropagation()}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button>
+    {(() => { const chip = laneChip(item.textFx, 'in'); return <button className={`text-transition enter ${selected.includes(`${item.id}-enter`)?'selected':''}`} title={`Text animation — ${chip.title}`} onClick={e => { e.preventDefault(); e.stopPropagation(); onSelect('enter') }} onPointerDown={e => e.stopPropagation()}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}
     <i className="timing-handle left" title={`Appears at ${textStart.toFixed(1)}s`} onPointerDown={e=>changeTiming('start',e)} onClick={e => e.stopPropagation()}/>
     <input value={item.text} placeholder="+ Add text" onChange={e=>update({text:e.target.value})} onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onDoubleClick={e => { e.preventDefault(); e.stopPropagation(); onEdit?.() }} title={item.type === 'title' ? `Edit text: double-click for full settings` : `Edit text on picture: double-click for style, position and motion`}/>
     <i className="timing-handle right" title={`Disappears at ${textEnd.toFixed(1)}s`} onPointerDown={e=>changeTiming('end',e)} onClick={e => e.stopPropagation()}/>
-    <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Disappear: ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={e => { e.preventDefault(); e.stopPropagation(); onSelect('exit') }} onPointerDown={e => e.stopPropagation()}>{textEffectSymbol(item.textFxExit || item.textExit)}</button>
+    {(() => { const chip = laneChip(item.textFx, 'out'); return <button className={`text-transition exit ${selected.includes(`${item.id}-exit`)?'selected':''}`} title={`Text animation — ${chip.title}`} onClick={e => { e.preventDefault(); e.stopPropagation(); onSelect('exit') }} onPointerDown={e => e.stopPropagation()}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}
   </div>
 }
 
@@ -1239,10 +1245,8 @@ function App() {
   const [defaultTextX, setDefaultTextX] = useState(50)
   // Default text animation for new captions and text frames (saved with the
   // project like the rest of the "Default text style" settings).
-  const [defaultTextFxEnter, setDefaultTextFxEnter] = useState(DEFAULT_ENTER)
-  const [defaultTextFxWhile, setDefaultTextFxWhile] = useState(DEFAULT_WHILE)
-  const [defaultTextFxExit, setDefaultTextFxExit] = useState(DEFAULT_EXIT)
-  const [defaultTextFxWhileSpeed, setDefaultTextFxWhileSpeed] = useState(WHILE_SPEED_DEFAULT)
+  // Project default text animation (a stack of effects) for new captions.
+  const [defaultStack, setDefaultStack] = useState<TextFxLayer[]>(() => defaultTextFx())
   const [defaultTextY, setDefaultTextY] = useState(72)
   const [showTextStyles, setShowTextStyles] = useState(false)
   const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)
@@ -1395,10 +1399,16 @@ function App() {
       fxEnter: normalizeTextEffect(saved.textDefaults?.textFxEnter, 'enter'),
       fxWhile: normalizeTextEffect(saved.textDefaults?.textFxWhile, 'while'),
       fxExit: normalizeTextEffect(saved.textDefaults?.textFxExit, 'exit'),
-      fxWhileSpeed: Number(saved.textDefaults?.textFxWhileSpeed) || WHILE_SPEED_DEFAULT,
+      fxWhileSpeed: Number(saved.textDefaults?.textFxWhileSpeed) || 2,
     }
+    // Default text animation: a stack (textDefaults.textFx); projects saved
+    // before stacks existed carry three default slot labels instead.
+    const savedDefaultStack: TextFxLayer[] = Array.isArray(saved.textDefaults?.textFx)
+      ? normalizeTextFx(saved.textDefaults.textFx)
+      : withIds(legacyToStack({ type: 'image' }, savedTextDefaults))
     if(Array.isArray(saved.media)){
-      const normalized = saved.media.map((m:any)=> {
+      const normalized = saved.media.map((m0:any)=> {
+        let m: any = m0
         if (m.transition) m.transition = normalizeTransition(m.transition)
         if (m.frameTransition) m.frameTransition = normalizeTransition(m.frameTransition)
         // ensure transitionParams is object
@@ -1421,30 +1431,12 @@ function App() {
           if (!Number.isFinite(Number(m.textY))) m.textY = savedTextDefaults.textY
           if (m.textEnabled == null) m.textEnabled = true
         }
-        // Dynamic text effects: map legacy xfade labels onto the text-effect
-        // catalogue (they always *rendered* as plain fades) and fill the new
-        // slots, so GUI chips and the renderer agree on what will be drawn.
-        m.textFxEnter = normalizeTextEffect(m.textFxEnter ?? m.textEnter ?? savedTextDefaults.fxEnter, 'enter')
-        m.textFxWhile = normalizeTextEffect(m.textFxWhile ?? savedTextDefaults.fxWhile, 'while')
-        m.textFxExit = normalizeTextEffect(m.textFxExit ?? m.textExit ?? savedTextDefaults.fxExit, 'exit')
-        if (!m.textEnter) m.textEnter = m.textFxEnter
-        if (!m.textExit) m.textExit = m.textFxExit
-        if (!Number.isFinite(Number(m.textFxWhileSpeed)) || !Number(m.textFxWhileSpeed)) m.textFxWhileSpeed = textEffectDefaultSeconds[m.textFxWhile] ?? savedTextDefaults.fxWhileSpeed
-        // Migration: old default for text colour To was #ffcc33 (yellow) while From was white/fontColour.
-        // If B colour is not the same as A colour, start by making B the same as A (no colour change until user picks).
-        if (typeof m.textColorTo === 'string' && m.textColorTo.toLowerCase() === '#ffcc33') {
-          const from = (typeof m.textColorFrom === 'string' && /^#[0-9a-fA-F]{6}$/.test(m.textColorFrom) ? m.textColorFrom : (typeof m.fontColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(m.fontColor) ? m.fontColor : null))
-          if (from && from.toLowerCase() !== '#ffcc33') {
-            m.textColorTo = from
-          } else if (!from) {
-            // no valid From, make both white so they match
-            m.textColorTo = '#ffffff'
-          }
-        }
-        // Also if anim enabled and colours differ due to old default, ensure they start the same
-        if (m.textColorAnimEnabled && typeof m.textColorFrom === 'string' && typeof m.textColorTo === 'string' && m.textColorFrom.toLowerCase() !== m.textColorTo.toLowerCase() && m.textColorTo.toLowerCase() === '#ffcc33') {
-          m.textColorTo = m.textColorFrom
-        }
+        // Stacked text effects: items saved before the stack existed carry the
+        // v1 slots (enter / while / exit labels) and the animation toggles.
+        // They become textFx layers here, the v1 fields are dropped (only
+        // textFx is written from now on) — backend legacy_to_stack() maps the
+        // same way for projects rendered without being opened.
+        m = migrateLegacyTextFx(m, savedTextDefaults)
         // Older projects may contain a caption window that reaches into the
         // following transition. Normalize it on load so the timeline display,
         // persisted snapshot, and renderer all use the same hold boundary.
@@ -1455,13 +1447,13 @@ function App() {
     if(saved.textDefaults){
       setFontFamily(savedTextDefaults.fontFamily); setFontSize(String(savedTextDefaults.fontSize)); setFontColor(savedTextDefaults.fontColor)
       setTextBold(savedTextDefaults.bold); setTextItalic(savedTextDefaults.italic); setTextUnderline(savedTextDefaults.underline); setTextOutline(savedTextDefaults.outline)
-      setDefaultTextX(savedTextDefaults.textX); setDefaultTextY(savedTextDefaults.textY); setDefaultTextFxEnter(savedTextDefaults.fxEnter); setDefaultTextFxWhile(savedTextDefaults.fxWhile); setDefaultTextFxExit(savedTextDefaults.fxExit); setDefaultTextFxWhileSpeed(savedTextDefaults.fxWhileSpeed)
+      setDefaultTextX(savedTextDefaults.textX); setDefaultTextY(savedTextDefaults.textY); setDefaultStack(savedDefaultStack)
     } else {
       // Projects from before text defaults existed use the same built-ins as a
       // fresh project instead of inheriting the defaults of the project loaded
       // immediately before them.
       setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setTextOutline(true)
-      setDefaultTextX(50); setDefaultTextY(72); setDefaultTextFxEnter(DEFAULT_ENTER); setDefaultTextFxWhile(DEFAULT_WHILE); setDefaultTextFxExit(DEFAULT_EXIT); setDefaultTextFxWhileSpeed(WHILE_SPEED_DEFAULT)
+      setDefaultTextX(50); setDefaultTextY(72); setDefaultStack(defaultTextFx())
     }
     if(saved.soundtrack){setAudioTracks(saved.soundtrack.tracks||[]);setAudioPolicy(saved.soundtrack.policy);setAudioVolume(saved.soundtrack.volume);setAudioFade(saved.soundtrack.fadeOut);setAudioFadeDuration(clampFade(saved.soundtrack.fadeDuration,2));setAudioFadeTail(clampFade(saved.soundtrack.fadeTail,0));setAudioNormalize(saved.soundtrack.normalize!==false);setAudioNormalizeTarget(clampLufs(saved.soundtrack.normalizeTarget))}
     if(saved.output){setResolution(saved.output.resolution);setFrameRate(saved.output.frameRate);setBitrate(saved.output.bitrate);setEncoder(saved.output.encoder);setOutputPath(saved.output.path)
@@ -1504,7 +1496,7 @@ function App() {
 
   const projectSnapshot = () => ({
     schemaVersion: 1, project: { name: projectName }, media,
-    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, outline:textOutline, textX: defaultTextX, textY: defaultTextY, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed },
+    textDefaults: { fontFamily, fontSize:Number(fontSize), fontColor, bold:textBold, italic:textItalic, underline:textUnderline, outline:textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack.map(({ id, ...l }) => l) },
     soundtrack: { tracks:audioTracks, policy:audioPolicy, volume:audioVolume, fadeOut:audioFade, fadeDuration:audioFadeDuration, fadeTail:audioFadeTail, normalize:audioNormalize, normalizeTarget:audioNormalizeTarget },
     // Sanitised here as well as on blur, so a render started straight after
     // typing can never be handed a name the filesystem would reject.
@@ -1537,7 +1529,7 @@ function App() {
   const persistProject = async (silent=false):Promise<number> => persistSnapshot(projectSnapshot(), silent)
   const blankProjectSnapshot = () => ({
     schemaVersion: 1, project: { name: BLANK_NAME }, media: [],
-    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFxEnter: DEFAULT_ENTER, textFxWhile: DEFAULT_WHILE, textFxExit: DEFAULT_EXIT, textFxWhileSpeed: WHILE_SPEED_DEFAULT },
+    textDefaults: { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFx: defaultTextFx().map(({ id, ...l }) => l) },
     soundtrack: { tracks: [], policy: 'Loop & trim', volume: 78, fadeOut: true, fadeDuration: 2, fadeTail: 0, normalize: true, normalizeTarget: -14 },
     output: { resolution: 'Full HD · 1080p', frameRate: '30 fps', bitrate: '8 Mbps · High', encoder: 'Auto · Quick Sync', path: '/output', filename: safeFilename(BLANK_NAME) },
     timeline: { rows: 'auto', zoom: 1 },
@@ -1554,7 +1546,7 @@ function App() {
     setAudioPolicy('Loop & trim'); setAudioVolume(78); setAudioFade(true); setAudioFadeDuration(2); setAudioFadeTail(0); setAudioNormalize(true); setAudioNormalizeTarget(-14)
     setResolution('Full HD · 1080p'); setFrameRate('30 fps'); setBitrate('8 Mbps · High'); setEncoder('Auto · Quick Sync')
     setOutputPath('/output'); setOutputFilename(safeFilename(BLANK_NAME))
-    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setTextOutline(true); setDefaultTextX(50); setDefaultTextY(72); setDefaultTextFxEnter(DEFAULT_ENTER); setDefaultTextFxWhile(DEFAULT_WHILE); setDefaultTextFxExit(DEFAULT_EXIT); setDefaultTextFxWhileSpeed(WHILE_SPEED_DEFAULT)
+    setFontFamily('Montserrat'); setFontSize('48'); setFontColor('#ffffff'); setTextBold(true); setTextItalic(false); setTextUnderline(false); setTextOutline(true); setDefaultTextX(50); setDefaultTextY(72); setDefaultStack(defaultTextFx())
     setTimelineRows('auto'); setTimelineZoom(1)
     setGlobalSlideDuration(DEFAULT_SLIDE_SECONDS); setGlobalDuration(DEFAULT_TRANSITION_SECONDS)
     setSelectedIds([]); setSelectedTransitions([]); setSelectedTextTransitions([])
@@ -1876,8 +1868,8 @@ function App() {
         // Movies keep their own sound by default; the soundtrack ducks around them.
         audioSource: isVideo ? 'original' : undefined,
         text: '', textMode: 'overlay', textEnabled: false, textStart: 0, textEnd: duration,
-        textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5,
-        textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed,
+        // Text animation: a copy of the project's default stack.
+        textFx: withIds(defaultStack),
         // New picture captions start as a copy of the current project style.
         // Saving the per-picture dialog then keeps these fields independent.
         fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textOutline,
@@ -1941,7 +1933,7 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textEnter: 'Fade', textExit: 'Fade', textEnterDuration: .5, textExitDuration: .5, textFxEnter: defaultTextFxEnter, textFxWhile: defaultTextFxWhile, textFxExit: defaultTextFxExit, textFxWhileSpeed: defaultTextFxWhileSpeed, textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0 }])
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0 }])
     setPendingTextFrame(id)
     setEditingTextFrame(id)
   }
@@ -1963,25 +1955,39 @@ function App() {
     const key = `${id}-${edge}`
     setSelectedTextTransitions(keys => keys.includes(key) ? keys.filter(x=>x!==key) : [...keys,key])
   }
-  const updateSelectedTextTransitions = (value?: string, duration?: number) => setMedia(items => items.map(item => {
-    const enter = selectedTextTransitions.includes(`${item.id}-enter`)
-    const exit = selectedTextTransitions.includes(`${item.id}-exit`)
-    return {...item,
-      ...(enter && value !== undefined ? {textFxEnter:value, textEnter:value} : {}), ...(exit && value !== undefined ? {textFxExit:value, textExit:value} : {}),
-      ...(enter && duration !== undefined ? {textEnterDuration:duration} : {}), ...(exit && duration !== undefined ? {textExitDuration:duration} : {})}
+  // Selected Enter / Exit edges (storyline text lane): set the lane's first
+  // effect and/or the duration of every layer in that lane.
+  const updateSelectedTextTransitions = (effectId?: string, duration?: number) => setMedia(items => items.map(item => {
+    let stack = item.textFx || []
+    if (selectedTextTransitions.includes(`${item.id}-enter`)) {
+      if (effectId !== undefined) stack = setLaneEffect(stack, 'in', effectId)
+      if (duration !== undefined) stack = setLaneDuration(stack, 'in', duration)
+    }
+    if (selectedTextTransitions.includes(`${item.id}-exit`)) {
+      if (effectId !== undefined) stack = setLaneEffect(stack, 'out', effectId)
+      if (duration !== undefined) stack = setLaneDuration(stack, 'out', duration)
+    }
+    return stack === item.textFx ? item : { ...item, textFx: stack }
   }))
   // Same scope as the Ken Burns buttons it sits beside: the selected clips, or
   // every photo when nothing is selected.
   const randomizeTextTransitions = () => {
-    // Draw from the text-effect catalogue (every label means something for
-    // text), not the 191-entry xfade list.
-    const enterOptions = allTextEffects('enter'), exitOptions = allTextEffects('exit')
+    // Randomize picks curated presets (whole stacks), so a random caption
+    // always looks intentional. Fonts and frame colours stay as they are;
+    // colour-change looks only land on text frames that have a colour B.
     const ids = selectedIds.length ? selectedIds : media.filter(x => x.type === 'image').map(x => x.id)
     if (!ids.length) { notify('No photos to update · add photos or select clips first'); return }
-    setMedia(items=>items.map(item=>ids.includes(item.id)?{...item,
-      textFxEnter:enterOptions[Math.floor(Math.random()*enterOptions.length)],
-      textFxExit:exitOptions[Math.floor(Math.random()*exitOptions.length)]}:item))
-    notify(`Text effects randomized · ${ids.length} photo${ids.length===1?'':'s'}`)
+    const picked: string[] = []
+    setMedia(items=>items.map(item=>{
+      if (!ids.includes(item.id)) return item
+      const isFrame = item.type === 'title'
+      const hasBg = isFrame && /^#[0-9a-f]{6}$/i.test(String(item.frameBackground2 || '')) && String(item.frameBackground2).toLowerCase() !== String(item.frameBackground).toLowerCase()
+      const preset = presetForRandom(isFrame, hasBg, PRESETS.filter(p => !p.frame || hasBg))
+      if (!preset) return item
+      picked.push(preset.label)
+      return { ...item, textFx: withIds(preset.layers) }
+    }))
+    notify(`Text effects randomized from ${PRESETS.length} presets · ${ids.length} item${ids.length===1?'':'s'}`)
   }
   const applyBulkEffect = () => {
     const ids = selectedIds.length ? selectedIds : media.filter(x => x.type === 'image').map(x => x.id)
@@ -2329,7 +2335,16 @@ function App() {
             })}</div>
 
             {selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
-            {selectedTextTransitions.length > 0 && <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text transition{selectedTextTransitions.length>1?'s':''} selected</span><TextEffectChip value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?(item?.textFxEnter||item?.textEnter||'Fade'):(item?.textFxExit||item?.textExit||'Fade out')})()} slot={(()=>{const [,edge]=selectedTextTransitions[0].split('-');return (edge==='enter'?'enter':'exit') as TextEffectSlot})()} onChange={v=>updateSelectedTextTransitions(v,undefined)} /><NumberStepper value={(()=>{const [id,edge]=selectedTextTransitions[0].split('-');const item=media.find(x=>x.id===Number(id));return edge==='enter'?item?.textEnterDuration??.5:item?.textExitDuration??.5})()} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} /><button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>}
+            {selectedTextTransitions.length > 0 && (() => {
+              const [firstId, firstEdge] = selectedTextTransitions[0].split('-')
+              const firstItem = media.find(x => x.id === Number(firstId))
+              const phase = firstEdge === 'enter' ? 'in' : 'out'
+              const firstLayer = firstItem ? layersOf(firstItem.textFx, phase)[0] : undefined
+              return <div className="timeline-inspector text-inspector"><span>{selectedTextTransitions.length} text {selectedTextTransitions.length > 1 ? 'lanes' : 'lane'} selected</span>
+                {firstItem && <LaneEffectChip item={firstItem} phase={phase} onPick={id => updateSelectedTextTransitions(id, undefined)} />}
+                <NumberStepper value={firstLayer?.duration ?? EFFECTS[firstLayer?.effect || '']?.duration ?? .5} min={0.1} step={0.1} suffix="sec" ariaLabel="Selected text transition time" onChange={v=>updateSelectedTextTransitions(undefined,v)} />
+                <button onClick={()=>setSelectedTextTransitions([])}><X size={13}/> Clear</button></div>
+            })()}
 
             <div className="media-view-bar" id="section-transitions"><span className="view-label">VIEW</span><div className="mode-toggle"><button className={!compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(false)} title="Show the full detail list"><List size={14}/> List</button><button className={compactMediaView ? 'active' : ''} onClick={() => setCompactMediaView(true)} title="Show a compact thumbnail grid with quick multi-selection"><LayoutGrid size={14}/> Compact</button></div>{compactMediaView && <div className="zoom-controls compact-zoom"><button onClick={() => setCompactZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out — smaller thumbnails"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={5} step={0.1} value={compactZoom} aria-label="Compact thumbnail zoom" onChange={e => setCompactZoom(Number(e.target.value))}/><span>{Math.round(compactZoom * 100)}%</span><button onClick={() => setCompactZoom(z => Math.min(5, +(z + .2).toFixed(1)))} title="Zoom in — bigger thumbnails"><ZoomIn size={14}/></button></div>}<span className="view-hint">Select frames with the check marks · Shift-click for a range · “Select all” grabs every frame in one go · drag to reorder · click a picture to view it</span></div>
             {compactMediaView && <div className="compact-actions"><button className="btn soft" disabled={!media.length} onClick={() => setSelectedIds(media.map(x => x.id))} title="Select every frame in one go"><Check size={14}/> Select all</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>Clear selection</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={14}/> Delete selected</button><span className="compact-count">{selectedIds.length} of {media.length} frame{media.length === 1 ? '' : 's'} selected</span></div>}
@@ -2345,7 +2360,15 @@ function App() {
                   <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'image' && item.effect === 'None' && <button type="button" className="thumb-effect off" title="No motion on this photo — click to add a Ken Burns effect" onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/></button>}{item.type === 'image' && item.effect !== 'None' && <button type="button" className={`thumb-effect ${isKenBurns(item.effect) && Math.abs(kenBurnsZoomOf(item) - KEN_BURNS_DEFAULT_ZOOM) > 0.001 ? 'custom' : ''}`} title={`Motion: ${item.effect}${isKenBurns(item.effect) ? ` · strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} %` : ''} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
                   <div className="clip-duration thumb-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
                   </div>
-                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && <button type="button" className="edit-picture-text-button" title={`Edit this picture's text style, visibility and timing · ${formatClock(normalizedTextTiming(item).textStart)}–${formatClock(normalizedTextTiming(item).textEnd)}`} onClick={event => { event.preventDefault(); event.stopPropagation(); setEditingPictureText(item.id) }} onPointerDown={event => event.stopPropagation()}><Pencil size={11}/> Edit</button>}{item.type !== 'title' && item.textEnabled === false ? null : <><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears with ${item.textFxEnter || item.textEnter} · ${item.textEnterDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{textEffectSymbol(item.textFxEnter || item.textEnter)}</button><input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/><button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears with ${item.textFxExit || item.textExit} · ${item.textExitDuration}s`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{textEffectSymbol(item.textFxExit || item.textExit)}</button></>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&<div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong><TextEffectChip value={(detailTextEditor.edge==='enter'?(item.textFxEnter||item.textEnter||'Fade'):(item.textFxExit||item.textExit||'Fade out'))} slot={detailTextEditor.edge} onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textFxEnter:v,textEnter:v}:{textFxExit:v,textExit:v})} />{!isStaticTextEffect(detailTextEditor.edge==='enter' ? (item.textFxEnter||item.textEnter) : (item.textFxExit||item.textExit)) && <NumberStepper value={detailTextEditor.edge==='enter'?(item.textEnterDuration ?? .5):(item.textExitDuration ?? .5)} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,detailTextEditor.edge==='enter'?{textEnterDuration:v}:{textExitDuration:v})} />}<button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>}{effectPicker===item.id && item.type !== 'title' && <KenBurnsPanel item={item} thumb={thumb} onPatch={p => patch(item.id, p)} onClose={() => setEffectPicker(null)}/>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false && item.text.trim() !== '') || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && item.text.trim() !== '' && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
+                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && <button type="button" className="edit-picture-text-button" title={`Edit this picture's text style, visibility and timing · ${formatClock(normalizedTextTiming(item).textStart)}–${formatClock(normalizedTextTiming(item).textEnd)}`} onClick={event => { event.preventDefault(); event.stopPropagation(); setEditingPictureText(item.id) }} onPointerDown={event => event.stopPropagation()}><Pencil size={11}/> Edit</button>}{item.type !== 'title' && item.textEnabled === false ? null : <>{(() => { const chip = laneChip(item.textFx, 'in'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}<input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/>{(() => { const chip = laneChip(item.textFx, 'out'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}</>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&(() => {
+                    const phase = detailTextEditor.edge === 'enter' ? 'in' : 'out'
+                    const lane = layersOf(item.textFx, phase)
+                    return <div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong>
+                      <LaneEffectChip item={item} phase={phase} onPick={id=>patch(item.id,{textFx:setLaneEffect(item.textFx||[], phase, id)})} onStack={stack=>patch(item.id,{textFx:stack})} />
+                      {lane.length > 0 && <NumberStepper value={lane[0].duration ?? EFFECTS[lane[0].effect]?.duration ?? .5} min={0.1} step={0.1} suffix="s" ariaLabel="Text transition duration" onChange={v=>patch(item.id,{textFx:setLaneDuration(item.textFx||[], phase, v)})} />}
+                      <button type="button" className="btn ghost small" title="Open the text editor: all lanes, presets, timeline" onClick={()=>{ setDetailTextEditor(null); if (item.type === 'title') setEditingTextFrame(item.id); else setEditingPictureText(item.id) }}>All effects…</button>
+                      <button onClick={()=>setDetailTextEditor(null)}><X size={13}/></button></div>
+                  })()}{effectPicker===item.id && item.type !== 'title' && <KenBurnsPanel item={item} thumb={thumb} onPatch={p => patch(item.id, p)} onClose={() => setEffectPicker(null)}/>}{item.type === 'video' && <div className="movie-audio"><Select ariaLabel={`${item.name} audio`} value={item.audioSource || 'soundtrack'} onChange={v => patch(item.id, { audioSource: v as 'soundtrack' | 'original' })}><option value="soundtrack">Soundtrack</option><option value="original">Original audio</option></Select><small>{item.audioSource === 'original' ? 'crossfades with the soundtrack' : 'the soundtrack keeps playing'}</small></div>}{((item.type !== 'title' && item.textEnabled === false && item.text.trim() !== '') || (item.type === 'video' && movieIsTrimmed(item))) && <div className="settings-chips">{item.textEnabled === false && item.text.trim() !== '' && <button type="button" className="settings-chip" title="Text is hidden on this picture — click to show it again" onClick={() => patch(item.id, { textEnabled: true })}><EyeOff size={10}/> Text hidden</button>}{item.type === 'video' && movieIsTrimmed(item) && <button type="button" className="settings-chip" title={`Using ${movieKeptLabel(item)} of the original movie — click to trim`} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }}><Scissors size={10}/> {movieKeptLabel(item)}</button>}</div>}</div>
                   {index < media.length - 1 ? <RecordedTransitionExample transition={item.transition} /> : <RecordedTransitionExample transition="" empty />}
                   {index < media.length - 1 ? <TransitionCell item={item} inline onPatch={patch_ => patch(item.id, patch_)} onDuration={v => updateDuration(item.id, v)} onOpenGallery={() => setShowTransitionGallery(true)} /> : <div className="transition-cell last-cell"><div className="end-card"><Check size={13}/> End of story</div></div>}
                   <div className="row-actions"><button disabled={index === 0} onClick={() => move(index, -1)} title="Move up"><ArrowUp size={14}/></button><button disabled={index === media.length - 1} onClick={() => move(index, 1)} title="Move down"><ArrowDown size={14}/></button><button onClick={() => setMedia(m => m.filter(x => x.id !== item.id))} title="Remove"><Trash2 size={14}/></button></div>
@@ -2395,9 +2418,9 @@ function App() {
       ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
     {editingPictureText != null && (() => { const target = media.find(x => x.id === editingPictureText); return target && target.type !== 'title'
-      ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, fxEnter: defaultTextFxEnter, fxWhile: defaultTextFxWhile, fxExit: defaultTextFxExit, fxWhileSpeed: defaultTextFxWhileSpeed }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} />
+      ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} />
       : null })()}
-    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} fxEnter={defaultTextFxEnter} setFxEnter={setDefaultTextFxEnter} fxWhile={defaultTextFxWhile} setFxWhile={setDefaultTextFxWhile} fxExit={defaultTextFxExit} setFxExit={setDefaultTextFxExit} fxWhileSpeed={defaultTextFxWhileSpeed} setFxWhileSpeed={setDefaultTextFxWhileSpeed} onClose={()=>setShowTextStyles(false)}/>} 
+    {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} defaultStack={defaultStack} setDefaultStack={setDefaultStack} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
@@ -2421,7 +2444,7 @@ function App() {
       setShowBrowser(false)
     }}/>} 
     {transitionPreviewId != null && (() => { const index = media.findIndex(x => x.id === transitionPreviewId); return index >= 0 && index < media.length - 1 ? <TransitionPreview outgoing={media[index]} incoming={media[index + 1]} onClose={() => setTransitionPreviewId(null)} onOpenGallery={() => setShowTransitionGallery(true)} onApply={(patchData) => { patch(media[index].id, patchData); setTransitionPreviewId(null); notify(`Applied ${patchData.transition} transition`) }} /> : null })()}
-    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} previewScope={previewScope} previewMode={previewRunMode} captionDefaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, fxEnter: defaultTextFxEnter, fxWhile: defaultTextFxWhile, fxExit: defaultTextFxExit, fxWhileSpeed: defaultTextFxWhileSpeed }} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
+    {showPreview && <Preview media={media} projectName={projectName} previewUrl={previewUrl} previewScope={previewScope} previewMode={previewRunMode} captionDefaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} playing={isPlaying} setPlaying={setPlaying} onClose={() => {setShowPreview(false); setPlaying(false)}}/>}
     {showProjectFileSave && <ProjectFileBrowser
       projectName={projectName}
       snapshot={projectSnapshot}
@@ -2464,10 +2487,10 @@ function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontCo
   sample?: string;
 }) {
   return <div className="type-controls-stack">
-    <div><FieldLabel>Font family</FieldLabel><Select value={fontFamily} onChange={setFontFamily}>{Object.entries(FONT_GROUPS).map(([group, names]) => <optgroup key={group} label={group}>{names.map(f => <option key={f} value={f}>{f}</option>)}</optgroup>)}</Select><div className="font-sample" style={{ fontFamily: `'${fontFamily}', sans-serif`, fontWeight: bold ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }} title="Live sample in the selected font">{sample || FONT_SAMPLE}</div></div>
+    <div><FieldLabel>Font family <small>{Object.values(FONT_GROUPS).flat().length} fonts · incl. handwriting</small></FieldLabel><FontPicker value={fontFamily} onChange={setFontFamily} sample={sample} /><div className="font-sample" style={{ fontFamily: fontStack(fontFamily), fontWeight: bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }} title="Live sample in the selected font">{sample || FONT_SAMPLE}</div></div>
     <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={200} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
     <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
-    <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold ? 'active' : ''} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
+    <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_BOLD.has(fontFamily)} title={FONTS_WITHOUT_BOLD.has(fontFamily) ? `${fontFamily} has a single weight` : 'Bold'} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
 }
 
@@ -2631,7 +2654,14 @@ function captionShadow(outline: boolean, sizePx: number): string {
   return `0 0 ${w}px rgba(0,0,0,.85), 0 0 ${w}px rgba(0,0,0,.85), 0 0 ${w * 2}px rgba(0,0,0,.6), ${shadow}`
 }
 
-function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,outline=true,setOutline,textX=50,setTextX,textY=72,setTextY,fxEnter, setFxEnter, fxWhile, setFxWhile, fxExit, setFxExit, fxWhileSpeed, setFxWhileSpeed,onClose}: any) {
+function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor,setFontColor,bold,setBold,italic,setItalic,underline,setUnderline,outline=true,setOutline,textX=50,setTextX,textY=72,setTextY,defaultStack,setDefaultStack,onClose}: any) {
+  const stack: TextFxLayer[] = defaultStack || []
+  const caption: BrowserCaption = { text: 'Summer, slowly.', family: fontFamily, bold, italic, colour: fontColor, isFrame: false }
+  const clock = useMotionClock(4.2)
+  const input: SceneInput = {
+    text: 'Summer, slowly.', stack, family: fontFamily, bold, italic, underline, colour: fontColor, fontSize: Number(fontSize) || 48,
+    x: textX, y: textY, align: 'center', outline, start: 0.2, end: 4, steady: 0, bg: null, motion: null,
+  }
   return <div className="modal-backdrop" onMouseDown={onClose}><div className="text-style-modal wide-style-modal" onMouseDown={e=>e.stopPropagation()}>
     <div className="modal-head"><div><span className="eyebrow">PROJECT DEFAULTS</span><h2>Default text style</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>
     <div className="style-modal-body">
@@ -2640,18 +2670,11 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
       <label className="check-label caption-outline-toggle" title="Draws a thin dark outline and a soft shadow behind captions on photos and videos so light text stays readable on bright pictures. Text frames are not affected.">
         <input type="checkbox" checked={outline} onChange={e => setOutline?.(e.target.checked)}/><span><Check size={11}/></span> Outline &amp; shadow behind captions <small>recommended</small>
       </label>
-      <div className="fx-section light">
-        <FieldLabel>Default text animation</FieldLabel>
-        <div className="fx-rows">
-          <div className="fx-row"><span className="fx-slot">Enter</span><TextEffectChip value={fxEnter || 'Fade'} slot="enter" ariaLabel="Default enter effect" onChange={setFxEnter} /></div>
-          <div className="fx-row"><span className="fx-slot">While shown</span><TextEffectChip value={fxWhile || 'None (static)'} slot="while" ariaLabel="Default while-shown effect" seconds={fxWhileSpeed} showSeconds onSecondsChange={setFxWhileSpeed} onChange={v => { setFxWhile(v); setFxWhileSpeed(textEffectDefaultSeconds[v] ?? fxWhileSpeed ?? 2) }} /></div>
-          <div className="fx-row"><span className="fx-slot">Exit</span><TextEffectChip value={fxExit || 'Fade out'} slot="exit" ariaLabel="Default exit effect" onChange={setFxExit} /></div>
-        </div>
-      </div>
+      <TextMotionEditor stack={stack} onChange={next => setDefaultStack(next)} caption={caption} windowSeconds={3.8} wordCount={2} light compact />
       <div className="frame-canvas default-position-stage" style={{background:'#30362d'}}>
-        <div className="draggable-title" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{left:`${textX}%`,top:`${textY}%`,fontFamily,fontSize:`${Math.min(Number(fontSize)||48,120)}px`,color:fontColor,fontWeight:bold?700:400,fontStyle:italic?'italic':'normal',textDecoration:underline?'underline':'none',textShadow:captionShadow(outline, Math.min(Number(fontSize)||48,120))}}>
-          <Move size={14}/><span>Summer, slowly.</span>
-        </div>
+        <MotionStage className="stage-fill" input={input} clock={clock}>
+          <div className="motion-drag" title="Drag to set the default position" onPointerDown={e => dragOnStage(e, (x, y) => { setTextX(x); setTextY(y) })} style={{ left: `${textX}%`, top: `${textY}%` }}><Move size={14}/></div>
+        </MotionStage>
       </div>
       <div className="position-readout light-readout"><Move size={14}/><span>Default position</span><strong>X {Math.round(textX)}% · Y {Math.round(textY)}%</strong></div>
     </div>
@@ -2659,24 +2682,81 @@ function TextStyleModal({fontFamily,setFontFamily,fontSize,setFontSize,fontColor
   </div></div>
 }
 
+type CaptionDefaults = {
+  fontFamily: string; fontSize: number; fontColor: string; bold: boolean; italic: boolean;
+  underline: boolean; outline: boolean; textX: number; textY: number; textFx: TextFxLayer[];
+}
+
+/** The frame's colour A → B change on the caption clock (seconds into the hold). */
+function bgChangeFor(item: MediaItem): BgChange | null {
+  const change = frameColourChange(item)
+  return change ? { colourA: change.from, colourB: change.to, transition: change.transition, start: change.start, time: change.time } : null
+}
+
+/** Motion path of the canvas editor (textMove* fields), % of the frame. */
+function motionPathFor(item: MediaItem) {
+  const x = Number.isFinite(Number(item.textX)) ? Number(item.textX) : 50
+  const y = Number.isFinite(Number(item.textY)) ? Number(item.textY) : 50
+  const fromX = Number.isFinite(Number(item.textMoveFromX)) ? Number(item.textMoveFromX) : x
+  const fromY = Number.isFinite(Number(item.textMoveFromY)) ? Number(item.textMoveFromY) : y
+  const toX = Number.isFinite(Number(item.textMoveToX)) ? Number(item.textMoveToX) : fromX
+  const toY = Number.isFinite(Number(item.textMoveToY)) ? Number(item.textMoveToY) : fromY
+  const it: any = item
+  const points = effectiveMotionPoints(fromX, fromY, toX, toY, it.textMovePath, it.textMovePathType || (it.textMovePath && it.textMovePath.length >= 2 ? 'freehand' : 'straight'),
+    it.textMoveCircleRadius, it.textMoveCircleTurns ?? 1, it.textMoveSineAmplitude ?? 8, it.textMoveSineFrequency ?? 2, it.textMoveStarPoints, it.textMoveStarInnerRatio,
+    it.textMoveSymbolRotation, it.textMoveSinusUpDownEnabled, it.textMoveSinusAmplitude, it.textMoveSinusFrequency, it.textMoveBounceHeight, it.textMoveBounceCount, it.textMoveBounceDamping)
+  return { points, fromX, fromY, toX, toY }
+}
+
+/** The caption of a media item as the preview engine sees it — the same
+ * resolution as caption_for_item() in backend/app/text_motion.py. */
+function sceneInputFor(item: MediaItem, defaults?: Partial<CaptionDefaults> | null, stack?: TextFxLayer[]): SceneInput {
+  const title = item.type === 'title'
+  const d = defaults || {}
+  const pick = <T,>(value: T | undefined | null, dflt: T | undefined, fallback: T): T => (value !== undefined && value !== null ? value : title ? fallback : (dflt ?? fallback))
+  const layers = stack ?? item.textFx ?? []
+  const timing = normalizedTextTiming(item)
+  const x = Number(pick(item.textX, d.textX, 50))
+  const y = Number(pick(item.textY, d.textY, title ? 50 : 72))
+  const motion = hasMotionPath(layers) ? { points: motionPathFor(item).points as [number, number][], easing: (item.textMoveEasing as string) || 'linear' } : null
+  return {
+    text: item.text || '', stack: layers,
+    family: String(pick(item.fontFamily || undefined, d.fontFamily, 'Montserrat')),
+    bold: Boolean(pick(item.textBold, d.bold, true)), italic: Boolean(pick(item.textItalic, d.italic, false)),
+    underline: Boolean(pick(item.textUnderline, d.underline, false)),
+    colour: String(pick(item.fontColor || undefined, d.fontColor, '#ffffff')),
+    fontSize: Number(pick(Number.isFinite(Number(item.fontSize)) ? Number(item.fontSize) : undefined, d.fontSize, 48)),
+    x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)),
+    align: title && (item as any).textCentered !== true ? 'left' : 'center',
+    outline: title ? (item as any).textOutline === true : (item.textOutline !== undefined ? item.textOutline !== false : d.outline !== false),
+    start: timing.textStart, end: timing.textEnd, steady: Math.max(0, Number((item as any).textSteadySeconds) || 0),
+    bg: title ? bgChangeFor(item) : null, motion,
+  }
+}
+
+/** A text frame (or caption) playing with its effects: lightbox and preview. */
+function FrameMotionPreview({ item, defaults, playing = true, className = '' }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; className?: string }) {
+  const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
+  const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
+  return <MotionStage className={`stage-fill ${className}`} input={input} clock={clock} background={item.type === 'title' ? item.frameBackground : undefined} bg={item.type === 'title' ? bgChangeFor(item) : null} />
+}
+
 // One editor for both caption styles — "Edit picture text" (the overlay drawn
 // on a photo/video) and text frames ("New text frame" / "Text frame editor").
-// The layout is shared: a 16:9 preview canvas (left, or on top in the "below"
-// layout) plus the same control sections in the same order. The real
-// differences are only the canvas background (media file vs. frame colour/
-// transition) and a few mode-specific sections: show-text toggle, outline and
-// caption timing for pictures; colour A/B + transition for frames.
+// The layout is shared: a 16:9 preview canvas with the mini timeline below it
+// (left, or on top in the "below" layout) plus the same control sections in
+// the same order. The canvas is drawn by the preview engine — the JavaScript
+// twin of the renderer — so what plays here is what the MP4 shows: the stack
+// of text effects, and for text frames the colour A → B background change
+// with FFmpeg's exact transition geometry, both on one clock. Hovering an
+// effect in the browser previews it on top of the stack.
 // Picture mode keeps a local draft and writes on "Save"; frame mode patches the
 // storyline item live (so a stacked lightbox behind the editor updates as you
 // type) and "Cancel" reverts to the original.
 function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery }: {
   mode: 'picture' | 'frame'
   item: MediaItem
-  defaults?: {
-    fontFamily: string; fontSize: number; fontColor: string; bold: boolean; italic: boolean;
-    underline: boolean; outline: boolean; textX: number; textY: number;
-    fxEnter: string; fxWhile: string; fxExit: string; fxWhileSpeed: number;
-  }
+  defaults?: CaptionDefaults
   src?: string
   isNew?: boolean
   stacked?: boolean
@@ -2686,9 +2766,11 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   onOpenGallery?: () => void
 }) {
   const isFrame = mode === 'frame'
-  const dd = defaults ?? { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, fxEnter: 'Fade', fxWhile: 'None (static)', fxExit: 'Fade out', fxWhileSpeed: 2 }
-  const [draft, setDraft] = useState<MediaItem>(() => isFrame ? item : (() => {
+  const dd: CaptionDefaults = defaults ?? { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFx: defaultTextFx() }
+  const [draft, setDraft] = useState<MediaItem>(() => isFrame ? { ...item, textFx: Array.isArray(item.textFx) ? item.textFx : withIds(dd.textFx) } : (() => {
     const initialTiming = normalizedTextTiming(item)
+    const x = Number.isFinite(Number(item.textX)) ? Number(item.textX) : dd.textX
+    const y = Number.isFinite(Number(item.textY)) ? Number(item.textY) : dd.textY
     return {
       ...item,
       textEnabled: item.textEnabled !== false,
@@ -2699,62 +2781,33 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
       textItalic: item.textItalic ?? dd.italic,
       textUnderline: item.textUnderline ?? dd.underline,
       textOutline: item.textOutline ?? dd.outline,
-      textX: Number.isFinite(Number(item.textX)) ? Number(item.textX) : dd.textX,
-      textY: Number.isFinite(Number(item.textY)) ? Number(item.textY) : dd.textY,
-      textFxEnter: item.textFxEnter || item.textEnter || dd.fxEnter,
-      textFxWhile: item.textFxWhile || dd.fxWhile,
-      textFxExit: item.textFxExit || item.textExit || dd.fxExit,
-      textFxWhileSpeed: Number(item.textFxWhileSpeed) || dd.fxWhileSpeed,
+      textX: x,
+      textY: y,
+      textFx: Array.isArray(item.textFx) ? item.textFx : withIds(dd.textFx),
       textStart: initialTiming.textStart,
       textEnd: initialTiming.textEnd,
-      textEnterDuration: Number(item.textEnterDuration) || 0.5,
-      textExitDuration: Number(item.textExitDuration) || 0.5,
-      textMoveEnabled: item.textMoveEnabled ?? false,
-      textMoveFromX: Number.isFinite(Number(item.textMoveFromX)) ? Number(item.textMoveFromX) : (Number.isFinite(Number(item.textX)) ? Number(item.textX) : dd.textX),
-      textMoveFromY: Number.isFinite(Number(item.textMoveFromY)) ? Number(item.textMoveFromY) : (Number.isFinite(Number(item.textY)) ? Number(item.textY) : dd.textY),
-      textMoveToX: Number.isFinite(Number(item.textMoveToX)) ? Number(item.textMoveToX) : (Number.isFinite(Number(item.textX)) ? Number(item.textX) : dd.textX),
-      textMoveToY: Number.isFinite(Number(item.textMoveToY)) ? Number(item.textMoveToY) : (Number.isFinite(Number(item.textY)) ? Number(item.textY) : dd.textY),
-      textMovePath: item.textMovePath,
+      textMoveFromX: Number.isFinite(Number(item.textMoveFromX)) ? Number(item.textMoveFromX) : x,
+      textMoveFromY: Number.isFinite(Number(item.textMoveFromY)) ? Number(item.textMoveFromY) : y,
+      textMoveToX: Number.isFinite(Number(item.textMoveToX)) ? Number(item.textMoveToX) : x,
+      textMoveToY: Number.isFinite(Number(item.textMoveToY)) ? Number(item.textMoveToY) : y,
       textMovePathType: item.textMovePathType || (item.textMovePath && item.textMovePath.length >= 2 ? 'freehand' : 'straight'),
       textMoveEasing: item.textMoveEasing || 'linear',
-      textMoveCircleRadius: item.textMoveCircleRadius,
       textMoveCircleTurns: item.textMoveCircleTurns ?? 1,
       textMoveSineAmplitude: item.textMoveSineAmplitude ?? 8,
       textMoveSineFrequency: item.textMoveSineFrequency ?? 2,
-      textMoveStarPoints: (item as any).textMoveStarPoints ?? 5,
-      textMoveStarInnerRatio: (item as any).textMoveStarInnerRatio ?? 0.45,
-      textMoveSymbolRotation: (item as any).textMoveSymbolRotation ?? 0,
-      textMoveSinusUpDownEnabled: (item as any).textMoveSinusUpDownEnabled ?? false,
-      textMoveSinusAmplitude: (item as any).textMoveSinusAmplitude ?? 6,
-      textMoveSinusFrequency: (item as any).textMoveSinusFrequency ?? 2,
-      textScaleEnabled: (item as any).textScaleEnabled ?? false,
-      textScaleFrom: (item as any).textScaleFrom ?? 1,
-      textScaleTo: (item as any).textScaleTo ?? 1.45,
-      textRotateEnabled: (item as any).textRotateEnabled ?? false,
-      textRotateFrom: (item as any).textRotateFrom ?? -10,
-      textRotateTo: (item as any).textRotateTo ?? 0,
-      textRotateSpeed: (item as any).textRotateSpeed,
-      textSquishEnabled: (item as any).textSquishEnabled ?? false,
-      textSquishFrom: (item as any).textSquishFrom ?? 0.5,
-      textSquishTo: (item as any).textSquishTo ?? 1,
-      textColorAnimEnabled: (item as any).textColorAnimEnabled ?? false,
-      textColorFrom: (item as any).textColorFrom || (item.fontColor || dd.fontColor || '#ffffff'),
-      textColorTo: (item as any).textColorTo || (item as any).textColorFrom || (item.fontColor || dd.fontColor || '#ffffff'),
     }
   })())
-  const [fxPlaying, setFxPlaying] = useState(true)
-  const [bgPlaying, setBgPlaying] = useState(true)
   const [layout, setLayout] = useState<'sidebar' | 'below'>(() => {
     try { return localStorage.getItem('textFrameLayout') === 'below' ? 'below' : 'sidebar' } catch { return 'sidebar' }
   })
   useEffect(() => { try { localStorage.setItem('textFrameLayout', layout) } catch { /* ignore */ } }, [layout])
   const { setRef: canvasRef, scale: frameScale } = useFrameScale<HTMLDivElement>()
   // Picture mode: the canvas background must be the picture as the render sees
-  // it — turned and cropped. The lightbox shares the same cached copy; a CSS
-  // transform cannot seat a 90°-turned portrait photo in the canvas unclipped.
+  // it — turned and cropped. The lightbox shares the same cached copy.
   const canvasPhoto = useCroppedSource(src || '', isFrame || item.type === 'video' ? null : item, 'stage', false)
   // Frame mode only: the item as it was when the editor opened (for "Cancel").
   const original = useRef(item)
+  const pathRef = useRef<HTMLDivElement | null>(null)
 
   const apply = (change: Partial<MediaItem>) => {
     setDraft(current => ({ ...current, ...change }))
@@ -2779,212 +2832,111 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   const bold = draft.textBold ?? (isFrame ? true : dd.bold)
   const italic = draft.textItalic ?? (isFrame ? false : dd.italic)
   const underline = draft.textUnderline ?? (isFrame ? false : dd.underline)
-  const captionText = draft.text || (isFrame ? ' ' : 'Add a caption')
   const centeredText = Boolean((draft as any).textCentered)
 
-  const fromX = Number.isFinite(Number(draft.textMoveFromX)) ? Number(draft.textMoveFromX) : draft.textX
-  const fromY = Number.isFinite(Number(draft.textMoveFromY)) ? Number(draft.textMoveFromY) : draft.textY
-  const toX = Number.isFinite(Number(draft.textMoveToX)) ? Number(draft.textMoveToX) : draft.textX
-  const toY = Number.isFinite(Number(draft.textMoveToY)) ? Number(draft.textMoveToY) : draft.textY
-  const enabled = Boolean(draft.textMoveEnabled)
-
-  const scaleEnabled = Boolean((draft as any).textScaleEnabled)
-  const scaleFrom = Number.isFinite(Number(draft.textScaleFrom)) ? Number(draft.textScaleFrom) : 1
-  const scaleTo = Number.isFinite(Number(draft.textScaleTo)) ? Number(draft.textScaleTo) : 1.45
-  const rotateEnabled = Boolean((draft as any).textRotateEnabled)
-  const rotateFrom = Number.isFinite(Number(draft.textRotateFrom)) ? Number(draft.textRotateFrom) : -10
-  const rotateTo = Number.isFinite(Number(draft.textRotateTo)) ? Number(draft.textRotateTo) : 0
-  // 0 = unset → the tilt travels over the whole window (the default)
-  const rotateSpeed = Number.isFinite(Number((draft as any).textRotateSpeed)) && Number((draft as any).textRotateSpeed) > 0 ? Number((draft as any).textRotateSpeed) : 0
-  const squishEnabled = Boolean((draft as any).textSquishEnabled)
-  const squishFrom = Number.isFinite(Number(draft.textSquishFrom)) ? Number(draft.textSquishFrom) : 0.5
-  const squishTo = Number.isFinite(Number(draft.textSquishTo)) ? Number(draft.textSquishTo) : 1
-  const colorAnimEnabled = Boolean((draft as any).textColorAnimEnabled)
-  const colorFrom = ((draft as any).textColorFrom && isHex((draft as any).textColorFrom)) ? (draft as any).textColorFrom : (color || '#ffffff')
-  const colorTo = ((draft as any).textColorTo && isHex((draft as any).textColorTo)) ? (draft as any).textColorTo : colorFrom
-
-  // Drives the grow/shrink, colour change and motion-path previews on the canvas
-  // (same loop the old frame editor used).
-  const [animProgress, setAnimProgress] = useState(0)
-  useEffect(() => {
-    if (!fxPlaying) return
-    if (!scaleEnabled && !colorAnimEnabled && !rotateEnabled && !squishEnabled && !enabled) return
-    let raf = 0
-    const start = performance.now()
-    const dur = Math.max(0.6, Number(draft.duration) || 5) * 1000
-    const tick = (now: number) => {
-      const elapsed = (now - start) % dur
-      setAnimProgress(elapsed / dur)
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [fxPlaying, scaleEnabled, colorAnimEnabled, rotateEnabled, squishEnabled, enabled, draft.duration])
-
-  const lerp = (a: number, b: number, t: number) => a + (b - a) * t
-  const hexToRgb = (hex: string) => { const h = hex.replace('#', ''); return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) } }
-  const rgbToHex = (r: number, g: number, b: number) => '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
-  const lerpHex = (a: string, b: string, t: number) => { try { const ca = hexToRgb(a), cb = hexToRgb(b); return rgbToHex(lerp(ca.r, cb.r, t), lerp(ca.g, cb.g, t), lerp(ca.b, cb.b, t)) } catch { return a } }
-  const holdForAnim = Math.max(0.2, Number(draft.duration) || 5)
-  const steadyForAnim = Math.max(0, Math.min(Number((draft as any).textSteadySeconds || 0), Math.max(0, holdForAnim - 0.05)))
-  const effectiveAnimProgress = steadyForAnim > 0.01 ? (animProgress * holdForAnim >= (holdForAnim - steadyForAnim) ? 1 : Math.max(0, Math.min(1, animProgress * holdForAnim / Math.max(0.05, holdForAnim - steadyForAnim)))) : animProgress
-  const interpolatedScale = scaleEnabled ? lerp(scaleFrom, scaleTo, effectiveAnimProgress) : 1
-  const interpolatedColor = colorAnimEnabled ? lerpHex(colorFrom, colorTo, effectiveAnimProgress) : color
-  // Rotate / squash over the same window. Squash factor < 1 goes flat & wide:
-  // the height shrinks and the width compensates a little, like a stamp press.
-  // Speed (seconds for the full from → to travel): unset = whole window,
-  // shorter finishes early and holds, longer is still travelling at the end.
-  const rotateProgress = rotateSpeed > 0 ? Math.max(0, Math.min(1, (animProgress * holdForAnim) / rotateSpeed)) : effectiveAnimProgress
-  const interpolatedAngle = rotateEnabled ? lerp(rotateFrom, rotateTo, rotateProgress) : 0
-  const squishFactor = squishEnabled ? lerp(squishFrom, squishTo, effectiveAnimProgress) : 1
-  const squishWidth = 1 + (1 - squishFactor) * 0.5
-  const textTransform = rotateEnabled || squishEnabled
-    ? `translate(-50%,-50%) rotate(${interpolatedAngle.toFixed(2)}deg) scale(${squishWidth.toFixed(3)}, ${squishFactor.toFixed(3)})`
-    : undefined
-
-  const easeProg = (p: number, easing: string) => { p = Math.max(0, Math.min(1, p)); if (easing === 'ease-in') return p * p; if (easing === 'ease-out') return 1 - (1 - p) * (1 - p); if (easing === 'ease-in-out') { if (p < 0.5) return 2 * p * p; return 1 - 2 * (1 - p) * (1 - p) } if (easing === 'smooth') { if (p < 0.5) return 4 * p * p * p; return 1 - Math.pow(-2 * p + 2, 3) / 2 } return p }
-  const movingPos = (() => {
-    if (!enabled) return null
-    const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2, (draft as any).textMoveStarPoints, (draft as any).textMoveStarInnerRatio, (draft as any).textMoveSymbolRotation, (draft as any).textMoveSinusUpDownEnabled, (draft as any).textMoveSinusAmplitude, (draft as any).textMoveSinusFrequency, (draft as any).textMoveBounceHeight, (draft as any).textMoveBounceCount, (draft as any).textMoveBounceDamping)
-    if (!pts.length) return null
-    const eased = easeProg(effectiveAnimProgress, (draft.textMoveEasing as any) || 'linear'); let total = 0; for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); if (total < 0.001) return pts[0]; let target = total * eased; for (let i = 1; i < pts.length; i++) { const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); if (target <= seg) { const t = seg === 0 ? 0 : target / seg; return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t] as [number, number] } target -= seg } return pts[pts.length - 1]
-  })()
-  const bouncyOffset = (() => {
-    const it: any = draft as any
-    if (!it.textBouncyEnabled && it.textFxWhile !== 'bouncy') return 0
-    const progB = effectiveAnimProgress
-    const h = it.textBouncyEnabled ? (it.textBouncyHeight ?? 12) : Number(it.textFxParams?.height ?? 12)
-    const n = it.textBouncyEnabled ? (it.textBouncyBounces ?? 3) : Number(it.textFxParams?.bounces ?? 3)
-    const d = it.textBouncyEnabled ? (it.textBouncyDamping ?? 0.35) : Number(it.textFxParams?.damping ?? 0.35)
-    const p = Math.max(0, Math.min(1, progB)); const idx = Math.min(Math.max(1, Math.min(8, Math.round(n))) - 1, Math.floor(p * Math.max(1, Math.min(8, Math.round(n))))); const segT = (p * Math.max(1, Math.min(8, Math.round(n)))) % 1; const amp = Math.max(0, Math.min(30, h)) * Math.pow(1 - Math.max(0, Math.min(0.95, d)), idx); return -amp * 4 * segT * (1 - segT)
-  })()
-  const titleLeft = movingPos ? movingPos[0] : draft.textX
-  const titleTop = (movingPos ? movingPos[1] : draft.textY) + bouncyOffset
-  // Frame pixels × boxHeight/1080 → the caption renders at the same size relative
-  // to the frame as the final MP4 (drawtext fontsize is in frame pixels).
-  const titleStyle: React.CSSProperties = {
-    left: `${titleLeft}%`, top: `${titleTop}%`,
-    fontFamily: `'${family}', sans-serif`,
-    fontSize: `${Math.max(4, size * interpolatedScale * frameScale)}px`,
-    color: interpolatedColor,
-    fontWeight: bold ? 700 : 400,
-    fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal',
-    textDecoration: underline ? 'underline' : 'none',
-    opacity: !isFrame && draft.textEnabled === false ? .45 : 1,
-    // The class sets translate(-50%,-50%) so the block centre sits on the
-    // position; an inline transform must repeat it first, then apply the
-    // rotate/squash around the block's own centre.
-    ...(textTransform ? { transform: textTransform } : {}),
-  }
-  const motionCaptionStyle: React.CSSProperties = {
-    fontFamily: `'${family}', sans-serif`,
-    // Frame pixels — TextMotionPathEditor scales these onto its own canvas.
-    fontSize: `${size}px`,
-    color,
-    fontWeight: bold ? 700 : 400,
-    fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal',
-    textDecoration: underline ? 'underline' : 'none',
-  }
-
-  // Picture mode only: the caption window (the same seconds the storyline
-  // text-lane handles control).
+  // ---- the stack and the shared clock ----
+  const stack = draft.textFx || []
+  const setStack = (next: TextFxLayer[]) => apply({ textFx: next })
+  const [candidate, setCandidate] = useState<{ stack: TextFxLayer[]; flag: string | null } | null>(null)
+  const [playing, setPlaying] = useState(true)
+  const clipDuration = Math.max(0.2, Number(draft.duration) || 5)
+  const clock = useMotionClock(clipDuration, playing)
   const timing = normalizedTextTiming(draft)
+  const bg = isFrame ? bgChangeFor(draft) : null
+  const motionEnabled = hasMotionPath(stack)
+  const motion = motionPathFor(draft)
+  const [prep, setPrep] = useState<Prepared | null>(null)
+  const [stackPrep, setStackPrep] = useState<Prepared | null>(null)
+  const sceneDefaults = isFrame ? null : dd
+  const input = useMemo(() => sceneInputFor(draft, sceneDefaults, candidate ? candidate.stack : stack), [draft, candidate, stack])
+  const browserCaption: BrowserCaption = {
+    text: draft.text || 'Text', family, bold, italic, colour: color, isFrame, background: isFrame ? draft.frameBackground : undefined,
+    bgChange: bg ? { colourB: bg.colourB, transition: bg.transition } : null,
+  }
+  const wordCount = useMemo(() => String(draft.text || '').split(/\s+/).filter(Boolean).length, [draft.text])
+  const sceneFor = (s: TextFxLayer[]) => ({ input: sceneInputFor(draft, sceneDefaults, s), background: isFrame ? draft.frameBackground : '#1b1e19', bg, duration: clipDuration })
+  const presetExtras = (p: MotionPreset) => {
+    const change: Partial<MediaItem> = {}
+    if (p.font) Object.assign(change, { fontFamily: p.font.family, ...(p.font.bold !== undefined ? { textBold: p.font.bold } : {}), textItalic: p.font.italic ?? false })
+    if (p.frame && isFrame) Object.assign(change, { frameBackground: p.frame.background, frameBackground2: p.frame.background2, frameTransition: p.frame.transition, frameTransitionTime: p.frame.time, frameTransitionStart: p.frame.start })
+    if (Object.keys(change).length) apply(change)
+  }
+  // The motion-path editor's own toggle adds / removes the Motion path layer.
+  const pathChange = (change: Partial<MediaItem>) => {
+    const { textMoveEnabled, ...rest } = change as any
+    let next: Partial<MediaItem> = rest
+    if (textMoveEnabled === true && !motionEnabled) next = { ...rest, textFx: [...stack.filter(l => l.effect !== 'motion-path'), { id: newLayerId(), effect: 'motion-path' }] }
+    if (textMoveEnabled === false) next = { ...rest, textFx: stack.filter(l => l.effect !== 'motion-path') }
+    apply(next)
+  }
+  const layerParam = (effect: string, name: string) => {
+    const l = stack.find(x => x.effect === effect && !x.muted)
+    if (!l) return undefined
+    const v = l.params?.[name] ?? EFFECTS[effect]?.params?.find(p => p.name === name)?.default
+    return Number.isFinite(Number(v)) ? Number(v) : undefined
+  }
+
+  // Picture mode only: the caption window (the storyline text-lane handles).
   const minimum = Math.min(MIN_TEXT_SECONDS, timing.duration)
   const setTextStart = (value: number) => apply({ textStart: Math.min(Math.max(0, value), timing.textEnd - minimum) })
   const setTextEnd = (value: number) => apply({ textEnd: Math.max(Math.min(timing.duration, value), timing.textStart + minimum) })
 
   const save = () => {
     if (isFrame) { onSave({}); return }
+    const d: any = draft
     onSave({
-      text: draft.text,
-      textEnabled: draft.textEnabled !== false,
-      fontFamily: draft.fontFamily,
-      fontSize: draft.fontSize,
-      fontColor: draft.fontColor,
-      textBold: draft.textBold,
-      textItalic: draft.textItalic,
-      textUnderline: draft.textUnderline,
-      textOutline: draft.textOutline,
-      textX: draft.textX,
-      textY: draft.textY,
-      textFxEnter: draft.textFxEnter || dd.fxEnter,
-      textEnter: draft.textFxEnter || dd.fxEnter,
-      textFxWhile: draft.textFxWhile || dd.fxWhile,
-      textFxWhileSpeed: draft.textFxWhileSpeed || dd.fxWhileSpeed,
-      textFxExit: draft.textFxExit || dd.fxExit,
-      textExit: draft.textFxExit || dd.fxExit,
-      textFxParams: draft.textFxParams,
-      textEnterDuration: draft.textEnterDuration,
-      textExitDuration: draft.textExitDuration,
-      textStart: timing.textStart,
-      textEnd: timing.textEnd,
-      textMoveEnabled: draft.textMoveEnabled,
-      textMoveFromX: draft.textMoveFromX,
-      textMoveFromY: draft.textMoveFromY,
-      textMoveToX: draft.textMoveToX,
-      textMoveToY: draft.textMoveToY,
-      textMovePath: draft.textMovePath,
-      textMovePathType: draft.textMovePathType,
-      textMoveEasing: draft.textMoveEasing,
-      textMoveCircleRadius: draft.textMoveCircleRadius,
-      textMoveCircleTurns: draft.textMoveCircleTurns,
-      textMoveSineAmplitude: draft.textMoveSineAmplitude,
-      textMoveSineFrequency: draft.textMoveSineFrequency,
-      textMoveStarPoints: (draft as any).textMoveStarPoints,
-      textMoveStarInnerRatio: (draft as any).textMoveStarInnerRatio,
-      textMoveSymbolRotation: (draft as any).textMoveSymbolRotation,
-      textMoveSinusUpDownEnabled: (draft as any).textMoveSinusUpDownEnabled,
-      textMoveSinusAmplitude: (draft as any).textMoveSinusAmplitude,
-      textMoveSinusFrequency: (draft as any).textMoveSinusFrequency,
-      textMoveBounceHeight: (draft as any).textMoveBounceHeight,
-      textMoveBounceCount: (draft as any).textMoveBounceCount,
-      textMoveBounceDamping: (draft as any).textMoveBounceDamping,
-      textSteadySeconds: (draft as any).textSteadySeconds,
-      textScaleEnabled: (draft as any).textScaleEnabled,
-      textScaleFrom: (draft as any).textScaleFrom,
-      textScaleTo: (draft as any).textScaleTo,
-      textRotateEnabled: (draft as any).textRotateEnabled,
-      textRotateFrom: (draft as any).textRotateFrom,
-      textRotateTo: (draft as any).textRotateTo,
-      textRotateSpeed: (draft as any).textRotateSpeed,
-      textSquishEnabled: (draft as any).textSquishEnabled,
-      textSquishFrom: (draft as any).textSquishFrom,
-      textSquishTo: (draft as any).textSquishTo,
-      textColorAnimEnabled: (draft as any).textColorAnimEnabled,
-      textColorFrom: (draft as any).textColorFrom,
-      textColorTo: (draft as any).textColorTo,
-      textBouncyEnabled: (draft as any).textBouncyEnabled,
-      textBouncyHeight: (draft as any).textBouncyHeight,
-      textBouncyBounces: (draft as any).textBouncyBounces,
-      textBouncyDamping: (draft as any).textBouncyDamping,
-      textBouncyFrequency: (draft as any).textBouncyFrequency,
-    })
+      text: draft.text, textEnabled: draft.textEnabled !== false,
+      fontFamily: draft.fontFamily, fontSize: draft.fontSize, fontColor: draft.fontColor,
+      textBold: draft.textBold, textItalic: draft.textItalic, textUnderline: draft.textUnderline, textOutline: draft.textOutline,
+      textX: draft.textX, textY: draft.textY, textFx: normalizeTextFx(stack),
+      textStart: timing.textStart, textEnd: timing.textEnd,
+      textMoveFromX: d.textMoveFromX, textMoveFromY: d.textMoveFromY, textMoveToX: d.textMoveToX, textMoveToY: d.textMoveToY,
+      textMovePath: d.textMovePath, textMovePathType: d.textMovePathType, textMoveEasing: d.textMoveEasing,
+      textMoveCircleRadius: d.textMoveCircleRadius, textMoveCircleTurns: d.textMoveCircleTurns,
+      textMoveSineAmplitude: d.textMoveSineAmplitude, textMoveSineFrequency: d.textMoveSineFrequency,
+      textMoveStarPoints: d.textMoveStarPoints, textMoveStarInnerRatio: d.textMoveStarInnerRatio, textMoveSymbolRotation: d.textMoveSymbolRotation,
+      textMoveSinusUpDownEnabled: d.textMoveSinusUpDownEnabled, textMoveSinusAmplitude: d.textMoveSinusAmplitude, textMoveSinusFrequency: d.textMoveSinusFrequency,
+      textMoveBounceHeight: d.textMoveBounceHeight, textMoveBounceCount: d.textMoveBounceCount, textMoveBounceDamping: d.textMoveBounceDamping,
+      textSteadySeconds: d.textSteadySeconds,
+    } as Partial<MediaItem>)
   }
 
-  const change = isFrame ? frameColourChange(draft) : null
+  // ---- colour A / B (text frames) ----
+  const backgrounds = ['#30382a', '#14213d', '#6f4238', '#37474f', '#5b285f', '#163c44']
   const sameAsA = isFrame && !isHex(draft.frameBackground2)
   const colourB = isFrame ? (draft.frameBackground2 || draft.frameBackground) : '#30382a'
-  const backgrounds = ['#30382a', '#14213d', '#6f4238', '#37474f', '#5b285f', '#163c44']
+  const bTime = Math.min(clipDuration, Math.max(0.2, Number(draft.frameTransitionTime) || 1))
+  const bStart = Math.min(Math.max(0, clipDuration - bTime), Math.max(0, Number(draft.frameTransitionStart) || 0))
+  const bTransition = draft.frameTransition || 'Fade'
+  const bSame = !sameAsA && String(colourB).toLowerCase() === String(draft.frameBackground).toLowerCase()
+  const followsBg = stack.some(l => !l.muted && (EFFECTS[l.effect]?.bg || l.sync === 'bg' || EFFECTS[l.effect]?.sync === 'bg'))
   const headline = isFrame ? (isNew ? 'New text frame' : 'Text frame editor') : 'Edit picture text'
-  const subline = isFrame ? 'DRAG THE TEXT TO POSITION IT' : 'THIS PICTURE / VIDEO · DRAG THE CAPTION TO POSITION IT'
+  const subline = isFrame ? 'DRAG THE TEXT TO POSITION IT · THE PREVIEW IS THE RENDER ENGINE' : 'THIS PICTURE / VIDEO · DRAG THE CAPTION TO POSITION IT'
+
+  // drag handle over the text block (frame px -> % of the canvas)
+  const box = prep?.ctx.units.text[0]
+  const handleStyle: React.CSSProperties = box
+    ? { left: `${draft.textX}%`, top: `${draft.textY}%`, width: `${Math.max(4, (box.w + prep!.em) / FRAME_W * 100)}%`, height: `${Math.max(6, (box.h + prep!.em * 0.4) / FRAME_H * 100)}%` }
+    : { left: `${draft.textX}%`, top: `${draft.textY}%` }
 
   return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`}><div className={`frame-editor${layout === 'below' ? ' layout-below' : ''}`}>
     <div className="preview-top"><div><strong>{headline}</strong><span>{subline}</span></div><div className="frame-head-actions"><div className="frame-layout-toggle" role="group" aria-label="Editor layout"><button type="button" className={layout === 'sidebar' ? 'active' : ''} title="Sidebar layout — controls in a column on the right" onClick={() => setLayout('sidebar')}><PanelRight size={14}/><span>Sidebar</span></button><button type="button" className={layout === 'below' ? 'active' : ''} title="Below layout — bigger preview with the controls arranged in the space beneath the picture" onClick={() => setLayout('below')}><PanelBottom size={14}/><span>Below</span></button></div><button onClick={close} title={isFrame && isNew ? 'Discard this text frame' : 'Discard changes and close'}><X size={20}/></button></div></div>
     <div className="frame-editor-body">
-      <div className={`frame-canvas${isFrame ? '' : ' photo'}`} ref={canvasRef} style={{ background: isFrame ? draft.frameBackground : '#000' }}>
-        {isFrame && change && <ColourChangePreview key={`${change.from}-${change.to}-${change.transition}-${change.time}-${change.start}-${change.hold}`} change={change} playing={bgPlaying} />}
-        {!isFrame && src && <div className="stage-blur" style={{ backgroundImage: `url(${canvasPhoto.src})`, filter: `blur(${backdropBlurPx(frameScale).toFixed(1)}px) brightness(0.88) saturate(1.2)` }} />}
-        {!isFrame && src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={canvasPhoto.src} alt="" draggable={false} />)}
-        {enabled && (() => {
-          const pts = effectiveMotionPoints(fromX, fromY, toX, toY, draft.textMovePath as any, (draft.textMovePathType as any) || 'straight', draft.textMoveCircleRadius, draft.textMoveCircleTurns ?? 1, draft.textMoveSineAmplitude ?? 8, draft.textMoveSineFrequency ?? 2, (draft as any).textMoveStarPoints, (draft as any).textMoveStarInnerRatio, (draft as any).textMoveSymbolRotation, (draft as any).textMoveSinusUpDownEnabled, (draft as any).textMoveSinusAmplitude, (draft as any).textMoveSinusFrequency, (draft as any).textMoveBounceHeight, (draft as any).textMoveBounceCount, (draft as any).textMoveBounceDamping)
-          const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p[0]} ${p[1]}`).join(' ')
-          return <svg className="frame-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={d} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType === 'straight' || !draft.textMovePathType) ? "1.2 1.2" : undefined} /></svg>
-        })()}
-        {enabled && <><span className="motion-handle from small frame-handle" style={{ left: `${fromX}%`, top: `${fromY}%` }}><b>S</b></span><span className="motion-handle to small frame-handle" style={{ left: `${toX}%`, top: `${toY}%` }}><b>E</b></span></>}
-        <div className={`draggable-title${isFrame ? ` wrap${centeredText ? '' : ' left'}` : ' wrap'}`} onPointerDown={e => dragOnStage(e, (x, y) => apply({ textX: x, textY: y, textMoveFromX: enabled ? x : draft.textMoveFromX, textMoveFromY: enabled ? y : draft.textMoveFromY }))} style={titleStyle}>
-          <Move size={14}/><TextFxPreview item={{ ...draft, fontColor: interpolatedColor, fontSize: size * interpolatedScale } as any} playing={fxPlaying}>{captionText}</TextFxPreview>
+      <div className="frame-left">
+        <div className={`frame-canvas${isFrame ? '' : ' photo'}`} ref={canvasRef} style={{ background: isFrame ? draft.frameBackground : '#000' }}>
+          {!isFrame && src && <div className="stage-blur" style={{ backgroundImage: `url(${canvasPhoto.src})`, filter: `blur(${backdropBlurPx(frameScale).toFixed(1)}px) brightness(0.88) saturate(1.2)` }} />}
+          {!isFrame && src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={canvasPhoto.src} alt="" draggable={false} />)}
+          <MotionStage className="stage-fill" input={input} clock={clock} background={isFrame ? draft.frameBackground : undefined} bg={bg} flag={candidate?.flag}
+            onPrepared={p => { setPrep(p); if (!candidate) setStackPrep(p) }}>
+            {motionEnabled && motion.points.length > 1 && <svg className="frame-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={motion.points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt[0]} ${pt[1]}`).join(' ')} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType === 'straight' || !draft.textMovePathType) ? '1.2 1.2' : undefined} /></svg>}
+            {motionEnabled && <><span className="motion-handle from small frame-handle" style={{ left: `${motion.fromX}%`, top: `${motion.fromY}%` }}><b>S</b></span><span className="motion-handle to small frame-handle" style={{ left: `${motion.toX}%`, top: `${motion.toY}%` }}><b>E</b></span></>}
+            <div className="motion-drag" title="Drag to position the text" style={handleStyle}
+              onPointerDown={e => dragOnStage(e, (x, y) => apply({ textX: x, textY: y, ...(motionEnabled ? { textMoveFromX: x, textMoveFromY: y } : {}) }))}><Move size={14}/></div>
+          </MotionStage>
+          {!isFrame && draft.textEnabled === false && <span className="picture-text-disabled-badge"><EyeOff size={12}/> Hidden</span>}
         </div>
-        {!isFrame && draft.textEnabled === false && <span className="picture-text-disabled-badge"><EyeOff size={12}/> Hidden</span>}
+        <TextMotionTimeline stack={stack} onChange={setStack} clock={clock} duration={clipDuration} start={timing.textStart} end={timing.textEnd}
+          bg={bg ? { start: bg.start, time: bg.time, from: bg.colourA, to: bg.colourB, transition: bTransition } : null} playing={playing} onPlaying={setPlaying} />
       </div>
       <aside>
         <div className="below-grid">
@@ -2992,127 +2944,64 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
           {isFrame && <label className="check-label" title="Centre the whole text block on its position and centre every line on the others — at position 50 / 50 the text sits in the middle of the frame"><input type="checkbox" checked={centeredText} onChange={e => apply({ textCentered: e.target.checked } as any)}/><span><Check size={11}/></span> Centre text in frame <small style={{ marginLeft: 6, opacity: .7 }}>lines &amp; block centre on the position</small></label>}
           {!isFrame && <label className="check-label picture-text-enabled"><input type="checkbox" checked={draft.textEnabled !== false} onChange={e => apply({ textEnabled: e.target.checked })}/><span>{draft.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</span>Show text on this picture</label>}
           <TypeControls fontFamily={family} setFontFamily={v => apply({ fontFamily: v })} fontSize={size} setFontSize={v => apply({ fontSize: v })} fontColor={color} setFontColor={v => apply({ fontColor: v })} bold={bold} setBold={v => apply({ textBold: v })} italic={italic} setItalic={v => apply({ textItalic: v })} underline={underline} setUnderline={v => apply({ textUnderline: v })} sample={isFrame ? draft.text.split('\n')[0] : (draft.text || 'Caption sample')} />
-          <div className="fx-section">
-            <FieldLabel>Text animation</FieldLabel>
-            <div className="fx-rows">
-              <div className="fx-row"><span className="fx-slot">Enter</span><TextEffectChip value={draft.textFxEnter || (isFrame ? 'Fade' : dd.fxEnter)} slot="enter" ariaLabel={`${item.name} enter effect`} showSeconds seconds={draft.textEnterDuration ?? .5} onSecondsChange={v => apply({ textEnterDuration: Math.max(0.1, Math.min(6, v)) })} onChange={v => apply({ textFxEnter: v, textEnter: v })} /></div>
-              <div className="fx-row"><span className="fx-slot">While shown</span><TextEffectChip value={draft.textFxWhile || (isFrame ? 'None (static)' : dd.fxWhile)} slot="while" ariaLabel={`${item.name} while-shown effect`} showSeconds seconds={draft.textFxWhileSpeed ?? (isFrame ? 2 : dd.fxWhileSpeed)} onSecondsChange={v => apply({ textFxWhileSpeed: Math.max(0.4, Math.min(12, v)) })} params={draft.textFxParams} onParamsChange={next => apply({ textFxParams: next })} onChange={v => apply({ textFxWhile: v, textFxWhileSpeed: textEffectDefaultSeconds[v] ?? draft.textFxWhileSpeed ?? (isFrame ? 2 : dd.fxWhileSpeed) })} /></div>
-              <div className="fx-row"><span className="fx-slot">Exit</span><TextEffectChip value={draft.textFxExit || (isFrame ? 'Fade out' : dd.fxExit)} slot="exit" ariaLabel={`${item.name} exit effect`} showSeconds seconds={draft.textExitDuration ?? .5} onSecondsChange={v => apply({ textExitDuration: Math.max(0.1, Math.min(6, v)) })} onChange={v => apply({ textFxExit: v, textExit: v })} /></div>
-            </div>
-            <div className="fx-foot"><small>The preview loops a CSS approximation — the MP4 renders the real effect.</small><button type="button" className={`icon-button ${fxPlaying ? 'playing' : ''}`} title={fxPlaying ? 'Pause the previews' : 'Play the previews'} onClick={() => setFxPlaying(p => !p)}>{fxPlaying ? <Pause size={13}/> : <Play size={13}/>}</button></div>
+          <TextMotionEditor stack={stack} onChange={setStack} caption={browserCaption} windowSeconds={Math.max(0.1, timing.textEnd - timing.textStart)} wordCount={wordCount}
+            conflicts={stackPrep?.ctx.conflicts} warnings={stackPrep?.ctx.warnings}
+            onCandidate={(s, flag) => setCandidate(s ? { stack: s, flag } : null)} sceneFor={sceneFor} onPresetExtras={presetExtras}
+            onEditPath={() => pathRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })} />
+          <div ref={pathRef}>
+            <TextMotionPathEditor
+              enabled={motionEnabled}
+              fromX={motion.fromX} fromY={motion.fromY} toX={motion.toX} toY={motion.toY}
+              path={draft.textMovePath as any}
+              pathType={draft.textMovePathType as any}
+              easing={draft.textMoveEasing as any}
+              circleRadius={draft.textMoveCircleRadius}
+              circleTurns={draft.textMoveCircleTurns}
+              sineAmplitude={draft.textMoveSineAmplitude}
+              sineFrequency={draft.textMoveSineFrequency}
+              starPoints={(draft as any).textMoveStarPoints}
+              starInnerRatio={(draft as any).textMoveStarInnerRatio}
+              symbolRotation={(draft as any).textMoveSymbolRotation}
+              sinusEnabled={(draft as any).textMoveSinusUpDownEnabled}
+              sinusAmplitude={(draft as any).textMoveSinusAmplitude}
+              sinusFrequency={(draft as any).textMoveSinusFrequency}
+              bounceHeight={(draft as any).textMoveBounceHeight}
+              bounceCount={(draft as any).textMoveBounceCount}
+              bounceDamping={(draft as any).textMoveBounceDamping}
+              rotateFrom={layerParam('rotate', 'from')}
+              rotateTo={layerParam('rotate', 'to')}
+              squishFrom={layerParam('squash', 'from')}
+              squishTo={layerParam('squash', 'to')}
+              onChange={pathChange}
+              src={isFrame ? undefined : src}
+              isVideo={item.type === 'video'}
+              background={isFrame ? draft.frameBackground : undefined}
+              caption={draft.text || (isFrame ? 'Title' : 'Add a caption')}
+              captionStyle={{ fontFamily: fontStack(family), fontSize: `${size}px`, color, fontWeight: bold && !FONTS_WITHOUT_BOLD.has(family) ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(family) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }}
+            />
           </div>
-          <div className="frame-scale-color">
-            <FieldLabel>Text size animation <small style={{ opacity: .7 }}>grow / shrink</small></FieldLabel>
-            <label className="check-label" style={{ marginBottom: 6 }}>
-              <input type="checkbox" checked={scaleEnabled} onChange={e => apply({ textScaleEnabled: e.target.checked, textScaleFrom: scaleFrom, textScaleTo: scaleTo } as any)} />
-              <span><Check size={11}/></span> Grow / shrink while shown {scaleEnabled && <small style={{ marginLeft: 6, opacity: .7 }}>{scaleFrom.toFixed(2)}× → {scaleTo.toFixed(2)}×</small>}
-            </label>
-            {scaleEnabled && <div className="motion-params" style={{ marginTop: 4 }}>
-              <label>From <input type="range" min={0.5} max={2} step={0.05} value={scaleFrom} onChange={e => apply({ textScaleFrom: Number(e.target.value) } as any)} /> <em>{scaleFrom.toFixed(2)}×</em></label>
-              <label>To <input type="range" min={0.5} max={2.5} step={0.05} value={scaleTo} onChange={e => apply({ textScaleTo: Number(e.target.value) } as any)} /> <em>{scaleTo.toFixed(2)}×</em></label>
-            </div>}
-            <FieldLabel>Text rotate <small style={{ opacity: .7 }}>tilt while shown · around its own centre</small></FieldLabel>
-            <label className="check-label" style={{ marginBottom: 6 }}>
-              <input type="checkbox" checked={rotateEnabled} onChange={e => apply({ textRotateEnabled: e.target.checked, textRotateFrom: rotateFrom, textRotateTo: rotateTo } as any)} />
-              <span><Check size={11}/></span> Rotate while shown {rotateEnabled && <small style={{ marginLeft: 6, opacity: .7 }}>{rotateFrom}° → {rotateTo}°</small>}
-            </label>
-            {rotateEnabled && <div className="motion-params" style={{ marginTop: 4 }}>
-              <label>From <input type="range" min={-90} max={90} step={1} value={rotateFrom} onChange={e => apply({ textRotateFrom: Number(e.target.value) } as any)} /> <em>{rotateFrom}°</em></label>
-              <label>To <input type="range" min={-90} max={90} step={1} value={rotateTo} onChange={e => apply({ textRotateTo: Number(e.target.value) } as any)} /> <em>{rotateTo}°</em></label>
-              <label title="How long the tilt takes to travel from → to · default is the whole text window. Shorter: it finishes early and holds. Longer: still turning when the text leaves.">Speed <input type="range" min={0.3} max={15} step={0.1} value={Math.max(0.3, Math.min(15, rotateSpeed || holdForAnim))} onChange={e => apply({ textRotateSpeed: Number(e.target.value) } as any)} /> <em>{(rotateSpeed || holdForAnim).toFixed(1)}s{rotateSpeed > 0 ? '' : ' · window'}</em></label>
-            </div>}
-            <FieldLabel>Text squash <small style={{ opacity: .7 }}>&lt;1 flat &amp; wide · 1 normal · &gt;1 tall</small></FieldLabel>
-            <label className="check-label" style={{ marginBottom: 6 }}>
-              <input type="checkbox" checked={squishEnabled} onChange={e => apply({ textSquishEnabled: e.target.checked, textSquishFrom: squishFrom, textSquishTo: squishTo } as any)} />
-              <span><Check size={11}/></span> Squash while shown {squishEnabled && <small style={{ marginLeft: 6, opacity: .7 }}>{squishFrom.toFixed(2)}× → {squishTo.toFixed(2)}×</small>}
-            </label>
-            {squishEnabled && <div className="motion-params" style={{ marginTop: 4 }}>
-              <label>From <input type="range" min={0.2} max={1.5} step={0.05} value={squishFrom} onChange={e => apply({ textSquishFrom: Number(e.target.value) } as any)} /> <em>{squishFrom.toFixed(2)}×</em></label>
-              <label>To <input type="range" min={0.2} max={1.5} step={0.05} value={squishTo} onChange={e => apply({ textSquishTo: Number(e.target.value) } as any)} /> <em>{squishTo.toFixed(2)}×</em></label>
-            </div>}
-            <FieldLabel>Text colour animation <small style={{ opacity: .7 }}>from → to</small></FieldLabel>
-            <label className="check-label" style={{ marginBottom: 6 }}>
-              <input type="checkbox" checked={colorAnimEnabled} onChange={e => { const checked = e.target.checked; const from = colorFrom; const to = checked ? (isHex(colorTo) && colorTo.toLowerCase() === from.toLowerCase() ? colorTo : from) : colorTo; apply({ textColorAnimEnabled: checked, textColorFrom: from, textColorTo: to } as any) }} />
-              <span><Check size={11}/></span> Colour change while shown {colorAnimEnabled && <small style={{ marginLeft: 6, opacity: .7, display: 'inline-flex', alignItems: 'center', gap: 4 }}><i style={{ width: 12, height: 12, background: colorFrom, display: 'inline-block', borderRadius: 2, border: '1px solid #555' }}/><ChevronRight size={10}/><i style={{ width: 12, height: 12, background: colorTo, display: 'inline-block', borderRadius: 2, border: '1px solid #555' }}/></small>}
-            </label>
-            {colorAnimEnabled && <div className="motion-params" style={{ marginTop: 4, alignItems: 'center' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>From <input type="color" value={colorFrom} onChange={e => apply({ textColorFrom: e.target.value } as any)} style={{ width: 36, height: 22, padding: 0, border: 'none' }} /> <em>{colorFrom}</em></label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>To <input type="color" value={colorTo} onChange={e => apply({ textColorTo: e.target.value } as any)} style={{ width: 36, height: 22, padding: 0, border: 'none' }} /> <em>{colorTo}</em></label>
-              <button type="button" className="btn ghost small" title="Swap colours" onClick={() => apply({ textColorFrom: colorTo, textColorTo: colorFrom } as any)}><RefreshCw size={12}/></button>
-            </div>}
-            {(scaleEnabled || colorAnimEnabled || rotateEnabled || squishEnabled) && <small style={{ opacity: .7, marginTop: 6, display: 'block' }}>Size, rotate, squash and colour-morph run over the visible text duration. In the MP4 the full window is used; easing from motion does not affect them.</small>}
-            <FieldLabel>Bouncy text <small style={{ opacity: .7 }}>damped vertical bounce in place</small></FieldLabel>
-            {(() => {
-              const bouncyEnabled = Boolean((draft as any).textBouncyEnabled)
-              const bouncyH = Number((draft as any).textBouncyHeight ?? 12)
-              const bouncyN = Number((draft as any).textBouncyBounces ?? 3)
-              const bouncyD = Number((draft as any).textBouncyDamping ?? 0.35)
-              const bouncyF = Number((draft as any).textBouncyFrequency ?? 1)
-              return <>
-                <label className="check-label" style={{ marginBottom: 6 }}>
-                  <input type="checkbox" checked={bouncyEnabled} onChange={e => apply({ textBouncyEnabled: e.target.checked, textBouncyHeight: bouncyH, textBouncyBounces: bouncyN, textBouncyDamping: bouncyD, textBouncyFrequency: bouncyF } as any)} />
-                  <span><Check size={11}/></span> Bouncy while shown {bouncyEnabled && <small style={{ marginLeft: 6, opacity: .7 }}>{bouncyH}% · {bouncyN}× · damp {bouncyD.toFixed(2)}</small>}
-                </label>
-                {bouncyEnabled && <div className="motion-params" style={{ marginTop: 4 }}>
-                  <label>Height <input type="range" min={1} max={26} step={1} value={bouncyH} onChange={e => apply({ textBouncyHeight: Number(e.target.value) } as any)} /> <em>{bouncyH}%</em></label>
-                  <label>Bounces <input type="range" min={1} max={8} step={1} value={bouncyN} onChange={e => apply({ textBouncyBounces: Number(e.target.value) } as any)} /> <em>{bouncyN}×</em></label>
-                  <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={bouncyD} onChange={e => apply({ textBouncyDamping: Number(e.target.value) } as any)} /> <em>{bouncyD.toFixed(2)}</em></label>
-                </div>}
-              </>
-            })()}
-          </div>
-          <TextMotionPathEditor
-            enabled={enabled}
-            fromX={fromX}
-            fromY={fromY}
-            toX={toX}
-            toY={toY}
-            path={draft.textMovePath as any}
-            pathType={draft.textMovePathType as any}
-            easing={draft.textMoveEasing as any}
-            circleRadius={draft.textMoveCircleRadius}
-            circleTurns={draft.textMoveCircleTurns}
-            sineAmplitude={draft.textMoveSineAmplitude}
-            sineFrequency={draft.textMoveSineFrequency}
-            starPoints={(draft as any).textMoveStarPoints}
-            starInnerRatio={(draft as any).textMoveStarInnerRatio}
-            symbolRotation={(draft as any).textMoveSymbolRotation}
-            sinusEnabled={(draft as any).textMoveSinusUpDownEnabled}
-            sinusAmplitude={(draft as any).textMoveSinusAmplitude}
-            sinusFrequency={(draft as any).textMoveSinusFrequency}
-            bounceHeight={(draft as any).textMoveBounceHeight}
-            bounceCount={(draft as any).textMoveBounceCount}
-            bounceDamping={(draft as any).textMoveBounceDamping}
-            rotateFrom={rotateEnabled ? rotateFrom : undefined}
-            rotateTo={rotateEnabled ? rotateTo : undefined}
-            rotateSpeed={rotateEnabled ? rotateSpeed : undefined}
-            squishFrom={squishEnabled ? squishFrom : undefined}
-            squishTo={squishEnabled ? squishTo : undefined}
-            onChange={apply}
-            src={isFrame ? undefined : src}
-            isVideo={item.type === 'video'}
-            background={isFrame ? draft.frameBackground : undefined}
-            caption={draft.text || (isFrame ? 'Title' : 'Add a caption')}
-            captionStyle={motionCaptionStyle}
-          />
           <div className="frame-steady-row">
-            <FieldLabel>Hold steady at end <small>text stays still for X seconds at the end (movement finishes early)</small></FieldLabel>
+            <FieldLabel>Hold steady at end <small>once-effects (motion path, grow, rotate, colour) finish X seconds early</small></FieldLabel>
             <div className="motion-params" style={{ marginTop: 4, alignItems: 'center' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>Steady tail <NumberStepper value={Number((draft as any).textSteadySeconds || 0)} min={0} max={Math.max(0, Number(draft.duration || 5) - 0.2)} step={0.1} suffix="s" ariaLabel="Hold steady at end" onChange={v => apply({ textSteadySeconds: Math.max(0, Math.min(v, Math.max(0, Number(draft.duration || 5) - 0.2))) } as any)} /> <em>{Number((draft as any).textSteadySeconds || 0).toFixed(1)}s</em></label>
-              <small style={{ opacity: .7, marginLeft: 8 }}>Text moves for {(Math.max(0, Number(draft.duration || 5) - Number((draft as any).textSteadySeconds || 0))).toFixed(1)}s, then holds at end for {Number((draft as any).textSteadySeconds || 0).toFixed(1)}s.</small>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>Steady tail <NumberStepper value={Number((draft as any).textSteadySeconds || 0)} min={0} max={Math.max(0, clipDuration - 0.2)} step={0.1} suffix="s" ariaLabel="Hold steady at end" onChange={v => apply({ textSteadySeconds: Math.max(0, Math.min(v, Math.max(0, clipDuration - 0.2))) } as any)} /></label>
             </div>
           </div>
           {isFrame && <>
             <div className="bg-columns">
-              <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(bg => <button key={bg} className={draft.frameBackground === bg ? 'active' : ''} style={{ background: bg }} onClick={() => apply({ frameBackground: bg })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(draft.frameBackground) ? draft.frameBackground : '#30382a'} onChange={e => apply({ frameBackground: e.target.value })}/></div></div>
-              <div className={sameAsA ? 'dimmed' : ''}><FieldLabel>Colour B</FieldLabel><div className="background-swatches">{backgrounds.map(bg => <button key={bg} disabled={sameAsA} className={colourB === bg ? 'active' : ''} style={{ background: bg }} onClick={() => apply({ frameBackground2: bg })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" disabled={sameAsA} value={isHex(colourB) ? colourB : '#30382a'} onChange={e => apply({ frameBackground2: e.target.value })}/></div><label className="check-label dark"><input type="checkbox" checked={sameAsA} onChange={e => apply(e.target.checked ? { frameBackground2: undefined } : { frameBackground2: backgrounds.find(b => b !== draft.frameBackground) || '#14213d', frameTransition: draft.frameTransition || 'Fade', frameTransitionTime: draft.frameTransitionTime || 1, frameTransitionStart: draft.frameTransitionStart ?? Math.max(0, (draft.duration - 1) / 2) })}/><span><Check size={11}/></span>Same as A</label></div>
+              <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(c => <button key={c} className={draft.frameBackground === c ? 'active' : ''} style={{ background: c }} onClick={() => apply({ frameBackground: c })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(draft.frameBackground) ? draft.frameBackground : '#30382a'} onChange={e => apply({ frameBackground: e.target.value })}/></div></div>
+              <div className={sameAsA ? 'dimmed' : ''}><FieldLabel>Colour B</FieldLabel><div className="background-swatches">{backgrounds.map(c => <button key={c} disabled={sameAsA} className={colourB === c ? 'active' : ''} style={{ background: c }} onClick={() => apply({ frameBackground2: c })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" disabled={sameAsA} value={isHex(colourB) ? colourB : '#30382a'} onChange={e => apply({ frameBackground2: e.target.value })}/></div>
+                <label className="check-label dark" title="Untick to give the frame a second colour: colour B starts as a copy of colour A, pick the colour you want"><input type="checkbox" checked={sameAsA} onChange={e => apply(e.target.checked ? { frameBackground2: undefined } : { frameBackground2: draft.frameBackground, frameTransition: draft.frameTransition || 'Fade', frameTransitionTime: draft.frameTransitionTime || 1, frameTransitionStart: draft.frameTransitionStart ?? Math.max(0, (clipDuration - 1) / 2) })}/><span><Check size={11}/></span>Same as A</label></div>
             </div>
-            {change && <div className="bg-transition">
-              <div className="ab-chip"><i style={{ background: change.from }}/><ChevronRight size={12}/><i style={{ background: change.to }}/><span>{change.transition} · starts {change.start.toFixed(1)}s · {change.time.toFixed(1)}s</span><button type="button" className={`icon-button ${bgPlaying ? 'playing' : ''}`} title={bgPlaying ? 'Pause preview' : 'Play the colour change'} onClick={() => setBgPlaying(p => !p)}>{bgPlaying ? <Pause size={13}/> : <Play size={13}/>}</button></div>
-              <div><FieldLabel>Transition A → B</FieldLabel><TransitionChip value={change.transition} onChange={v => apply({ frameTransition: v })} onOpenGallery={onOpenGallery}/></div>
-              <div><FieldLabel>Start at <span>{change.start.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={Math.max(0, draft.duration - change.time)} step={0.1} value={change.start} onChange={e => apply({ frameTransitionStart: Number(e.target.value) })}/></div>
-              <div><FieldLabel>Duration <span>{change.time.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0.2} max={draft.duration} step={0.1} value={change.time} onChange={e => { const t = Number(e.target.value); apply({ frameTransitionTime: t, frameTransitionStart: Math.min(change.start, Math.max(0, draft.duration - t)) }) }}/></div>
-              <div className="bg-timeline" title="Frame timeline: A · transition · B"><i style={{ background: change.from, flex: change.start }}/><i className="mix" style={{ background: `linear-gradient(90deg,${change.from},${change.to})`, flex: change.time }}/><i style={{ background: change.to, flex: Math.max(0, change.hold - change.start - change.time) }}/></div>
+            {!sameAsA && <div className="bg-transition">
+              <div className="ab-chip"><i style={{ background: draft.frameBackground }}/><ChevronRight size={12}/><i style={{ background: colourB }}/><span>{bSame ? 'Pick colour B to start the change' : `${bTransition} · starts ${bStart.toFixed(1)}s · ${bTime.toFixed(1)}s`}</span><button type="button" className={`icon-button ${playing ? 'playing' : ''}`} title={playing ? 'Pause the preview' : 'Play the preview (background and text on one clock)'} onClick={() => setPlaying(p => !p)}>{playing ? <Pause size={13}/> : <Play size={13}/>}</button></div>
+              <div><FieldLabel>Transition A → B</FieldLabel><TransitionChip value={bTransition} onChange={v => apply({ frameTransition: v })} onOpenGallery={onOpenGallery}/></div>
+              <div><FieldLabel>Start at <span>{bStart.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0} max={Math.max(0, clipDuration - bTime)} step={0.1} value={bStart} onChange={e => apply({ frameTransitionStart: Number(e.target.value) })}/></div>
+              <div><FieldLabel>Duration <span>{bTime.toFixed(1)}s</span></FieldLabel><input className="range" type="range" min={0.2} max={clipDuration} step={0.1} value={bTime} onChange={e => { const t = Number(e.target.value); apply({ frameTransitionTime: t, frameTransitionStart: Math.min(bStart, Math.max(0, clipDuration - t)) }) }}/></div>
+              <div className="bg-timeline" title="Frame timeline: A · transition · B"><i style={{ background: draft.frameBackground, flex: bStart }}/><i className="mix" style={{ background: `linear-gradient(90deg,${draft.frameBackground},${colourB})`, flex: bTime }}/><i style={{ background: colourB, flex: Math.max(0, clipDuration - bStart - bTime) }}/></div>
+              <div className="bg-sync-hint">
+                <Sparkles size={12}/><span>{followsBg ? 'The text reacts to this colour change (see the A→B badges in the lanes).' : 'Let the text react: follow the new colour with the same wipe, or time any layer to the change.'}</span>
+                {!followsBg && !bSame && <button type="button" className="btn ghost small" onClick={() => setStack([...stack, { id: newLayerId(), effect: 'bg-follow' }])}>Text follows colour</button>}
+              </div>
             </div>}
           </>}
           {!isFrame && <>
@@ -3126,159 +3015,13 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
               <small>These values are the same caption window controlled by the handles in the storyline text lane.</small>
             </div>
           </>}
-          <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(draft.textX)}% · Y {Math.round(draft.textY)}%</strong>{enabled && movingPos && <span style={{ marginLeft: 8, opacity: .7 }}>motion {Math.round(movingPos[0])}%,{Math.round(movingPos[1])}%</span>}{(scaleEnabled || colorAnimEnabled) && <span style={{ marginLeft: 8, opacity: .7 }}>{scaleEnabled ? `${scaleFrom.toFixed(2)}→${scaleTo.toFixed(2)}×` : ''}{scaleEnabled && colorAnimEnabled ? ' · ' : ''}{colorAnimEnabled ? `${colorFrom}→${colorTo}` : ''}</span>}</div>
-          <p><Info size={13}/> {isFrame ? 'Drag the title on the preview. Choose font, size and weight in the controls. Enable motion path to animate from start to end. Grow/shrink and colour change run over the whole frame time.' : 'Drag the caption on the preview. The picture is shown whole, letterboxed over a blurred copy exactly as rendered, with the caption at its final size and position.'}</p>
+          <div className="position-readout"><Move size={14}/><span>Position</span><strong>X {Math.round(draft.textX)}% · Y {Math.round(draft.textY)}%</strong>{stack.length > 0 && <span style={{ marginLeft: 8, opacity: .7 }}>{stack.filter(l => !l.muted).length} effect{stack.filter(l => !l.muted).length === 1 ? '' : 's'} stacked</span>}</div>
+          <p><Info size={13}/> {isFrame ? 'Drag the title on the preview. The preview runs the render engine itself: effects stack, and with a colour B the background changes with the exact transition shape. Hover an effect in the browser to try it on top of the stack.' : 'Drag the caption on the preview. The picture is shown whole, letterboxed over a blurred copy exactly as rendered, and the caption plays with its stacked effects as in the MP4.'}</p>
         </div>
       </aside>
     </div>
     <div className="modal-foot"><span>{isFrame ? `Frame duration: ${draft.duration}s` : draft.textEnabled === false ? 'Caption hidden · settings kept' : 'Per-picture settings'}</span><button className="btn ghost" onClick={() => apply({ textX: 50, textY: 50, textMoveFromX: 50, textMoveFromY: 50 })}>Reset position</button><button className="btn ghost" onClick={close}>{isFrame && isNew ? 'Discard' : 'Cancel'}</button><button className="btn dark" onClick={save}><Check size={15}/> {isFrame ? (isNew ? 'Add to storyline' : 'Save') : 'Save picture text'}</button></div>
   </div></div>
-}
-
-function ColourChangePreview({ change, playing }: { change: NonNullable<ReturnType<typeof frameColourChange>>; playing: boolean }) {
-  const name = useMemo(() => `bgchange${Math.random().toString(36).slice(2, 8)}`, [])
-  const cls = quickTransitionClass(change.transition)
-  const p0 = Math.max(0, Math.min(100, change.start / change.hold * 100))
-  const p1 = Math.max(p0, Math.min(100, (change.start + change.time) / change.hold * 100))
-  const hidden = cls === 'from-left' ? 'transform:translateX(-100%)' : cls === 'from-right' ? 'transform:translateX(100%)' : cls === 'from-up' ? 'transform:translateY(-100%)' : cls === 'from-down' ? 'transform:translateY(100%)' : cls === 'from-circle' ? 'clip-path:circle(0% at 50% 50%)' : 'opacity:0'
-  const shown = cls === 'from-circle' ? 'clip-path:circle(75% at 50% 50%)' : cls === 'fade' ? 'opacity:1' : 'transform:none'
-  const css = `@keyframes ${name}{0%,${p0.toFixed(2)}%{${hidden}}${p1.toFixed(2)}%,100%{${shown}}}`
-  return <>
-    <style>{css}</style>
-    <div className="bg-change-layer" style={{ background: change.to, animationName: name, animationDuration: `${change.hold}s`, animationIterationCount: 'infinite', animationTimingFunction: 'linear', animationPlayState: playing ? 'running' : 'paused' }} />
-  </>
-}
-
-// CSS approximation of the chosen text effects, looping live on the editor
-// canvas — the same split the app uses everywhere else (CSS in the editor,
-// drawtext/libass in renderer.py via text_effects.py). enter+exit share one
-// keyframes track over the clip duration; the "while shown" loop runs as a
-// second, infinite animation on a nested span. Char-staggered effects are
-// approximated with per-char delays.
-function TextFxPreview({ item, playing, children }: { item: MediaItem; playing: boolean; children: string }) {
-  const enter = item.textFxEnter || 'Fade'
-  const exit = item.textFxExit || 'Fade out'
-  const whileFx = item.textFxWhile || 'None (static)'
-  const di = Math.max(0.1, item.textEnterDuration ?? 0.5)
-  const dOut = Math.max(0.1, item.textExitDuration ?? 0.5)
-  const speed = Math.max(0.4, item.textFxWhileSpeed ?? 2)
-  const hold = Math.max(1.2, item.duration ?? 5)
-  const name = useMemo(() => `tfx${Math.random().toString(36).slice(2, 9)}`, [])
-  const whileName = `${name}w`
-
-  const ENTER_KEYS: Record<string, string> = {
-    'Fade': 'opacity:0', 'Blur in': 'opacity:0;filter:blur(10px)', 'Flicker in': 'opacity:0',
-    'Slide from left': 'opacity:0;transform:translateX(-42px)',
-    'Slide from right': 'opacity:0;transform:translateX(42px)',
-    'Slide from top': 'opacity:0;transform:translateY(-32px)',
-    'Slide from bottom': 'opacity:0;transform:translateY(32px)',
-    'Rise & settle': 'opacity:0;transform:translateY(34px)',
-    'Drop & bounce': 'opacity:0;transform:translateY(-36px)',
-    'Slide & overshoot': 'opacity:0;transform:translateX(-52px)',
-    'Split fade · chars': 'opacity:0', 'Split fade · words': 'opacity:0',
-    'Split rise · chars': 'opacity:0', 'Split from centre': 'opacity:0;transform:scale(.2)',
-    'Typewriter': 'opacity:0', 'Typewriter + caret': 'opacity:0', 'Word by word': 'opacity:0',
-    'Decrypted scramble': 'opacity:0',
-    'Pop in': 'opacity:0;transform:scale(.18)', 'Zoom down': 'opacity:0;transform:scale(3.2)',
-    'Flip in': 'opacity:0;transform:scaleY(.08)', 'Rotate in': 'opacity:0;transform:rotate(-85deg) scale(.85)',
-    'Wipe from left': 'clip-path:inset(0 100% 0 0)', 'Wipe from right': 'clip-path:inset(0 0 0 100%)',
-    'Wipe from top': 'clip-path:inset(0 0 100% 0)', 'Wipe from bottom': 'clip-path:inset(100% 0 0 0)',
-    'Wipe from top-left': 'clip-path:inset(0 100% 100% 0)', 'Wipe from top-right': 'clip-path:inset(0 0 100% 100%)',
-    'Wipe from bottom-left': 'clip-path:inset(100% 100% 0 0)', 'Wipe from bottom-right': 'clip-path:inset(100% 0 0 100%)',
-    'Lower-third bar': 'opacity:0;transform:translateX(-56px)',
-  }
-  const EXIT_KEYS: Record<string, string> = {
-    'Fade out': 'opacity:0', 'Blur out': 'opacity:0;filter:blur(10px)',
-    'Slide out left': 'opacity:0;transform:translateX(-42px)',
-    'Slide out right': 'opacity:0;transform:translateX(42px)',
-    'Slide out top': 'opacity:0;transform:translateY(-32px)',
-    'Slide out bottom': 'opacity:0;transform:translateY(32px)',
-    'Sink & fade': 'opacity:0;transform:translateY(14px)',
-    'Split out · chars': 'opacity:0', 'Typewriter delete': 'opacity:0', 'Scramble out': 'opacity:0',
-    'Pop out': 'opacity:0;transform:scale(1.25)', 'Rotate out': 'opacity:0;transform:rotate(80deg)',
-    'Wipe out left': 'clip-path:inset(0 100% 0 0)', 'Wipe out right': 'clip-path:inset(0 0 0 100%)',
-    'Wipe out top': 'clip-path:inset(0 0 100% 0)', 'Wipe out bottom': 'clip-path:inset(100% 0 0 0)',
-    'Wipe out top-left': 'clip-path:inset(0 100% 100% 0)', 'Wipe out top-right': 'clip-path:inset(0 0 100% 100%)',
-    'Wipe out bottom-left': 'clip-path:inset(100% 100% 0 0)', 'Wipe out bottom-right': 'clip-path:inset(100% 0 0 100%)',
-    'Lower-third retract': 'opacity:0;transform:translateX(-56px)',
-  }
-  const WHILE_KEYS: Record<string, string> = {
-    'Gentle float': 'transform:translateY(-4px)',
-    'Horizontal drift': 'transform:translateX(8px)',
-    'Slow zoom': 'transform:scale(1.1)',
-    'Pulse': 'transform:scale(1.09)',
-    'Wave': 'transform:translateY(-6px)',
-    'Shake': 'transform:translate(2px,-2px)',
-    'Shimmer': 'text-shadow:0 0 10px #ffffff',
-    'Neon glow': 'text-shadow:0 0 9px currentcolor,0 0 18px currentcolor',
-    'Colour cycle': 'color:#66d7ff',
-    'Glitch flicker': 'transform:translate(2px,1px) skewX(-3deg)',
-    'Karaoke sweep': 'color:#66d7ff',
-    'Count up': 'color:#66d7ff',
-  }
-  // "None" enter/exit: the caption is visible from the first frame / to the
-  // last — the keyframe start or end must not animate in from invisible.
-  const from = isStaticTextEffect(enter) ? 'opacity:1' : (ENTER_KEYS[enter] || 'opacity:0')
-  const to = isStaticTextEffect(exit) ? 'opacity:1' : (EXIT_KEYS[exit] || 'opacity:0')
-  const e0 = 0, e1 = di / hold * 100
-  const x0 = Math.max(e1, (hold - dOut) / hold * 100), x1 = 100
-  // Per-char stagger for the split/typed families (approximation: same fade,
-  // staggered delay; the render does the real per-char motion).
-  const staggered = ['Split fade · chars', 'Split fade · words', 'Split rise · chars', 'Split from centre', 'Typewriter', 'Typewriter + caret', 'Word by word', 'Decrypted scramble', 'Split out · chars', 'Typewriter delete', 'Scramble out'].includes(enter) || ['Split out · chars', 'Typewriter delete', 'Scramble out'].includes(exit)
-  const chars = Array.from(children)
-  const charDelay = (i: number) => (di * i) / Math.max(1, chars.length)
-  const css = `@keyframes ${name}{0%{${from}}${e1.toFixed(2)}%{opacity:1;transform:none;filter:none;clip-path:inset(0 0 0 0)}${x0.toFixed(2)}%{opacity:1;transform:none;filter:none;clip-path:inset(0 0 0 0)}100%{${to}}}`
-  const whileCss = WHILE_KEYS[whileFx] ? `@keyframes ${whileName}{0%{transform:none}${50}%{${WHILE_KEYS[whileFx]}}100%{transform:none}}` : ''
-  const countMatch = whileFx === 'Count up' ? true : false
-  const [count, setCount] = useState(0)
-  useEffect(() => {
-    if (!countMatch || !playing) return
-    const defs = textEffectParams('Count up')
-    const from = Number(item.textFxParams?.from ?? defs[0]?.default ?? 0) || 0
-    const toNum = Number(item.textFxParams?.to ?? defs[1]?.default ?? 100) || 0
-    const started = performance.now()
-    const timer = window.setInterval(() => {
-      const u = ((performance.now() - started) / 1000 % speed) / speed
-      setCount(Math.round(from + (toNum - from) * u))
-    }, 90)
-    return () => window.clearInterval(timer)
-  }, [countMatch, playing, speed, item.textFxParams?.from, item.textFxParams?.to])
-
-  const isBold = (item as any).textBold ?? (item as any).bold ?? true
-  const isItalic = (item as any).textItalic ?? (item as any).italic ?? false
-  const isUnderline = (item as any).textUnderline ?? (item as any).underline ?? false
-  const deco = isUnderline ? 'underline' : 'none'
-  const fWeight = isBold ? 700 : 400
-  const fStyle = isItalic ? 'italic' : 'normal'
-  const innerStyle: React.CSSProperties = whileCss ? {
-    animationName: whileName, animationDuration: `${speed}s`,
-    animationIterationCount: 'infinite', animationTimingFunction: 'ease-in-out',
-    animationPlayState: playing ? 'running' : 'paused', display: 'inline-block',
-    textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any,
-  } : { display: 'inline-block', textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any }
-
-  return <>
-    <style>{css}{whileCss}</style>
-    <span style={{
-      display: 'inline-block', whiteSpace: 'pre',
-      animationName: name, animationDuration: `${hold}s`, animationTimingFunction: 'linear',
-      animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
-      textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any,
-    }}>
-      {staggered
-        ? chars.map((ch, i) => <span
-            key={i}
-            style={{
-              display: 'inline-block', whiteSpace: 'pre',
-              animationName: name, animationDuration: `${hold}s`,
-              animationDelay: `${charDelay(i)}s`, animationTimingFunction: 'linear',
-              animationIterationCount: 'infinite', animationPlayState: playing ? 'running' : 'paused',
-              textDecoration: deco, fontWeight: fWeight as any, fontStyle: fStyle as any,
-            }}
-          >{ch}</span>)
-        : <span style={innerStyle}>{countMatch ? String(count) : children}</span>}
-    </span>
-  </>
 }
 
 function KenBurnsPanel({ item, thumb, onPatch, onClose }: { item: MediaItem; thumb: string | null | undefined; onPatch: (patch: Partial<MediaItem>) => void; onClose: () => void }) {
@@ -3648,10 +3391,9 @@ export function TransitionPreview({ outgoing, incoming, onClose, onApply, onOpen
   </div></div>
 }
 
-function Preview({ media, projectName, previewUrl, previewScope = 'all', previewMode = 'standard', captionDefaults, playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, previewScope?: number|'all', previewMode?: PreviewMode, captionDefaults?: { fontFamily: string; fontSize: number; fontColor: string; bold: boolean; italic: boolean; underline: boolean; outline: boolean; textX: number; textY: number; fxEnter: string; fxWhile: string; fxExit: string; fxWhileSpeed: number }, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
+function Preview({ media, projectName, previewUrl, previewScope = 'all', previewMode = 'standard', captionDefaults, playing, setPlaying, onClose }: { media: MediaItem[], projectName: string, previewUrl:string|null, previewScope?: number|'all', previewMode?: PreviewMode, captionDefaults?: Partial<CaptionDefaults>, playing: boolean, setPlaying: (x: boolean) => void, onClose: () => void }) {
   const [current, setCurrent] = useState(0)
   const [stageFailed, setStageFailed] = useState(false)
-  const [motionProgress, setMotionProgress] = useState(0)
 
   useEffect(() => {
     if (!playing || media.length === 0) return
@@ -3668,27 +3410,6 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   }, [playing, current, media])
   useEffect(() => setStageFailed(false), [current])
 
-  useEffect(() => {
-    if (!playing) return
-    const item = media[current]
-    const needs = item && ((item as any).textMoveEnabled || (item as any).textScaleEnabled || (item as any).textColorAnimEnabled || (item as any).textRotateEnabled || (item as any).textSquishEnabled || (item as any).textBouncyEnabled || (item as any).textFxWhile === 'bouncy')
-    if (!item || !needs) {
-      setMotionProgress(0)
-      return
-    }
-    const start = performance.now()
-    const timing = normalizedTextTiming(item)
-    const hold = Math.max(0.2, (item.type==='title' ? (item.duration || 5) : (timing.textEnd - timing.textStart)) || 1)
-    let raf = 0
-    const tick = (now: number) => {
-      const elapsed = (now - start) / 1000
-      const prog = (elapsed % hold) / hold
-      setMotionProgress(prog)
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [playing, current, media])
 
   const currentItem = media[current]
   const origUrl = currentItem ? itemThumbUrl(currentItem) : ''
@@ -3700,218 +3421,17 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   const stageCrop = useCroppedSource(currentUrl, stageIsVideo ? null : currentItem, 'stage', false)
   const stageLook = usePictureLook(stageCrop.ready ? stageCrop.src : currentUrl, currentItem, false, !stageIsVideo, stageCrop.rotationApplied)
   const stageTurned = stageCrop.rotationApplied || stageLook.rotationBaked
-  const defaults = captionDefaults || { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, fxEnter: DEFAULT_ENTER, fxWhile: DEFAULT_WHILE, fxExit: DEFAULT_EXIT, fxWhileSpeed: WHILE_SPEED_DEFAULT }
-  const captionItem = currentItem && currentItem.type !== 'title' ? {
-    ...currentItem,
-    fontFamily: currentItem.fontFamily || defaults.fontFamily,
-    fontSize: currentItem.fontSize ?? defaults.fontSize,
-    fontColor: currentItem.fontColor || defaults.fontColor,
-    textBold: currentItem.textBold ?? defaults.bold,
-    textItalic: currentItem.textItalic ?? defaults.italic,
-    textUnderline: currentItem.textUnderline ?? defaults.underline,
-    textOutline: currentItem.textOutline ?? defaults.outline,
-    textX: currentItem.textX ?? defaults.textX,
-    textY: currentItem.textY ?? defaults.textY,
-    textFxEnter: currentItem.textFxEnter || currentItem.textEnter || defaults.fxEnter,
-    textFxWhile: currentItem.textFxWhile || defaults.fxWhile,
-    textFxExit: currentItem.textFxExit || currentItem.textExit || defaults.fxExit,
-    textFxWhileSpeed: currentItem.textFxWhileSpeed ?? defaults.fxWhileSpeed,
-  } : currentItem
-
-  const easeProgress = (p: number, easing: string) => {
-    p = Math.max(0, Math.min(1, p))
-    if (easing === 'ease-in') return p*p
-    if (easing === 'ease-out') return 1 - (1-p)*(1-p)
-    if (easing === 'ease-in-out') {
-      if (p < 0.5) return 2*p*p
-      return 1 - 2*(1-p)*(1-p)
-    }
-    if (easing === 'smooth') {
-      if (p < 0.5) return 4*p*p*p
-      return 1 - Math.pow(-2*p+2, 3)/2
-    }
-    return p
-  }
-
-  const clampM = (v:number)=>Math.max(0,Math.min(100,v))
-  const generateCirclePoints = (fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, turns: number, num = 64) => {
-    let cx: number, cy: number, r: number
-    if (radius != null && radius > 0) { cx = fromX; cy = fromY; r = radius } else { cx = (fromX + toX) / 2; cy = (fromY + toY) / 2; const d = Math.hypot(toX - fromX, toY - fromY); r = d / 2; if (r < 1) { r = 15; cx = fromX; cy = fromY } }
-    turns = Math.max(0.1, Math.min(4, turns))
-    const pts: [number, number][] = []
-    let startAng = 0
-    if (radius == null || radius <= 0) startAng = Math.atan2(fromY - cy, fromX - cx)
-    for (let i = 0; i <= num; i++) { const ang = startAng + (i / num) * turns * 2 * Math.PI; pts.push([clampM(cx + r * Math.cos(ang)), clampM(cy + r * Math.sin(ang))]) }
-    return pts
-  }
-  const generateSinePoints = (fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 80) => {
-    const amp = Math.max(0, Math.min(40, amplitude)); const freq = Math.max(0.1, Math.min(10, frequency))
-    const dx = toX - fromX, dy = toY - fromY; const len = Math.hypot(dx, dy)
-    if (len < 1e-6) { const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; pts.push([clampM(fromX + amp * Math.sin(freq * 2 * Math.PI * p)), clampM(fromY + p*20)]) } return pts }
-    const ux = dx / len, uy = dy / len; const px = -uy, py = ux; const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; const bx=fromX+dx*p, by=fromY+dy*p; const off=amp*Math.sin(freq*2*Math.PI*p); pts.push([clampM(bx+px*off), clampM(by+py*off)]) } return pts
-  }
-  const generateSineVerticalPoints = (fromX:number, fromY:number, toX:number, toY:number, amplitude:number, frequency:number, num=80):[number,number][]=>{ const amp=Math.max(0,Math.min(30,amplitude)); const freq=Math.max(0.1,Math.min(10,frequency)); const pts:[number,number][]=[]; for(let i=0;i<=num;i++){ const p=i/num; const bx=fromX+(toX-fromX)*p, by=fromY+(toY-fromY)*p; const off=amp*Math.sin(freq*2*Math.PI*p); pts.push([clampM(bx), clampM(by+off)]) } return pts }
-  const generateStarPoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, points:number, innerRatio:number, rotation:number):[number,number][]=>{ const n=Math.max(3,Math.min(10,Math.round(points||5))); const ratio=Math.max(0.2,Math.min(0.85,innerRatio??0.45)); let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(8,d*0.45)} const rot=(rotation||0)*Math.PI/180; const vertices:[number,number][]=[]; const step=Math.PI/n; for(let i=0;i<n*2;i++){ const ang=rot - Math.PI/2 + i*step; const rad=i%2===0?r:r*ratio; vertices.push([clampM(cx+rad*Math.cos(ang)), clampM(cy+rad*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<12;k++){ const t=k/12; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts }
-  const generateDiamondPoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, rotation:number):[number,number][]=>{ let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.5)} const rot=(rotation||0)*Math.PI/180; const base:[number,number][]=[[cx,cy-r],[cx+r,cy],[cx,cy+r],[cx-r,cy]].map(([x,y])=>{ const dx=x-cx, dy=y-cy; return [clampM(cx+dx*Math.cos(rot)-dy*Math.sin(rot)), clampM(cy+dx*Math.sin(rot)+dy*Math.cos(rot))] as [number,number]}); base.push(base[0]); const pts:[number,number][]=[]; for(let i=0;i<base.length-1;i++){ const a=base[i], b=base[i+1]; for(let k=0;k<20;k++){ const t=k/20; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(base[base.length-1]); return pts }
-  const generateTrianglePoints = (fromX:number, fromY:number, toX:number, toY:number, radius:number|undefined, rotation:number):[number,number][]=>{ let cx:number, cy:number, r:number; if(radius!=null&&radius>2){cx=fromX;cy=fromY;r=radius}else{cx=(fromX+toX)/2;cy=(fromY+toY)/2; const d=Math.hypot(toX-fromX,toY-fromY); r=Math.max(10,d*0.55)} const rot=(rotation||0)*Math.PI/180; const vertices:[number,number][]=[]; for(let i=0;i<3;i++){ const ang=rot - Math.PI/2 + i*(2*Math.PI/3); vertices.push([clampM(cx+r*Math.cos(ang)), clampM(cy+r*Math.sin(ang))]) } vertices.push(vertices[0]); const pts:[number,number][]=[]; for(let i=0;i<vertices.length-1;i++){ const a=vertices[i], b=vertices[i+1]; for(let k=0;k<24;k++){ const t=k/24; pts.push([clampM(a[0]+(b[0]-a[0])*t), clampM(a[1]+(b[1]-a[1])*t)]) } } pts.push(vertices[vertices.length-1]); return pts }
-  const generateBouncePoints = (fromX:number, fromY:number, toX:number, toY:number, height:number, bounces:number, damping:number, numPerBounce=28):[number,number][]=>{ const h=Math.max(0,Math.min(30,height??14)); const n=Math.max(1,Math.min(8,Math.round(bounces??4))); const d=Math.max(0,Math.min(0.9,damping??0.35)); const pts:[number,number][]=[]; for(let i=0;i<n;i++){ const amp=h*Math.pow(1-d,i); const segStart=i/n, segEnd=(i+1)/n; for(let k=0;k<numPerBounce;k++){ const tSeg=k/numPerBounce; const p=segStart+tSeg*(segEnd-segStart); const bx=fromX+(toX-fromX)*p; const byBase=fromY+(toY-fromY)*p; const parabola=4*tSeg*(1-tSeg); const off=-amp*parabola; pts.push([clampM(bx), clampM(byBase+off)] )} } pts.push([clampM(toX), clampM(toY)]); return pts }
-  const bouncyOffsetLocal = (progress:number, height:number, bounces:number, damping:number):number=>{ const h=Math.max(0,Math.min(30,height??12)); const n=Math.max(1,Math.min(8,Math.round(bounces??3))); const d=Math.max(0,Math.min(0.95,damping??0.35)); if(h<0.2) return 0; const p=Math.max(0,Math.min(1,progress)); const idx=Math.min(n-1, Math.floor(p*n)); const segT=(p*n)%1; const amp=h*Math.pow(1-d, idx); const parabola=4*segT*(1-segT); return -amp*parabola }
-  const applySinus = (points:[number,number][], enabled:boolean, amp:number, freq:number):[number,number][]=>{ if(!enabled||points.length<2) return points; const a=Math.max(0,Math.min(20,amp??6)); if(a<0.2) return points; const f=Math.max(0.1,Math.min(10,freq??2)); let total=0; for(let i=1;i<points.length;i++) total+=Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1]); if(total<1e-6) return points; const out:[number,number][]=[]; const num=Math.max(points.length,80); const pointAlong=(pts:[number,number][], prog:number):[number,number]=>{ if(!pts.length) return [50,50]; if(pts.length===1) return pts[0]; let t=0; for(let i=1;i<pts.length;i++) t+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); let target=t*Math.max(0,Math.min(1,prog)); for(let i=1;i<pts.length;i++){ const seg=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); if(target<=seg){ const tt=seg===0?0:target/seg; return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*tt, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*tt] } target-=seg } return pts[pts.length-1] }; for(let i=0;i<=num;i++){ const p=i/num; const b=pointAlong(points,p); const off=a*Math.sin(f*2*Math.PI*p); out.push([clampM(b[0]), clampM(b[1]+off)]) } return out }
-
-  const effectivePoints = (fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInner?: number, symRot?: number, sinusEn?: boolean, sinusAmp?: number, sinusFreq?: number, bounceH?: number, bounceN?: number, bounceD?: number) => {
-    let base:[number,number][]
-    if ((pathType==='freehand' || pathType==='polyline') && path && path.length>=2) base=path
-    else if (pathType==='circle') base=generateCirclePoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
-    else if (pathType==='sine') base=generateSinePoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
-    else if (pathType==='sine-vertical') base=generateSineVerticalPoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
-    else if (pathType==='star') base=generateStarPoints(fromX, fromY, toX, toY, circleRadius, starPoints??5, starInner??0.45, symRot??0)
-    else if (pathType==='diamond') base=generateDiamondPoints(fromX, fromY, toX, toY, circleRadius, symRot??0)
-    else if (pathType==='triangle') base=generateTrianglePoints(fromX, fromY, toX, toY, circleRadius, symRot??0)
-    else if (pathType==='bounce') base=generateBouncePoints(fromX, fromY, toX, toY, bounceH??14, bounceN??4, bounceD??0.35)
-    else if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base=[[fromX, fromY]] as [number, number][]
-    else base=[[fromX, fromY], [toX, toY]] as [number, number][]
-    if (sinusEn) base=applySinus(base,true,sinusAmp??6, sinusFreq??2)
-    return base
-  }
-
-  const pointAlongPath = (points: [number, number][], progress: number) => {
-    if (!points.length) return { x: 50, y: 50 }
-    if (points.length === 1) return { x: points[0][0], y: points[0][1] }
-    let total = 0
-    for (let i = 1; i < points.length; i++) total += Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1])
-    if (total < 0.001) return { x: points[0][0], y: points[0][1] }
-    let target = total * Math.max(0, Math.min(1, progress))
-    for (let i = 1; i < points.length; i++) {
-      const seg = Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1])
-      if (target <= seg) {
-        const t = seg === 0 ? 0 : target / seg
-        return { x: points[i-1][0] + (points[i][0]-points[i-1][0])*t, y: points[i-1][1] + (points[i][1]-points[i-1][1])*t }
-      }
-      target -= seg
-    }
-    return { x: points[points.length-1][0], y: points[points.length-1][1] }
-  }
-
-  const getMotionPos = (item: MediaItem | undefined, progressRaw: number) => {
-    if (!item || !item.textMoveEnabled) return null
-    const fromX = Number.isFinite(Number(item.textMoveFromX)) ? Number(item.textMoveFromX) : item.textX
-    const fromY = Number.isFinite(Number(item.textMoveFromY)) ? Number(item.textMoveFromY) : item.textY
-    const toX = Number.isFinite(Number(item.textMoveToX)) ? Number(item.textMoveToX) : fromX
-    const toY = Number.isFinite(Number(item.textMoveToY)) ? Number(item.textMoveToY) : fromY
-    const pathType = (item.textMovePathType as any) || (item.textMovePath && item.textMovePath.length>=2 ? 'freehand' : 'straight')
-    const easing = (item.textMoveEasing as any) || 'linear'
-    // steady tail: motion finishes early and holds final position for textSteadySeconds at end
-    const _holdRaw = (()=>{
-      try{
-        const it:any=item as any
-        const d= Number(it.duration)||5
-        if(it.type==='title') return Math.max(0.2,d)
-        const s= Number(it.textStart); const e= Number(it.textEnd)
-        const st= Number.isFinite(s)? s:0; const en= Number.isFinite(e)? e: d
-        return Math.max(0.2, en - st)
-      } catch{ return 1}
-    })()
-    const _steady = Math.max(0, Math.min(Number((item as any).textSteadySeconds||0), Math.max(0, _holdRaw - 0.05)))
-    const _effective = Math.max(0.05, _holdRaw - _steady)
-    const _progRawMotion = _steady>0.01 ? (progressRaw*_holdRaw >= _effective ? 1 : Math.max(0,Math.min(1, progressRaw*_holdRaw/_effective))) : progressRaw
-    const eased = easeProgress(_progRawMotion, easing)
-    const pts = effectivePoints(fromX, fromY, toX, toY, item.textMovePath as any, pathType, item.textMoveCircleRadius, item.textMoveCircleTurns ?? 1, item.textMoveSineAmplitude ?? 8, item.textMoveSineFrequency ?? 2, (item as any).textMoveStarPoints, (item as any).textMoveStarInnerRatio, (item as any).textMoveSymbolRotation, (item as any).textMoveSinusUpDownEnabled, (item as any).textMoveSinusAmplitude, (item as any).textMoveSinusFrequency, (item as any).textMoveBounceHeight, (item as any).textMoveBounceCount, (item as any).textMoveBounceDamping)
-    return pointAlongPath(pts as any, eased)
-  }
-
-  // scale / colour animation helpers for preview stage (same hold progress as motion)
-  const lerpNum = (a:number,b:number,t:number)=>a+(b-a)*t
-  const hexToRgbP = (hex:string)=>{ const h=hex.replace('#',''); return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)} }
-  const rgbToHexP = (r:number,g:number,b:number)=> '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')
-  const lerpHexP = (a:string,b:string,t:number)=>{ try{ const ca=hexToRgbP(a), cb=hexToRgbP(b); return rgbToHexP(lerpNum(ca.r,cb.r,t), lerpNum(ca.g,cb.g,t), lerpNum(ca.b,cb.b,t)) } catch{ return a } }
-  const motionPos = getMotionPos(captionItem as any, motionProgress)
-  const titleMotionPos = currentItem?.type === 'title' ? getMotionPos(currentItem, motionProgress) : null
-
-  const activeForStyle: any = captionItem || currentItem
-  const scaleEn = activeForStyle ? Boolean(activeForStyle.textScaleEnabled) : false
-  const scaleFrom = activeForStyle ? Number(activeForStyle.textScaleFrom ?? 1) : 1
-  const scaleTo = activeForStyle ? Number(activeForStyle.textScaleTo ?? 1.4) : 1
-  const curScale = scaleEn ? lerpNum(scaleFrom, scaleTo, motionProgress) : 1
-  const colorEn = activeForStyle ? Boolean(activeForStyle.textColorAnimEnabled) : false
-  const colFrom = activeForStyle ? String(activeForStyle.textColorFrom || activeForStyle.fontColor || defaults.fontColor || '#ffffff') : '#ffffff'
-  const colTo = activeForStyle ? String(activeForStyle.textColorTo || activeForStyle.textColorFrom || activeForStyle.fontColor || defaults.fontColor || '#ffffff') : '#ffffff'
-  const curColor = colorEn ? lerpHexP(colFrom, colTo, motionProgress) : undefined
-  // rotate / squash — same linear full-window interpolation as size & colour
-  const rotEnP = activeForStyle ? Boolean(activeForStyle.textRotateEnabled) : false
-  const rotFromP = activeForStyle ? Number(activeForStyle.textRotateFrom ?? -10) : -10
-  const rotToP = activeForStyle ? Number(activeForStyle.textRotateTo ?? 0) : 0
-  const rotSpeedP = activeForStyle ? Number(activeForStyle.textRotateSpeed ?? 0) : 0
-  // Same hold the progress loop runs over (title: duration, caption: window)
-  const rotHoldP = (() => {
-    if (!activeForStyle) return 1
-    try {
-      const d = Number(activeForStyle.duration) || 5
-      if (activeForStyle.type === 'title') return Math.max(0.2, d)
-      const s = Number(activeForStyle.textStart); const e = Number(activeForStyle.textEnd)
-      return Math.max(0.2, (Number.isFinite(e) ? e : d) - (Number.isFinite(s) ? s : 0))
-    } catch { return 1 }
-  })()
-  const rotProgP = rotSpeedP > 0 ? Math.max(0, Math.min(1, (motionProgress * rotHoldP) / rotSpeedP)) : motionProgress
-  const curAngle = rotEnP ? lerpNum(rotFromP, rotToP, rotProgP) : 0
-  const sqEnP = activeForStyle ? Boolean(activeForStyle.textSquishEnabled) : false
-  const sqFromP = activeForStyle ? Number(activeForStyle.textSquishFrom ?? 0.5) : 0.5
-  const sqToP = activeForStyle ? Number(activeForStyle.textSquishTo ?? 1) : 1
-  const curSquish = sqEnP ? lerpNum(sqFromP, sqToP, motionProgress) : 1
-  const captionTransformP = rotEnP || sqEnP
-    ? `rotate(${curAngle.toFixed(2)}deg) scale(${(1 + (1 - curSquish) * 0.5).toFixed(3)}, ${curSquish.toFixed(3)})`
-    : undefined
-
-  const getBouncyOff = (it:any):number=>{
-    if(!it) return 0
-    const _holdB = (()=>{
-      try{
-        const d= Number(it.duration)||5
-        if(it.type==='title') return Math.max(0.2,d)
-        const s= Number(it.textStart); const e= Number(it.textEnd)
-        return Math.max(0.2,(Number.isFinite(e)?e:d)-(Number.isFinite(s)?s:0))
-      } catch{ return 1}
-    })()
-    const _steadyB = Math.max(0, Math.min(Number(it.textSteadySeconds||0), Math.max(0, _holdB - 0.05)))
-    const _effectiveB = Math.max(0.05, _holdB - _steadyB)
-    const _progB = _steadyB>0.01 ? (motionProgress*_holdB >= _effectiveB ? 1 : Math.max(0,Math.min(1, motionProgress*_holdB/_effectiveB))) : motionProgress
-    if(it.textBouncyEnabled){
-      return bouncyOffsetLocal(_progB, it.textBouncyHeight ?? 12, it.textBouncyBounces ?? 3, it.textBouncyDamping ?? 0.35)
-    }
-    if(it.textFxWhile === 'bouncy'){
-      const p = it.textFxParams || {}
-      const h = Number(p.height ?? 12)
-      const n = Number(p.bounces ?? 3)
-      const d = Number(p.damping ?? 0.35)
-      return bouncyOffsetLocal(_progB, h, n, d)
-    }
-    return 0
-  }
-  const bouncyOff = getBouncyOff(captionItem as any)
-  const bouncyTitleOff = currentItem?.type === 'title' ? getBouncyOff(currentItem as any) : 0
-  const captionPosition = currentItem?.type === 'title'
-    ? { left: `${(titleMotionPos?.x ?? currentItem.textX)}%`, top: `${((titleMotionPos?.y ?? currentItem.textY) + bouncyTitleOff)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
-    : captionItem
-      ? { left: `${(motionPos?.x ?? captionItem.textX)}%`, top: `${((motionPos?.y ?? captionItem.textY) + bouncyOff)}%`, bottom: 'auto', transform: 'translate(-50%,-50%)' }
-      : undefined
-  const captionStyle: React.CSSProperties | undefined = captionItem ? {
-    fontFamily: `'${captionItem.fontFamily}', sans-serif`, fontSize: `${Math.min((Number(captionItem.fontSize) || defaults.fontSize) * curScale, 160)}px`,
-    color: curColor || captionItem.fontColor, fontWeight: captionItem.textBold ? 700 : 400,
-    fontStyle: captionItem.textItalic && !FONTS_WITHOUT_ITALIC.has(captionItem.fontFamily || '') ? 'italic' : 'normal',
-    textDecoration: captionItem.textUnderline ? 'underline' : 'none', textShadow: captionShadow(captionItem.textOutline !== false, Math.min((Number(captionItem.fontSize) || defaults.fontSize) * curScale, 160)),
-    ...(captionTransformP ? { transform: captionTransformP } : {}),
-  } : (currentItem?.type==='title' ? {
-    fontFamily: `'${currentItem.fontFamily}', sans-serif`, fontSize: `${Math.min((Number(currentItem.fontSize) || 48) * curScale, 160)}px`,
-    color: curColor || currentItem.fontColor, fontWeight: (currentItem as any).textBold ? 700 : 400,
-    fontStyle: (currentItem as any).textItalic ? 'italic' : 'normal',
-    textDecoration: (currentItem as any).textUnderline ? 'underline' : 'none',
-    ...(captionTransformP ? { transform: captionTransformP } : {}),
-  } as any : undefined)
+  // Captions and text frames play with their stacked effects through the
+  // preview engine (the JavaScript twin of the renderer), text frames with
+  // their colour A -> B background change.
+  const defaults = captionDefaults || null
+  const showCaption = currentItem && (currentItem.type === 'title' || (currentItem.textEnabled !== false && String(currentItem.text || '').trim() !== ''))
 
   if(previewUrl)return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></div>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/><div className="preview-caption" style={captionPosition}><span>{currentItem?.textMode === 'frame' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><strong style={captionStyle}>{currentItem && currentItem.type !== 'title' && currentItem.textEnabled === false ? '' : currentItem?.type === 'title' ? (currentItem.text || '') : captionItem ? <TextFxPreview item={{...captionItem, fontColor: curColor || captionItem.fontColor, fontSize: (Number(captionItem.fontSize)||defaults.fontSize) * curScale} as any} playing={playing}>{captionItem.text || ''}</TextFxPreview> : ''}</strong></div><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/>{showCaption && currentItem && <FrameMotionPreview key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} />}<span className="preview-eyebrow">{currentItem?.type === 'title' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 

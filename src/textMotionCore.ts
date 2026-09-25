@@ -832,7 +832,8 @@ export function evaluate (ctx: Ctx, e: Unit, t: number): State {
       }
       if (ch === 'colour') {
         colour = keys(ctx, L, spec, u, colour, useed)
-        if (split) split = { ...split, a: keys(ctx, L, spec, u, split.a, useed), b: keys(ctx, L, spec, u, split.b, useed) }
+        const cur = split as NonNullable<State['split']> | null
+        if (cur) split = { ...cur, a: keys(ctx, L, spec, u, cur.a, useed), b: keys(ctx, L, spec, u, cur.b, useed) }
         continue
       }
       let v: any

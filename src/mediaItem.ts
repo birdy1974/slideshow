@@ -1,5 +1,7 @@
 // The storyline item: one photo, movie, or generated text frame.
 // Shared by App.tsx and the media/movie editors.
+import type { TextFxLayer } from './textMotionCore'
+
 export type MediaItem = {
   id: number; name: string; path: string; src: string; type: 'image' | 'video' | 'title';
   duration: number; effect: string; transition: string; transitionTime: number;
@@ -12,14 +14,18 @@ export type MediaItem = {
   textEnabled?: boolean;
   // Seconds inside the item's visible hold. The outgoing slide transition is
   // additional timeline time and is never part of this text window.
-  textStart: number; textEnd: number; textEnter: string; textExit: string;
-  textEnterDuration: number; textExitDuration: number;
-  // Dynamic text effects (Option 1, docs/text-effects-options.md): labels from
-  // registry/text-effects.json — how the text enters, what it does while
-  // shown (loop period + per-effect params), and how it exits. Absent fields
-  // mean the historic behaviour: Fade in / static / Fade out. src/App.tsx
-  // turns them into CSS previews; backend/app/text_effects.py renders the
-  // real thing with drawtext expressions or libass.
+  textStart: number; textEnd: number;
+  // Stacked text effects (docs/text-motion-references.md): an ordered list of
+  // layers, each one effect of registry/text-motion.json (by id) plus its
+  // overrides. The effect decides the lane (Enter / While shown / Exit);
+  // layers combine. src/textMotionCore.ts previews them, backend/app/
+  // text_motion.py renders the same numbers with libass.
+  textFx?: TextFxLayer[];
+  // v1 text animation (three single-effect slots). Items saved before the
+  // stack existed carry these; src/textFx.ts migrateLegacyTextFx() turns them
+  // into textFx when a project is opened and they are not written any more.
+  textEnter?: string; textExit?: string;
+  textEnterDuration?: number; textExitDuration?: number;
   textFxEnter?: string; textFxWhile?: string; textFxExit?: string;
   textFxWhileSpeed?: number; textFxParams?: Record<string, string>;
   textX: number; textY: number; frameBackground: string;
