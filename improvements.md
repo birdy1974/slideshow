@@ -1,6 +1,5 @@
 2026-09-23
 - check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
-- add / edit text frame: on popup window in case "Same as A" is disabled by user make custom color B the same as custom color A (for initialization, user can change it afterwards)
 - check https://jitter.video/templates/text/ and advise if we can integrate the text motion in the application
 - check [https://jitter.video/templates/text/](https://github.com/LeiQiaoZhi/Easy-Text-Effects-for-Unity) and advise if we can integrate the text motion in the application
 - check [https://jitter.video/templates/text/](https://prismic.io/blog/css-text-animations) and advise if we can integrate the text motion in the application
@@ -8,6 +7,18 @@
 
 
 ---= DONE =---
+
+2026-09-25 — Text frame popup: unticking "Same as A" starts Colour B as a copy of Colour A
+- New text frame / Text frame editor: when "Same as A" is unticked, Colour B
+  (swatch highlight + Custom colour picker) is now set to the current Colour A,
+  including a custom A colour. Before, it jumped to the first preset swatch
+  that differed from A. This only sets the starting value; B can be changed
+  straight away and the transition defaults (Fade, 1 s, centred start) are
+  still filled in as before.
+- While B equals A the frame is still one colour (the app and the MP4 renderer
+  both treat B = A as "no change"), so the A → B transition controls stay
+  hidden. A short hint under the checkbox says to pick another colour for B,
+  and the transition controls appear as soon as B differs from A.
 
 2026-09-25 — Text popups: removed the separate "Bouncy text" option
 - Edit picture text / New text frame / Text frame editor no longer show the
