@@ -691,7 +691,7 @@ def text_effect_preview_clear() -> dict[str, Any]:
 
 @app.get("/api/text-effects/{slug}")
 def text_effect_preview_file(slug: str) -> FileResponse:
-    """Cached example clip for a text-effect label, rendered on first use."""
+    """Cached example clip for a text effect (registry v2 id), rendered on first use."""
     name = slug[:-4] if slug.lower().endswith(".mp4") else slug
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", name or ""):
         raise HTTPException(404, "Unknown text-effect preview")
@@ -699,7 +699,7 @@ def text_effect_preview_file(slug: str) -> FileResponse:
     if not entry:
         raise HTTPException(404, "Unknown text-effect preview")
     try:
-        path = text_effect_previews.ensure(entry["label"])
+        path = text_effect_previews.ensure(entry["slug"])
     except PreviewUnavailable as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - a failed render must not 500 the picker

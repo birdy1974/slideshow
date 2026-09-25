@@ -11,8 +11,14 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 - FFmpeg xfade catalogue (58 native transitions) plus 133 GL transitions (gl-transitions.com, ported to the custom ffmpeg via `ffmpeg-patch/`), per-transition parameters/labels/groups kept in one shared `registry/transitions.json` consumed by both backend and frontend, per-transition timing, random/bulk assignment, and GLSL-to-dissolve portability fallback
 - A searchable transition browser replacing the 191-entry dropdown: a chip in every transition setting plus a full-screen gallery (Browse all 191) with looping examples rendered once per transition and cached under `/config` — see [docs/transition-previews.md](docs/transition-previews.md)
 - Ken Burns controls with selected-item and random bulk assignment
-- Timed captions, draggable title placement, 20 bundled open-licence fonts (sans, serif, display & script — see `public/fonts/README.md`), and frame backgrounds
-- Dynamic text effects in three slots (enter / while shown / exit, 65 effects in `registry/text-effects.json`): typewriter, split stagger, pop/zoom/rotate, wipes, karaoke sweep, shake, glitch flicker, count-up, lower-third bars and more — approximated live by CSS in the editor and rendered for real by animated drawtext expressions or libass (`.ass` overlays), with cached rendered examples in the pickers — see [docs/text-effects.md](docs/text-effects.md)
+- Timed captions, draggable title placement, and frame backgrounds with an optional second colour (colour A → B through any transition)
+- 49 bundled open-licence fonts, including 15 handwriting, 16 script and 2 typewriter families. The font picker draws each one in its own face. See `public/fonts/README.md`
+- Stacked text effects: 129 effects in Enter / While shown / Exit lanes, combined per channel instead of overwriting each other, plus 19 curated presets (`registry/text-motion.json`)
+  - Effect types: typewriter, handwriting write-on, letter and word staggers, wipes, 3D flips, glitch, neon, copies (shadows, extrusion, trails) and more
+  - Effects can target word ranges and can follow the text frame's colour change with its exact shape and timing
+  - The browser is aligned with the transition browser: search, ★ favourites, recent, presets, hover previews on top of your stack, a full gallery, a mini timeline and saved presets
+  - The editor preview runs a twin of the render engine; the MP4 is burnt in with libass
+  - See [docs/text-motion.md](docs/text-motion.md)
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming
 - Resilient media validation: 0-byte cloud-synced files are retried before failing a render, and slow NAS volumes get a generous (retryable) ffprobe timeout
 - Real 480p proxy previews streamed from the backend

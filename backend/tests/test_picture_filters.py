@@ -273,6 +273,10 @@ class SegmentLookTest(unittest.TestCase):
         (self.settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
         (self.settings.videos_dir / "a.mp4").write_bytes(b"x" * 64)
         self.renderer = Renderer(Database(base / "look.db"), self.settings)
+        # The graphs of the container build (drawtext + libass), whatever
+        # FFmpeg happens to be on this machine's PATH.
+        self.renderer._drawtext_supported = True
+        self.renderer._ass_supported = True
 
     def tearDown(self) -> None:
         self.temp.cleanup()

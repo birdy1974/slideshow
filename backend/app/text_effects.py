@@ -1245,7 +1245,86 @@ def _header(g: TextGeometry) -> str:
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     )
 
+# \fad(in,out) — the simple two-argument fade. Deliberately does not match the
+# seven-argument \fade(...), which the engine never emits.
+_FAD_TAG = re.compile(r"\\fad\((\d+),(\d+)\)")
+
+
+def _merge_fades(tags: str) -> str:
+    """Collapse every ``\\fad(a,b)`` in one override block into a single tag.
+
+    libass honours only the FIRST ``\\fad`` of an event and silently ignores the
+    rest. The enter and exit builders each contribute their own fade
+    (``\\fad(800,0)`` + ``\\fad(0,600)``), so whenever both ended up in the same
+    event, e.g. the default Fade / Fade out together with any libass While effect
+    (Neon glow, Pulse, Wave ...), or every caption on an FFmpeg build without
+    drawtext, the exit fade was lost and the text popped off on the last frame.
+
+    The merged tag keeps the longest fade-in and the longest fade-out, placed
+    where the first fade was, and the other fades are dropped. With zero or one
+    fade the block is returned unchanged, so documents that were already
+    correct stay byte-identical.
+    """
+    fades = _FAD_TAG.findall(tags)
+    if len(fades) < 2:
+        return tags
+    merged = f"\\fad({max(int(a) for a, _ in fades)},{max(int(b) for _, b in fades)})"
+    seen = False
+
+    def keep_first(_match: re.Match) -> str:
+        nonlocal seen
+        if seen:
+            return ""
+        seen = True
+        return merged
+
+    return _FAD_TAG.sub(keep_first, tags)
+
+
+# \t(t1,t2,...) and \move(x1,y1,x2,y2,t1,t2): times are milliseconds counted
+# from the start of the event that carries them.
+_T_TIMES = re.compile(r"\\t\((-?\d+),(-?\d+),")
+_MOVE_TIMES = re.compile(r"\\move\((-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?\d+),(-?\d+)\)")
+
+
+def _slice_offset_ms(slice_start: float, window_start: float) -> int:
+    """Milliseconds between two event starts as written: ASS keeps centiseconds."""
+    return (max(0, int(round(slice_start * 100))) - max(0, int(round(window_start * 100)))) * 10
+
+
+def _shift_tag_times(tags: str, offset_ms: int) -> str:
+    """Re-time tags written for the whole text window onto a later slice.
+
+    Some effects cut the window into consecutive events (typewriter/scramble
+    steps, motion-path segments). Loops and exits are built for an event that
+    starts with the window, and libass counts \\t and \\move times from the
+    start of *each* event, so copying them unchanged restarted the loop in
+    every slice: a Pulse on a circle path never got past its first 78 ms.
+    Shifting by the slice's offset keeps one continuous timeline. Negative
+    times are fine for libass: a \\t that ended before the slice applies its
+    final value at once, and one in progress continues from the right point.
+    \\fad is measured from the event's own edges and is left alone.
+    """
+    if offset_ms == 0 or not tags:
+        return tags
+
+    def shift_t(match: re.Match) -> str:
+        t1, t2 = int(match.group(1)) - offset_ms, int(match.group(2)) - offset_ms
+        if t1 == 0 and t2 == 0:
+            t1 = -1   # \t(0,0,...) would mean "over the whole event" to libass
+        return f"\\t({t1},{t2},"
+
+    def shift_move(match: re.Match) -> str:
+        x1, y1, x2, y2, t1, t2 = match.groups()
+        return f"\\move({x1},{y1},{x2},{y2},{int(t1) - offset_ms},{int(t2) - offset_ms})"
+
+    return _MOVE_TIMES.sub(shift_move, _T_TIMES.sub(shift_t, tags))
+
+
 def _ev(layer: int, start: float, end: float, tags: str, text: str) -> str:
+    # Every Dialogue line goes through here, so this is the one place that
+    # guarantees an event never carries two competing \fad tags (see above).
+    tags = _merge_fades(tags)
     return f"Dialogue: {layer},{ass_time(start)},{ass_time(max(end, start + 0.02))},FX,,0,0,0,,{{{tags}}}{text}"
 
 def _multiline(g: TextGeometry) -> str:
@@ -1395,7 +1474,11 @@ def _hidden_line_text(units: list[str], visible_index: int, visible_tags: str) -
         if unit == "\n":
             parts.append(r"\N")
         elif index == visible_index:
-            parts.append(f"{{\\alpha&H00&{visible_tags}}}{escape_ass(unit)}")
+            # ...and hide the rest again: without the closing block the whole
+            # suffix after the unit stayed visible, so Split rise / Split from
+            # centre drew every remaining letter once per event (a stack of
+            # rising "olden hour", "lden hour", ... copies, over-drawn at rest).
+            parts.append(f"{{\\alpha&H00&{visible_tags}}}{escape_ass(unit)}{{\\alpha&HFF&}}")
         else:
             parts.append(escape_ass(unit) if unit != " " else " ")
     return "".join(parts)
@@ -1538,7 +1621,17 @@ def _sliced_enter_events(g: TextGeometry, fx: FxPlan, while_tags: str, exit_tags
             remaining = [c for c in chars[i + 1:] if c != "\n"]
             noise = "".join(rng.choice(SCRAMBLE_GLYPHS) for _ in remaining)
             text = _join_chars(chars[: i + 1]) + escape_ass(noise)
-        events.append(_ev(0, t0, t1, pos_tag + while_tags + exit_tags, text))
+        # One timeline for the whole window: loops continue across the steps
+        # instead of restarting every step (see _shift_tag_times).
+        offset = _slice_offset_ms(t0, g.start)
+        tags = pos_tag + _shift_tag_times(while_tags, offset)
+        if i == total - 1:
+            # Only the last step runs to the end of the window, so only it
+            # carries the exit. Every step used to: a 500 ms \fad(0,500) on a
+            # 120 ms step left the typed text at 24 % -> 0 % opacity, so it
+            # looked dim and flickered for the whole reveal.
+            tags += _shift_tag_times(exit_tags, offset)
+        events.append(_ev(0, t0, t1, tags, text))
     return events
 
 def _sliced_exit_appends(g: TextGeometry, exit_id: str) -> tuple[float, list[str]]:
@@ -1858,15 +1951,20 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
             x2 = g.width * sampled_pts[i+1][0] / 100.0
             y2 = g.height * sampled_pts[i+1][1] / 100.0
             seg_ms = int(round(slice_dur*1000))
+            # Loops, inline body tags and the exit are timed for the whole
+            # window; re-time them onto this slice so they run continuously
+            # instead of restarting every slice (see _shift_tag_times).
+            offset = _slice_offset_ms(t0, g.start)
+            slice_while = _shift_tag_times(while_tags, offset)
             move = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})\\alpha{alpha}"
-            tags = move + while_tags
+            tags = move + slice_while
             if i == 0 and "\\move(" not in enter_tags:
-                tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + while_tags + f"\\alpha{alpha}"
+                tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + slice_while + f"\\alpha{alpha}"
             if i == num_samples-1 and "\\move(" not in exit_tags:
                 # tail steady will be added after loop if needed, so don't add exit yet if steady
                 if steady <= 0.01:
-                    tags += exit_tags
-            events.append(_ev(0, t0, t1, tags, body))
+                    tags += _shift_tag_times(exit_tags, offset)
+            events.append(_ev(0, t0, t1, tags, _shift_tag_times(body, offset)))
         if steady > 0.01:
             tail_t0 = g.start + effective
             tail_mid = (tail_t0 + g.end) / 2
@@ -1876,9 +1974,10 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
             # need bouncy offset? motion_pos handles it but pts already include bounce trajectory? For tail static, use last pt with bouncy at prog 1? bouncy offset at 1 is 0
             # apply bouncy if enabled: use motion_pos_at for tail pos (handles bouncy)
             mx, my = g.motion_pos_at(tail_mid)
-            tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + while_tags + exit_tags
+            offset = _slice_offset_ms(tail_t0, g.start)
+            tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + _shift_tag_times(while_tags + exit_tags, offset)
             # include enter_tags if motion had none? already handled
-            events.append(_ev(0, tail_t0, g.end, tags, body))
+            events.append(_ev(0, tail_t0, g.end, tags, _shift_tag_times(body, offset)))
         return events
 
     # Linear easing — distance-proportional timing
@@ -1901,24 +2000,28 @@ def _motion_path_events(g: TextGeometry, while_tags: str, enter_tags: str, exit_
         x2 = g.width * pts[i+1][0] / 100.0
         y2 = g.height * pts[i+1][1] / 100.0
         seg_ms = int(round((t1 - t0)*1000))
+        # same re-timing as the eased branch above
+        offset = _slice_offset_ms(t0, g.start)
+        slice_while = _shift_tag_times(while_tags, offset)
         move = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})\\alpha{alpha}"
-        tags = move + while_tags
+        tags = move + slice_while
         if i == 0:
             if "\\move(" not in enter_tags:
-                tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + while_tags + f"\\alpha{alpha}"
+                tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + slice_while + f"\\alpha{alpha}"
             else:
-                tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + while_tags
+                tags = f"\\an5\\move({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f},0,{seg_ms})" + enter_tags + slice_while
         if i == len(pts)-2:
             if "\\move(" not in exit_tags:
                 if steady <= 0.01:
-                    tags += exit_tags
-        events.append(_ev(0, t0, t1, tags, body))
+                    tags += _shift_tag_times(exit_tags, offset)
+        events.append(_ev(0, t0, t1, tags, _shift_tag_times(body, offset)))
     if steady > 0.01:
         tail_mid = (g.start + effective + g.end) / 2
         alpha = _alpha_at(g, tail_mid)
         mx, my = g.motion_pos_at(tail_mid)
-        tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + while_tags + exit_tags
-        events.append(_ev(0, g.start + effective, g.end, tags, body))
+        offset = _slice_offset_ms(g.start + effective, g.start)
+        tags = f"\\an5\\pos({mx:.0f},{my:.0f})\\alpha{alpha}" + _shift_tag_times(while_tags + exit_tags, offset)
+        events.append(_ev(0, g.start + effective, g.end, tags, _shift_tag_times(body, offset)))
     return events
 
 def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
@@ -1935,6 +2038,14 @@ def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
     if exit_sliced:
         end_at, tail_events = _sliced_exit_appends(g, exit_id)
 
+    def exit_for_body() -> str:
+        # The exit's tags belong to the event(s) that run to the end of the
+        # window. A sliced exit (Typewriter delete / Scramble out) is played
+        # by the tail events, so the text before it must not fade out on its
+        # own: it faded to nothing and then popped back at full opacity to be
+        # deleted.
+        return "" if exit_sliced else _exit_tags(g, plan.exit_)
+
     base_while = "" if while_id in ("none", "karaoke-sweep", "wave", "shimmer") else _while_tags(g, while_id)
     extra_scale_color = _scale_color_while_tags(g)
     while_tags = base_while + extra_scale_color
@@ -1950,14 +2061,14 @@ def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
         return _header(g) + "\n" + "\n".join(events) + "\n"
 
     if enter_id in ("typewriter-caret", "decrypted-scramble"):
-        events = _sliced_enter_events(g, plan, while_tags, _exit_tags(g, plan.exit_), end_at=end_at if exit_sliced else None)
+        events = _sliced_enter_events(g, plan, while_tags, exit_for_body(), end_at=end_at if exit_sliced else None)
         return _header(g) + "\n" + "\n".join(events + tail_events) + "\n"
 
     if enter_id == "split-rise-chars":
-        events = _split_rise_events(g, while_tags, _degrade_move_exit(_exit_tags(g, plan.exit_)), end_at)
+        events = _split_rise_events(g, while_tags, _degrade_move_exit(exit_for_body()), end_at)
         return _header(g) + "\n" + "\n".join(events + tail_events) + "\n"
     if enter_id == "split-from-centre":
-        events = _split_centre_events(g, while_tags, _degrade_move_exit(_exit_tags(g, plan.exit_)), end_at)
+        events = _split_centre_events(g, while_tags, _degrade_move_exit(exit_for_body()), end_at)
         return _header(g) + "\n" + "\n".join(events + tail_events) + "\n"
 
     enter_tags, enter_body = _enter_tags(g, plan.enter)
@@ -1969,7 +2080,7 @@ def build_ass_document(g: TextGeometry, plan: FxPlan) -> str:
         body = enter_body if enter_body is not None else _multiline(g)
     if exit_id == "split-out-chars":
         body = _split_out_body(g)
-    exit_tags = _exit_tags(g, plan.exit_)
+    exit_tags = exit_for_body()
 
     pts = g.motion_points()
     if pts and len(pts) >= 2:
