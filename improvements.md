@@ -1,13 +1,17 @@
 2026-09-23
-- check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
 - make max selectable font size bigger till 350 (instead of 200)
 - make default selectable colors the more fivit colors (RED, BLUE, YELLOW, PURPLE, white, black, etc) and a quick option to change to pastel colors
 - do a deep search on the internet to see if you can add other slide transitions and more text effects and text motions. only give the options, do not change any code yet.
 - give rendering progress (Prepared slide 28/84: <filename> ....) also in rendering pane at the bottom during redering
+- "ready to generate" in main header does not jump to generate pane
+- in detailed transition list: move duration of the slide (default 5 second) to the right (under and in line with "text on picture" option) and make picture bigger (use whole height of row)
 - 
 
 
 ---= DONE =---
+- check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
+
+
 
 2026-09-25 — Stacked text effects implemented (P1–P4), 29 new fonts, text synced to the colour A → B background
 - implement everything, add new font (especially handwritten fonts) and integrate with the color transitions background
