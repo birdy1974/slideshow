@@ -1099,17 +1099,23 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
    details look the same whether the caption is shown or hidden. With the
    caption shown, the text bar is compacted to fit the narrower info column:
    the mode select becomes a 2-line-narrow select and the input shrinks. */
-.timeline-item.wide-transition{grid-template-columns:34px 88px minmax(190px,1fr) 78px minmax(300px,2fr) 76px;align-items:start}
+.timeline-item.wide-transition{grid-template-columns:34px 120px minmax(190px,1fr) 78px minmax(300px,2fr) 76px;align-items:start}
 .timeline-item.wide-transition .recorded-transition-example{width:76px;height:66px;align-self:start;margin-top:0}
 .timeline-item.wide-transition .row-select,.timeline-item.wide-transition .row-actions{align-self:start;padding-top:4px}
-.thumb-column{display:flex;flex-direction:column;gap:6px;width:88px;align-self:start}
-.thumb-column .thumb{width:88px;height:54px}
-.clip-duration.thumb-duration{width:88px;height:34px;border:1px solid #d9dad4;border-radius:6px;background:#fff;display:flex;align-items:center;align-self:start}
-.clip-duration.thumb-duration .number-stepper{border:0;border-radius:0;height:100%;flex:1;min-width:0;background:transparent}
-.clip-duration.thumb-duration .number-stepper .step-btn{width:18px;background:transparent;color:#a1a39d}
-.clip-duration.thumb-duration .number-stepper .step-btn:hover{background:#ebebe5;color:#343730}
-.clip-duration.thumb-duration .number-stepper input{font-size:11px;font-weight:600}
-.clip-duration.thumb-duration span{font-size:9px;color:#aaa;margin-right:7px;flex-shrink:0}
+/* The duration stepper moved from under the thumbnail into the info column
+   (under "text on picture"), so the thumb column is free to stretch: the
+   picture fills the whole height of the row. */
+.thumb-column{display:flex;flex-direction:column;width:120px;align-self:stretch}
+.thumb-column .thumb{width:100%;flex:1 1 auto;min-height:54px}
+.item-duration{display:flex;align-items:center;gap:7px;margin-top:5px;font:700 8px Manrope;letter-spacing:.4px;color:#62685b}
+.item-duration svg{flex:0 0 auto;opacity:.8}
+.item-duration .clip-duration{flex:0 0 auto}
+.clip-duration.slide-duration{width:88px;height:24px;border:1px solid #d9dad4;border-radius:6px;background:#fff;display:flex;align-items:center}
+.clip-duration.slide-duration .number-stepper{border:0;border-radius:0;height:100%;flex:1;min-width:0;background:transparent}
+.clip-duration.slide-duration .number-stepper .step-btn{width:18px;background:transparent;color:#a1a39d}
+.clip-duration.slide-duration .number-stepper .step-btn:hover{background:#ebebe5;color:#343730}
+.clip-duration.slide-duration .number-stepper input{font-size:10px;font-weight:600}
+.clip-duration.slide-duration span{font-size:9px;color:#aaa;margin-right:7px;flex-shrink:0}
 .clip-duration.transition-duration{width:88px;height:34px;border:1px solid #d9dad4;border-radius:6px;background:#fff;display:flex;align-items:center}
 .clip-duration.transition-duration .number-stepper{border:0;border-radius:0;height:100%;flex:1;min-width:0;background:transparent}
 .clip-duration.transition-duration .number-stepper .step-btn{width:18px;background:transparent;color:#a1a39d}
@@ -1125,8 +1131,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .timeline-item.wide-transition .item-text-edit .select-wrap select{font-size:8px;padding:0 16px 0 5px}
 .timeline-item.wide-transition .item-text-edit .select-wrap svg{right:4px;width:11px}
 .timeline-item.wide-transition .detail-transition-popover{grid-template-columns:60px minmax(80px,1fr) 80px 22px;height:auto;padding:4px}
-.timeline-head{grid-template-columns:20px 88px minmax(190px,1fr) 78px minmax(300px,2fr) 76px}
-@media(max-width:1100px){.timeline-item.wide-transition{grid-template-columns:34px 88px minmax(150px,.9fr) 78px minmax(220px,1.5fr) 76px}}
+.timeline-head{grid-template-columns:20px 120px minmax(190px,1fr) 78px minmax(300px,2fr) 76px}
+@media(max-width:1100px){.timeline-item.wide-transition{grid-template-columns:34px 120px minmax(150px,.9fr) 78px minmax(220px,1.5fr) 76px}}
 @media(max-width:760px){.timeline-item.wide-transition{grid-template-columns:34px 88px 1fr}.timeline-item.wide-transition .recorded-transition-example{grid-column:2/-1;grid-row:auto;width:76px;height:66px}.thumb-column{width:88px}.thumb-column .thumb{width:88px}}
 /* Storyline movie clips: real frames edge to edge (same strip as the movie
    editor); trimmed-away sections are darkened. */
