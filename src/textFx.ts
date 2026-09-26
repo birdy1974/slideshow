@@ -100,13 +100,13 @@ export function candidateConflict(stack: TextFxLayer[], effectId: string, opts: 
   if (effectNeedsBg(fx) && opts.hasBg === false) return 'needs colour B'
   const live = stack.filter(l => !l.muted && l.id !== opts.replacingId && EFFECTS[l.effect])
   if (!fx.content) {
-    const whole = live.find(l => ['count', 'countdown'].includes(EFFECTS[l.effect].content?.type))
+    const whole = live.find(l => ['count', 'countdown', 'swap'].includes(EFFECTS[l.effect].content?.type))
     if (whole && fx.unit !== 'text') return `whole text (${EFFECTS[whole.effect].label})`
     return null
   }
   const clash = live.find(l => EFFECTS[l.effect].content && EFFECTS[l.effect].phase === fx.phase)
   if (clash) return `replaces ${EFFECTS[clash.effect].label}`
-  if (['count', 'countdown'].includes(fx.content.type) && live.some(l => (l.unit || EFFECTS[l.effect].unit) !== 'text')) return 'runs on the whole text'
+  if (['count', 'countdown', 'swap'].includes(fx.content.type) && live.some(l => (l.unit || EFFECTS[l.effect].unit) !== 'text')) return 'runs on the whole text'
   return null
 }
 

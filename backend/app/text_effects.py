@@ -452,6 +452,184 @@ def _generate_bounce_points(
     pts.append((_clamp(to_x,0,100), _clamp(to_y,0,100)))
     return pts
 
+# ---- New path shapes (2026-09 round): twins of the App.tsx generators —
+# same formulas, same sample counts, so the preview and the MP4 agree. ----
+def _generate_spiral_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, turns: float, num: int = 96
+) -> list[tuple[float,float]]:
+    d = math.hypot(to_x - from_x, to_y - from_y)
+    if radius is not None and radius > 2:
+        cx, cy, r0, start_ang = from_x, from_y, radius, -math.pi / 2
+    elif d > 0.5:
+        cx, cy = to_x, to_y
+        r0 = d
+        start_ang = math.atan2(from_y - cy, from_x - cx)
+    else:
+        cx, cy, r0, start_ang = from_x, from_y, 15.0, -math.pi / 2
+    t = max(0.2, min(6.0, turns))
+    pts: list[tuple[float,float]] = []
+    for i in range(num + 1):
+        p = i / num
+        ang = start_ang + p * t * 2 * math.pi
+        r = r0 * (1 - p)
+        pts.append((_clamp(cx + r * math.cos(ang), 0, 100), _clamp(cy + r * math.sin(ang), 0, 100)))
+    pts.append((_clamp(cx, 0, 100), _clamp(cy, 0, 100)))
+    return pts
+
+
+def _generate_figure8_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, num: int = 120
+) -> list[tuple[float,float]]:
+    d = math.hypot(to_x - from_x, to_y - from_y)
+    explicit = radius is not None and radius > 2
+    cx = from_x if explicit else (from_x + to_x) / 2.0
+    cy = from_y if explicit else (from_y + to_y) / 2.0
+    a = float(radius) if explicit else max(10.0, d * 0.4)
+    pts: list[tuple[float,float]] = []
+    for i in range(num + 1):
+        t = (i / num) * 2 * math.pi
+        s, c = math.sin(t), math.cos(t)
+        den = 1 + s * s
+        pts.append((_clamp(cx + a * c / den, 0, 100), _clamp(cy + a * s * c / den, 0, 100)))
+    return pts
+
+
+def _generate_lissajous_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    amp: float, freq_x: float, freq_y: float, num: int = 140
+) -> list[tuple[float,float]]:
+    ax = max(2.0, min(40.0, amp or 14.0))
+    ay = ax * 0.7
+    f1 = max(0.5, min(8.0, freq_x or 3.0))
+    f2 = max(0.5, min(8.0, freq_y or 2.0))
+    cx, cy = from_x, from_y
+    pts: list[tuple[float,float]] = []
+    for i in range(num + 1):
+        t = i / num
+        pts.append((_clamp(cx + ax * math.sin(2 * math.pi * f1 * t + math.pi / 2), 0, 100),
+                    _clamp(cy + ay * math.sin(2 * math.pi * f2 * t), 0, 100)))
+    return pts
+
+
+def _generate_zigzag_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    amplitude: float, frequency: float, num: int = 96
+) -> list[tuple[float,float]]:
+    amp = max(0.0, min(40.0, 10.0 if amplitude is None else amplitude))
+    freq = max(0.5, min(10.0, 3.0 if frequency is None else frequency))
+    dx, dy = to_x - from_x, to_y - from_y
+    length = math.hypot(dx, dy)
+    ux, uy = (1.0, 0.0) if length < 1e-6 else (dx / length, dy / length)
+    px, py = -uy, ux
+    pts: list[tuple[float,float]] = []
+    for i in range(num + 1):
+        p = i / num
+        s = p * freq
+        f = s - math.floor(s)
+        tri = f * 4 - 1 if f < 0.5 else 3 - f * 4
+        off = amp * tri
+        pts.append((_clamp(from_x + dx * p + px * off, 0, 100), _clamp(from_y + dy * p + py * off, 0, 100)))
+    return pts
+
+
+def _generate_heart_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, rotation: float, num: int = 120
+) -> list[tuple[float,float]]:
+    d = math.hypot(to_x - from_x, to_y - from_y)
+    explicit = radius is not None and radius > 2
+    cx = from_x if explicit else (from_x + to_x) / 2.0
+    cy = from_y if explicit else (from_y + to_y) / 2.0
+    r = float(radius) if explicit else max(10.0, d * 0.4)
+    s = r / 16.0
+    rot = (rotation or 0.0) * math.pi / 180.0
+    pts: list[tuple[float,float]] = []
+    for i in range(num + 1):
+        t = (i / num) * 2 * math.pi
+        hx = 16 * (math.sin(t) ** 3)
+        hy = 13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)
+        x, y = s * hx, -s * hy
+        pts.append((_clamp(cx + x * math.cos(rot) - y * math.sin(rot), 0, 100),
+                    _clamp(cy + x * math.sin(rot) + y * math.cos(rot), 0, 100)))
+    return pts
+
+
+def _generate_polygon_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, sides: float, rotation: float, num_per_seg: int = 24
+) -> list[tuple[float,float]]:
+    n = max(3, min(10, int(round(sides or 5))))
+    d = math.hypot(to_x - from_x, to_y - from_y)
+    if radius is not None and radius > 2:
+        cx, cy, r = from_x, from_y, radius
+    else:
+        cx, cy = (from_x + to_x) / 2.0, (from_y + to_y) / 2.0
+        r = max(10.0, d * 0.5)
+    rot = (rotation or 0.0) * math.pi / 180.0
+    vertices: list[tuple[float,float]] = []
+    for i in range(n):
+        ang = rot - math.pi / 2 + i * (2 * math.pi / n)
+        vertices.append((_clamp(cx + r * math.cos(ang), 0, 100), _clamp(cy + r * math.sin(ang), 0, 100)))
+    vertices.append(vertices[0])
+    pts: list[tuple[float,float]] = []
+    for i in range(len(vertices) - 1):
+        a, b = vertices[i], vertices[i + 1]
+        for k in range(num_per_seg):
+            t = k / num_per_seg
+            pts.append((_clamp(a[0] + (b[0] - a[0]) * t, 0, 100), _clamp(a[1] + (b[1] - a[1]) * t, 0, 100)))
+    pts.append(vertices[-1])
+    return pts
+
+
+def _generate_pendulum_points(
+    from_x: float, from_y: float, to_x: float, to_y: float,
+    radius: float | None, num: int = 60
+) -> list[tuple[float,float]]:
+    arm = radius if (radius is not None and radius > 2) else 20.0
+    px = (from_x + to_x) / 2.0
+    py = (from_y + to_y) / 2.0 - arm
+    d0 = math.hypot(from_x - px, from_y - py)
+    d1 = math.hypot(to_x - px, to_y - py)
+    r = max(2.0, (d0 + d1) / 2.0)
+    a0 = math.atan2(from_y - py, from_x - px)
+    a1 = math.atan2(to_y - py, to_x - px)
+    if d0 < 0.5 and d1 < 0.5:
+        a0, a1 = math.pi / 2 - 0.5, math.pi / 2 + 0.5
+
+    def _norm2pi(a: float) -> float:
+        x = math.fmod(a, 2 * math.pi)
+        if x < 0:
+            x += 2 * math.pi
+        return x
+
+    def _crosses(start: float, delta: float, target: float) -> bool:
+        t = _norm2pi(target - start)
+        span = abs(delta)
+        return t <= span + 1e-9 if delta >= 0 else (2 * math.pi - t) <= span + 1e-9
+
+    cw = _norm2pi(a1 - a0)
+    if cw < 1e-9:
+        cw = 2 * math.pi
+    ccw = cw - 2 * math.pi
+    cw_passes = _crosses(a0, cw, math.pi / 2)
+    ccw_passes = _crosses(a0, ccw, math.pi / 2)
+    if cw_passes and ccw_passes:
+        delta = cw if abs(cw) <= abs(ccw) else ccw
+    elif cw_passes:
+        delta = cw
+    elif ccw_passes:
+        delta = ccw
+    else:
+        delta = cw if abs(cw) <= abs(ccw) else ccw
+    pts: list[tuple[float,float]] = []
+    for i in range(num + 1):
+        ang = a0 + (i / num) * delta
+        pts.append((_clamp(px + r * math.cos(ang), 0, 100), _clamp(py + r * math.sin(ang), 0, 100)))
+    return pts
+
+
 def _bouncy_offset(progress: float, height: float, bounces: float, damping: float) -> float:
     h = max(0.0, min(30.0, height if height is not None else 12.0))
     if h < 0.1:
@@ -502,6 +680,7 @@ def _effective_motion_points(
     bounce_height: float | None = None,
     bounce_count: float | None = None,
     bounce_damping: float | None = None,
+    lissajous_freq_y: float | None = None,
 ) -> list[tuple[float,float]] | None:
     pt = (path_type or "straight").lower()
     base: list[tuple[float,float]] | None = None
@@ -521,6 +700,20 @@ def _effective_motion_points(
         base = _generate_triangle_points(from_x, from_y, to_x, to_y, circle_radius, symbol_rotation or 0)
     elif pt == "bounce":
         base = _generate_bounce_points(from_x, from_y, to_x, to_y, bounce_height or 14, bounce_count or 4, bounce_damping or 0.35)
+    elif pt == "spiral":
+        base = _generate_spiral_points(from_x, from_y, to_x, to_y, circle_radius, circle_turns)
+    elif pt == "figure-8":
+        base = _generate_figure8_points(from_x, from_y, to_x, to_y, circle_radius)
+    elif pt == "lissajous":
+        base = _generate_lissajous_points(from_x, from_y, to_x, to_y, sine_amp, sine_freq, lissajous_freq_y or 2)
+    elif pt == "zigzag":
+        base = _generate_zigzag_points(from_x, from_y, to_x, to_y, sine_amp, sine_freq)
+    elif pt == "heart":
+        base = _generate_heart_points(from_x, from_y, to_x, to_y, circle_radius, symbol_rotation or 0)
+    elif pt == "polygon":
+        base = _generate_polygon_points(from_x, from_y, to_x, to_y, circle_radius, star_points or 5, symbol_rotation or 0)
+    elif pt == "pendulum":
+        base = _generate_pendulum_points(from_x, from_y, to_x, to_y, circle_radius)
     elif pt == "polyline" and path and len(path) >= 2:
         base = path
     else:

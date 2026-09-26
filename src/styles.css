@@ -768,6 +768,10 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* The text frame editor opened from the story preview popup: raised above the
    lightbox (z-50) exactly like the movie/look editors (z-60). */
 .modal-backdrop.stacked{z-index:60}
+/* A picker opened from inside an editor modal (collage photo/background
+   pickers) must clear the editor itself — including the stacked editor that
+   sits over the story preview: preview 50 → editor 60 → picker 70. */
+.modal-backdrop.over-editor{z-index:70}
 /* Compact grid: ✎ bottom-right opens the editor; the card body now previews. */
 .compact-edit{position:absolute;bottom:6px;right:6px;width:25px;height:25px;border:0;border-radius:50%;background:#1c1f1bcc;color:#d1ef9d;display:grid;place-items:center;cursor:pointer;z-index:3}
 .compact-edit:hover{background:#4a6230;color:#fff}
@@ -1099,17 +1103,23 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
    details look the same whether the caption is shown or hidden. With the
    caption shown, the text bar is compacted to fit the narrower info column:
    the mode select becomes a 2-line-narrow select and the input shrinks. */
-.timeline-item.wide-transition{grid-template-columns:34px 88px minmax(190px,1fr) 78px minmax(300px,2fr) 76px;align-items:start}
+.timeline-item.wide-transition{grid-template-columns:34px 120px minmax(190px,1fr) 78px minmax(300px,2fr) 76px;align-items:start}
 .timeline-item.wide-transition .recorded-transition-example{width:76px;height:66px;align-self:start;margin-top:0}
 .timeline-item.wide-transition .row-select,.timeline-item.wide-transition .row-actions{align-self:start;padding-top:4px}
-.thumb-column{display:flex;flex-direction:column;gap:6px;width:88px;align-self:start}
-.thumb-column .thumb{width:88px;height:54px}
-.clip-duration.thumb-duration{width:88px;height:34px;border:1px solid #d9dad4;border-radius:6px;background:#fff;display:flex;align-items:center;align-self:start}
-.clip-duration.thumb-duration .number-stepper{border:0;border-radius:0;height:100%;flex:1;min-width:0;background:transparent}
-.clip-duration.thumb-duration .number-stepper .step-btn{width:18px;background:transparent;color:#a1a39d}
-.clip-duration.thumb-duration .number-stepper .step-btn:hover{background:#ebebe5;color:#343730}
-.clip-duration.thumb-duration .number-stepper input{font-size:11px;font-weight:600}
-.clip-duration.thumb-duration span{font-size:9px;color:#aaa;margin-right:7px;flex-shrink:0}
+/* The duration stepper moved from under the thumbnail into the info column
+   (under "text on picture"), so the thumb column is free to stretch: the
+   picture fills the whole height of the row. */
+.thumb-column{display:flex;flex-direction:column;width:120px;align-self:stretch}
+.thumb-column .thumb{width:100%;flex:1 1 auto;min-height:54px}
+.item-duration{display:flex;align-items:center;gap:7px;margin-top:5px;font:700 8px Manrope;letter-spacing:.4px;color:#62685b}
+.item-duration svg{flex:0 0 auto;opacity:.8}
+.item-duration .clip-duration{flex:0 0 auto}
+.clip-duration.slide-duration{width:88px;height:24px;border:1px solid #d9dad4;border-radius:6px;background:#fff;display:flex;align-items:center}
+.clip-duration.slide-duration .number-stepper{border:0;border-radius:0;height:100%;flex:1;min-width:0;background:transparent}
+.clip-duration.slide-duration .number-stepper .step-btn{width:18px;background:transparent;color:#a1a39d}
+.clip-duration.slide-duration .number-stepper .step-btn:hover{background:#ebebe5;color:#343730}
+.clip-duration.slide-duration .number-stepper input{font-size:10px;font-weight:600}
+.clip-duration.slide-duration span{font-size:9px;color:#aaa;margin-right:7px;flex-shrink:0}
 .clip-duration.transition-duration{width:88px;height:34px;border:1px solid #d9dad4;border-radius:6px;background:#fff;display:flex;align-items:center}
 .clip-duration.transition-duration .number-stepper{border:0;border-radius:0;height:100%;flex:1;min-width:0;background:transparent}
 .clip-duration.transition-duration .number-stepper .step-btn{width:18px;background:transparent;color:#a1a39d}
@@ -1125,8 +1135,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .timeline-item.wide-transition .item-text-edit .select-wrap select{font-size:8px;padding:0 16px 0 5px}
 .timeline-item.wide-transition .item-text-edit .select-wrap svg{right:4px;width:11px}
 .timeline-item.wide-transition .detail-transition-popover{grid-template-columns:60px minmax(80px,1fr) 80px 22px;height:auto;padding:4px}
-.timeline-head{grid-template-columns:20px 88px minmax(190px,1fr) 78px minmax(300px,2fr) 76px}
-@media(max-width:1100px){.timeline-item.wide-transition{grid-template-columns:34px 88px minmax(150px,.9fr) 78px minmax(220px,1.5fr) 76px}}
+.timeline-head{grid-template-columns:20px 120px minmax(190px,1fr) 78px minmax(300px,2fr) 76px}
+@media(max-width:1100px){.timeline-item.wide-transition{grid-template-columns:34px 120px minmax(150px,.9fr) 78px minmax(220px,1.5fr) 76px}}
 @media(max-width:760px){.timeline-item.wide-transition{grid-template-columns:34px 88px 1fr}.timeline-item.wide-transition .recorded-transition-example{grid-column:2/-1;grid-row:auto;width:76px;height:66px}.thumb-column{width:88px}.thumb-column .thumb{width:88px}}
 /* Storyline movie clips: real frames edge to edge (same strip as the movie
    editor); trimmed-away sections are darkened. */
@@ -1431,3 +1441,97 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .font-list button.active{background:#dfe9ca}
 .font-list .font-sample{flex:1;min-width:0;margin:0;padding:0;border:0;border-radius:0;opacity:1;font-size:21px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.35}
 .font-meta{flex:none;font:700 9px Manrope;color:#7d8178;white-space:nowrap}
+
+/* --- Quick-pick colour swatches (vivid basics ↔ pastels) for text colour and frame backgrounds --- */
+.swatch-picker{display:flex;flex-direction:column;gap:6px;width:100%}
+.swatch-picker .swatch-row{display:flex;flex-wrap:wrap;gap:5px}
+.swatch-picker .swatch{width:26px;height:24px;min-width:0;border:1px solid #ffffff55;box-shadow:inset 0 0 0 1px #00000033;border-radius:5px;padding:0;cursor:pointer}
+.swatch-picker .swatch:hover{filter:brightness(1.12)}
+.swatch-picker .swatch.active{outline:2px solid var(--lime);outline-offset:1px}
+.swatch-picker .swatch[disabled]{cursor:not-allowed}
+.swatch-picker .swatch-foot{height:35px;border:1px solid #d9dad4;border-radius:6px;background:#fff;display:flex;align-items:center;gap:9px;padding:0 8px}
+.swatch-picker .swatch-mode{display:flex;border:1px solid #d9dad4;border-radius:6px;overflow:hidden}
+.swatch-picker .swatch-mode button{height:23px;padding:0 9px;border:0;background:transparent;color:#8a8f86;font:700 8px Manrope;letter-spacing:.4px;cursor:pointer}
+.swatch-picker .swatch-mode button.active{background:#31362d;color:var(--lime)}
+.swatch-picker .swatch-custom{display:flex;align-items:center;gap:6px;margin-left:auto;color:#a0a49b;min-width:0}
+.swatch-picker .swatch-custom input{width:24px;height:24px;border:0;padding:0;background:none;cursor:pointer}
+.swatch-picker .swatch-custom b{font:600 9px Manrope;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.swatch-picker.disabled{opacity:.35}
+.bg-columns .dimmed .swatch-picker{opacity:.35}
+
+/* --- Live render stage under the progress bar in the generation pane --- */
+/* Shows what the backend is doing right now ("Prepared slide 28/84 — beach.jpg",
+   "Joining timeline…"), polled once a second from the job row in SQLite. */
+.render-stage{display:flex;align-items:center;gap:7px;margin:8px 0 0;min-width:0}
+.render-stage svg{color:#5e7d2c;flex:0 0 auto}
+.render-stage span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 9px Manrope;color:#6f7466}
+
+/* --- Header nav jumps: keep the target clear of the sticky top bar --- */
+#section-storyline,#section-transitions,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}
+
+/* --- Photo collage (Phase 1): DOM twin of the FFmpeg composite --- */
+.collage-photos{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.collage-layer{position:absolute;top:0;left:0;transform-origin:0 0}
+/* Virtual camera: wraps background + photos; the transform (translate+scale)
+   is written per frame from cameraState(), the same window maths the
+   render's crop/zoompan chain uses. */
+.collage-camera{position:absolute;inset:0;transform-origin:50% 50%;will-change:transform}
+.collage-mat{position:absolute;background:#fff;border-radius:2px;box-sizing:border-box;box-shadow:0 6px 18px rgba(0,0,0,.38),0 2px 5px rgba(0,0,0,.25);will-change:transform,opacity}
+.collage-mat img{display:block;border-radius:1px;object-fit:cover;background:#dcdcd8}
+.collage-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#cfd4ca;font-size:11px}
+.collage-empty .btn{pointer-events:auto}
+.collage-strip{display:flex;gap:6px;overflow-x:auto;padding:2px;scrollbar-width:thin}
+.collage-chip{position:relative;flex:0 0 auto;width:54px;height:54px;border-radius:6px;overflow:hidden;border:1px solid #4a4e45;background:#20231f;cursor:grab}
+.collage-chip.over{border-color:var(--lime)}
+.collage-chip img{width:100%;height:100%;object-fit:cover;pointer-events:none}
+.collage-chip .chip-num{position:absolute;left:2px;top:2px;z-index:2;background:#0009;color:#fff;font-size:8px;font-weight:700;border-radius:3px;padding:0 3px}
+.collage-chip .chip-actions{position:absolute;inset:auto 0 0 0;display:flex;justify-content:space-between;background:#000a;opacity:0;transition:opacity .12s}
+.collage-chip:hover .chip-actions{opacity:1}
+.chip-actions button{border:0;background:none;color:#fff;cursor:pointer;display:grid;place-items:center;padding:2px}
+.chip-actions button:disabled{opacity:.3;cursor:default}
+.chip-actions .chip-remove:hover{color:#ff8f8f}
+.collage-add{flex:0 0 auto;min-width:86px;height:54px;border:1px dashed #6b7263;border-radius:6px;background:none;color:#c9cec2;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:4px;cursor:pointer}
+.collage-add:hover{border-color:var(--lime);color:var(--lime)}
+.collage-full{flex:0 0 auto;align-self:center;color:#989d93;font-size:9px;display:flex;gap:5px;align-items:center}
+.collage-choices-group{margin-bottom:14px}
+.collage-choices-group small{display:flex;gap:5px;color:#92978e;font-size:8px;line-height:1.5;margin-top:5px}
+.collage-choices{display:flex;gap:6px;flex-wrap:wrap}
+.collage-choices button{border:1px solid #494e45;background:#20231f;color:#c9cec2;border-radius:6px;padding:6px 11px;font-size:10px;font-weight:700;cursor:pointer}
+.collage-choices button.active{border-color:var(--lime);color:var(--lime);background:#2a3324}
+.collage-seed{display:flex;gap:7px;align-items:center}
+/* Checkbox rows in the collage editor (depth push-back, beat sync) */
+.collage-check{display:flex;align-items:flex-start;gap:7px;margin-top:8px;font-size:9.5px;line-height:1.45;color:#d7dbd2;cursor:pointer}
+.collage-check input{width:13px;height:13px;margin-top:1px;flex:none;accent-color:#8f7ff0;cursor:pointer}
+.collage-check.disabled{opacity:.45;cursor:not-allowed}
+.collage-check.disabled input{cursor:not-allowed}
+/* Beat-synced arrival time under a timing row's photo name */
+.collage-timing-row .name em{display:block;font-style:normal;font-size:8px;color:#8f7ff0;letter-spacing:.02em}
+.collage-symbol{position:relative;display:block;width:100%;height:100%}
+.collage-symbol img{position:absolute;top:12%;width:42%;height:76%;object-fit:cover;background:#fff;padding:6%;box-sizing:border-box;border-radius:2px;box-shadow:0 2px 6px #0006}
+.collage-symbol b{position:absolute;right:4%;bottom:6%;z-index:4;background:#0009;color:#fff;font-size:8px;border-radius:3px;padding:0 3px}
+.collage-editor aside textarea{height:52px}
+
+/* --- Collage: background picture + per-photo timing --- */
+.collage-bg{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;transform:scale(1.12);transform-origin:center}
+.collage-bg-row{display:flex;gap:7px;align-items:center}
+.collage-bg-row .custom-bg{flex:1;margin-top:0}
+.collage-bg-pick{display:flex;gap:9px;border:1px solid #494e45;border-radius:6px;padding:7px;background:#20231f}
+.collage-bg-pick>img{width:64px;height:40px;object-fit:cover;border-radius:4px;flex:0 0 auto}
+.collage-bg-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
+.collage-bg-meta strong{font-size:9px;color:#c9cec2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.collage-blur{display:flex;align-items:center;gap:7px;font-size:9px;color:#b8bcb2}
+.collage-blur input[type=range]{flex:1;accent-color:var(--lime)}
+.collage-blur b{width:30px;text-align:right;color:#d9ddd3}
+.collage-bg-actions{display:flex;gap:6px}
+.collage-timing{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent;padding-right:2px}
+.collage-timing-row{display:grid;grid-template-columns:26px minmax(0,1fr) auto auto;gap:6px;align-items:center;border:1px solid #3d423a;border-radius:5px;padding:3px 6px;background:#23261f}
+.collage-timing-row img{width:26px;height:18px;object-fit:cover;border-radius:2px}
+.collage-timing-row .name{font-size:9px;color:#c9cec2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.collage-timing-row label{font-size:8px;color:#8f948b;white-space:nowrap}
+.collage-timing-empty{color:#8f948b}
+.collage-timing-total{display:flex;gap:7px;align-items:center;margin-top:8px;font-size:9px;color:#b8bcb2;flex-wrap:wrap}
+.collage-timing-row .ctl{display:flex;align-items:center;gap:4px}
+.collage-timing-actions{margin-left:auto;display:flex;gap:6px}
+.collage-replay{position:absolute;right:8px;bottom:8px;z-index:5;display:flex;align-items:center;gap:5px;border:0;border-radius:5px;background:#000a;color:#fff;font-size:9px;font-weight:700;padding:5px 8px;cursor:pointer}
+.collage-replay:hover{background:#000c}
+.collage-choices-group .collage-total{float:right;font-style:normal;font-size:8px;color:var(--lime);letter-spacing:.5px}

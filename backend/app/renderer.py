@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
+from .collage import bg_blur_radius, collage_background, collage_graph, collage_inputs, normalize_collage
 from .config import Settings
 from .database import Database, utcnow
 from .filter_values import quote_filter_value
@@ -355,8 +356,13 @@ def _slide_stage_label(item: dict[str, Any], index: int, total: int) -> str:
     render fails on one clip.
     """
     name = str(item.get("name") or item.get("path") or "slide")
-    if item.get("type") == "title":
+    if item.get("type") in ("title", "collage"):
         text = str(item.get("text") or "").strip()
+        collage = normalize_collage(item)
+        if collage is not None:
+            base = f"Collage · {len(collage['photos'])} photos"
+            suffix = f" · “{_short_label(text, 24)}”" if text else ""
+            return f"{index + 1}/{total} — {base}{suffix}"
         text = _short_label(text, 28) if text else "Text frame"
         return f"{index + 1}/{total} — Title “{text}”"
     label = _short_label(name, 32)
@@ -729,6 +735,59 @@ def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1
     )
 
 
+def _detect_beats_pcm(ffmpeg_bin: str, source: Path, max_beats: int = 1200) -> list[float]:
+    """Energy-based onset detection over mono 8 kHz PCM (see Renderer.detect_beats).
+
+    The signal is cut into 16 ms hops; each hop's mean-square energy goes
+    through a log, and positive frame-to-frame jumps (onset strength) that
+    exceed 1.5x the trailing ~1.6 s average plus a small absolute floor mark
+    onsets, thinned to >= 0.22 s apart. A file that starts loud begins on its
+    downbeat, so t=0 is an onset too. Precision is one hop (16 ms) — well
+    below a 25 fps frame.
+    """
+    import array as _array
+
+    command = [ffmpeg_bin, "-hide_banner", "-nostats", "-i", str(source),
+               "-map", "0:a:0?", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"]
+    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg exited with {proc.returncode}")
+    count = len(proc.stdout) // 2
+    if count < 8000:            # under a second of audio — nothing to sync to
+        return []
+    samples = _array.array("h")
+    samples.frombytes(proc.stdout[: count * 2])
+
+    hop, win, min_gap = 128, 100, 0.22
+    frames = count // hop
+    env = []
+    for k in range(frames):
+        acc = 0
+        for v in samples[k * hop:(k + 1) * hop]:
+            acc += v * v
+        env.append(math.log(1.0 + 1e-2 * acc / hop))
+    strength = [env[0]] + [max(0.0, env[k] - env[k - 1]) for k in range(1, frames)]
+
+    onsets: list[float] = [0.0] if env[0] > 1.0 else []   # loud start = downbeat
+    last = onsets[0] if onsets else -1.0
+    run = 0.0
+    for k in range(1, frames - 1):
+        run += strength[k]
+        if k > win:
+            run -= strength[k - win - 1]
+        s = strength[k]
+        mean = run / min(k + 1, win + 1)
+        if (s > 0.05 and s > strength[k - 1] and s >= strength[k + 1]
+                and s > 1.5 * mean and env[k] > 1.0):
+            t = round(k * hop / 8000.0, 3)
+            if t - last >= min_gap:
+                onsets.append(t)
+                last = t
+                if len(onsets) >= max_beats:
+                    break
+    return onsets
+
+
 class Renderer:
     def __init__(self, db: Database, settings: Settings):
         self.db, self.settings = db, settings
@@ -1073,10 +1132,12 @@ class Renderer:
 
     @staticmethod
     def preview_has_text(item: dict[str, Any]) -> bool:
-        """Whether a slide has visible text worth keeping in a fast preview."""
+        """Whether a slide has content worth keeping in a fast preview."""
         text = str(item.get("text") or "").strip()
         if not text:
-            return False
+            # A collage without a caption still carries its photos — that is
+            # the content a fast preview exists to inspect.
+            return normalize_collage(item) is not None
         # A standalone title frame is text by definition. Picture/video
         # captions can be hidden without deleting their text, and hidden text
         # must not accidentally turn a static hold back on in fast mode.
@@ -1101,7 +1162,7 @@ class Renderer:
         """
         problems: list[str] = []
         for item in project.get("media", []):
-            if item.get("type") == "title":
+            if item.get("type") in ("title", "collage"):
                 continue
             label = _short_label(str(item.get("name") or "media"))
             try:
@@ -1431,7 +1492,7 @@ class Renderer:
             # and style with the plain fades the stack starts and ends with.
             if has_ass and ass_path is not None:
                 bg = None
-                change = frame_colour_change(item) if item.get("type") == "title" else None
+                change = frame_colour_change(item) if item.get("type") in ("title", "collage") else None
                 if change is not None:
                     bg = BgChange(
                         colour_a=str(item.get("frameBackground") or "#30382a"), colour_b=change["to"],
@@ -1602,6 +1663,10 @@ class Renderer:
             duration = segment_durations[index]
             segment = work / f"segment-{index:04d}.mp4"
             kind_name = item.get("type", "image")
+            # Collage slides ride the generated-frame pipeline: a colour
+            # background with photos and caption composited on top, exactly
+            # like a title frame, just with photo inputs attached.
+            generated = kind_name in ("title", "collage")
             ken_burns = ken_burns_settings(item)
             if kind_name == "image":
                 # Photos are never cropped: fit the whole picture in the frame and
@@ -1615,7 +1680,7 @@ class Renderer:
             clip_t = format_ffmpeg_number(duration)
             lead_in = transitions[index - 1] if index else 0.0
             lead_out = transitions[index] if index < len(transitions) else 0.0
-            if kind_name == "title":
+            if generated:
                 # CSS gradients are useful in the editor preview but cannot be
                 # rendered by FFmpeg's color source. Accept only an exact CSS
                 # hex colour and convert it to FFmpeg's unambiguous 0xRRGGBB
@@ -1625,13 +1690,35 @@ class Renderer:
                 if not re.fullmatch(r"#[0-9a-fA-F]{6}", background):
                     background = "#30382a"
                 ffmpeg_background = "0x" + background[1:]
-                command += ["-f", "lavfi", "-i", f"color=c={ffmpeg_background}:s={width}x{height}:r={fps}:d={clip_t}"]
-                colour_change = frame_colour_change(item)
-                if colour_change is not None:
-                    # Second colour as another lavfi source; both are xfaded
-                    # below with the user's transition. The caption is drawn
-                    # afterwards so it stays fixed on top of the changing bed.
-                    command += ["-f", "lavfi", "-i", f"color=c=0x{colour_change['to'][1:]}:s={width}x{height}:r={fps}:d={clip_t}"]
+                # A collage may replace the colour bed with a library picture
+                # (optionally blurred). It becomes input 0, filled to the
+                # frame like a full-bleed photo; the colour-change xfade only
+                # exists between two colours, so it is skipped for pictures.
+                collage_open = normalize_collage(item)
+                bg_picture = None
+                if collage_open is not None and collage_open.get("backgroundImage"):
+                    try:
+                        bg_picture = collage_background(self.settings, item)
+                    except (FileNotFoundError, UnsafePath) as exc:
+                        raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
+                if bg_picture is not None:
+                    command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(bg_picture)]
+                else:
+                    command += ["-f", "lavfi", "-i", f"color=c={ffmpeg_background}:s={width}x{height}:r={fps}:d={clip_t}"]
+                    colour_change = frame_colour_change(item)
+                    if colour_change is not None:
+                        # Second colour as another lavfi source; both are xfaded
+                        # below with the user's transition. The caption is drawn
+                        # afterwards so it stays fixed on top of the changing bed.
+                        command += ["-f", "lavfi", "-i", f"color=c=0x{colour_change['to'][1:]}:s={width}x{height}:r={fps}:d={clip_t}"]
+                # A photo collage (the item's `collage` spec) adds one image
+                # input per photo; the composite graph is built below.
+                if collage_open is not None:
+                    try:
+                        for photo_src in collage_inputs(self.settings, item):
+                            command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", photo_src]
+                    except (FileNotFoundError, UnsafePath) as exc:
+                        raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
             else:
                 source = source_path(self.settings, item)
                 if not source.exists(): raise RenderError(f"Media file is missing: {source}")
@@ -1679,7 +1766,7 @@ class Renderer:
                 turn = rotation_filter(item.get("rotation"))
                 if turn:
                     prefix.append(turn)
-            crop = normalize_crop(item) if kind_name != "title" else None
+            crop = normalize_crop(item) if not generated else None
             if crop:
                 prefix += crop_filters(crop)
             filters = prefix + [base_filter]
@@ -1720,7 +1807,7 @@ class Renderer:
             # colour. The blurred letterbox backdrop is already part of the
             # frame at this point, which is why it picks the same look up —
             # exactly what the browser preview shows.
-            if kind_name != "title":
+            if not generated:
                 look = picture_look(item, width, height)
                 if look:
                     filters.append(look)
@@ -1728,17 +1815,63 @@ class Renderer:
             # rotate/squash caption needs the plain chain plus a second
             # (transparent colour-source) stream, which the lasso and
             # colour-change graphs below cannot share.
-            colour_change = frame_colour_change(item) if kind_name == "title" else None
+            colour_change = frame_colour_change(item) if generated else None
             cut_out = lasso_plan(crop)
+            collage_spec = normalize_collage(item) if generated else None
+            # A picture background replaces the colour bed — and with it the
+            # colour-change xfade (that transition lives between two colours).
+            bg_picture_spec = bool(collage_spec and collage_spec.get("backgroundImage"))
+            if bg_picture_spec:
+                colour_change = None
             text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass", lead_in=lead_in,
                                             transform_blocked=cut_out is not None or colour_change is not None,
                                             layer_fps=fps, layer_duration=duration)
+            # Everything before the caption — a collage composites its photos
+            # on this base, then the caption and the format tail close the graph.
+            base_filters = list(filters)
             if isinstance(text_filter, str) and text_filter: filters.append(text_filter)
             filters += ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
             # A lasso cut-out needs the mask as a second input, which -vf cannot
             # express: the hole is filled by compositing a blurred copy of the
             # same picture through the mask (see picture_crop.lasso_graph).
-            if cut_out is not None:
+            if collage_spec is not None:
+                # Photo collage: each photo becomes a matted sprite (polaroid
+                # mat + soft shadow, animated) overlaid on the colour base; the
+                # caption and format tail close the graph. A colour-change
+                # xfade, if any, feeds the base the photos land on.
+                base_chain = ",".join(base_filters)
+                photo_lines, last = collage_graph(
+                    item, width, height, fps, duration, lead_in,
+                    1 + (1 if colour_change is not None else 0), "cb")
+                tail = ([text_filter] if isinstance(text_filter, str) and text_filter else []) + \
+                       ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
+                if colour_change is not None:
+                    offset = lead_in + colour_change["start"]
+                    head = (
+                        f"[0:v][1:v]xfade=transition={quote_xfade_value(self.resolve_xfade(colour_change['transition']))}"
+                        f":duration={format_ffmpeg_number(colour_change['time'])}:offset={format_ffmpeg_number(offset)}[bg];"
+                        f"[bg]{base_chain}[cb];"
+                    )
+                elif bg_picture_spec:
+                    # Input 0 is the background picture: fill the frame with
+                    # it and blur it by the chosen strength.
+                    blur = float(collage_spec.get("backgroundBlur") or 0.0)
+                    chain = base_chain + (f",boxblur={bg_blur_radius(blur)}:2" if blur > 0.001 else "")
+                    head = f"[0:v]{chain}[cb];"
+                else:
+                    head = f"[0:v]{base_chain}[cb];"
+                if isinstance(text_filter, LayeredText):
+                    layer = text_filter
+                    graph = (head + "".join(photo_lines) +
+                             f"[{last}]format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[base];"
+                             f"color=c=black@0.0:s={layer.layer_size}x{layer.layer_size}:r={fps}:d={clip_t}"
+                             f",format=rgba,{layer.chain},settb=AVTB,setpts=PTS-STARTPTS[tx];"
+                             f"[base][tx]overlay=x={quote_filter_value(layer.overlay_x)}"
+                             f":y={quote_filter_value(layer.overlay_y)}[v]")
+                else:
+                    graph = head + "".join(photo_lines) + f"[{last}]{','.join(tail)}[v]"
+                command += ["-filter_complex", graph, "-map", "[v]"]
+            elif cut_out is not None:
                 mask_path = work / f"mask-{index:04d}.pgm"
                 mask_path.write_bytes(lasso_mask_pgm(cut_out["points"]))
                 command += lasso_inputs(mask_path, fps, duration)
@@ -2185,6 +2318,21 @@ class Renderer:
             raise RenderError(f"{mux_stage} failed — {exc}") from exc
         progress(98, "Finalizing MP4 — done")
         return output
+
+    def detect_beats(self, source: Path) -> list[float]:
+        """Onset (beat) times of a music file, in seconds — the beat-sync data.
+
+        Energy-based detection with no extra dependencies: the file is decoded
+        to mono 8 kHz PCM, short-time energy jumps in the log domain that beat
+        an adaptive threshold become onsets, thinned to at least 0.22 s apart.
+        Returns [] for a file with no (audible) audio; raises RenderError when
+        FFmpeg cannot decode the file at all.
+        """
+        try:
+            beats = _detect_beats_pcm(self.settings.ffmpeg_bin, source)
+        except (OSError, RuntimeError) as exc:
+            raise RenderError(f"Beat analysis of '{source.name}' failed — {exc}") from exc
+        return beats
 
     def measure_loudness(self, source: Path, target: float, edit_filter: str = "", cancelled: threading.Event | None = None, log_file: Path | None = None) -> dict[str, float] | None:
         """First loudnorm pass: integrated loudness / true peak / LRA of a file.

@@ -14,6 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, cameraState, collageDuration, defaultDelay, exitTotal, normalizeCollage, photoDelay, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageSpec } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
@@ -129,6 +130,15 @@ function mediaRootFromPath(fullPath: string, fallback: MediaRoot = 'photos'): Me
   if (p === '/photos' || p.startsWith('/photos/')) return 'photos'
   if (p === '/uploads' || p.startsWith('/uploads/')) return 'uploads'
   return fallback
+}
+
+/** A title frame that carries photos: a collage slide. */
+function isCollageItem(item: MediaItem | null | undefined): boolean {
+  return !!item && item.type === 'title' && Array.isArray(item.collage?.photos) && (item.collage?.photos?.length ?? 0) > 0
+}
+
+function collagePhotoUrl(photo: { path: string }) {
+  return mediaFileUrl(mediaRootFromPath(photo.path), photo.path)
 }
 
 // Combine directory listings of the photos and videos mounts into one view.
@@ -310,7 +320,7 @@ function MediaLightbox({ title, src, kind, onClose, onPrev, onNext, onDelete, on
         : kind === 'video' ? <CropSpriteVideo item={lookItem} className="lightbox-media" src={videoSrc} style={lookView.style} controls autoPlay onError={() => { if (!usePreview && previewSrc !== src) setUsePreview(true); else setFailed(true) }} />
         : kind === 'audio' ? <audio className="lightbox-audio" src={src} controls autoPlay onError={() => setFailed(true)} />
         : kind === 'title' && titleFrame ? <div className="lightbox-stage title-frame-stage" ref={titleStageRef} style={frameBackgroundStyle(titleFrame)}>
-            <FrameMotionPreview item={titleFrame} playing={!suspended} />
+            {isCollageItem(titleFrame) ? <CollageSlideStage item={titleFrame} playing={!suspended} /> : <FrameMotionPreview item={titleFrame} playing={!suspended} />}
           </div>
         : <div className="lightbox-stage"><img className={`lightbox-media lightbox-photo ${!turnedByProxy && (turn === 90 || turn === 270) ? 'turned' : ''}`} style={{ ...(turnedByProxy ? undefined : rotationStyle(turn)), ...lookView.style }} src={lookView.src} alt={title} onError={() => setFailed(true)} /></div>}
       {lookView.vignette && <i className="look-vignette" style={lookView.vignette}/>}
@@ -521,6 +531,12 @@ function frameColourChange(item: MediaItem) {
 // CSS approximation of the FFmpeg transition for editor/thumbnail previews.
 // Static gradient chip for thumbnails: A on the left, B on the right.
 function frameBackgroundStyle(item: MediaItem): React.CSSProperties {
+  // A collage's background picture becomes the clip face (crisp at thumbnail
+  // size; the real blurred preview lives in the editors and lightbox).
+  const bg = item.collage?.backgroundImage
+  if (item.type === 'title' && typeof bg === 'string' && bg) {
+    return { backgroundImage: `url(${collagePhotoUrl({ path: bg })})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+  }
   const change = frameColourChange(item)
   return change ? { background: `linear-gradient(100deg, ${change.from} 0 46%, ${change.to} 54% 100%)` } : { background: item.frameBackground }
 }
@@ -665,8 +681,154 @@ function generateBouncePointsMotion(fromX: number, fromY: number, toX: number, t
   pts.push([clampPctMotion(toX), clampPctMotion(toY)])
   return pts
 }
-function bouncyOffset(progress: number, height: number, bounces: number, damping: number): number {
-  const h = Math.max(0, Math.min(30, height ?? 12))
+// ---- New path shapes (2026-09 round). Each has a bit-identical twin in
+// backend/app/text_effects.py (the renderer) and in TextMotionPathEditor.tsx
+// (the editor canvas) — same formulas, same sample counts, so preview and
+// MP4 travel exactly the same curve. ----
+function generateSpiralPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, turns: number, num = 96): [number, number][] {
+  // With an explicit radius the spiral collapses into the start point;
+  // otherwise it starts at the start handle and winds into the end handle.
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  let cx: number, cy: number, r0: number, startAng: number
+  if (radius != null && radius > 2) { cx = fromX; cy = fromY; r0 = radius; startAng = -Math.PI / 2 }
+  else if (d > 0.5) { cx = toX; cy = toY; r0 = d; startAng = Math.atan2(fromY - cy, fromX - cx) }
+  else { cx = fromX; cy = fromY; r0 = 15; startAng = -Math.PI / 2 }
+  const t = Math.max(0.2, Math.min(6, turns))
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const ang = startAng + p * t * 2 * Math.PI
+    const r = r0 * (1 - p)
+    pts.push([clampPctMotion(cx + r * Math.cos(ang)), clampPctMotion(cy + r * Math.sin(ang))])
+  }
+  pts.push([clampPctMotion(cx), clampPctMotion(cy)])
+  return pts
+}
+function generateFigure8PointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, num = 120): [number, number][] {
+  // Lemniscate of Bernoulli: x = a·cos t/(1+sin²t), y = a·sin t·cos t/(1+sin²t)
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  const explicit = radius != null && radius > 2
+  const cx = explicit ? fromX : (fromX + toX) / 2
+  const cy = explicit ? fromY : (fromY + toY) / 2
+  const a = explicit ? radius as number : Math.max(10, d * 0.4)
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const t = (i / num) * 2 * Math.PI
+    const s = Math.sin(t), c = Math.cos(t)
+    const den = 1 + s * s
+    pts.push([clampPctMotion(cx + a * c / den), clampPctMotion(cy + a * s * c / den)])
+  }
+  return pts
+}
+function generateLissajousPointsMotion(fromX: number, fromY: number, toX: number, toY: number, amp: number, freqX: number, freqY: number, num = 140): [number, number][] {
+  const ax = Math.max(2, Math.min(40, amp || 14))
+  const ay = ax * 0.7
+  const f1 = Math.max(0.5, Math.min(8, freqX || 3))
+  const f2 = Math.max(0.5, Math.min(8, freqY || 2))
+  const cx = fromX, cy = fromY
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const t = i / num
+    pts.push([clampPctMotion(cx + ax * Math.sin(2 * Math.PI * f1 * t + Math.PI / 2)), clampPctMotion(cy + ay * Math.sin(2 * Math.PI * f2 * t))])
+  }
+  return pts
+}
+function generateZigzagPointsMotion(fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 96): [number, number][] {
+  const amp = Math.max(0, Math.min(40, amplitude ?? 10))
+  const freq = Math.max(0.5, Math.min(10, frequency ?? 3))
+  const dx = toX - fromX, dy = toY - fromY
+  const len = Math.hypot(dx, dy)
+  const ux = len < 1e-6 ? 1 : dx / len, uy = len < 1e-6 ? 0 : dy / len
+  const px = -uy, py = ux
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const s = p * freq
+    const f = s - Math.floor(s)
+    const tri = f < 0.5 ? f * 4 - 1 : 3 - f * 4
+    const off = amp * tri
+    pts.push([clampPctMotion(fromX + dx * p + px * off), clampPctMotion(fromY + dy * p + py * off)])
+  }
+  return pts
+}
+function generateHeartPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number, num = 120): [number, number][] {
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  const explicit = radius != null && radius > 2
+  const cx = explicit ? fromX : (fromX + toX) / 2
+  const cy = explicit ? fromY : (fromY + toY) / 2
+  const r = explicit ? radius as number : Math.max(10, d * 0.4)
+  const s = r / 16
+  const rot = (rotation || 0) * Math.PI / 180
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const t = (i / num) * 2 * Math.PI
+    const hx = 16 * Math.pow(Math.sin(t), 3)
+    const hy = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)
+    const x = s * hx, y = -s * hy
+    pts.push([clampPctMotion(cx + x * Math.cos(rot) - y * Math.sin(rot)), clampPctMotion(cy + x * Math.sin(rot) + y * Math.cos(rot))])
+  }
+  return pts
+}
+function generatePolygonPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, sides: number, rotation: number, numPerSeg = 24): [number, number][] {
+  // Regular n-gon — generalises diamond (4) and triangle (3).
+  const n = Math.max(3, Math.min(10, Math.round(sides || 5)))
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  let cx: number, cy: number, r: number
+  if (radius != null && radius > 2) { cx = fromX; cy = fromY; r = radius }
+  else { cx = (fromX + toX) / 2; cy = (fromY + toY) / 2; r = Math.max(10, d * 0.5) }
+  const rot = (rotation || 0) * Math.PI / 180
+  const vertices: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    const ang = rot - Math.PI / 2 + i * (2 * Math.PI / n)
+    vertices.push([clampPctMotion(cx + r * Math.cos(ang)), clampPctMotion(cy + r * Math.sin(ang))])
+  }
+  vertices.push(vertices[0])
+  const pts: [number, number][] = []
+  for (let i = 0; i < vertices.length - 1; i++) {
+    const a = vertices[i], b = vertices[i + 1]
+    for (let k = 0; k < numPerSeg; k++) {
+      const t = k / numPerSeg
+      pts.push([clampPctMotion(a[0] + (b[0] - a[0]) * t), clampPctMotion(a[1] + (b[1] - a[1]) * t)])
+    }
+  }
+  pts.push(vertices[vertices.length - 1])
+  return pts
+}
+function generatePendulumPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, num = 60): [number, number][] {
+  // Arc under a pivot above the midpoint; the sweep always passes through the
+  // lowest point, whichever side the handles are on.
+  const arm = radius != null && radius > 2 ? radius : 20
+  const px = (fromX + toX) / 2, py = (fromY + toY) / 2 - arm
+  const d0 = Math.hypot(fromX - px, fromY - py)
+  const d1 = Math.hypot(toX - px, toY - py)
+  const r = Math.max(2, (d0 + d1) / 2)
+  let a0 = Math.atan2(fromY - py, fromX - px)
+  let a1 = Math.atan2(toY - py, toX - px)
+  if (d0 < 0.5 && d1 < 0.5) { a0 = Math.PI / 2 - 0.5; a1 = Math.PI / 2 + 0.5 }
+  const norm2pi = (a: number) => { let x = a % (2 * Math.PI); if (x < 0) x += 2 * Math.PI; return x }
+  const crosses = (start: number, delta: number, target: number) => {
+    const t = norm2pi(target - start)
+    const span = Math.abs(delta)
+    return delta >= 0 ? t <= span + 1e-9 : (2 * Math.PI - t) <= span + 1e-9
+  }
+  let cw = norm2pi(a1 - a0)
+  if (cw < 1e-9) cw = 2 * Math.PI
+  const ccw = cw - 2 * Math.PI
+  const cwPasses = crosses(a0, cw, Math.PI / 2)
+  const ccwPasses = crosses(a0, ccw, Math.PI / 2)
+  let delta: number
+  if (cwPasses && ccwPasses) delta = Math.abs(cw) <= Math.abs(ccw) ? cw : ccw
+  else if (cwPasses) delta = cw
+  else if (ccwPasses) delta = ccw
+  else delta = Math.abs(cw) <= Math.abs(ccw) ? cw : ccw
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const ang = a0 + (i / num) * delta
+    pts.push([clampPctMotion(px + r * Math.cos(ang)), clampPctMotion(py + r * Math.sin(ang))])
+  }
+  return pts
+}
+function bouncyOffset(progress: number, height: number, bounces: number, damping: number): number {  const h = Math.max(0, Math.min(30, height ?? 12))
   const n = Math.max(1, Math.min(8, Math.round(bounces ?? 3)))
   const d = Math.max(0, Math.min(0.95, damping ?? 0.35))
   if (h < 0.2) return 0
@@ -688,7 +850,7 @@ function applySinusUpDownMotion(points: [number,number][], enabled: boolean, amp
   for(let i=0;i<=num;i++){ const p=i/num; const b=pointAlong(points,p); const off=amp*Math.sin(freq*2*Math.PI*p); out.push([clampPctMotion(b[0]), clampPctMotion(b[1]+off)]) }
   return out
 }
-function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInnerRatio?: number, symbolRotation?: number, sinusEnabled?: boolean, sinusAmp?: number, sinusFreq?: number, bounceHeight?: number, bounceCount?: number, bounceDamping?: number): [number, number][] {
+function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInnerRatio?: number, symbolRotation?: number, sinusEnabled?: boolean, sinusAmp?: number, sinusFreq?: number, bounceHeight?: number, bounceCount?: number, bounceDamping?: number, lissajousFreqY?: number): [number, number][] {
   let base: [number, number][]
   if ((pathType === 'freehand' || pathType === 'polyline') && path && path.length >= 2) base = path
   else if (pathType === 'circle') base = generateCirclePointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
@@ -698,6 +860,13 @@ function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: n
   else if (pathType === 'diamond') base = generateDiamondPointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
   else if (pathType === 'triangle') base = generateTrianglePointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
   else if (pathType === 'bounce') base = generateBouncePointsMotion(fromX, fromY, toX, toY, bounceHeight ?? 14, bounceCount ?? 4, bounceDamping ?? 0.35)
+  else if (pathType === 'spiral') base = generateSpiralPointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
+  else if (pathType === 'figure-8') base = generateFigure8PointsMotion(fromX, fromY, toX, toY, circleRadius)
+  else if (pathType === 'lissajous') base = generateLissajousPointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq, lissajousFreqY ?? 2)
+  else if (pathType === 'zigzag') base = generateZigzagPointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'heart') base = generateHeartPointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'polygon') base = generatePolygonPointsMotion(fromX, fromY, toX, toY, circleRadius, starPoints ?? 5, symbolRotation ?? 0)
+  else if (pathType === 'pendulum') base = generatePendulumPointsMotion(fromX, fromY, toX, toY, circleRadius)
   else if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base = [[fromX, fromY]]
   else base = [[fromX, fromY], [toX, toY]]
   if (sinusEnabled) base = applySinusUpDownMotion(base, true, sinusAmp ?? 6, sinusFreq ?? 2)
@@ -1249,10 +1418,23 @@ function App() {
   const [defaultStack, setDefaultStack] = useState<TextFxLayer[]>(() => defaultTextFx())
   const [defaultTextY, setDefaultTextY] = useState(72)
   const [showTextStyles, setShowTextStyles] = useState(false)
-  const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)
-  // Id of a text frame created by "Add text frame" that has not been saved
+  const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)  // Id of a text frame created by "Add text frame" that has not been saved
   // yet: Cancel/close removes it again, only Done keeps it in the storyline.
   const [pendingTextFrame, setPendingTextFrame] = useState<number | null>(null)
+  // Collage editor (same lifecycle: a brand-new collage is removed again on
+  // cancel; photos/layout/animation live in the item's `collage` spec).
+  const [editingCollageFrame, setEditingCollageFrame] = useState<number | null>(null)
+  const [pendingCollageFrame, setPendingCollageFrame] = useState<number | null>(null)
+  // Photo picker opened from the collage editor: chosen files are appended to
+  // the edited collage instead of the storyline.
+  const [collagePickerFor, setCollagePickerFor] = useState<number | null>(null)
+  // Background-picture picker opened from the collage editor: the chosen
+  // image becomes the slide's background instead of joining the photo set.
+  const [bgPickerFor, setBgPickerFor] = useState<number | null>(null)
+  // Replace-one-photo picker opened from a collage chip: the chosen image
+  // swaps into that slot (two in-collage photos trade places), keeping the
+  // slot's wait and size.
+  const [replacePickerFor, setReplacePickerFor] = useState<{ id: number; index: number } | null>(null)
   // Files uploading from this device into the NAS uploads volume ("Upload
   // from this device" in the media picker and drag & drop onto the storyline).
   const [uploads, setUploads] = useState<UploadItem[]>([])
@@ -1437,6 +1619,15 @@ function App() {
         // textFx is written from now on) — backend legacy_to_stack() maps the
         // same way for projects rendered without being opened.
         m = migrateLegacyTextFx(m, savedTextDefaults)
+        // Collages saved in the documented top-level shape (type 'collage'
+        // with photos/layout/… directly on the item) become title frames with
+        // a collage spec — the one shape the editor works with. The renderer
+        // accepts both; the UI round-trips only this one.
+        if (m.type === 'collage') {
+          m.type = 'title'
+          if (!m.collage) m.collage = { photos: m.photos ?? [], layout: m.layout, animation: m.animation, shape: m.shape, seed: m.seed }
+          m.name = m.name || 'Photo collage'
+        }
         // Older projects may contain a caption window that reaches into the
         // following transition. Normalize it on load so the timeline display,
         // persisted snapshot, and renderer all use the same hold boundary.
@@ -1882,7 +2073,7 @@ function App() {
   // Upload photos/movies from this device to the NAS uploads volume, one
   // request per file with progress and cancel; every completed file joins
   // the storyline immediately, exactly like a file picked from a mount.
-  const startUploads = (fileList: File[], folder = '') => {
+  const startUploads = (fileList: File[], folder = '', addToStoryline = true) => {
     const accepted = fileList.filter(isUploadableFile)
     const ignored = fileList.length - accepted.length
     if (!accepted.length) { notify('No photos or movies in that selection — uploads accept pictures and videos only'); return }
@@ -1907,7 +2098,7 @@ function App() {
           if (entry) {
             ok++
             finish('done')
-            await addFilesToStoryline([entry])
+            if (addToStoryline) await addFilesToStoryline([entry])
           } else {
             failures.push(`${item.name}: ${error || 'rejected'}`)
             finish('error', error || 'rejected')
@@ -1921,7 +2112,7 @@ function App() {
         }
       }
       if (ignored) failures.push(`${ignored} file${ignored === 1 ? '' : 's'} ignored (photos and movies only)`)
-      if (ok) notify(`Uploaded ${ok} file${ok === 1 ? '' : 's'} to /uploads${folder ? `/${folder}` : ''} and added ${ok === 1 ? 'it' : 'them'} to the storyline`)
+      if (ok) notify(`Uploaded ${ok} file${ok === 1 ? '' : 's'} to /uploads${folder ? `/${folder}` : ''}${addToStoryline ? ` and added ${ok === 1 ? 'it' : 'them'} to the storyline` : ' — pick them from the uploads folder'}`)
       if (failures.length) notify(`Upload problem — ${failures[0]}${failures.length > 1 ? ` · +${failures.length - 1} more` : ''}\nThe reasons stay listed in the upload tray (bottom right).`)
       setBrowserReloadKey(key => key + 1)
       // Successful rows fade out on their own; failed rows stay until the
@@ -1933,7 +2124,7 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0 }])
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0 }]) 
     setPendingTextFrame(id)
     setEditingTextFrame(id)
   }
@@ -1945,6 +2136,39 @@ function App() {
     setPendingTextFrame(null)
     setEditingTextFrame(null)
   }
+  // A collage starts as a generated frame with an (initially empty) photo set;
+  // the editor opens straight away so photos can be picked before it exists
+  // meaningfully. Cancelling a brand-new collage removes it again.
+  const addCollageFrame = () => {
+    const id = Date.now()
+    const duration = clampSlideDefault(globalSlideDuration)
+    const transitionTime = clampTransitionDefault(globalDuration)
+    setMedia(items => [...items, { id, name: 'Photo collage', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80, frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0, collage: { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 + Math.floor(Math.random() * 9999) } }])
+    setPendingCollageFrame(id)
+    setEditingCollageFrame(id)
+  }
+  const closeCollageEditor = (save: boolean) => {
+    if (!save && editingCollageFrame !== null && editingCollageFrame === pendingCollageFrame) {
+      setMedia(items => items.filter(x => x.id !== editingCollageFrame))
+      setSelectedIds(ids => ids.filter(id => id !== editingCollageFrame))
+    }
+    setPendingCollageFrame(null)
+    setEditingCollageFrame(null)
+  }
+  // Every collage edit flows through here: a changed collage spec re-derives
+  // the slide duration from the photo timings (waits + entrance + hold), so
+  // the storyline always shows how long the photos actually need. The caption
+  // window follows — a generated frame shows text for the whole slide.
+  const patchCollageItem = (id: number, change: Partial<MediaItem>) => {
+    if (!change.collage) return patch(id, change)
+    const spec = change.collage
+    const total = (spec.photos?.length ?? 0) > 0 ? collageDuration(spec) : 0
+    if (total > 0) return patch(id, { ...change, duration: total, textStart: 0, textEnd: total })
+    patch(id, change)
+  }
+  // A generated slide's edit affordances open the right editor: the collage
+  // editor for photo collages, the text frame editor for plain text frames.
+  const openFrameEditor = (item: MediaItem) => isCollageItem(item) ? setEditingCollageFrame(item.id) : setEditingTextFrame(item.id)
   const dropAudioOn = (targetId: number) => {
     if (draggedAudioId === null || draggedAudioId === targetId) return setDraggedAudioId(null)
     setAudioTracks(items => { const next = [...items]; const from = next.findIndex(x => x.id === draggedAudioId); const to = next.findIndex(x => x.id === targetId); const [track] = next.splice(from, 1); next.splice(to, 0, track); return next })
@@ -2229,6 +2453,7 @@ function App() {
       const kind:'preview'|'render'=active.kind==='preview'?'preview':'render'
       if(kind==='preview')setPreviewing(true);else setRendering(true)
       setProgress(Math.max(1,Math.round(active.progress||0)))
+      setJobStage(typeof active.stage==='string'?active.stage:'')
       notify(`${kind==='preview'?'Preview':'MP4 render'} is still running — progress restored`)
       void trackJob(active.id,kind)
     }catch{/* job list unavailable; nothing to resume */}
@@ -2319,7 +2544,7 @@ function App() {
             onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setStoryDrop(false) }}
             onDrop={e => { if (Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); setStoryDrop(false); const files = Array.from(e.dataTransfer.files); if (files.length) startUploads(files) } }}>
             <div className="drop-overlay"><Upload size={22}/><span>Drop photos or movies to upload them to the NAS and add them here</span></div>
-            <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={15}/> New project</button></div></div>
+            <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={addCollageFrame} title="A slide of up to 12 photos — polaroid stack, grid or scatter, with drop-in, pop-in or swing animation"><Plus size={15}/> Photo collage</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={15}/> New project</button></div></div>
             <div className="bulk-tools"><button className="btn soft default-text-style-bulk" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect} title="Apply the selected effect to the selection — or to every photo when nothing is selected. “None” removes the Ken Burns motion.">Apply effect</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><button className="random-button text-trans-random" onClick={randomizeTextTransitions} title="Give these photos a random text animation: each gets a curated preset (a whole stack of enter / while / exit effects) · every photo when nothing is selected"><Shuffle size={13}/> Text effects</button><Select value={bulkFilter} onChange={setBulkFilter} ariaLabel="Picture filter">{LOOK_GROUPS.map(group => <optgroup key={group} label={group}>{LOOK_PRESETS.filter(preset => preset.group === group).map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</optgroup>)}</Select><button onClick={applyBulkFilter} title="Apply this filter to the selection — or to every photo and movie when nothing is selected"><Sparkles size={12}/> Apply filter</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} onOpenGallery={() => setShowTransitionGallery(true)} /><button onClick={applyBulkTransition}>Apply effect</button></div>
 
             <div className="bulk-bar"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><label className="check-label random-params-toggle" title="When set, randomizing also draws fresh values for every transition parameter — easing and the selected transition's size, zoom, colour, smoothness and other registry values (reverse is always left unchecked). Transition durations are never changed."><input type="checkbox" checked={randomizeParams} onChange={e => setRandomizeParams(e.target.checked)}/><span><Check size={11}/></span> params</label><button className="random-button" title={`Randomize every transition using: ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''} · durations and Ken Burns motion are left untouched`} onClick={() => { randomize(); notify(`Transitions randomized · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters randomized' : ''}`) }}><Shuffle size={14}/> Randomize all</button><button className="random-button" title={`Randomize only the transitions between neighbouring selected slides · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''}`} onClick={randomizeSelectedTransitions}><Shuffle size={14}/> Randomize selected</button><i/><button className="gallery-button" title={`Open a full-screen gallery with a small example of every transition`} onClick={() => setShowTransitionGallery(true)}><LayoutGrid size={14}/> Browse all {totalTransitionCount}</button></div>
@@ -2331,7 +2556,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `calc(${timelineZoom * 100}% - 18px)`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => setEditingTextFrame(item.id) : () => setEditingPictureText(item.id)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && setEditingTextFrame(item.id)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''} ${item.type === 'video' ? 'movie-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}>{item.type === 'video' ? <MovieStrip item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} /> : <MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="clip-frame-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `calc(${timelineZoom * 100}% - 18px)`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => setEditingTextFrame(item.id) : () => setEditingPictureText(item.id)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && openFrameEditor(item)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''} ${item.type === 'video' ? 'movie-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}>{item.type === 'video' ? <MovieStrip item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} /> : <MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="clip-frame-edit" title={isCollageItem(item) ? `Edit collage · ${item.collage?.photos.length} photos · ${item.duration}s` : `Edit text frame · “${item.text}” · ${item.duration}s`} aria-label={isCollageItem(item) ? 'Edit collage' : 'Edit text frame'} onClick={e => { e.preventDefault(); e.stopPropagation(); openFrameEditor(item) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
@@ -2350,17 +2575,16 @@ function App() {
             {compactMediaView && <div className="compact-actions"><button className="btn soft" disabled={!media.length} onClick={() => setSelectedIds(media.map(x => x.id))} title="Select every frame in one go"><Check size={14}/> Select all</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>Clear selection</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={14}/> Delete selected</button><span className="compact-count">{selectedIds.length} of {media.length} frame{media.length === 1 ? '' : 's'} selected</span></div>}
             {!compactMediaView && selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
             {!compactMediaView && <div className="timeline-head"><span className="head-select"><SelectAllSlides allSelected={allSlidesSelected} selectedCount={selectedIds.length} totalCount={media.length} onToggle={toggleAllSlides}/></span><span>MEDIA</span><span>SLIDE / CLIP</span><span>EXAMPLE</span><span>DURATION · TRANSITION TO NEXT</span><span></span></div>}
-            {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={e => { setDraggedId(item.id); e.dataTransfer.setData('text/plain', String(item.id)); e.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? frameBackgroundStyle(item) : undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="compact-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }}><Pencil size={13}/></button>}<button type="button" className="compact-preview" title={item.type === 'title' ? `Preview this text frame · “${item.text}”` : `Preview · ${item.name}`} aria-label={`Open preview of ${item.name}`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }}><ZoomIn size={13}/></button><PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div><button className="compact-select" title="Select frame · Shift-click for a range" aria-label={selectedIds.includes(item.id) ? `Deselect ${item.name}` : `Select ${item.name}`} aria-pressed={selectedIds.includes(item.id)} onClick={e => { e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selectedIds.includes(item.id) && <Check size={11}/>}</span></button><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
+            {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={e => { setDraggedId(item.id); e.dataTransfer.setData('text/plain', String(item.id)); e.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? frameBackgroundStyle(item) : undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <TitleClipFace item={item} /> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="compact-edit" title={isCollageItem(item) ? `Edit collage · ${item.collage?.photos.length} photos · ${item.duration}s` : `Edit text frame · “${item.text}” · ${item.duration}s`} aria-label={isCollageItem(item) ? 'Edit collage' : 'Edit text frame'} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openFrameEditor(item) }}><Pencil size={13}/></button>}<button type="button" className="compact-preview" title={item.type === 'title' ? `Preview this text frame · “${item.text}”` : `Preview · ${item.name}`} aria-label={`Open preview of ${item.name}`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }}><ZoomIn size={13}/></button><PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div><button className="compact-select" title="Select frame · Shift-click for a range" aria-label={selectedIds.includes(item.id) ? `Deselect ${item.name}` : `Select ${item.name}`} aria-pressed={selectedIds.includes(item.id)} onClick={e => { e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selectedIds.includes(item.id) && <Check size={11}/>}</span></button><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
               {media.map((item, index) => {
                 const thumb = itemThumbUrl(item)
                 const textHidden = item.type !== 'title' && item.textEnabled === false
                 return <div className={`timeline-item wide-transition ${item.type === 'video' ? 'movie-row' : item.type === 'title' ? 'title-row' : ''} ${textHidden ? 'text-hidden-row' : ''} ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                   <div className="thumb-column">
-                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={item} />}{item.type === 'image' && item.effect === 'None' && <button type="button" className="thumb-effect off" title="No motion on this photo — click to add a Ken Burns effect" onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/></button>}{item.type === 'image' && item.effect !== 'None' && <button type="button" className={`thumb-effect ${isKenBurns(item.effect) && Math.abs(kenBurnsZoomOf(item) - KEN_BURNS_DEFAULT_ZOOM) > 0.001 ? 'custom' : ''}`} title={`Motion: ${item.effect}${isKenBurns(item.effect) ? ` · strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} %` : ''} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
-                  <div className="clip-duration thumb-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div>
+                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <TitleClipFace item={item} /> : <MediaThumb item={item} />}{item.type === 'image' && item.effect === 'None' && <button type="button" className="thumb-effect off" title="No motion on this photo — click to add a Ken Burns effect" onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/></button>}{item.type === 'image' && item.effect !== 'None' && <button type="button" className={`thumb-effect ${isKenBurns(item.effect) && Math.abs(kenBurnsZoomOf(item) - KEN_BURNS_DEFAULT_ZOOM) > 0.001 ? 'custom' : ''}`} title={`Motion: ${item.effect}${isKenBurns(item.effect) ? ` · strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} %` : ''} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
                   </div>
-                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && <button type="button" className="edit-picture-text-button" title={`Edit this picture's text style, visibility and timing · ${formatClock(normalizedTextTiming(item).textStart)}–${formatClock(normalizedTextTiming(item).textEnd)}`} onClick={event => { event.preventDefault(); event.stopPropagation(); setEditingPictureText(item.id) }} onPointerDown={event => event.stopPropagation()}><Pencil size={11}/> Edit</button>}{item.type !== 'title' && item.textEnabled === false ? null : <>{(() => { const chip = laneChip(item.textFx, 'in'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}<input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/>{(() => { const chip = laneChip(item.textFx, 'out'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}</>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={`Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>setEditingTextFrame(item.id)}>Edit frame</button>}</div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&(() => {
+                  <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && <button type="button" className="edit-picture-text-button" title={`Edit this picture's text style, visibility and timing · ${formatClock(normalizedTextTiming(item).textStart)}–${formatClock(normalizedTextTiming(item).textEnd)}`} onClick={event => { event.preventDefault(); event.stopPropagation(); setEditingPictureText(item.id) }} onPointerDown={event => event.stopPropagation()}><Pencil size={11}/> Edit</button>}{item.type !== 'title' && item.textEnabled === false ? null : <>{(() => { const chip = laneChip(item.textFx, 'in'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}<input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/>{(() => { const chip = laneChip(item.textFx, 'out'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}</>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={isCollageItem(item) ? `Edit this collage · ${item.collage?.photos.length} photos` : `Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>openFrameEditor(item)}>{isCollageItem(item) ? 'Edit collage' : 'Edit frame'}</button>}</div><div className="item-duration" title="How long this slide stays on screen before the next one · default 5 sec"><Clock3 size={11}/><span>Slide duration</span><div className="clip-duration slide-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} slide duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div></div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&(() => {
                     const phase = detailTextEditor.edge === 'enter' ? 'in' : 'out'
                     const lane = layersOf(item.textFx, phase)
                     return <div className="detail-transition-popover"><strong>{detailTextEditor.edge==='enter'?'Text appears':'Text disappears'}</strong>
@@ -2394,7 +2618,7 @@ function App() {
             <div className="estimate"><div><Activity size={15}/><span>ESTIMATED OUTPUT</span></div><strong>~{formatFileSize(estimateOutputBytes(total, bitrate, soundProgramSeconds > 0))}</strong><small>H.264{soundProgramSeconds ? ' · AAC stereo' : ''} · {formatClock(total)} · {parsePresetNumber(bitrate, 8)} Mbps</small></div>
           </section>
 
-          <section className="panel review-panel"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync||capabilities.vaapi?'':'warning'} title={capabilities.quickSync||capabilities.vaapi?undefined:(capabilities.vaapiError||undefined)}>{capabilities.quickSync||capabilities.vaapi?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':capabilities.vaapi?'Hardware encoding available · VAAPI':<>{'Quick Sync and VAAPI unavailable · CPU fallback'}{capabilities.vaapiError&&<small className="cap-note">{capabilities.vaapiError}</small>}</>}</li>{(() => {
+          <section className="panel review-panel" id="section-render"><div className="review-title"><Sparkles size={18}/><div><h3>{rendering||previewing?'Working…':'Ready to render'}</h3><p>{rendering||previewing?`${progress}% · you can stop at any time`:'All checks passed'}</p></div><span>{rendering||previewing?<RefreshCw className="spin" size={14}/>:<Check size={14}/>}</span></div><ul><li><Check size={13}/> {media.length} media items are ready</li><li><Check size={13}/> Output folder is writable</li><li className={capabilities.ffmpeg?'':'warning'}>{capabilities.ffmpeg?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.ffmpeg?'FFmpeg backend is available':'FFmpeg is unavailable'}</li><li className={capabilities.quickSync||capabilities.vaapi?'':'warning'} title={capabilities.quickSync||capabilities.vaapi?undefined:(capabilities.vaapiError||undefined)}>{capabilities.quickSync||capabilities.vaapi?<Check size={13}/>:<AlertTriangle size={13}/>} {capabilities.quickSync?'Intel Quick Sync is available':capabilities.vaapi?'Hardware encoding available · VAAPI':<>{'Quick Sync and VAAPI unavailable · CPU fallback'}{capabilities.vaapiError&&<small className="cap-note">{capabilities.vaapiError}</small>}</>}</li>{(() => {
               // GL transitions are C ports of the gl-transitions shaders running
               // inside xfade: always computed on the CPU, by design, on every
               // machine. The GPU (when present) still encodes every part. The only
@@ -2403,7 +2627,7 @@ function App() {
               if (capabilities.ffmpeg && capabilities.hasGL === false) return <li className={usesGL ? 'warning' : ''} title="This FFmpeg build lacks the xfade-easing patch: GL transitions and easing/reverse render as a plain dissolve.">{usesGL ? <AlertTriangle size={13}/> : <Check size={13}/>} {usesGL ? 'This FFmpeg has no GL transitions · the ones in this project fall back to dissolve' : 'This FFmpeg has no GL transitions (none used in this project)'}</li>
               const hw = capabilities.quickSync || capabilities.vaapi
               return <li title="GL transitions are computed on the CPU inside FFmpeg's xfade filter on every system — there is no GPU shader path. Hardware encoding still applies to the transition clips."><Check size={13}/> {hw ? 'GL transitions computed on CPU (by design) · clips encoded on the GPU' : 'GL transitions computed on CPU (by design) · CPU encoding'}</li>
-            })()}{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><div className="preview-options"><div><FieldLabel>PREVIEW DETAIL <span>{previewMode === 'fast' ? 'faster diagnostic' : 'complete selected sequence'}</span></FieldLabel><Select value={previewMode} onChange={value => setPreviewMode(value as PreviewMode)} ariaLabel="Preview detail"><option value="fast">Fast · text + transitions</option><option value="standard">Standard · all selected slides</option></Select></div><p><Info size={12}/> Fast mode skips static holds without text and omits the soundtrack; transitions and text timing remain rendered by FFmpeg.</p></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} title={previewSubset?`Low-resolution preview of the ${previewSubset.length} selected slide${previewSubset.length===1?'':'s'} only (${formatClock(timelineModel(previewSubset).total)}) — clear the selection to preview the whole movie`:'Low-resolution preview of the whole movie — select slides in the storyline to preview only those'} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:previewSubset?`Preview ${previewSubset.length} selected`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={requestRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop all running preview and final-render jobs for this project" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop all</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <div className="progress"><i style={{width: `${progress}%`}}/></div>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop all cancels every queued/running preview and final-render job for this project. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
+            })()}{audioFadeTooLong && <li className="warning"><AlertTriangle size={13}/> Soundtrack fade ({audioFadeDuration.toFixed(1)}s + {audioFadeTail.toFixed(1)}s silence) exceeds the slideshow · it will be clamped</li>}</ul><div className="estimate-row"><div><Timer size={14}/><span>ESTIMATED TIME TO GENERATE</span><strong>{jobRunning?liveEstimateLabel:predictedRender===null?'—':formatEstimate(predictedRender)}</strong><small>{estimateBasis}{!jobRunning && predictedPreview!==null?` · preview ${formatEstimate(predictedPreview)}`:''}</small></div><div><HardDrive size={14}/><span>ESTIMATED FILE SIZE</span><strong>{media.length?`~${formatFileSize(estimatedBytes)}`:'—'}</strong><small>{parsePresetNumber(bitrate,8)} Mbps · {resolution.replace(/ · .*/,'')}{soundProgramSeconds>0?' · AAC':''}</small></div><div><Clock3 size={14}/><span>ESTIMATED TOTAL SLIDESHOW TIME</span><strong>{formatClock(total)}</strong><small>{media.length} item{media.length===1?'':'s'} · {timeline.transitions.length} transition{timeline.transitions.length===1?'':'s'}</small></div></div><div className="preview-options"><div><FieldLabel>PREVIEW DETAIL <span>{previewMode === 'fast' ? 'faster diagnostic' : 'complete selected sequence'}</span></FieldLabel><Select value={previewMode} onChange={value => setPreviewMode(value as PreviewMode)} ariaLabel="Preview detail"><option value="fast">Fast · text + transitions</option><option value="standard">Standard · all selected slides</option></Select></div><p><Info size={12}/> Fast mode skips static holds without text and omits the soundtrack; transitions and text timing remain rendered by FFmpeg.</p></div><button className="btn preview-btn" disabled={previewing||rendering||!capabilities.ffmpeg||media.length===0} title={previewSubset?`Low-resolution preview of the ${previewSubset.length} selected slide${previewSubset.length===1?'':'s'} only (${formatClock(timelineModel(previewSubset).total)}) — clear the selection to preview the whole movie`:'Low-resolution preview of the whole movie — select slides in the storyline to preview only those'} onClick={generatePreview}>{previewing?<RefreshCw className="spin" size={16}/>:<Play size={16}/>} {previewing?`Generating preview ${progress}%`:previewSubset?`Preview ${previewSubset.length} selected`:'Generate preview'}</button><button className="btn render-btn" disabled={rendering||previewing||!capabilities.ffmpeg||media.length===0} onClick={requestRender}>{rendering ? <><RefreshCw className="spin" size={16}/> Rendering… {progress}%</> : <><Zap size={16}/> Render MP4</>}</button><button type="button" className="btn ghost stop-job wide" disabled={!rendering && !previewing} title="Stop all running preview and final-render jobs for this project" onClick={() => void stopActiveJob()}><Square size={14} fill="currentColor"/> Stop all</button>{!rendering&&!previewing&&finishedRender&&<div className="render-ready-row"><Download size={15}/><div className="render-ready-info"><strong>MP4 ready</strong><small>{finishedRender.name}{finishedRender.bytes!==null?` · ${formatFileSize(finishedRender.bytes)}`:''}</small></div><a className="btn soft" href={finishedRender.url} download title="Save the finished MP4 to this device"><Download size={14}/> Download MP4</a></div>}{(rendering||previewing) && <><div className="progress"><i style={{width: `${progress}%`}}/></div><p className="render-stage" title={jobStage || 'Waiting for the backend to report the first stage'}><RefreshCw className="spin" size={12}/><span>{jobStage || 'Starting…'}</span></p></>}<p className="render-note"><Info size={13}/> FFmpeg jobs run in the backend; progress and logs are stored in SQLite. Stop all cancels every queued/running preview and final-render job for this project. Intermediate segments and stale proxy previews are cleaned up automatically after each render.</p></section>
         </div>
         </div>
       </div>
@@ -2421,7 +2645,63 @@ function App() {
       ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} />
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} defaultStack={defaultStack} setDefaultStack={setDefaultStack} onClose={()=>setShowTextStyles(false)}/>} 
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>} 
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>}
+    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onOpenCaption={() => {
+      // Switching to the caption editor is not a cancel: a brand-new collage
+      // must survive the handover (closeCollageEditor(false) deletes pending
+      // ones), so clear the pending flag instead of routing through cancel.
+      if (editingCollageFrame !== null && editingCollageFrame === pendingCollageFrame) setPendingCollageFrame(null)
+      setEditingCollageFrame(null)
+      setEditingTextFrame(editingCollageFrame)
+    }} audioTracks={audioTracks} audioLoop={audioPolicy === 'Loop & trim'} holdStart={(() => { const idx = media.findIndex(x => x.id === editingCollageFrame); if (idx <= 0) return 0; const { starts } = timelineModel(media); return starts[idx] })()}/>}
+    {collagePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setCollagePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+      // Merge the chosen photos into the collage (deduped, capped at 12);
+      // order of picking is order on the pile — later photos on top. The
+      // merged spec goes through patchCollageItem so the slide duration
+      // follows the photo timings again.
+      const id = collagePickerFor
+      const target = media.find(x => x.id === id)
+      if (target) {
+        const current = target.collage?.photos ?? []
+        const seen = new Set(current.map(p => p.path))
+        const added = files.filter((f:any) => f.kind === 'image' && !f.empty && !seen.has(f.path)).slice(0, MAX_COLLAGE_PHOTOS - current.length).map((f:any) => ({ path: String(f.path), name: String(f.name || '') }))
+        if (added.length) {
+          const base = target.collage ?? { layout: 'stack' as const, animation: 'drop' as const, shape: '4:3' as const, seed: 1 }
+          patchCollageItem(id, { collage: { ...base, photos: [...current, ...added] } })
+        }
+      }
+      setCollagePickerFor(null)
+    }}/>}
+    {bgPickerFor !== null && <MediaBrowser photoPick="background" aboveEditor onClose={()=>setBgPickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+      // One image becomes the collage's background picture.
+      const id = bgPickerFor
+      const target = media.find(x => x.id === id)
+      const file = files.find((f:any) => f.kind === 'image' && !f.empty)
+      if (target && file) patchCollageItem(id, { collage: { ...(target.collage ?? { photos: [], layout: 'stack' as const, animation: 'drop' as const, shape: '4:3' as const, seed: 1 }), backgroundImage: String(file.path) } })
+      setBgPickerFor(null)
+    }}/>}
+    {replacePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setReplacePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+      const { id, index } = replacePickerFor
+      const target = media.find(x => x.id === id)
+      const file = files.find((f:any) => f.kind === 'image' && !f.empty)
+      if (target && file) {
+        const photos = [...(target.collage?.photos ?? [])]
+        const existing = photos.findIndex(p => p.path === file.path)
+        if (existing === index) {
+          // the same photo picked — nothing to change
+        } else if (existing >= 0) {
+          // already in the collage: the two slots trade photos, each keeping
+          // its own wait and size
+          const old = photos[index]
+          photos[index] = { ...old, path: file.path, name: file.name }
+          photos[existing] = { ...photos[existing], path: old.path, name: old.name }
+        } else {
+          photos[index] = { ...photos[index], path: file.path, name: file.name }
+        }
+        patchCollageItem(id, { collage: { ...(target.collage ?? { photos: [], layout: 'stack' as const, animation: 'drop' as const, shape: '4:3' as const, seed: 1 }), photos } })
+      }
+      setReplacePickerFor(null)
+    }}/>}
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
         const additions: AudioTrack[] = []
@@ -2471,9 +2751,44 @@ function App() {
     {showClearOutputConfirm && <ConfirmDialog title="Clear output directory?" message={`Are you sure you want to delete all files in ${outputPath || '/output'}? This action cannot be undone.`} confirmLabel="Clear output" onConfirm={clearOutputDirectory} onCancel={()=>setShowClearOutputConfirm(false)}/>}
     {showCleanTempConfirm && <ConfirmDialog title="Clean temporary files?" message={`This deletes every intermediate render segment, soundtrack cache and proxy preview (the work and preview folders), and clears the render history. Rendered MP4 files in ${outputPath || '/output'} and your saved projects are kept. This cannot be undone.`} confirmLabel="Clean temp files" onConfirm={cleanTempFiles} onCancel={()=>setShowCleanTempConfirm(false)}/>}
     {overwritePath && <ConfirmDialog title="Output file already exists" message={`${overwritePath} already exists. Rendering again will replace it with the new video.`} confirmLabel="Overwrite & render" onConfirm={()=>{const path=overwritePath;setOverwritePath(null);void startJob('render',true)}} onCancel={()=>setOverwritePath(null)}/>}
-    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : previewedItem.type === 'title' ? 'title' : 'image'} titleFrame={previewedItem.type === 'title' ? previewedItem : undefined} onEditFrame={previewedItem.type === 'title' ? () => setEditingTextFrame(previewedItem.id) : undefined} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} lookItem={previewedItem.type === 'title' ? null : previewedItem} onLook={() => openLookEditor(previewedItem, 'filters')} onCrop={() => openLookEditor(previewedItem, 'crop')} suspended={editingMovieId != null || lookItemId != null || editingTextFrame != null || editingPictureText != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
+    {previewedItem && <MediaLightbox title={previewedItem.name} src={itemThumbUrl(previewedItem) || ''} kind={previewedItem.type === 'video' ? 'video' : previewedItem.type === 'title' ? 'title' : 'image'} titleFrame={previewedItem.type === 'title' ? previewedItem : undefined} onEditFrame={previewedItem.type === 'title' ? () => openFrameEditor(previewedItem) : undefined} position={`${previewIndex + 1} / ${previewItems.length}`} onPrev={previewIndex > 0 ? () => setStoryPreviewId(previewItems[previewIndex - 1].id) : undefined} onNext={previewIndex + 1 < previewItems.length ? () => setStoryPreviewId(previewItems[previewIndex + 1].id) : undefined} onDelete={deletePreviewedItem} onEdit={previewedItem.type === 'video' ? () => setEditingMovieId(previewedItem.id) : undefined} lookItem={previewedItem.type === 'title' ? null : previewedItem} onLook={() => openLookEditor(previewedItem, 'filters')} onCrop={() => openLookEditor(previewedItem, 'crop')} suspended={editingMovieId != null || lookItemId != null || editingTextFrame != null || editingPictureText != null} rotation={previewedItem.rotation} onRotate={previewedItem.type === 'image' ? rotatePreviewedItem : undefined} onClose={() => setStoryPreviewId(null)} />}
     {uploads.length > 0 && <UploadTray items={uploads} onCancel={id => uploadCancelers.current.get(id)?.()} onClear={() => setUploads([])}/>}
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
+  </div>
+}
+
+/** Quick-pick colour swatches for the text colour and the frame background
+ *  pickers: vivid basics by default (red, orange, yellow, green, cyan, blue,
+ *  purple, magenta, pink, white, grey, black) and a one-click Pastel switch
+ *  for soft tones. The mode is shared by every swatch row in the app, so one
+ *  click flips them all; the native colour input covers anything else. */
+const VIVID_SWATCHES = ['#ff0000', '#ff7f00', '#ffff00', '#00cc00', '#00ffff', '#0066ff', '#8000ff', '#ff00ff', '#ff4d9e', '#ffffff', '#808080', '#000000']
+const PASTEL_SWATCHES = ['#ffb3b3', '#ffcc99', '#ffffb3', '#b3e6b3', '#b3ffff', '#a8c8ff', '#cc99ff', '#ffccff', '#ffb3d1', '#ffffff', '#d9d9d9', '#4d4d4d']
+
+// One vivid/pastel choice for every swatch row (tiny pub/sub, no context).
+let swatchesPastel = false
+const swatchModeListeners = new Set<(pastel: boolean) => void>()
+const setSwatchesPastel = (pastel: boolean) => { swatchesPastel = pastel; swatchModeListeners.forEach(l => l(pastel)) }
+function useSwatchesPastel() {
+  const [pastel, setPastel] = useState(swatchesPastel)
+  useEffect(() => { swatchModeListeners.add(setPastel); return () => { swatchModeListeners.delete(setPastel) } }, [])
+  return pastel
+}
+
+function ColorSwatchPicker({ value, onChange, disabled = false }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
+  const pastel = useSwatchesPastel()
+  const colours = pastel ? PASTEL_SWATCHES : VIVID_SWATCHES
+  const current = typeof value === 'string' && value ? value : '#ffffff'
+  const hex = isHex(current) ? current : '#ffffff'
+  return <div className={`swatch-picker${disabled ? ' disabled' : ''}`}>
+    <div className="swatch-row">{colours.map(c => <button key={c} type="button" disabled={disabled} className={`swatch${current.toLowerCase() === c.toLowerCase() ? ' active' : ''}`} style={{ background: c }} title={c.toUpperCase()} aria-label={`Colour ${c.toUpperCase()}`} onClick={() => onChange(c)} />)}</div>
+    <div className="swatch-foot">
+      <div className="swatch-mode" role="group" aria-label="Swatch colours">
+        <button type="button" className={pastel ? '' : 'active'} aria-pressed={!pastel} disabled={disabled} title="Vivid basic colours" onClick={() => setSwatchesPastel(false)}>Vivid</button>
+        <button type="button" className={pastel ? 'active' : ''} aria-pressed={pastel} disabled={disabled} title="Soft pastel colours" onClick={() => setSwatchesPastel(true)}>Pastel</button>
+      </div>
+      <span className="swatch-custom" title="Pick any colour"><Palette size={13}/><input type="color" disabled={disabled} value={hex} aria-label="Custom colour" onChange={e => onChange(e.target.value)}/><b>{current.toUpperCase()}</b></span>
+    </div>
   </div>
 }
 
@@ -2488,8 +2803,8 @@ function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontCo
 }) {
   return <div className="type-controls-stack">
     <div><FieldLabel>Font family <small>{Object.values(FONT_GROUPS).flat().length} fonts · incl. handwriting</small></FieldLabel><FontPicker value={fontFamily} onChange={setFontFamily} sample={sample} /><div className="font-sample" style={{ fontFamily: fontStack(fontFamily), fontWeight: bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }} title="Live sample in the selected font">{sample || FONT_SAMPLE}</div></div>
-    <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={200} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
-    <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
+    <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={350} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
+    <div><FieldLabel>Text colour</FieldLabel><ColorSwatchPicker value={fontColor} onChange={setFontColor} /></div>
     <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_BOLD.has(fontFamily)} title={FONTS_WITHOUT_BOLD.has(fontFamily) ? `${fontFamily} has a single weight` : 'Bold'} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
 }
@@ -2704,7 +3019,7 @@ function motionPathFor(item: MediaItem) {
   const it: any = item
   const points = effectiveMotionPoints(fromX, fromY, toX, toY, it.textMovePath, it.textMovePathType || (it.textMovePath && it.textMovePath.length >= 2 ? 'freehand' : 'straight'),
     it.textMoveCircleRadius, it.textMoveCircleTurns ?? 1, it.textMoveSineAmplitude ?? 8, it.textMoveSineFrequency ?? 2, it.textMoveStarPoints, it.textMoveStarInnerRatio,
-    it.textMoveSymbolRotation, it.textMoveSinusUpDownEnabled, it.textMoveSinusAmplitude, it.textMoveSinusFrequency, it.textMoveBounceHeight, it.textMoveBounceCount, it.textMoveBounceDamping)
+    it.textMoveSymbolRotation, it.textMoveSinusUpDownEnabled, it.textMoveSinusAmplitude, it.textMoveSinusFrequency, it.textMoveBounceHeight, it.textMoveBounceCount, it.textMoveBounceDamping, it.textMoveLissajousFreqY)
   return { points, fromX, fromY, toX, toY }
 }
 
@@ -2718,7 +3033,7 @@ function sceneInputFor(item: MediaItem, defaults?: Partial<CaptionDefaults> | nu
   const timing = normalizedTextTiming(item)
   const x = Number(pick(item.textX, d.textX, 50))
   const y = Number(pick(item.textY, d.textY, title ? 50 : 72))
-  const motion = hasMotionPath(layers) ? { points: motionPathFor(item).points as [number, number][], easing: (item.textMoveEasing as string) || 'linear' } : null
+  const motion = hasMotionPath(layers) ? { points: motionPathFor(item).points as [number, number][], easing: (item.textMoveEasing as string) || 'linear', rotateAlong: !!(item as any).textMoveRotateAlongPath } : null
   return {
     text: item.text || '', stack: layers,
     family: String(pick(item.fontFamily || undefined, d.fontFamily, 'Montserrat')),
@@ -2739,6 +3054,131 @@ function FrameMotionPreview({ item, defaults, playing = true, className = '' }: 
   const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
   return <MotionStage className={`stage-fill ${className}`} input={input} clock={clock} background={item.type === 'title' ? item.frameBackground : undefined} bg={item.type === 'title' ? bgChangeFor(item) : null} />
+}
+
+// ---------------------------------------------------------------------------
+// Photo collage preview — the DOM twin of the FFmpeg composite. Same seeded
+// placements, same animation curves (src/collageCore.ts = backend/app/
+// collage.py), drawn with CSS transforms: one absolutely-positioned mat per
+// photo on a 1920×1080 stage, animated imperatively on the shared motion
+// clock so photo choreography and caption play in sync.
+// ---------------------------------------------------------------------------
+
+const COLLAGE_ASPECT: Record<string, number> = { '4:3': 4 / 3, square: 1, '3:4': 3 / 4 }
+
+/** The photo layer of a collage slide. Scaled to its host like MotionStage. */
+function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typeof useMotionClock> }) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const layerRef = useRef<HTMLDivElement | null>(null)
+  const camRef = useRef<HTMLDivElement | null>(null)
+  const matRefs = useRef<(HTMLDivElement | null)[]>([])
+  const spec = useMemo<CollageSpec | undefined>(() => normalizeCollage(item.collage) as CollageSpec | undefined, [item.collage])
+  // The background picture comes from the raw spec so it also shows behind
+  // the "no photos yet" placeholder (normalizeCollage needs >= 1 photo).
+  const raw = item.collage
+  const bg = typeof raw?.backgroundImage === 'string' && raw.backgroundImage ? raw.backgroundImage : ''
+  const bgBlur = Math.max(0, Math.min(1, Number(raw?.backgroundBlur) || 0))
+  const geo = useMemo(() => {
+    if (!spec) return []
+    const aspect = FRAME_W / FRAME_H
+    const pin = pinAnchor(spec)
+    return placements(spec, aspect).map(pl => {
+      const wPx = pl.w / 100 * FRAME_W
+      const border = 0.045 * wPx
+      const bottom = 0.205 * wPx
+      const photoW = wPx - 2 * border
+      const photoH = photoW / (COLLAGE_ASPECT[spec.shape] ?? 4 / 3)
+      const matH = photoH + border + bottom
+      return {
+        ax: pl.cx / 100 * FRAME_W,
+        ay: pl.cy / 100 * FRAME_H - (pin ? matH / 2 : 0),
+        wPx, border, bottom, photoW, photoH, matH,
+      }
+    })
+  }, [spec])
+
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return
+    const apply = () => {
+      const w = el.clientWidth || FRAME_W
+      if (layerRef.current) layerRef.current.style.transform = `scale(${w / FRAME_W})`
+    }
+    apply()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null
+    ro?.observe(el)
+    return () => ro?.disconnect()
+  }, [hostRef, layerRef, spec])
+
+  useEffect(() => {
+    if (!spec) return
+    const pin = pinAnchor(spec)
+    return clock.subscribe(t => {
+      geo.forEach((g, i) => {
+        const el = matRefs.current[i]
+        if (!el) return
+        const st = photoState(spec, i, t, 0, FRAME_W / FRAME_H)
+        el.style.left = `${g.ax + st.dx / 100 * FRAME_W}px`
+        el.style.top = `${g.ay + st.dy / 100 * FRAME_H}px`
+        el.style.transformOrigin = pin ? '50% 0' : '50% 50%'
+        el.style.transform = `translate(-50%, ${pin ? '0' : '-50%'}) rotate(${st.rot}deg) scale(${st.scale}) scaleX(${st.scaleX})`
+        el.style.opacity = String(st.alpha)
+        el.style.filter = st.dim > 0.004 ? `brightness(${(1 - st.dim).toFixed(3)})` : ''
+      })
+      // Virtual camera over the whole scene (background + photos): the same
+      // window maths the render's crop/zoompan chain uses.
+      if (camRef.current) {
+        const cs = cameraState(spec, t, 0, FRAME_W / FRAME_H)
+        camRef.current.style.transform = `translate(${((50 - cs.cx) * cs.z).toFixed(3)}%, ${((50 - cs.cy) * cs.z).toFixed(3)}%) scale(${cs.z.toFixed(5)})`
+      }
+    })
+  }, [spec, geo, clock])
+
+  if (!spec && !bg) return null
+  return <div ref={hostRef} className="collage-photos stage-fill">
+    <div ref={layerRef} className="collage-layer" style={{ width: FRAME_W, height: FRAME_H }}>
+      <div ref={camRef} className="collage-camera">
+        {bg && <img className="collage-bg" src={collagePhotoUrl({ path: bg })} alt="" draggable={false}
+          style={{ filter: `blur(${bgBlurCssPx(bgBlur)}px)` }} />}
+        {(spec?.photos ?? []).map((photo, i) => {
+          const g = geo[i]
+          if (!g) return null
+          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className="collage-mat"
+            style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom }}>
+            <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy"
+              style={{ width: g.photoW, height: g.photoH, objectFit: 'cover' }} />
+          </div>
+        })}
+      </div>
+    </div>
+  </div>
+}
+
+/** A whole collage slide playing: photos first, caption on top (like the MP4).
+ * Any change to the collage itself restarts the choreography from the top so
+ * the new size / timing / animation can be watched from the first photo;
+ * `replayKey` restarts it on demand (the editor's Replay button). */
+function CollageSlideStage({ item, defaults, playing = true, replayKey = 0 }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; replayKey?: number }) {
+  const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
+  const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
+  const specKey = JSON.stringify(item.collage ?? null)
+  useEffect(() => { clock.seek(0) }, [specKey, clock])
+  useEffect(() => { clock.seek(0) }, [replayKey, clock])
+  return <>
+    <CollagePhotos item={item} clock={clock} />
+    <MotionStage className="stage-fill" input={input} clock={clock} />
+  </>
+}
+
+/** The face of a generated slide in a thumb-sized clip: a "T" for text
+ * frames, a mini stacked-photos badge with the count for collages. */
+function TitleClipFace({ item }: { item: MediaItem }) {
+  const photos = item.collage?.photos ?? []
+  if (!photos.length) return <span className="title-symbol">T</span>
+  return <span className="collage-symbol" title={`${photos.length} photos`}>
+    {photos.slice(0, 3).map((p, i) => <img key={`${p.path}-${i}`} src={collagePhotoUrl(p)} alt="" loading="lazy" style={{ zIndex: 3 - i, transform: `rotate(${(i - 1) * 8}deg) translate(${i * 9}%`, left: `${i * 14}%` }} />)}
+    <b>{photos.length}</b>
+  </span>
 }
 
 // One editor for both caption styles — "Edit picture text" (the overlay drawn
@@ -2902,7 +3342,6 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   }
 
   // ---- colour A / B (text frames) ----
-  const backgrounds = ['#30382a', '#14213d', '#6f4238', '#37474f', '#5b285f', '#163c44']
   const sameAsA = isFrame && !isHex(draft.frameBackground2)
   const colourB = isFrame ? (draft.frameBackground2 || draft.frameBackground) : '#30382a'
   const bTime = Math.min(clipDuration, Math.max(0.2, Number(draft.frameTransitionTime) || 1))
@@ -2968,6 +3407,8 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
               bounceHeight={(draft as any).textMoveBounceHeight}
               bounceCount={(draft as any).textMoveBounceCount}
               bounceDamping={(draft as any).textMoveBounceDamping}
+              lissajousFreqY={(draft as any).textMoveLissajousFreqY}
+              rotateAlong={!!(draft as any).textMoveRotateAlongPath}
               rotateFrom={layerParam('rotate', 'from')}
               rotateTo={layerParam('rotate', 'to')}
               squishFrom={layerParam('squash', 'from')}
@@ -2988,8 +3429,8 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
           </div>
           {isFrame && <>
             <div className="bg-columns">
-              <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(c => <button key={c} className={draft.frameBackground === c ? 'active' : ''} style={{ background: c }} onClick={() => apply({ frameBackground: c })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(draft.frameBackground) ? draft.frameBackground : '#30382a'} onChange={e => apply({ frameBackground: e.target.value })}/></div></div>
-              <div className={sameAsA ? 'dimmed' : ''}><FieldLabel>Colour B</FieldLabel><div className="background-swatches">{backgrounds.map(c => <button key={c} disabled={sameAsA} className={colourB === c ? 'active' : ''} style={{ background: c }} onClick={() => apply({ frameBackground2: c })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" disabled={sameAsA} value={isHex(colourB) ? colourB : '#30382a'} onChange={e => apply({ frameBackground2: e.target.value })}/></div>
+              <div><FieldLabel>Colour A</FieldLabel><ColorSwatchPicker value={draft.frameBackground} onChange={v => apply({ frameBackground: v })} /></div>
+              <div className={sameAsA ? 'dimmed' : ''}><FieldLabel>Colour B</FieldLabel><ColorSwatchPicker value={colourB} onChange={v => apply({ frameBackground2: v })} disabled={sameAsA} />
                 <label className="check-label dark" title="Untick to give the frame a second colour: colour B starts as a copy of colour A, pick the colour you want"><input type="checkbox" checked={sameAsA} onChange={e => apply(e.target.checked ? { frameBackground2: undefined } : { frameBackground2: draft.frameBackground, frameTransition: draft.frameTransition || 'Fade', frameTransitionTime: draft.frameTransitionTime || 1, frameTransitionStart: draft.frameTransitionStart ?? Math.max(0, (clipDuration - 1) / 2) })}/><span><Check size={11}/></span>Same as A</label></div>
             </div>
             {!sameAsA && <div className="bg-transition">
@@ -3082,7 +3523,301 @@ function UploadTray({ items, onCancel, onClear }: { items: UploadItem[], onCance
 }
 
 
-function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloadKey = 0, audioOnly=false }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[], folder?: string) => void, uploadsStatus?: UploadsStatus|null, reloadKey?: number, audioOnly?:boolean }) {
+// ---------------------------------------------------------------------------
+// Collage editor — pick up to 12 photos, then choose the seeded layout and
+// the entrance animation every photo follows. The canvas is the DOM twin of
+// the FFmpeg composite (src/collageCore.ts = backend/app/collage.py), so what
+// plays here is what the MP4 shows, caption included, on one clock. Caption
+// styling lives in the regular text frame editor (a collage is a title frame
+// with photos); "Style & effects…" hands over to it.
+// ---------------------------------------------------------------------------
+// Detected onsets of a music track, cached per library path (the backend
+// caches too — this keeps re-opening a collage editor instant).
+const trackBeatsCache = new Map<string, number[]>()
+async function fetchTrackBeats(track: { path: string; name: string }): Promise<number[]> {
+  const rel = mediaRelativePath('music', mediaItemPath(track))
+  const cached = trackBeatsCache.get(rel)
+  if (cached) return cached
+  const response = await fetch(`/api/media/beats?root=music&path=${encodeURIComponent(rel)}`)
+  if (!response.ok) throw new Error(await readApiError(response, 'Beat analysis failed'))
+  const data = await response.json()
+  const beats: number[] = Array.isArray(data?.beats) ? data.beats.filter((v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)) : []
+  trackBeatsCache.set(rel, beats)
+  return beats
+}
+
+const COLLAGE_LAYOUTS: { id: CollageSpec['layout']; label: string; hint: string }[] = [
+  { id: 'stack', label: 'Stack', hint: 'A loose pile of polaroids — one photo on top, the rest scattered around it' },
+  { id: 'grid', label: 'Grid', hint: 'Even rows and columns, every photo straight' },
+  { id: 'scatter', label: 'Scatter', hint: 'Grid cells with seeded jitter — photos drift and tilt inside their slot' },
+  { id: 'filmstrip', label: 'Filmstrip', hint: 'A strip of overlapping frames across the middle — one row up to 5 photos, two rows beyond' },
+  { id: 'fan', label: 'Fan', hint: 'Cards fanned out from a point below the frame, each tilted along its spoke' },
+  { id: 'masonry', label: 'Masonry', hint: 'Pinterest-style columns with seeded size variety — photos stack into the shortest column' },
+]
+const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string }[] = [
+  { id: 'drop', label: 'Drop in', hint: 'Photos fall in from above, straightening as they land' },
+  { id: 'pop', label: 'Pop in', hint: 'Photos pop up from 55% with a springy overshoot' },
+  { id: 'swing', label: 'Swing', hint: 'Photos hang from a pin at the top of the mat and swing to rest' },
+  { id: 'flip', label: 'Flip in', hint: 'Cards flip open edge-on with a springy overshoot' },
+  { id: 'none', label: 'None', hint: 'Photos appear with the slide — no entrance animation' },
+]
+const COLLAGE_EXITS: { id: NonNullable<CollageSpec['exit']>; label: string; hint: string }[] = [
+  { id: 'none', label: 'Stay on', hint: 'The photos stay on screen until the next slide takes over' },
+  { id: 'sweep', label: 'Sweep out', hint: 'After the hold, every photo sweeps outward through its own position, fading as it goes' },
+  { id: 'deal', label: 'Deal off', hint: 'The pile is dealt away one card at a time — top card first, off to the right' },
+  { id: 'shuffle', label: 'Scatter off', hint: 'The photos scatter off in seeded random directions' },
+]
+const COLLAGE_CAMERAS: { id: NonNullable<CollageSpec['camera']>; label: string; hint: string }[] = [
+  { id: 'none', label: 'Still', hint: 'A fixed camera on the whole collage' },
+  { id: 'pan', label: 'Pan', hint: 'A gentle drift across a slightly zoomed frame — the wall-gallery look' },
+  { id: 'zoom', label: 'Zoom in', hint: 'The camera slowly zooms into the last photo as it lands' },
+  { id: 'telescope', label: 'Telescope', hint: 'A deeper, smooth zoom into the last photo — bridging towards the next slide' },
+  { id: 'droste', label: 'Droste', hint: 'An accelerating deep zoom — the endless-zoom feel' },
+]
+const COLLAGE_SHAPES: { id: CollageSpec['shape']; label: string; hint: string }[] = [
+  { id: '4:3', label: '4:3', hint: 'Landscape photos (crop to 4:3)' },
+  { id: 'square', label: 'Square', hint: 'Square photos' },
+  { id: '3:4', label: '3:4', hint: 'Portrait photos (crop to 3:4)' },
+]
+
+function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, onReplacePhoto, audioTracks = [], holdStart = 0, audioLoop = true }: {
+  item: MediaItem
+  isNew?: boolean
+  stacked?: boolean
+  livePatch: (change: Partial<MediaItem>) => void
+  onSave: () => void
+  onClose: () => void
+  onPickPhotos: () => void
+  onPickBackground: () => void
+  onOpenCaption: () => void
+  onReplacePhoto: (index: number) => void
+  audioTracks?: AudioTrack[]
+  holdStart?: number
+  audioLoop?: boolean
+}) {
+  const spec: CollageSpec = item.collage ?? { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 }
+  const photos = spec.photos ?? []
+  const setSpec = (change: Partial<CollageSpec>) => livePatch({ collage: { ...spec, ...change } })
+  const [dragChip, setDragChip] = useState<number | null>(null)
+  const [dragOverChip, setDragOverChip] = useState<number | null>(null)
+  const dropChip = (onto: number) => {
+    if (dragChip !== null && dragChip !== onto) {
+      const next = [...photos]
+      const [moved] = next.splice(dragChip, 1)
+      next.splice(onto, 0, moved)
+      setSpec({ photos: next })
+    }
+    setDragChip(null)
+    setDragOverChip(null)
+  }
+  const movePhoto = (i: number, dir: -1 | 1) => {
+    const j = i + dir
+    if (j < 0 || j >= photos.length) return
+    const next = [...photos]
+    const [moved] = next.splice(i, 1)
+    next.splice(j, 0, moved)
+    setSpec({ photos: next })
+  }
+  const removePhoto = (i: number) => setSpec({ photos: photos.filter((_, k) => k !== i) })
+  const full = photos.length >= MAX_COLLAGE_PHOTOS
+  // Per-photo timing: editing one wait materialises every photo's delay
+  // (untouched ones keep the auto-stagger value they were showing).
+  const setDelay = (i: number, v: number) => {
+    const n = photos.length
+    setSpec({ photos: photos.map((photo, k) => ({ ...photo, delay: k === i ? Math.max(0, Math.min(30, v)) : (photo.delay ?? defaultDelay(n, k)) })) })
+  }
+  const spreadEvenly = () => setSpec({ photos: photos.map(photo => { const { delay, ...rest } = photo; return rest }) })
+  const setSize = (i: number, v: number) => {
+    setSpec({ photos: photos.map((photo, k) => ({ ...photo, size: k === i ? Math.max(0.5, Math.min(1.5, v)) : (photo.size ?? 1) })) })
+  }
+  const resetSizes = () => setSpec({ photos: photos.map(photo => { const { size, ...rest } = photo; return rest }) })
+  const total = photos.length ? collageDuration(spec) : 0
+  const entrance = ENTRANCE_LENGTH[spec.animation] ?? 0
+  const [replayKey, setReplayKey] = useState(0)
+  // Beat sync: fetch the soundtrack's detected onsets and map them into this
+  // slide's own hold clock (0 = the hold starts). The stored list is the data
+  // BOTH engines then use, so the preview shows exactly what the MP4 does.
+  const [beatStatus, setBeatStatus] = useState<'idle' | 'analysing' | 'done' | 'nomusic' | 'error'>('idle')
+  const lastBeatsRef = useRef('')
+  useEffect(() => {
+    if (spec.beatSync !== true) { setBeatStatus('idle'); return }
+    let cancelled = false
+    const run = async () => {
+      if (!audioTracks.length) { setBeatStatus('nomusic'); return }
+      setBeatStatus('analysing')
+      try {
+        // Tracks play back-to-back (their kept regions concatenated); with
+        // 'Loop & trim' the whole concatenation repeats to fill the video,
+        // so the beats repeat with that period too.
+        const kept: number[] = []
+        for (const track of audioTracks) kept.push(trackKeptSeconds(track))
+        const total = kept.reduce((sum, v) => sum + v, 0)
+        const merged: number[] = []
+        const mapPass = async (passStart: number) => {
+          let trackStart = passStart
+          for (let k = 0; k < audioTracks.length; k++) {
+            const range = trackKeptRange(audioTracks[k])
+            const fileBeats = await fetchTrackBeats(audioTracks[k])
+            merged.push(...slideLocalBeats(fileBeats, trackStart, range.start, range.end, holdStart))
+            trackStart += kept[k]
+          }
+        }
+        await mapPass(0)
+        if (audioLoop && total > 0.05) {
+          const horizon = holdStart + 600
+          for (let passStart = total; passStart < horizon && merged.length < 12000; passStart += total) await mapPass(passStart)
+        }
+        if (cancelled) return
+        merged.sort((a, b) => a - b)
+        const clean = merged.filter((b, i) => i === 0 || b - merged[i - 1] > 0.02)
+        setBeatStatus('done')
+        const key = JSON.stringify(clean)
+        if (key !== lastBeatsRef.current && key !== JSON.stringify(spec.beats ?? [])) {
+          lastBeatsRef.current = key
+          setSpec({ beats: clean })
+        }
+      } catch {
+        if (!cancelled) setBeatStatus('error')
+      }
+    }
+    run()
+    return () => { cancelled = true }
+    // spec/setSpec identities change per render; the beat list itself is
+    // deliberately NOT a dependency — writing it must not re-run the fetch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec.beatSync, audioTracks, holdStart])
+  const beatsReady = spec.beatSync === true && (spec.beats?.length ?? 0) > 0
+  const beatHint = spec.beatSync !== true
+    ? 'Turn on to roll every photo landing forward to the next beat of the soundtrack — photos can share a beat, the “pile lands on the drop” reveal.'
+    : beatStatus === 'analysing' ? 'Analysing the music…'
+    : beatStatus === 'nomusic' ? 'No music on the timeline yet — add a soundtrack track first; until then photos keep their waits.'
+    : beatStatus === 'error' ? 'Could not analyse the music (unreadable audio?) — photos keep their waits.'
+    : beatsReady ? `${spec.beats?.length} beats mapped into this slide — the “lands” time on each row is the real arrival.`
+    : 'No beats detected in the music — photos keep their waits.'
+  return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`} onMouseDown={onClose}><div className="frame-editor collage-editor" onMouseDown={e => e.stopPropagation()}>
+    <div className="preview-top"><div><strong>{isNew ? 'New photo collage' : 'Photo collage'}</strong><span>PICK UP TO {MAX_COLLAGE_PHOTOS} PHOTOS · THE PREVIEW IS THE RENDER ENGINE</span></div><div className="frame-head-actions"><button onClick={onClose} title={isNew ? 'Discard this collage' : 'Discard changes and close'}><X size={20}/></button></div></div>
+    <div className="frame-editor-body">
+      <div className="frame-left">
+        <div className="frame-canvas" style={{ background: item.frameBackground }}>
+          <CollageSlideStage item={item} replayKey={replayKey} />
+          {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
+          <button type="button" className="collage-replay" title="Restart the preview from the first photo" onClick={() => setReplayKey(k => k + 1)}><RotateCcw size={12}/> Replay</button>
+        </div>
+        <div className="collage-strip">
+          {photos.map((photo, i) => <div className={`collage-chip${dragOverChip === i ? ' over' : ''}`} key={`${photo.path}-${i}`}
+            draggable onDragStart={() => setDragChip(i)} onDragEnd={() => { setDragChip(null); setDragOverChip(null) }}
+            onDragOver={e => { e.preventDefault(); setDragOverChip(i) }}
+            onDrop={e => { e.preventDefault(); dropChip(i) }}
+            title={photo.name || photo.path}>
+            <span className="chip-num">{i + 1}</span>
+            <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy" />
+            <span className="chip-actions">
+              <button type="button" title="Replace this photo with another from the library — keeps its wait and size" onClick={() => onReplacePhoto(i)}><RefreshCw size={11}/></button>
+              <button type="button" disabled={i === 0} title="Move earlier (photos later in the list land on top)" onClick={() => movePhoto(i, -1)}><ChevronLeft size={11}/></button>
+              <button type="button" disabled={i === photos.length - 1} title="Move later" onClick={() => movePhoto(i, 1)}><ChevronRight size={11}/></button>
+              <button type="button" className="chip-remove" title="Remove from collage" onClick={e => { e.stopPropagation(); removePhoto(i) }}><X size={11}/></button>
+            </span>
+          </div>)}
+          {!full && <button type="button" className="collage-add" onClick={onPickPhotos} title="Choose photos from the media library"><Plus size={15}/> Add photos…</button>}
+          {full && <span className="collage-full"><Info size={12}/> {MAX_COLLAGE_PHOTOS} photos is the maximum</span>}
+        </div>
+      </div>
+      <aside>
+        <div className="collage-choices-group"><FieldLabel>Layout</FieldLabel>
+          <div className="collage-choices">{COLLAGE_LAYOUTS.map(l => <button key={l.id} type="button" className={spec.layout === l.id ? 'active' : ''} title={l.hint} onClick={() => setSpec({ layout: l.id })}>{l.label}</button>)}</div>
+          <small>{COLLAGE_LAYOUTS.find(l => l.id === spec.layout)?.hint}</small></div>
+        <div className="collage-choices-group"><FieldLabel>Photo animation</FieldLabel>
+          <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
+          <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
+          <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' || spec.animation === 'flip' ? '' : ' disabled'}`}>
+            <input type="checkbox" checked={spec.depth === true} disabled={spec.animation !== 'drop' && spec.animation !== 'pop' && spec.animation !== 'flip'} onChange={e => setSpec({ depth: e.target.checked })} />
+            <span>Depth push-back — photos already landed shrink back and dim a little as each new one lands</span>
+          </label></div>
+        <div className="collage-choices-group"><FieldLabel>Photo exit</FieldLabel>
+          <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
+          <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small></div>
+        <div className="collage-choices-group"><FieldLabel>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></FieldLabel>
+          {spec.animation === 'none'
+            ? <small>With no entrance animation every photo is on screen from the first frame, so there is nothing to time. Pick an entrance to stagger the photos.</small>
+            : <>
+              <div className="collage-timing">
+                {photos.map((photo, i) => <div className="collage-timing-row" key={`${photo.path}-${i}`}>
+                  <img src={collagePhotoUrl(photo)} alt="" loading="lazy" />
+                  <span className="name" title={photo.name || photo.path}>{photo.name || photo.path.split('/').pop() || `photo ${i + 1}`}{beatsReady && <em title={`Nominal wait ${photoDelay(spec, i).toFixed(2)}s — the beat snaps it to ${photoStart(spec, i, 0).toFixed(2)}s`}>lands {photoStart(spec, i, 0).toFixed(2)}s</em>}</span>
+                  <span className="ctl" title={i === 0 ? 'Seconds after the slide starts before this photo appears' : 'Seconds after the previous photo appears before this one appears'}>
+                    <label>{i === 0 ? 'after start' : 'waits'}</label>
+                    <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.1} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
+                    <label>sec</label>
+                  </span>
+                  <span className="ctl" title="This photo's mat size — 100 % is the layout default; larger photos overlap their neighbours, smaller ones tuck in">
+                    <label>size</label>
+                    <NumberStepper value={Math.round(photoSize(spec, i) * 100)} min={50} max={150} step={5} ariaLabel={`Photo ${i + 1} size`} onChange={v => setSize(i, v / 100)} />
+                    <label>%</label>
+                  </span>
+                </div>)}
+                {photos.length === 0 && <small className="collage-timing-empty">Pick photos to set when each one appears.</small>}
+              </div>
+              <div className="collage-timing-total">
+                <span title="How long the finished collage stays on screen after the last photo has landed">Hold after last</span>
+                <NumberStepper value={spec.hold ?? 2} min={0} max={60} step={0.5} ariaLabel="Hold after the last photo" onChange={v => setSpec({ hold: Math.max(0, v) })} />
+                <span>sec</span>
+                <span className="collage-timing-actions">
+                  <button type="button" className="btn ghost small" title="Reset every wait to the even auto-stagger" onClick={spreadEvenly}>Spread evenly</button>
+                  <button type="button" className="btn ghost small" title="Reset every photo to the layout's default size" onClick={resetSizes}>Reset sizes</button>
+                </span>
+              </div>
+              <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold{exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — {total}s in total. The storyline duration follows automatically. Size is per photo: bigger photos overlap their neighbours, smaller ones tuck in.</small>
+            </>}</div>
+        <div className="collage-choices-group"><FieldLabel>Beat sync</FieldLabel>
+          <label className={`collage-check${spec.animation === 'none' ? ' disabled' : ''}`}>
+            <input type="checkbox" checked={spec.beatSync === true} disabled={spec.animation === 'none'} onChange={e => setSpec({ beatSync: e.target.checked })} />
+            <span>Snap photo landings to the music — each photo waits for the next beat</span>
+          </label>
+          <small>{beatHint}</small></div>
+        <div className="collage-choices-group"><FieldLabel>Photo shape</FieldLabel>
+          <div className="collage-choices">{COLLAGE_SHAPES.map(s => <button key={s.id} type="button" className={spec.shape === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ shape: s.id })}>{s.label}</button>)}</div>
+          <small>{COLLAGE_SHAPES.find(s => s.id === spec.shape)?.hint}</small></div>
+        <div className="collage-choices-group"><FieldLabel>Arrangement</FieldLabel>
+          <div className="collage-seed">
+            <NumberStepper value={spec.seed} min={1} max={999999} step={1} ariaLabel="Layout seed" onChange={v => setSpec({ seed: Math.max(1, Math.round(v)) || 1 })} />
+            <button type="button" className="btn ghost" title="Re-roll the seeded arrangement — same number always gives the same layout" onClick={() => setSpec({ seed: 1 + Math.floor(Math.random() * 9999) })}><Shuffle size={13}/> Shuffle</button>
+          </div>
+          <small>The seed pins the layout: the same number always arranges the photos identically — in the preview and in the render.</small></div>
+        <div className="collage-choices-group"><FieldLabel>Camera</FieldLabel>
+          <div className="collage-choices">{COLLAGE_CAMERAS.map(c => <button key={c.id} type="button" className={(spec.camera ?? 'none') === c.id ? 'active' : ''} title={c.hint} onClick={() => setSpec({ camera: c.id === 'none' ? undefined : c.id })}>{c.label}</button>)}</div>
+          <small>{COLLAGE_CAMERAS.find(c => c.id === (spec.camera ?? 'none'))?.hint}</small></div>
+        <div className="collage-choices-group"><FieldLabel>Caption (optional)</FieldLabel>
+          <textarea value={item.text} placeholder="Add a caption on top of the photos…" onChange={e => livePatch({ text: e.target.value })}/>
+          <button type="button" className="btn ghost small" onClick={onOpenCaption} title="Font, colour, position and text effects — the full text frame editor"><Pencil size={11}/> Style &amp; effects…</button></div>
+        <div className="collage-choices-group"><FieldLabel>Background</FieldLabel>
+          {spec.backgroundImage
+            ? <div className="collage-bg-pick">
+                <img src={collagePhotoUrl({ path: spec.backgroundImage })} alt="" />
+                <div className="collage-bg-meta">
+                  <strong title={spec.backgroundImage}>{spec.backgroundImage.split('/').pop()}</strong>
+                  <label className="collage-blur" title="Soften the background so the photos stand out">
+                    <span>Blur</span>
+                    <input type="range" min={0} max={100} step={1} value={Math.round(Math.max(0, Math.min(1, spec.backgroundBlur ?? 0)) * 100)} onChange={e => setSpec({ backgroundBlur: Number(e.target.value) / 100 })} />
+                    <b>{Math.round(Math.max(0, Math.min(1, spec.backgroundBlur ?? 0)) * 100)}%</b>
+                  </label>
+                  <div className="collage-bg-actions">
+                    <button type="button" className="btn ghost small" onClick={onPickBackground}>Replace…</button>
+                    <button type="button" className="btn ghost small" onClick={() => setSpec({ backgroundImage: undefined, backgroundBlur: undefined })}>Use colour</button>
+                  </div>
+                </div>
+              </div>
+            : <div className="collage-bg-row">
+                <label className="custom-bg"><input type="color" value={/^#[0-9a-fA-F]{6}$/.test(item.frameBackground) ? item.frameBackground : '#2e3138'} onChange={e => livePatch({ frameBackground: e.target.value })}/> {item.frameBackground.toUpperCase()}</label>
+                <button type="button" className="btn ghost small" onClick={onPickBackground} title="Fill the frame with a library picture — optionally blurred — behind the photos"><ImageIcon size={12}/> Picture…</button>
+              </div>}
+          <small>{spec.backgroundImage ? 'The picture fills the frame behind the photos. Blur keeps the polaroids readable on a busy picture; the colour and its change are unused while a picture is set.' : 'A flat colour behind the photos — or a library picture, optionally blurred.'}</small></div>
+        <p><Info size={13}/> 6–10 photos per collage render best. Photos are fitted into {spec.shape === '3:4' ? 'portrait' : spec.shape === 'square' ? 'square' : 'landscape'} mats with a polaroid frame and a soft shadow, exactly as the preview shows. Order matters: later photos land on top.</p>
+      </aside>
+    </div>
+    <div className="modal-foot"><span>{photos.length} of {MAX_COLLAGE_PHOTOS} photos · seed {spec.seed}{total > 0 ? ` · ${total}s` : ''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!photos.length} onClick={onSave}><Check size={14}/> Done</button></div>
+  </div></div>
+}
+function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloadKey = 0, audioOnly=false, photoPick=false, aboveEditor=false }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[], folder?: string) => void, uploadsStatus?: UploadsStatus|null, reloadKey?: number, audioOnly?:boolean, photoPick?:boolean | 'background', aboveEditor?:boolean }) {
   const [root,setRoot]=useState<MediaRoot>(audioOnly?'music':'photos')
   const [allMedia,setAllMedia]=useState(!audioOnly)
   const [path,setPath]=useState('');const [entries,setEntries]=useState<any[]>([]);const [selected,setSelected]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
@@ -3168,7 +3903,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
     setLightbox({ title: entry.name, src: mediaFileUrl(fileRoot(entry), entry.path), kind })
   }
   const skippedEmpty = selected.filter((f:any)=>f.empty).length
-  const addable = selected.filter((f:any)=>!f.empty)
+  const addable = photoPick ? selected.filter((f:any)=>!f.empty && f.kind==='image') : selected.filter((f:any)=>!f.empty)
   const isUploadsView = !audioOnly && !allMedia && root==='uploads'
   const toggleDeleteSelect=(entry:any)=>{
     setDeleteError('')
@@ -3207,7 +3942,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
       setDeleting(false)
     }
   }
-  return <div className="modal-backdrop" onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v,.wmv,.asf,.mpg,.mpeg,.ts,.mts,.m2ts,.flv,.f4v,.3gp,.3gpp,.vob,.dav,.mxf,.mod,.tod,.divx" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className="file-grid">{entries.map(file=>{
+  return <div className={`modal-backdrop${aboveEditor ? ' over-editor' : ''}`} onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':photoPick==='background'?'Choose background picture':photoPick?'Select collage photos':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v,.wmv,.asf,.mpg,.mpeg,.ts,.mts,.m2ts,.flv,.f4v,.3gp,.3gpp,.vob,.dav,.mxf,.mod,.tod,.divx" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className="file-grid">{entries.map(file=>{
   const isDelSelected=deleteSelection.some((x:any)=>x.path===file.path)
   const isSel=selected.some((x:any)=>x.path===file.path)
   return <div className={`file-card ${isSel?'selected':''} ${isDelSelected?'delete-selected':''} ${file.empty?'empty':''} ${file.accessible===false?'inaccessible':''}`} key={file.path}>
@@ -3223,7 +3958,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
     <button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button>
     {isUploadsView&&<button type="button" className="file-card-delete" title={`Delete ${file.name}`} aria-label={`Delete ${file.name}`} disabled={uploadsStatus?.writable===false} onClick={(e)=>{e.stopPropagation();deleteSingle(file)}}><Trash2 size={13}/></button>}
   </div>
-})}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation. {isUploadsView&&<>Use the checkboxes to select files/folders, then Delete selected. Deleting a folder removes everything inside it.</>}</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}{deleteSelection.length?` · ${deleteSelection.length} marked for deletion`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> Add to storyline</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}{showDeleteConfirm&&<div className="modal-backdrop" onMouseDown={()=>!deleting&&setShowDeleteConfirm(false)}><div className="confirm-modal" onMouseDown={e=>e.stopPropagation()}><div className="confirm-icon"><AlertTriangle size={24}/></div><h2>Delete from /uploads?</h2><p>{deleteSelection.length===1?`Are you sure you want to delete “${deleteSelection[0]?.name}”? ${deleteSelection[0]?.kind==='directory'?'The folder and everything inside it will be removed.':''} This cannot be undone.`:`Are you sure you want to delete ${deleteSelection.length} items from /uploads${path?`/${path}`:''}? ${deleteSelection.some((e:any)=>e.kind==='directory')?'Folders will be removed recursively.':''} This cannot be undone.`}</p>{deleteSelection.length>1&&deleteSelection.length<=12&&<ul className="delete-list">{deleteSelection.map((e:any)=><li key={e.path}>{e.kind==='directory'?'📁 ':'📄 '}{e.name}</li>)}</ul>}{deleteSelection.length>12&&<p><small>First 12: {deleteSelection.slice(0,12).map((e:any)=>e.name).join(', ')} …</small></p>}<div className="confirm-actions"><button className="btn ghost" disabled={deleting} onClick={()=>setShowDeleteConfirm(false)}>Cancel</button><button className="btn dark" disabled={deleting} onClick={()=>void confirmDelete()}>{deleting?<RefreshCw className="spin" size={14}/>:<Trash2 size={14}/>} {deleting?'Deleting…':'Delete'}</button></div></div></div>}</div>
+})}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation. {isUploadsView&&<>Use the checkboxes to select files/folders, then Delete selected. Deleting a folder removes everything inside it.</>}</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}{deleteSelection.length?` · ${deleteSelection.length} marked for deletion`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> {photoPick==='background'?'Use as background':photoPick?`Add ${addable.length||''} photo${addable.length===1?'':'s'}`:'Add to storyline'}</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}{showDeleteConfirm&&<div className="modal-backdrop" onMouseDown={()=>!deleting&&setShowDeleteConfirm(false)}><div className="confirm-modal" onMouseDown={e=>e.stopPropagation()}><div className="confirm-icon"><AlertTriangle size={24}/></div><h2>Delete from /uploads?</h2><p>{deleteSelection.length===1?`Are you sure you want to delete “${deleteSelection[0]?.name}”? ${deleteSelection[0]?.kind==='directory'?'The folder and everything inside it will be removed.':''} This cannot be undone.`:`Are you sure you want to delete ${deleteSelection.length} items from /uploads${path?`/${path}`:''}? ${deleteSelection.some((e:any)=>e.kind==='directory')?'Folders will be removed recursively.':''} This cannot be undone.`}</p>{deleteSelection.length>1&&deleteSelection.length<=12&&<ul className="delete-list">{deleteSelection.map((e:any)=><li key={e.path}>{e.kind==='directory'?'📁 ':'📄 '}{e.name}</li>)}</ul>}{deleteSelection.length>12&&<p><small>First 12: {deleteSelection.slice(0,12).map((e:any)=>e.name).join(', ')} …</small></p>}<div className="confirm-actions"><button className="btn ghost" disabled={deleting} onClick={()=>setShowDeleteConfirm(false)}>Cancel</button><button className="btn dark" disabled={deleting} onClick={()=>void confirmDelete()}>{deleting?<RefreshCw className="spin" size={14}/>:<Trash2 size={14}/>} {deleting?'Deleting…':'Delete'}</button></div></div></div>}</div>
 }
 
 
@@ -3431,7 +4166,7 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/>{showCaption && currentItem && <FrameMotionPreview key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} />}<span className="preview-eyebrow">{currentItem?.type === 'title' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <span className="title-symbol">T</span> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/>{currentItem && isCollageItem(currentItem) ? <CollageSlideStage key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} /> : showCaption && currentItem && <FrameMotionPreview key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} />}<span className="preview-eyebrow">{isCollageItem(currentItem) ? 'PHOTO COLLAGE' : currentItem?.type === 'title' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <TitleClipFace item={m} /> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 

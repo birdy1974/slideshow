@@ -16,7 +16,7 @@
 // the transition and the text reacting to it frame-accurately.
 
 import {
-  ambientOpacity, bgRegion, buildLayout, cleanLines, colourToken, compileStack, evaluate, layerKeys, layerU, paramString,
+  ambientOpacity, bgRegion, buildLayout, cleanLines, colourToken, compileStack, EASE, evaluate, layerKeys, layerU, paramString,
   type BgChange, type Caption, type Ctx, type Layout, type MotionPath, type Region, type Rgb, type State, type TextFxLayer, type Unit,
 } from './textMotionCore'
 import { EFFECTS } from './textFx'
@@ -227,6 +227,7 @@ export class MotionScene {
   private lines: GlyphView[] = []
   private members: Map<number, GlyphView[]> = new Map()
   private boxes: BoxView[] = []
+  private bubbles: BoxView[] = []
   private caret: HTMLSpanElement | null = null
   private lastCount = -1
   private lastChange = 0
@@ -237,8 +238,9 @@ export class MotionScene {
     const { frameW, frameH } = prep
     this.root = h('div', `tm-scene${opts.className ? ` ${opts.className}` : ''}`, { width: `${frameW}px`, height: `${frameH}px` })
     const ctx = prep.ctx
-    this.copies = ctx.stack.flatMap(L => (L.fx.copies || []).filter((s: any) => s.type !== 'box').map((spec: any) => ({ L, spec })))
+    this.copies = ctx.stack.flatMap(L => (L.fx.copies || []).filter((s: any) => s.type !== 'box' && s.type !== 'bubble').map((spec: any) => ({ L, spec })))
     const boxSpecs = ctx.stack.flatMap(L => (L.fx.copies || []).filter((s: any) => s.type === 'box').map((spec: any) => ({ L, spec })))
+    const bubbleSpecs = ctx.stack.flatMap(L => (L.fx.copies || []).filter((s: any) => s.type === 'bubble').map((spec: any) => ({ L, spec })))
     const below = h('div', 'tm-layer tm-below')
     const above = h('div', 'tm-layer tm-above')
     for (const { L, spec } of boxSpecs) {
@@ -250,6 +252,16 @@ export class MotionScene {
         ;(spec.below === false ? above : below).append(el)
         if (gap) (spec.below === false ? above : below).append(gap)
         this.boxes.push({ L, spec, u, el, gap })
+      }
+    }
+    for (const { L, spec } of bubbleSpecs) {
+      for (const u of ctx.units[L.unit] || []) {
+        if (L.ranks.get(u.index) === undefined) continue
+        if ((u.level === 'char' || u.level === 'word') && !u.text.trim()) continue
+        const el = h('div', 'tm-box tm-bubble')
+        el.style.borderRadius = '9999px'
+        ;(spec.below === false ? above : below).append(el)
+        this.bubbles.push({ L, spec, u, el, gap: null })
       }
     }
     this.root.append(below)
@@ -333,6 +345,7 @@ export class MotionScene {
       for (const v of this.units) this.draw(v, states.get(v)!, t, true)
     }
     for (const b of this.boxes) this.drawBox(b, t)
+    for (const b of this.bubbles) this.drawBubble(b, t)
     if (this.caret) this.drawCaret(t, states)
   }
 
@@ -466,6 +479,40 @@ export class MotionScene {
         node.style.clipPath = `inset(${(height * tp).toFixed(1)}px ${(w * (1 - r)).toFixed(1)}px ${(height * (1 - bt)).toFixed(1)}px ${(w * l).toFixed(1)}px)`
       } else node.style.clipPath = ''
     }
+  }
+
+  /** Bubbles: rounded pill behind each unit, popping in with an outBack
+   *  overshoot. Twin of _bubble_events() in backend/app/text_motion.py. */
+  private drawBubble(b: BoxView, t: number) {
+    const ctx = this.prep.ctx
+    const { em, baselineOff, capH } = this.prep
+    const { L, spec, u, el } = b
+    const s = evaluate(ctx, u, t)
+    const lu = layerU(ctx, L, u.index, t)
+    const col = colourToken(ctx, paramString(L, spec.colour ?? '#ffffff'), s.colour)
+    let op = clamp01(s.tot.opacity) * clamp01(Number(spec.alpha ?? 1))
+    const pw = Number((spec.pad || [0.22, 0])[0])
+    const w = u.w + 2 * pw * em
+    const hh = Number(spec.height ?? 1.15) * em
+    let off = Number(spec.offsetY ?? 0) * em
+    if (spec.valign === 'baseline') off += baselineOff
+    else if (spec.valign === 'cap') off += baselineOff - capH / 2
+    let sc = 1
+    if (spec.pop !== false) {
+      sc = Math.max(0, EASE.outBack(clamp01(lu / 0.6)))
+      op = op * clamp01(lu * 5)
+    }
+    const cx = s.x, cy = s.y + off
+    const visible = op > 0.004 && sc > 0.002
+    el.style.display = visible ? '' : 'none'
+    if (!visible) return
+    el.style.left = `${cx - w / 2}px`
+    el.style.top = `${cy - hh / 2}px`
+    el.style.width = `${w}px`
+    el.style.height = `${hh}px`
+    el.style.background = rgba(col, op)
+    el.style.transformOrigin = '50% 50%'
+    el.style.transform = `rotate(${s.tot.rz.toFixed(2)}deg) scale(${sc.toFixed(4)})`
   }
 
   private drawCaret(t: number, states: Map<GlyphView, State>) {

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import mimetypes
 
 from .config import settings
+from .collage import normalize_collage
 from .database import Database
 from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, create_media_folder, delete_media_entry, mounted_path, safe_path, source_path
 from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
@@ -92,7 +93,27 @@ def validate_mount_references(payload: dict[str, Any]) -> None:
     except UnsafePath as exc:
         raise HTTPException(422, f"Invalid output path: {exc}") from exc
     for item in payload.get("media", []):
-        if item.get("type") == "title":
+        if item.get("type") in ("title", "collage"):
+            # A collage (photo slide with a photo set) validates its photos
+            # here so a missing file fails the request, not minutes later
+            # during the render.
+            collage = normalize_collage(item)
+            if collage is not None:
+                for photo in collage["photos"]:
+                    try:
+                        src = source_path(settings, photo)
+                        if not src.is_file():
+                            raise HTTPException(422, f"Collage photo is missing: {photo.get('name') or photo['path']}")
+                    except UnsafePath as exc:
+                        raise HTTPException(422, f"Invalid collage photo path for {photo.get('name','photo')}: {exc}") from exc
+                bg = str(collage.get("backgroundImage") or "")
+                if bg:
+                    try:
+                        src = source_path(settings, {"path": bg, "name": ""})
+                        if not src.is_file():
+                            raise HTTPException(422, f"Collage background picture is missing: {bg}")
+                    except UnsafePath as exc:
+                        raise HTTPException(422, f"Invalid collage background path: {bg}") from exc
             continue
         try:
             source_path(settings, item)
@@ -535,6 +556,35 @@ def media_loudness(root: str = Query(pattern="^(music|videos|photos)$"), path: s
     if not stats or abs(stats["input_i"]) > 1e6:
         raise HTTPException(422, "Could not measure loudness (silent or unreadable audio)")
     return {"integrated": round(stats["input_i"], 1), "truePeak": round(stats["input_tp"], 1), "range": round(stats["input_lra"], 1)}
+
+
+# Beat analysis is pure reads of a file's audio — cache it so toggling beat
+# sync on and off (or re-opening the collage editor) never re-decodes a song.
+_beats_cache: dict[tuple[str, int, int], list[float]] = {}
+
+
+@app.get("/api/media/beats")
+def media_beats(root: str = Query(pattern="^(music|videos|photos)$"), path: str = "") -> dict[str, Any]:
+    """Onset (beat) times of an audio file — the data behind collage beat sync.
+
+    Used by the collage editor to snap photo arrivals to the music: the
+    editor maps these file-local times onto the slide's own clock and stores
+    the result in the collage spec (so the render needs no audio analysis).
+    """
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS: raise HTTPException(415, "File has no supported audio")
+    if target.stat().st_size == 0: raise HTTPException(422, "File is empty (0 bytes)")
+    stat = target.stat()
+    key = (str(target), stat.st_mtime_ns, stat.st_size)
+    beats = _beats_cache.get(key)
+    if beats is None:
+        beats = renderer.detect_beats(target)
+        if len(_beats_cache) > 32:
+            _beats_cache.clear()
+        _beats_cache[key] = beats
+    return {"beats": beats, "count": len(beats)}
 
 
 @app.get("/api/media/cropdetect")
