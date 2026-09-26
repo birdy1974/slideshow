@@ -1,5 +1,9 @@
 2026-09-23
 - check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
+- make max selectable font size bigger till 350 (instead of 200)
+- make default selectable colors the more fivit colors (RED, BLUE, YELLOW, PURPLE, white, black, etc) and a quick option to change to pastel colors
+- do a deep search on the internet to see if you can add other slide transitions and more text effects and text motions. only give the options, do not change any code yet.
+-  
 
 
 ---= DONE =---
