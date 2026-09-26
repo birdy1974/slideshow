@@ -1455,3 +1455,6 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .render-stage{display:flex;align-items:center;gap:7px;margin:8px 0 0;min-width:0}
 .render-stage svg{color:#5e7d2c;flex:0 0 auto}
 .render-stage span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 9px Manrope;color:#6f7466}
+
+/* --- Header nav jumps: keep the target clear of the sticky top bar --- */
+#section-storyline,#section-transitions,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}
