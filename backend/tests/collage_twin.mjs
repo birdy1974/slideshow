@@ -16,7 +16,10 @@ const out = []
 for (const c of input.cases) {
   const spec = c.spec
   const pls = core.placements(spec, c.aspect)
-  const states = c.times.map(t => pls.map((_, i) => core.photoState(spec, i, t, c.leadIn)))
+  const states = c.times.map(t => pls.map((_, i) => core.photoState(spec, i, t, c.leadIn, c.aspect)))
+  const camera = c.camera
+    ? { mode: c.camera, states: c.times.map(t => core.cameraState(spec, t, c.leadIn, c.aspect)) }
+    : null
   out.push({
     id: c.id,
     hash: core.hash01(c.hashArgs[0], c.hashArgs[1], c.hashArgs[2]),
@@ -26,6 +29,7 @@ for (const c of input.cases) {
     duration: core.collageDuration(spec),
     placements: pls,
     states,
+    camera,
     mapBeats: c.mapBeats
       ? core.slideLocalBeats(c.mapBeats.beats, c.mapBeats.trackStart, c.mapBeats.trimStart, c.mapBeats.trimEnd, c.mapBeats.holdStart)
       : null,

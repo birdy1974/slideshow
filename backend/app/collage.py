@@ -231,7 +231,39 @@ def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
 
 
 # How long an entrance runs until the photo is fully at rest.
-ENTRANCE_LENGTH = {"drop": 0.55, "pop": 0.5, "swing": 2.0, "none": 0.0}
+ENTRANCE_LENGTH = {"drop": 0.55, "pop": 0.5, "swing": 2.0, "flip": 0.45, "none": 0.0}
+
+# Exits - how the photos leave after the hold. Twin of collageCore.ts.
+EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4}
+EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1}
+
+
+def exit_mode(spec: dict[str, Any]) -> str:
+    """The spec's exit mode, sanitised."""
+    return spec.get("exit") if spec.get("exit") in ("sweep", "deal", "shuffle") else "none"
+
+
+def exit_offset(spec: dict[str, Any], i: int) -> float:
+    """When photo i starts leaving, relative to the end of the hold. 'deal'
+    clears the top of the pile first (photo n-1 leaves first)."""
+    mode = exit_mode(spec)
+    if mode == "none":
+        return 0.0
+    n = len(spec.get("photos") or [])
+    if mode == "deal":
+        return EXIT_STAGGER["deal"] * max(0, n - 1 - i)
+    return EXIT_STAGGER[mode] * i
+
+
+def exit_total(spec: dict[str, Any]) -> float:
+    """Total seconds the exit adds to the slide (longest offset + fly)."""
+    mode = exit_mode(spec)
+    if mode == "none":
+        return 0.0
+    n = len(spec.get("photos") or [])
+    if not n:
+        return 0.0
+    return EXIT_LENGTH[mode] + max(exit_offset(spec, 0), exit_offset(spec, n - 1))
 
 
 def _round2(v: float) -> float:
@@ -240,10 +272,10 @@ def _round2(v: float) -> float:
     return math.floor(v * 100 + 0.5) / 100
 
 
-def collage_duration(spec: dict[str, Any]) -> float:
-    """The slide duration implied by the photo timings: last photo's start +
-    its entrance + the hold after it ('none' photos are all on screen from
-    the first frame, so just the hold). 0 for an empty collage."""
+def base_duration(spec: dict[str, Any]) -> float:
+    """The slide duration before any exit: last photo's start + its entrance
+    + the hold after it ('none' photos are all on screen from the first
+    frame, so just the hold). 0 for an empty collage."""
     photos = spec.get("photos") or []
     if not photos:
         return 0.0
@@ -259,6 +291,14 @@ def collage_duration(spec: dict[str, Any]) -> float:
         return _round2(hold)
     last = photo_start(spec, len(photos) - 1, 0.0)
     return _round2(last + ENTRANCE_LENGTH.get(anim, 0.0) + hold)
+
+
+def collage_duration(spec: dict[str, Any]) -> float:
+    """The slide duration implied by the photo timings: entrances + hold +
+    the exit fly at the end. This is what the editor writes into the slide."""
+    if not (spec.get("photos") or []):
+        return 0.0
+    return _round2(base_duration(spec) + exit_total(spec))
 
 
 def bg_blur_css_px(blur: float) -> float:
@@ -283,7 +323,7 @@ def push_depth(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> 
     if spec.get("depth") is not True:
         return 0.0
     anim = str(spec.get("animation") or "drop")
-    if anim not in ("drop", "pop"):
+    if anim not in ("drop", "pop", "flip"):
         return 0.0
     e = ENTRANCE_LENGTH[anim]
     n = len(spec.get("photos") or [])
@@ -295,7 +335,36 @@ def push_depth(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> 
     return min(DEPTH["max"], p)
 
 
-def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> dict[str, float]:
+def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: float = 16 / 9) -> dict[str, float]:
+    """Virtual camera at segment time t — twin of cameraState() in collageCore.ts.
+    Returns the window zoom and centre (% of frame); 'pan' drifts across,
+    the zoom family centres on the last photo's anchor, clamped inside the
+    frame. The FFmpeg crop/zoompan chain and the preview's CSS transform are
+    two views of these numbers."""
+    mode = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
+    if mode == "none":
+        return {"z": 1.0, "cx": 50.0, "cy": 50.0}
+    d = max(0.2, collage_duration(spec))
+    p = _clamp01((t - lead_in) / d)
+    if mode == "pan":
+        return {"z": 1.09, "cx": 54 - 8 * p, "cy": 50.0}
+    pls = placements(spec, aspect)
+    a = pls[-1] if pls else {"cx": 50.0, "cy": 50.0}
+    if mode == "zoom":
+        z = 1 + 0.35 * p
+    elif mode == "telescope":
+        z = 1 + 0.9 * (p * p * (3 - 2 * p))
+    else:
+        z = 1 + 1.1 * (p ** 2.2)
+    half = 50.0 / z
+    return {
+        "z": z,
+        "cx": min(100 - half, max(half, a["cx"])),
+        "cy": min(100 - half, max(half, a["cy"])),
+    }
+
+
+def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9) -> dict[str, float]:
     """Animated offsets of photo i at segment time t — twin of photoState()."""
     t0 = photo_start(spec, i, lead_in)
     push = push_depth(spec, i, t, lead_in)
@@ -303,16 +372,52 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) ->
     if anim == "drop":
         q = _clamp01((t - t0) / 0.55)
         settle = (1 - q) ** 3
-        return {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1 - DEPTH["scale"] * push, "alpha": _clamp01((t - t0) / 0.22), "dim": DEPTH["dim"] * push}
-    if anim == "pop":
+        st = {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1 - DEPTH["scale"] * push, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.22), "dim": DEPTH["dim"] * push}
+    elif anim == "pop":
         q = _clamp01((t - t0) / 0.5)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        return {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": (0.55 + 0.45 * back) * (1 - DEPTH["scale"] * push), "alpha": _clamp01((t - t0) / 0.18), "dim": DEPTH["dim"] * push}
-    if anim == "swing":
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": (0.55 + 0.45 * back) * (1 - DEPTH["scale"] * push), "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": DEPTH["dim"] * push}
+    elif anim == "flip":
+        # A card flipping open around its vertical axis: edge-on (4% width)
+        # with an outBack overshoot, straightening as it settles.
+        q = _clamp01((t - t0) / 0.45)
+        back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
+        st = {"dx": 0.0, "dy": 0.0, "rot": -4 * (1 - q), "scale": 1 - DEPTH["scale"] * push, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / 0.15), "dim": DEPTH["dim"] * push}
+    elif anim == "swing":
         tau = max(0.0, t - t0)
         rot = 14 * math.exp(-1.3 * tau) * math.cos(2 * math.pi * tau / 1.6)
-        return {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "alpha": _clamp01(tau / 0.15), "dim": 0.0}
-    return {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "alpha": 1.0, "dim": 0.0}
+        st = {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01(tau / 0.15), "dim": 0.0}
+    else:
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0}
+    # Exit: after the hold (and every entrance) the photos leave the frame.
+    mode = exit_mode(spec)
+    if mode != "none":
+        seed = int(spec.get("seed") or 1)
+        te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
+        qe = _clamp01((t - te0) / EXIT_LENGTH[mode])
+        if qe > 0:
+            ease = qe * qe
+            if mode == "sweep":
+                pl = placements(spec, aspect)[i]
+                vx = pl["cx"] - 50
+                vy = pl["cy"] - 50
+                length = math.hypot(vx, vy)
+                dirx = 0.0 if length < 1e-6 else vx / length
+                diry = -1.0 if length < 1e-6 else vy / length
+                st["dx"] += 90 * dirx * ease
+                st["dy"] += 90 * diry * ease
+                st["rot"] += (hash01(seed, i, 71) - 0.5) * 20 * qe
+            elif mode == "deal":
+                st["dx"] += 90 * ease
+                st["dy"] += -6 * math.sin(math.pi * qe)
+                st["rot"] += 25 * qe
+            else:
+                a = hash01(seed, i, 73) * 2 * math.pi
+                st["dx"] += 75 * math.cos(a) * ease
+                st["dy"] += 55 * math.sin(a) * ease
+                st["rot"] += (hash01(seed, i, 75) - 0.5) * 40 * qe
+            st["alpha"] *= 1 - _clamp01((qe - 0.75) / 0.25)
+    return st
 
 
 def pin_anchor(spec: dict[str, Any]) -> bool:
@@ -365,7 +470,9 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     if not photos:
         return None
     layout = raw.get("layout") if raw.get("layout") in ("stack", "grid", "scatter", "filmstrip", "fan", "masonry") else "stack"
-    animation = raw.get("animation") if raw.get("animation") in ("drop", "pop", "swing", "none") else "drop"
+    animation = raw.get("animation") if raw.get("animation") in ("drop", "pop", "swing", "flip", "none") else "drop"
+    exit_ = raw.get("exit") if raw.get("exit") in ("sweep", "deal", "shuffle") else None
+    camera = raw.get("camera") if raw.get("camera") in ("pan", "zoom", "telescope", "droste") else None
     shape = raw.get("shape") if raw.get("shape") in ("4:3", "square", "3:4") else "4:3"
     try:
         seed = int(raw.get("seed") or 1)
@@ -412,6 +519,10 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         spec["beats"] = beats
     if raw.get("depth") is True:
         spec["depth"] = True
+    if exit_ is not None:
+        spec["exit"] = exit_
+    if camera is not None:
+        spec["camera"] = camera
     if bg is not None:
         spec["backgroundImage"] = bg
     if blur is not None:
@@ -525,6 +636,8 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
 
     lines: list[str] = []
     prev = base_label
+    seed = int(spec.get("seed") or 1)
+    ex_mode = exit_mode(spec)
     for i, pl in enumerate(pls):
         inp = first_input + i
         mat_w = max(24, round(pl["w"] / 100 * width))
@@ -559,10 +672,49 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         t0 = photo_start(spec, i, lead_in)
         push = push_expr(i)
         shrink = f"(1-{_n(DEPTH['scale'])}*{push})" if push is not None else None
+        # Exit: when this photo flies out (None when it stays until the
+        # transition). The exit terms are appended to every entrance's
+        # position/rotation expressions — the twin's photoState() defines
+        # the exact curves (accelerating fly, alpha fading over the last
+        # quarter, 'deal' off to the right, seeded 'shuffle' directions).
+        ex_dx = ex_dy = ex_rot = None
+        fade_out = ""
+        t_end = None
+        if ex_mode != "none":
+            te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
+            t_end = te0 + EXIT_LENGTH[ex_mode]
+            qe = f"min(max((t-{_n(te0)})/{_n(EXIT_LENGTH[ex_mode])},0),1)"
+            fade_d = 0.25 * EXIT_LENGTH[ex_mode]
+            fade_out = f",fade=t=out:st={_n(t_end - fade_d)}:d={_n(fade_d)}:alpha=1"
+            if ex_mode == "sweep":
+                vx, vy = pl["cx"] - 50, pl["cy"] - 50
+                vlen = math.hypot(vx, vy)
+                dirx = 0.0 if vlen < 1e-6 else vx / vlen
+                diry = -1.0 if vlen < 1e-6 else vy / vlen
+                ex_dx = 90 * dirx / 100 * width
+                ex_dy = 90 * diry / 100 * height
+                ex_rot = (hash01(seed, i, 71) - 0.5) * 20
+            elif ex_mode == "deal":
+                ex_dx = 0.9 * width
+                ex_dy = -0.06 * height          # -6*sin(pi*qe) percent of height
+                ex_rot = 25.0
+            else:
+                a = hash01(seed, i, 73) * 2 * math.pi
+                ex_dx = 75 * math.cos(a) / 100 * width
+                ex_dy = 55 * math.sin(a) / 100 * height
+                ex_rot = (hash01(seed, i, 75) - 0.5) * 40
+        def fly_term(value: float, expr: str) -> str:
+            # Sign-aware term so generated expressions never contain '+-'.
+            return (f"-{_n(abs(value))}" if value < 0 else f"+{_n(value)}") + f"*{expr}"
+        ex_x = fly_term(ex_dx, f"pow({qe},2)") if ex_dx is not None else ""
+        ex_y = (fly_term(ex_dy, f"pow({qe},2)") if ex_mode != "deal"
+                else fly_term(ex_dy, f"sin(PI*{qe})")) if ex_dy is not None else ""
+        ex_r = fly_term(ex_rot, qe) if ex_rot is not None else ""
+
         mid = ""                                # fade + rotate/scale chain
         if anim == "drop":
             q = f"min(max((t-{_n(t0)})/0.55,0),1)"
-            ang = f"({_n(pl['rot'])}-7*pow(1-{q},3))*PI/180"
+            ang = f"({_n(pl['rot'])}-7*pow(1-{q},3){ex_r})*PI/180"
             mid = f"fade=t=in:st={_n(t0)}:d=0.22:alpha=1,rotate='{ang}':c=black@0.0"
             if shrink is not None:
                 mid += f",scale=w='{_n(cw)}*{shrink}':h=-2:eval=frame"
@@ -572,14 +724,27 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             if shrink is not None:
                 scale = f"{scale}*{shrink}"
             mid = f"fade=t=in:st={_n(t0)}:d=0.18:alpha=1,scale=w='{_n(cw)}*{scale}':h=-2:eval=frame"
+            if ex_r:
+                mid += f",rotate='({ex_r[1:]})*PI/180':c=black@0.0"
+        elif anim == "flip":
+            # Card flipping open edge-on: width follows the outBack curve,
+            # height only the uniform depth shrink — the anchor tracks both.
+            q = f"min(max((t-{_n(t0)})/0.45,0),1)"
+            sx = f"max(0.04,0.04+0.96*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
+            su = shrink if shrink is not None else "1"
+            mid = (f"fade=t=in:st={_n(t0)}:d=0.15:alpha=1,"
+                   f"scale=w='max(1,{_n(cw)}*{sx}*{su})':h='max(1,{_n(ch)}*{su})':eval=frame,"
+                   f"rotate='(-4*(1-{q}){ex_r})*PI/180':c=black@0.0")
         elif anim == "swing":
             tau = f"max(t-{_n(t0)},0)"
-            ang = f"{_n(pl['rot'])}*PI/180+14*PI/180*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6)"
+            ang = f"{_n(pl['rot'])}*PI/180+14*PI/180*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}*PI/180"
             mid = f"fade=t=in:st={_n(t0)}:d=0.15:alpha=1,rotate='{ang}':c=black@0.0"
-        elif abs(pl["rot"]) > 0.01:
-            mid = f"rotate='{_n(pl['rot'])}*PI/180':c=black@0.0"
+        elif ex_r or abs(pl["rot"]) > 0.01:
+            base_r = _n(pl["rot"]) if abs(pl["rot"]) > 0.01 else "0"
+            mid = f"rotate='({base_r}{ex_r})*PI/180':c=black@0.0"
         if not mid:
             mid = "null"
+        mid += fade_out
 
         # Anchor: the canvas centre lands on the mat centre, or on the pin
         # (top edge of the mat) for swinging photos. FFmpeg's overlay x/y is
@@ -590,25 +755,38 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         if anim == "drop":
             q = f"min(max((t-{_n(t0)})/0.55,0),1)"
             if shrink is None:
-                x_expr = _n(ax_px - cw / 2)
-                y_expr = f"{_n(ay_px - ch / 2)}-{_n(0.26 * height)}*pow(1-{q},3)"
+                x_expr = f"{_n(ax_px - cw / 2)}{ex_x}"
+                y_expr = f"{_n(ay_px - ch / 2)}-{_n(0.26 * height)}*pow(1-{q},3){ex_y}"
             else:
                 # The sprite shrinks as later photos land on top; the anchor
                 # tracks the same scale so the mat stays centred on it.
-                x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{shrink}"
-                y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{shrink}-{_n(0.26 * height)}*pow(1-{q},3)"
+                x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{shrink}{ex_x}"
+                y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{shrink}-{_n(0.26 * height)}*pow(1-{q},3){ex_y}"
         elif anim == "pop":
             q = f"min(max((t-{_n(t0)})/0.5,0),1)"
             scale = f"(0.55+0.45*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
             if shrink is not None:
                 scale = f"{scale}*{shrink}"
-            x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{scale}"
-            y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{scale}"
+            x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{scale}{ex_x}"
+            y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{scale}{ex_y}"
+        elif anim == "flip":
+            q = f"min(max((t-{_n(t0)})/0.45,0),1)"
+            sx = f"max(0.04,0.04+0.96*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
+            su = shrink if shrink is not None else "1"
+            x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{sx}*{su}{ex_x}"
+            y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{su}{ex_y}"
         else:
             # swing / none: a static centre-anchored sprite (swing rotates
             # around the pin, which is the canvas centre — see above).
-            x_expr, y_expr = _n(ax_px - cw / 2), _n(ay_px - ch / 2)
-        enable = f":enable='gte(t,{_n(t0)})'" if anim != "none" else ""
+            x_expr = f"{_n(ax_px - cw / 2)}{ex_x}"
+            y_expr = f"{_n(ay_px - ch / 2)}{ex_y}"
+        if t_end is not None:
+            # The photo leaves at t_end: 'none' photos are on screen from the
+            # very first frame, everyone else from their entrance start.
+            enable_from = _n(t0) if anim != "none" else "0"
+            enable = f":enable='between(t,{enable_from},{_n(t_end)})'"
+        else:
+            enable = f":enable='gte(t,{_n(t0)})'" if anim != "none" else ""
 
         m, t_, s = f"m{i}", f"t{i}", f"s{i}"
         # Depth push-back dims the mat itself (the shadow silhouette is black
@@ -637,4 +815,38 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         lines.append(f"[sp{i}]{mid}[sp{i}r];")
         lines.append(f"[{prev}][sp{i}r]overlay=x='{x_expr}':y='{y_expr}'{enable}[o{i}];")
         prev = f"o{i}"
+
+    # Virtual camera over the composed scene — the last thing before the
+    # caption: 'pan' drifts a constant window across the frame (crop), the
+    # zoom family zooms into the last photo's anchor (zoompan). The window
+    # maths is the twin's cameraState(); the clamps keep the window inside
+    # the frame so both engines see identical pixels.
+    cam = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
+    if cam != "none" and pls:
+        d = max(0.2, collage_duration(spec))
+        if cam == "pan":
+            ow, oh = max(2, int(width / 1.09)), max(2, int(height / 1.09))
+            p = f"min(max((t-{_n(lead_in)})/{_n(d)},0),1)"
+            lines.append(
+                f"[{prev}]crop={ow}:{oh}:x='(iw-ow)*(54-8*{p})/100':y='(ih-oh)/2',"
+                f"scale={width}:{height},setsar=1[cam];"
+            )
+        else:
+            # zoompan has no t variable — 'on' is the output frame count and
+            # the output fps equals the input fps (d=1), so on/fps is time.
+            p = f"min(max((on/{_n(fps)}-{_n(lead_in)})/{_n(d)},0),1)"
+            if cam == "zoom":
+                zexpr = f"(1+0.35*{p})"
+            elif cam == "telescope":
+                zexpr = f"(1+0.9*({p}*{p}*(3-2*{p})))"
+            else:
+                zexpr = f"(1+1.1*pow({p},2.2))"
+            anchor = pls[-1]
+            cx = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cx'])}))"
+            cy = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cy'])}))"
+            lines.append(
+                f"[{prev}]zoompan=z='{zexpr}':x='({cx}/100)*iw-iw/(2*{zexpr})'"
+                f":y='({cy}/100)*ih-ih/(2*{zexpr})':d=1:s={width}x{height}:fps={_n(fps)},setsar=1[cam];"
+            )
+        prev = "cam"
     return lines, prev

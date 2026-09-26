@@ -1472,6 +1472,10 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* --- Photo collage (Phase 1): DOM twin of the FFmpeg composite --- */
 .collage-photos{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .collage-layer{position:absolute;top:0;left:0;transform-origin:0 0}
+/* Virtual camera: wraps background + photos; the transform (translate+scale)
+   is written per frame from cameraState(), the same window maths the
+   render's crop/zoompan chain uses. */
+.collage-camera{position:absolute;inset:0;transform-origin:50% 50%;will-change:transform}
 .collage-mat{position:absolute;background:#fff;border-radius:2px;box-sizing:border-box;box-shadow:0 6px 18px rgba(0,0,0,.38),0 2px 5px rgba(0,0,0,.25);will-change:transform,opacity}
 .collage-mat img{display:block;border-radius:1px;object-fit:cover;background:#dcdcd8}
 .collage-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#cfd4ca;font-size:11px}

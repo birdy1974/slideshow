@@ -17,6 +17,11 @@ import pytest
 
 from app.collage import (
     MAX_COLLAGE_PHOTOS,
+    base_duration,
+    camera_state,
+    exit_mode,
+    exit_offset,
+    exit_total,
     bg_blur_radius,
     collage_duration,
     collage_graph,
@@ -49,7 +54,8 @@ def _run_node(cases: dict) -> list:
 
 def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
           delays: list | None = None, hold: float | None = None, sizes: list | None = None,
-          depth: bool = False, beat_sync: bool = False, beats: list | None = None) -> dict:
+          depth: bool = False, beat_sync: bool = False, beats: list | None = None,
+          exit: str | None = None, camera: str | None = None) -> dict:
     photos = []
     for k in range(count):
         p = {"path": f"/photos/p{k}.jpg", "name": f"p{k}.jpg"}
@@ -63,6 +69,10 @@ def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
         spec["hold"] = hold
     if depth:
         spec["depth"] = True
+    if exit is not None:
+        spec["exit"] = exit
+    if camera is not None:
+        spec["camera"] = camera
     if beat_sync:
         spec["beatSync"] = True
         if beats is not None:
@@ -75,7 +85,7 @@ def _cases() -> list[dict]:
     times = [0.0, 0.15, 0.31, 0.5, 0.7, 1.0, 1.37, 2.0, 3.5]
     idx = 0
     for layout in ("stack", "grid", "scatter", "filmstrip", "fan", "masonry"):
-        for animation in ("drop", "pop", "swing", "none"):
+        for animation in ("drop", "pop", "swing", "flip", "none"):
             for shape in ("4:3", "square", "3:4"):
                 for count, seed in ((1, 1), (3, 7), (6, 42), (10, 2026)):
                     idx += 1
@@ -167,6 +177,39 @@ def _cases() -> list[dict]:
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.5, 1.05],
         "hashArgs": [6, 3, 11], "matW": 30,
     })
+    # exits: the photos leave after the hold — every entrance × every exit
+    for exit_mode_name in ("sweep", "deal", "shuffle"):
+        for animation in ("drop", "pop", "none", "flip"):
+            cases.append({
+                "id": f"exit-{exit_mode_name}-{animation}",
+                "spec": _spec("stack", animation, "4:3", 5, 9, delays=[0.15, 0.5, 0.4, 0.7, 0.3], hold=2,
+                              exit=exit_mode_name),
+                "aspect": 16 / 9, "leadIn": 0.5,
+                "times": [0.0, 0.8, 2.5, 4.2, 4.6, 5.0, 5.6, 6.2, 7.0],
+                "hashArgs": [9, 5, 71], "matW": 34,
+            })
+    # sweep direction depends on the placement → exercise other aspects
+    cases.append({
+        "id": "exit-sweep-portrait",
+        "spec": _spec("fan", "drop", "3:4", 4, 3, delays=[0.2, 0.3, 0.2, 0.3], hold=1, exit="sweep"),
+        "aspect": 9 / 16, "leadIn": 0.0, "times": [0.0, 1.5, 3.0, 3.6, 4.2],
+        "hashArgs": [3, 4, 71], "matW": 30,
+    })
+    # virtual cameras over the composed scene
+    for camera in ("pan", "zoom", "telescope", "droste"):
+        cases.append({
+            "id": f"camera-{camera}",
+            "spec": _spec("masonry", "pop", "4:3", 5, 5, delays=[0.15, 0.4, 0.3, 0.5, 0.2], hold=2, camera=camera),
+            "aspect": 16 / 9, "leadIn": 0.5,
+            "times": [0.0, 0.6, 1.7, 3.0, 4.4, 5.8, 7.0],
+            "hashArgs": [5, 5, 11], "matW": 30, "camera": camera,
+        })
+    cases.append({
+        "id": "camera-zoom-exit",
+        "spec": _spec("grid", "drop", "square", 3, 2, delays=[0.15, 0.3, 0.3], hold=1.5, camera="zoom", exit="deal"),
+        "aspect": 16 / 9, "leadIn": 0.25, "times": [0.0, 1.0, 2.5, 3.4, 4.0, 4.6],
+        "hashArgs": [2, 3, 11], "matW": 30, "camera": "zoom",
+    })
     # the editor's track→slide beat mapping, evaluated in the TS twin
     for i, mb in enumerate([
         {"beats": [0.0, 0.5, 1.0, 1.5, 2.0], "trackStart": 0.0, "trimStart": 0.0, "trimEnd": 0.0, "holdStart": 1.25},
@@ -207,10 +250,17 @@ def test_collage_twin_engines_agree():
         # animation states at every sampled time
         for ti, t in enumerate(case["times"]):
             for i in range(len(spec["photos"])):
-                py = photo_state(spec, i, t, lead_in)
+                py = photo_state(spec, i, t, lead_in, aspect)
                 ts = got["states"][ti][i]
-                for key in ("dx", "dy", "rot", "scale", "alpha", "dim"):
+                for key in ("dx", "dy", "rot", "scale", "scaleX", "alpha", "dim"):
                     assert abs(ts[key] - py[key]) < TOL, f"{where} t={t} photo {i} {key}: {ts[key]} != {py[key]}"
+        # virtual camera: same window, same clamps
+        if case.get("camera"):
+            for ti, t in enumerate(case["times"]):
+                py = camera_state(spec, t, lead_in, aspect)
+                ts = got["camera"]["states"][ti]
+                for key in ("z", "cx", "cy"):
+                    assert abs(ts[key] - py[key]) < TOL, f"{where} t={t} camera {key}: {ts[key]} != {py[key]}"
         # slideLocalBeats (editor-only helper): expected values computed here
         if case.get("mapBeats"):
             mb = case["mapBeats"]
@@ -482,6 +532,97 @@ def test_depth_push_back_shrinks_and_dims_the_pile():
     assert abs(settled["scale"] - (1 - 0.06)) < TOL and abs(settled["dim"] - 0.11) < TOL
 
 
+def test_exit_math_and_derived_duration():
+    spec = _spec("stack", "drop", "4:3", 4, 1, delays=[0.15, 0.3, 0.3, 0.3], hold=2)
+    assert exit_mode(spec) == "none" and exit_total(spec) == 0.0
+    assert abs(collage_duration(spec) - base_duration(spec)) < TOL
+    for mode, total in (("sweep", 0.45 + 0.05 * 3), ("shuffle", 0.4 + 0.1 * 3),
+                        ("deal", 0.32 + 0.22 * 3)):
+        exited = _spec("stack", "drop", "4:3", 4, 1, delays=[0.15, 0.3, 0.3, 0.3], hold=2, exit=mode)
+        assert exit_mode(exited) == mode
+        assert abs(exit_total(exited) - total) < TOL, mode
+        assert abs(collage_duration(exited) - (base_duration(exited) + total)) < TOL, mode
+    # deal clears the pile top-first: photo n-1 leaves immediately, photo 0 last
+    deal = _spec("stack", "drop", "4:3", 4, 1, exit="deal")
+    assert [exit_offset(deal, i) for i in range(4)] == [0.66, 0.44, 0.22, 0.0]
+    sweep = _spec("stack", "drop", "4:3", 4, 1, exit="sweep")
+    assert [exit_offset(sweep, i) for i in range(4)] == pytest.approx([0.0, 0.05, 0.1, 0.15])
+    # 'none' entrance: the exit still applies after the plain hold
+    plain = _spec("grid", "none", "4:3", 3, 1, hold=2, exit="sweep")
+    assert abs(collage_duration(plain) - (2 + 0.45 + 0.05 * 2)) < TOL
+
+
+def test_exit_state_curves():
+    # sweep: a photo right of centre flies right, a centred one flies up
+    spec = _spec("grid", "none", "4:3", 2, 1, hold=1, exit="sweep")
+    base = base_duration(spec)                      # 'none' → 1 s hold
+    mid = photo_state(spec, 0, base + 0.3)          # grid photo 0 sits left of centre
+    assert mid["dx"] < 0 and mid["dy"] == 0.0, mid  # flies left
+    late = photo_state(spec, 0, base + 0.4)         # inside the final fade quarter
+    assert 0 < late["alpha"] < 1
+    gone = photo_state(spec, 0, base + 0.5)
+    assert gone["alpha"] == 0.0 and abs(gone["dx"]) > 60
+    before = photo_state(spec, 0, base - 0.01)
+    assert before["dx"] == 0.0 and before["alpha"] == 1.0
+    # deal: the arc dy is -6*sin(pi*qe), spin +25 deg, and photo n-1 leaves first
+    deal = _spec("stack", "none", "4:3", 3, 1, hold=1, exit="deal")
+    b = base_duration(deal)
+    last_mid = photo_state(deal, 2, b + 0.16)       # half through its 0.32 s fly
+    assert abs(last_mid["dy"] - (-6.0)) < TOL       # sin(pi/2) = 1
+    assert abs(last_mid["rot"] - 12.5) < TOL
+    first_not_started = photo_state(deal, 0, b + 0.16)
+    assert first_not_started["dx"] == 0.0 and first_not_started["alpha"] == 1.0
+    # shuffle: seeded directions are deterministic
+    sh = _spec("scatter", "none", "4:3", 4, 7, hold=1, exit="shuffle")
+    b = base_duration(sh)
+    a = photo_state(sh, 1, b + 0.2)["dx"]
+    again = photo_state(sh, 1, b + 0.2)["dx"]
+    assert a == again
+
+
+def test_flip_entrance_opens_edge_on():
+    spec = _spec("grid", "flip", "4:3", 2, 1, delays=[0.1, 0.3])
+    start = photo_start(spec, 0, 0.0)
+    edge = photo_state(spec, 0, start)
+    assert abs(edge["scaleX"] - 0.04) < TOL and edge["alpha"] == 0.0
+    mid = photo_state(spec, 0, start + 0.225)       # halfway through the 0.45 s flip
+    assert 0.04 < mid["scaleX"] < 1.2 and abs(mid["rot"]) > 0   # outBack may overshoot
+    settled = photo_state(spec, 0, start + 0.45)
+    assert abs(settled["scaleX"] - 1.0) < 1e-6 and abs(settled["rot"]) < TOL
+    # depth push-back applies to flip too (uniform shrink + dim)
+    deep = _spec("grid", "flip", "4:3", 3, 1, delays=[0.05, 1.0, 1.0], depth=True)
+    pushed = photo_state(deep, 0, 2.6)
+    assert abs(pushed["scale"] - (1 - 0.06 * 2)) < TOL and abs(pushed["dim"] - 0.11 * 2) < TOL  # two later photos
+
+
+def test_camera_state_windows_stay_inside_the_frame():
+    ident = camera_state(_spec("stack", "drop", "4:3", 3, 1), 1.0)
+    assert (ident["z"], ident["cx"], ident["cy"]) == (1.0, 50.0, 50.0)
+    # pan: a slight zoom drifting across, y fixed
+    pan = _spec("grid", "pop", "4:3", 4, 1, hold=2, camera="pan")
+    d = collage_duration(pan)
+    for t, cx in ((0.0, 54.0), (d / 2, 50.0), (d, 46.0)):
+        st = camera_state(pan, t)
+        assert abs(st["cx"] - cx) < TOL and abs(st["cy"] - 50) < TOL and abs(st["z"] - 1.09) < TOL
+    # zoom family: centres on the LAST photo's anchor, clamped inside the frame
+    for mode in ("zoom", "telescope", "droste"):
+        spec = _spec("masonry", "drop", "4:3", 5, 5, hold=2, camera=mode)
+        d = collage_duration(spec)
+        zs = []
+        for k in range(21):
+            st = camera_state(spec, d * k / 20)
+            half = 50 / st["z"]
+            assert half - 1e-9 <= st["cx"] <= 100 - half + 1e-9, (mode, st)
+            assert half - 1e-9 <= st["cy"] <= 100 - half + 1e-9, (mode, st)
+            zs.append(st["z"])
+        assert all(b >= a for a, b in zip(zs, zs[1:]))     # monotonic zoom in
+        assert zs[0] == 1.0 and zs[-1] > 1.3, (mode, zs[-1])
+    # lead-in shifts the clock, not the curve
+    spec = _spec("grid", "pop", "4:3", 4, 1, hold=2, camera="zoom")
+    d = collage_duration(spec)
+    assert abs(camera_state(spec, 0.5 + d / 2, 0.5)["z"] - camera_state(spec, d / 2)["z"]) < TOL
+
+
 def test_graph_builds_for_every_animation():
     for animation in ("drop", "pop", "swing", "none"):
         for layout in ("stack", "grid", "scatter"):
@@ -584,6 +725,40 @@ def test_graph_depth_push_back():
     plain = {"collage": _spec("stack", "drop", "4:3", 4, 7, depth=False)}
     glines, _ = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
     assert "eq@dim" not in "".join(glines) and "scale=w=" not in "".join(glines)
+
+
+def test_graph_exits_and_flip_and_camera():
+    # exits: windowed enable, a fade-out at the end of every fly, and the
+    # fly terms appended to the position expressions
+    item = {"collage": _spec("stack", "drop", "4:3", 4, 7, delays=[0.15, 0.3, 0.3, 0.3], hold=2, exit="deal")}
+    lines, _ = collage_graph(item, 1280, 720, 25.0, 8.0, 0.5, 1, "cb")
+    graph = "".join(lines)
+    assert graph.count("between(t,") == 4                     # every photo leaves
+    assert graph.count("fade=t=out") == 4
+    assert graph.count("*sin(PI*") == 4                       # deal's dy arc, one per photo
+    # 'none' entrance + exit: photos are on screen from frame 0
+    none_item = {"collage": _spec("grid", "none", "4:3", 3, 7, hold=1, exit="sweep")}
+    nlines, _ = collage_graph(none_item, 1280, 720, 25.0, 5.0, 0.5, 1, "cb")
+    ngraph = "".join(nlines)
+    assert ngraph.count("between(t,0,") == 3
+    # flip: width follows the outBack curve, height only the depth shrink
+    flip = {"collage": _spec("grid", "flip", "4:3", 2, 3, depth=True)}
+    flines, _ = collage_graph(flip, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
+    fgraph = "".join(flines)
+    assert "scale=w='max(1," in fgraph and "rotate='(-4*(1-" in fgraph
+    # camera: pan → a moving crop, zoom family → zoompan into the last anchor
+    pan = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2, camera="pan")}
+    plines, plast = collage_graph(pan, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
+    pgraph = "".join(plines)
+    assert "crop=" in pgraph and "(54-8*" in pgraph and plast == "cam"
+    zoom = {"collage": _spec("masonry", "drop", "4:3", 5, 5, hold=2, camera="zoom")}
+    zlines, zlast = collage_graph(zoom, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
+    zgraph = "".join(zlines)
+    assert "zoompan=z='(1+0.35*" in zgraph and "d=1:s=1280x720" in zgraph and zlast == "cam"
+    # no camera → the composed photos label is the result, no crop/zoompan
+    plain = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2)}
+    gglines, gglast = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
+    assert gglast == "o3" and "zoompan" not in "".join(gglines)
 
 
 def test_graph_none_without_collage():

@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, collageDuration, defaultDelay, normalizeCollage, photoDelay, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageSpec } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, cameraState, collageDuration, defaultDelay, exitTotal, normalizeCollage, photoDelay, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageSpec } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
@@ -1431,6 +1431,10 @@ function App() {
   // Background-picture picker opened from the collage editor: the chosen
   // image becomes the slide's background instead of joining the photo set.
   const [bgPickerFor, setBgPickerFor] = useState<number | null>(null)
+  // Replace-one-photo picker opened from a collage chip: the chosen image
+  // swaps into that slot (two in-collage photos trade places), keeping the
+  // slot's wait and size.
+  const [replacePickerFor, setReplacePickerFor] = useState<{ id: number; index: number } | null>(null)
   // Files uploading from this device into the NAS uploads volume ("Upload
   // from this device" in the media picker and drag & drop onto the storyline).
   const [uploads, setUploads] = useState<UploadItem[]>([])
@@ -2642,7 +2646,14 @@ function App() {
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} defaultStack={defaultStack} setDefaultStack={setDefaultStack} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>}
-    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onOpenCaption={() => { closeCollageEditor(false); setEditingTextFrame(editingCollageFrame) }} audioTracks={audioTracks} audioLoop={audioPolicy === 'Loop & trim'} holdStart={(() => { const idx = media.findIndex(x => x.id === editingCollageFrame); if (idx <= 0) return 0; const { starts } = timelineModel(media); return starts[idx] })()}/>}
+    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onOpenCaption={() => {
+      // Switching to the caption editor is not a cancel: a brand-new collage
+      // must survive the handover (closeCollageEditor(false) deletes pending
+      // ones), so clear the pending flag instead of routing through cancel.
+      if (editingCollageFrame !== null && editingCollageFrame === pendingCollageFrame) setPendingCollageFrame(null)
+      setEditingCollageFrame(null)
+      setEditingTextFrame(editingCollageFrame)
+    }} audioTracks={audioTracks} audioLoop={audioPolicy === 'Loop & trim'} holdStart={(() => { const idx = media.findIndex(x => x.id === editingCollageFrame); if (idx <= 0) return 0; const { starts } = timelineModel(media); return starts[idx] })()}/>}
     {collagePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setCollagePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
       // Merge the chosen photos into the collage (deduped, capped at 12);
       // order of picking is order on the pile — later photos on top. The
@@ -2668,6 +2679,28 @@ function App() {
       const file = files.find((f:any) => f.kind === 'image' && !f.empty)
       if (target && file) patchCollageItem(id, { collage: { ...(target.collage ?? { photos: [], layout: 'stack' as const, animation: 'drop' as const, shape: '4:3' as const, seed: 1 }), backgroundImage: String(file.path) } })
       setBgPickerFor(null)
+    }}/>}
+    {replacePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setReplacePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+      const { id, index } = replacePickerFor
+      const target = media.find(x => x.id === id)
+      const file = files.find((f:any) => f.kind === 'image' && !f.empty)
+      if (target && file) {
+        const photos = [...(target.collage?.photos ?? [])]
+        const existing = photos.findIndex(p => p.path === file.path)
+        if (existing === index) {
+          // the same photo picked — nothing to change
+        } else if (existing >= 0) {
+          // already in the collage: the two slots trade photos, each keeping
+          // its own wait and size
+          const old = photos[index]
+          photos[index] = { ...old, path: file.path, name: file.name }
+          photos[existing] = { ...photos[existing], path: old.path, name: old.name }
+        } else {
+          photos[index] = { ...photos[index], path: file.path, name: file.name }
+        }
+        patchCollageItem(id, { collage: { ...(target.collage ?? { photos: [], layout: 'stack' as const, animation: 'drop' as const, shape: '4:3' as const, seed: 1 }), photos } })
+      }
+      setReplacePickerFor(null)
     }}/>}
     {showAudioBrowser && <MediaBrowser audioOnly onClose={()=>setShowAudioBrowser(false)} onAdd={(files:any[])=>{
       void (async () => {
@@ -3037,6 +3070,7 @@ const COLLAGE_ASPECT: Record<string, number> = { '4:3': 4 / 3, square: 1, '3:4':
 function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typeof useMotionClock> }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const layerRef = useRef<HTMLDivElement | null>(null)
+  const camRef = useRef<HTMLDivElement | null>(null)
   const matRefs = useRef<(HTMLDivElement | null)[]>([])
   const spec = useMemo<CollageSpec | undefined>(() => normalizeCollage(item.collage) as CollageSpec | undefined, [item.collage])
   // The background picture comes from the raw spec so it also shows behind
@@ -3083,31 +3117,39 @@ function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typ
       geo.forEach((g, i) => {
         const el = matRefs.current[i]
         if (!el) return
-        const st = photoState(spec, i, t)
+        const st = photoState(spec, i, t, 0, FRAME_W / FRAME_H)
         el.style.left = `${g.ax + st.dx / 100 * FRAME_W}px`
         el.style.top = `${g.ay + st.dy / 100 * FRAME_H}px`
         el.style.transformOrigin = pin ? '50% 0' : '50% 50%'
-        el.style.transform = `translate(-50%, ${pin ? '0' : '-50%'}) rotate(${st.rot}deg) scale(${st.scale})`
+        el.style.transform = `translate(-50%, ${pin ? '0' : '-50%'}) rotate(${st.rot}deg) scale(${st.scale}) scaleX(${st.scaleX})`
         el.style.opacity = String(st.alpha)
         el.style.filter = st.dim > 0.004 ? `brightness(${(1 - st.dim).toFixed(3)})` : ''
       })
+      // Virtual camera over the whole scene (background + photos): the same
+      // window maths the render's crop/zoompan chain uses.
+      if (camRef.current) {
+        const cs = cameraState(spec, t, 0, FRAME_W / FRAME_H)
+        camRef.current.style.transform = `translate(${((50 - cs.cx) * cs.z).toFixed(3)}%, ${((50 - cs.cy) * cs.z).toFixed(3)}%) scale(${cs.z.toFixed(5)})`
+      }
     })
   }, [spec, geo, clock])
 
   if (!spec && !bg) return null
   return <div ref={hostRef} className="collage-photos stage-fill">
     <div ref={layerRef} className="collage-layer" style={{ width: FRAME_W, height: FRAME_H }}>
-      {bg && <img className="collage-bg" src={collagePhotoUrl({ path: bg })} alt="" draggable={false}
-        style={{ filter: `blur(${bgBlurCssPx(bgBlur)}px)` }} />}
-      {(spec?.photos ?? []).map((photo, i) => {
-        const g = geo[i]
-        if (!g) return null
-        return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className="collage-mat"
-          style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom }}>
-          <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy"
-            style={{ width: g.photoW, height: g.photoH, objectFit: 'cover' }} />
-        </div>
-      })}
+      <div ref={camRef} className="collage-camera">
+        {bg && <img className="collage-bg" src={collagePhotoUrl({ path: bg })} alt="" draggable={false}
+          style={{ filter: `blur(${bgBlurCssPx(bgBlur)}px)` }} />}
+        {(spec?.photos ?? []).map((photo, i) => {
+          const g = geo[i]
+          if (!g) return null
+          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className="collage-mat"
+            style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom }}>
+            <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy"
+              style={{ width: g.photoW, height: g.photoH, objectFit: 'cover' }} />
+          </div>
+        })}
+      </div>
     </div>
   </div>
 }
@@ -3516,7 +3558,21 @@ const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string
   { id: 'drop', label: 'Drop in', hint: 'Photos fall in from above, straightening as they land' },
   { id: 'pop', label: 'Pop in', hint: 'Photos pop up from 55% with a springy overshoot' },
   { id: 'swing', label: 'Swing', hint: 'Photos hang from a pin at the top of the mat and swing to rest' },
+  { id: 'flip', label: 'Flip in', hint: 'Cards flip open edge-on with a springy overshoot' },
   { id: 'none', label: 'None', hint: 'Photos appear with the slide — no entrance animation' },
+]
+const COLLAGE_EXITS: { id: NonNullable<CollageSpec['exit']>; label: string; hint: string }[] = [
+  { id: 'none', label: 'Stay on', hint: 'The photos stay on screen until the next slide takes over' },
+  { id: 'sweep', label: 'Sweep out', hint: 'After the hold, every photo sweeps outward through its own position, fading as it goes' },
+  { id: 'deal', label: 'Deal off', hint: 'The pile is dealt away one card at a time — top card first, off to the right' },
+  { id: 'shuffle', label: 'Scatter off', hint: 'The photos scatter off in seeded random directions' },
+]
+const COLLAGE_CAMERAS: { id: NonNullable<CollageSpec['camera']>; label: string; hint: string }[] = [
+  { id: 'none', label: 'Still', hint: 'A fixed camera on the whole collage' },
+  { id: 'pan', label: 'Pan', hint: 'A gentle drift across a slightly zoomed frame — the wall-gallery look' },
+  { id: 'zoom', label: 'Zoom in', hint: 'The camera slowly zooms into the last photo as it lands' },
+  { id: 'telescope', label: 'Telescope', hint: 'A deeper, smooth zoom into the last photo — bridging towards the next slide' },
+  { id: 'droste', label: 'Droste', hint: 'An accelerating deep zoom — the endless-zoom feel' },
 ]
 const COLLAGE_SHAPES: { id: CollageSpec['shape']; label: string; hint: string }[] = [
   { id: '4:3', label: '4:3', hint: 'Landscape photos (crop to 4:3)' },
@@ -3524,7 +3580,7 @@ const COLLAGE_SHAPES: { id: CollageSpec['shape']; label: string; hint: string }[
   { id: '3:4', label: '3:4', hint: 'Portrait photos (crop to 3:4)' },
 ]
 
-function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, audioTracks = [], holdStart = 0, audioLoop = true }: {
+function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, onReplacePhoto, audioTracks = [], holdStart = 0, audioLoop = true }: {
   item: MediaItem
   isNew?: boolean
   stacked?: boolean
@@ -3534,6 +3590,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   onPickPhotos: () => void
   onPickBackground: () => void
   onOpenCaption: () => void
+  onReplacePhoto: (index: number) => void
   audioTracks?: AudioTrack[]
   holdStart?: number
   audioLoop?: boolean
@@ -3655,6 +3712,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <span className="chip-num">{i + 1}</span>
             <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy" />
             <span className="chip-actions">
+              <button type="button" title="Replace this photo with another from the library — keeps its wait and size" onClick={() => onReplacePhoto(i)}><RefreshCw size={11}/></button>
               <button type="button" disabled={i === 0} title="Move earlier (photos later in the list land on top)" onClick={() => movePhoto(i, -1)}><ChevronLeft size={11}/></button>
               <button type="button" disabled={i === photos.length - 1} title="Move later" onClick={() => movePhoto(i, 1)}><ChevronRight size={11}/></button>
               <button type="button" className="chip-remove" title="Remove from collage" onClick={e => { e.stopPropagation(); removePhoto(i) }}><X size={11}/></button>
@@ -3671,10 +3729,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         <div className="collage-choices-group"><FieldLabel>Photo animation</FieldLabel>
           <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
           <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
-          <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' ? '' : ' disabled'}`}>
-            <input type="checkbox" checked={spec.depth === true} disabled={spec.animation !== 'drop' && spec.animation !== 'pop'} onChange={e => setSpec({ depth: e.target.checked })} />
+          <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' || spec.animation === 'flip' ? '' : ' disabled'}`}>
+            <input type="checkbox" checked={spec.depth === true} disabled={spec.animation !== 'drop' && spec.animation !== 'pop' && spec.animation !== 'flip'} onChange={e => setSpec({ depth: e.target.checked })} />
             <span>Depth push-back — photos already landed shrink back and dim a little as each new one lands</span>
           </label></div>
+        <div className="collage-choices-group"><FieldLabel>Photo exit</FieldLabel>
+          <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
+          <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small></div>
         <div className="collage-choices-group"><FieldLabel>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></FieldLabel>
           {spec.animation === 'none'
             ? <small>With no entrance animation every photo is on screen from the first frame, so there is nothing to time. Pick an entrance to stagger the photos.</small>
@@ -3705,7 +3766,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                   <button type="button" className="btn ghost small" title="Reset every photo to the layout's default size" onClick={resetSizes}>Reset sizes</button>
                 </span>
               </div>
-              <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold — {total}s in total. The storyline duration follows automatically. Size is per photo: bigger photos overlap their neighbours, smaller ones tuck in.</small>
+              <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold{exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — {total}s in total. The storyline duration follows automatically. Size is per photo: bigger photos overlap their neighbours, smaller ones tuck in.</small>
             </>}</div>
         <div className="collage-choices-group"><FieldLabel>Beat sync</FieldLabel>
           <label className={`collage-check${spec.animation === 'none' ? ' disabled' : ''}`}>
@@ -3722,6 +3783,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <button type="button" className="btn ghost" title="Re-roll the seeded arrangement — same number always gives the same layout" onClick={() => setSpec({ seed: 1 + Math.floor(Math.random() * 9999) })}><Shuffle size={13}/> Shuffle</button>
           </div>
           <small>The seed pins the layout: the same number always arranges the photos identically — in the preview and in the render.</small></div>
+        <div className="collage-choices-group"><FieldLabel>Camera</FieldLabel>
+          <div className="collage-choices">{COLLAGE_CAMERAS.map(c => <button key={c.id} type="button" className={(spec.camera ?? 'none') === c.id ? 'active' : ''} title={c.hint} onClick={() => setSpec({ camera: c.id === 'none' ? undefined : c.id })}>{c.label}</button>)}</div>
+          <small>{COLLAGE_CAMERAS.find(c => c.id === (spec.camera ?? 'none'))?.hint}</small></div>
         <div className="collage-choices-group"><FieldLabel>Caption (optional)</FieldLabel>
           <textarea value={item.text} placeholder="Add a caption on top of the photos…" onChange={e => livePatch({ text: e.target.value })}/>
           <button type="button" className="btn ghost small" onClick={onOpenCaption} title="Font, colour, position and text effects — the full text frame editor"><Pencil size={11}/> Style &amp; effects…</button></div>
