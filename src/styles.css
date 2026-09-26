@@ -1448,3 +1448,10 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .swatch-picker .swatch-custom b{font:600 9px Manrope;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .swatch-picker.disabled{opacity:.35}
 .bg-columns .dimmed .swatch-picker{opacity:.35}
+
+/* --- Live render stage under the progress bar in the generation pane --- */
+/* Shows what the backend is doing right now ("Prepared slide 28/84 — beach.jpg",
+   "Joining timeline…"), polled once a second from the job row in SQLite. */
+.render-stage{display:flex;align-items:center;gap:7px;margin:8px 0 0;min-width:0}
+.render-stage svg{color:#5e7d2c;flex:0 0 auto}
+.render-stage span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 9px Manrope;color:#6f7466}
