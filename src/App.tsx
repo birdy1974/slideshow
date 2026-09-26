@@ -2477,6 +2477,41 @@ function App() {
   </div>
 }
 
+/** Quick-pick colour swatches for the text colour and the frame background
+ *  pickers: vivid basics by default (red, orange, yellow, green, cyan, blue,
+ *  purple, magenta, pink, white, grey, black) and a one-click Pastel switch
+ *  for soft tones. The mode is shared by every swatch row in the app, so one
+ *  click flips them all; the native colour input covers anything else. */
+const VIVID_SWATCHES = ['#ff0000', '#ff7f00', '#ffff00', '#00cc00', '#00ffff', '#0066ff', '#8000ff', '#ff00ff', '#ff4d9e', '#ffffff', '#808080', '#000000']
+const PASTEL_SWATCHES = ['#ffb3b3', '#ffcc99', '#ffffb3', '#b3e6b3', '#b3ffff', '#a8c8ff', '#cc99ff', '#ffccff', '#ffb3d1', '#ffffff', '#d9d9d9', '#4d4d4d']
+
+// One vivid/pastel choice for every swatch row (tiny pub/sub, no context).
+let swatchesPastel = false
+const swatchModeListeners = new Set<(pastel: boolean) => void>()
+const setSwatchesPastel = (pastel: boolean) => { swatchesPastel = pastel; swatchModeListeners.forEach(l => l(pastel)) }
+function useSwatchesPastel() {
+  const [pastel, setPastel] = useState(swatchesPastel)
+  useEffect(() => { swatchModeListeners.add(setPastel); return () => { swatchModeListeners.delete(setPastel) } }, [])
+  return pastel
+}
+
+function ColorSwatchPicker({ value, onChange, disabled = false }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
+  const pastel = useSwatchesPastel()
+  const colours = pastel ? PASTEL_SWATCHES : VIVID_SWATCHES
+  const current = typeof value === 'string' && value ? value : '#ffffff'
+  const hex = isHex(current) ? current : '#ffffff'
+  return <div className={`swatch-picker${disabled ? ' disabled' : ''}`}>
+    <div className="swatch-row">{colours.map(c => <button key={c} type="button" disabled={disabled} className={`swatch${current.toLowerCase() === c.toLowerCase() ? ' active' : ''}`} style={{ background: c }} title={c.toUpperCase()} aria-label={`Colour ${c.toUpperCase()}`} onClick={() => onChange(c)} />)}</div>
+    <div className="swatch-foot">
+      <div className="swatch-mode" role="group" aria-label="Swatch colours">
+        <button type="button" className={pastel ? '' : 'active'} aria-pressed={!pastel} disabled={disabled} title="Vivid basic colours" onClick={() => setSwatchesPastel(false)}>Vivid</button>
+        <button type="button" className={pastel ? 'active' : ''} aria-pressed={pastel} disabled={disabled} title="Soft pastel colours" onClick={() => setSwatchesPastel(true)}>Pastel</button>
+      </div>
+      <span className="swatch-custom" title="Pick any colour"><Palette size={13}/><input type="color" disabled={disabled} value={hex} aria-label="Custom colour" onChange={e => onChange(e.target.value)}/><b>{current.toUpperCase()}</b></span>
+    </div>
+  </div>
+}
+
 function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontColor, setFontColor, bold, setBold, italic, setItalic, underline, setUnderline, sample }: {
   fontFamily: string; setFontFamily: (v: string) => void;
   fontSize: number; setFontSize: (v: number) => void;
@@ -2489,7 +2524,7 @@ function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontCo
   return <div className="type-controls-stack">
     <div><FieldLabel>Font family <small>{Object.values(FONT_GROUPS).flat().length} fonts · incl. handwriting</small></FieldLabel><FontPicker value={fontFamily} onChange={setFontFamily} sample={sample} /><div className="font-sample" style={{ fontFamily: fontStack(fontFamily), fontWeight: bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }} title="Live sample in the selected font">{sample || FONT_SAMPLE}</div></div>
     <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={350} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
-    <div><FieldLabel>Text colour</FieldLabel><div className="color-control"><input type="color" value={fontColor.startsWith('#') ? fontColor : '#ffffff'} onChange={e => setFontColor(e.target.value)}/><span>{fontColor.toUpperCase()}</span></div></div>
+    <div><FieldLabel>Text colour</FieldLabel><ColorSwatchPicker value={fontColor} onChange={setFontColor} /></div>
     <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_BOLD.has(fontFamily)} title={FONTS_WITHOUT_BOLD.has(fontFamily) ? `${fontFamily} has a single weight` : 'Bold'} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
 }
@@ -2902,7 +2937,6 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   }
 
   // ---- colour A / B (text frames) ----
-  const backgrounds = ['#30382a', '#14213d', '#6f4238', '#37474f', '#5b285f', '#163c44']
   const sameAsA = isFrame && !isHex(draft.frameBackground2)
   const colourB = isFrame ? (draft.frameBackground2 || draft.frameBackground) : '#30382a'
   const bTime = Math.min(clipDuration, Math.max(0.2, Number(draft.frameTransitionTime) || 1))
@@ -2988,8 +3022,8 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
           </div>
           {isFrame && <>
             <div className="bg-columns">
-              <div><FieldLabel>Colour A</FieldLabel><div className="background-swatches">{backgrounds.map(c => <button key={c} className={draft.frameBackground === c ? 'active' : ''} style={{ background: c }} onClick={() => apply({ frameBackground: c })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" value={isHex(draft.frameBackground) ? draft.frameBackground : '#30382a'} onChange={e => apply({ frameBackground: e.target.value })}/></div></div>
-              <div className={sameAsA ? 'dimmed' : ''}><FieldLabel>Colour B</FieldLabel><div className="background-swatches">{backgrounds.map(c => <button key={c} disabled={sameAsA} className={colourB === c ? 'active' : ''} style={{ background: c }} onClick={() => apply({ frameBackground2: c })}/>)}</div><div className="custom-bg"><Palette size={14}/><span>Custom</span><input type="color" disabled={sameAsA} value={isHex(colourB) ? colourB : '#30382a'} onChange={e => apply({ frameBackground2: e.target.value })}/></div>
+              <div><FieldLabel>Colour A</FieldLabel><ColorSwatchPicker value={draft.frameBackground} onChange={v => apply({ frameBackground: v })} /></div>
+              <div className={sameAsA ? 'dimmed' : ''}><FieldLabel>Colour B</FieldLabel><ColorSwatchPicker value={colourB} onChange={v => apply({ frameBackground2: v })} disabled={sameAsA} />
                 <label className="check-label dark" title="Untick to give the frame a second colour: colour B starts as a copy of colour A, pick the colour you want"><input type="checkbox" checked={sameAsA} onChange={e => apply(e.target.checked ? { frameBackground2: undefined } : { frameBackground2: draft.frameBackground, frameTransition: draft.frameTransition || 'Fade', frameTransitionTime: draft.frameTransitionTime || 1, frameTransitionStart: draft.frameTransitionStart ?? Math.max(0, (clipDuration - 1) / 2) })}/><span><Check size={11}/></span>Same as A</label></div>
             </div>
             {!sameAsA && <div className="bg-transition">
