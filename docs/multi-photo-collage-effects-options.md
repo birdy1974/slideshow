@@ -83,9 +83,12 @@ pipeline stage:
 
 ```
 item: { type: 'collage', duration, transition, transitionTime,
-        photos: [{ path, delay? }, …]       // references into the photo library; delay = seconds
+        photos: [{ path, delay?, size? }, …]  // references into the photo library; delay = seconds
                                            // after the PREVIOUS photo appears (photo 0: after the
                                            // hold starts). Missing = auto stagger.
+                                           // size = 0.5..1.5 multiplier on the layout's base mat
+                                           // width (missing / junk → 1); the mat grows around its
+                                           // anchor, it never moves. Editor stepper 50–150 %.
         layout: 'stack' | 'grid' | 'masonry' | 'scatter' | 'filmstrip' | 'fan',
         animation: 'drop' | 'pop' | 'swing' | 'deal' | 'none',
         background: '#hex' | 'none',
@@ -173,7 +176,9 @@ nominal stagger time. Also useful later for text effects (word-pop on beat).
 > DOM-transform preview, and captions riding the existing text stack.
 > **Timing update:** per-photo appearance waits (`delay`) with a hold after
 > the last photo — the slide duration is derived from them
-> (`collageDuration`, auto-synced by the editor). **Background update:** an
+> (`collageDuration`, auto-synced by the editor). **Size update:** each
+> photo can scale its mat (50–150 %, `photos[].size`) — the anchor stays
+> put. **Background update:** an
 > optional library picture behind the photos with a blur strength
 > (`backgroundImage` / `backgroundBlur`; replaces the colour bed and its
 > change). The editor round-trips items as title frames with a `collage`

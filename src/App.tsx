@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, collageDuration, defaultDelay, normalizeCollage, photoDelay, photoStart, photoState, pinAnchor, placements, type CollageSpec } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, collageDuration, defaultDelay, normalizeCollage, photoDelay, photoSize, photoStart, photoState, pinAnchor, placements, type CollageSpec } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
@@ -3111,10 +3111,16 @@ function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typ
   </div>
 }
 
-/** A whole collage slide playing: photos first, caption on top (like the MP4). */
-function CollageSlideStage({ item, defaults, playing = true }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean }) {
+/** A whole collage slide playing: photos first, caption on top (like the MP4).
+ * Any change to the collage itself restarts the choreography from the top so
+ * the new size / timing / animation can be watched from the first photo;
+ * `replayKey` restarts it on demand (the editor's Replay button). */
+function CollageSlideStage({ item, defaults, playing = true, replayKey = 0 }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; replayKey?: number }) {
   const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
+  const specKey = JSON.stringify(item.collage ?? null)
+  useEffect(() => { clock.seek(0) }, [specKey, clock])
+  useEffect(() => { clock.seek(0) }, [replayKey, clock])
   return <>
     <CollagePhotos item={item} clock={clock} />
     <MotionStage className="stage-fill" input={input} clock={clock} />
@@ -3542,15 +3548,21 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     setSpec({ photos: photos.map((photo, k) => ({ ...photo, delay: k === i ? Math.max(0, Math.min(30, v)) : (photo.delay ?? defaultDelay(n, k)) })) })
   }
   const spreadEvenly = () => setSpec({ photos: photos.map(photo => { const { delay, ...rest } = photo; return rest }) })
+  const setSize = (i: number, v: number) => {
+    setSpec({ photos: photos.map((photo, k) => ({ ...photo, size: k === i ? Math.max(0.5, Math.min(1.5, v)) : (photo.size ?? 1) })) })
+  }
+  const resetSizes = () => setSpec({ photos: photos.map(photo => { const { size, ...rest } = photo; return rest }) })
   const total = photos.length ? collageDuration(spec) : 0
   const entrance = ENTRANCE_LENGTH[spec.animation] ?? 0
+  const [replayKey, setReplayKey] = useState(0)
   return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`} onMouseDown={onClose}><div className="frame-editor collage-editor" onMouseDown={e => e.stopPropagation()}>
     <div className="preview-top"><div><strong>{isNew ? 'New photo collage' : 'Photo collage'}</strong><span>PICK UP TO {MAX_COLLAGE_PHOTOS} PHOTOS · THE PREVIEW IS THE RENDER ENGINE</span></div><div className="frame-head-actions"><button onClick={onClose} title={isNew ? 'Discard this collage' : 'Discard changes and close'}><X size={20}/></button></div></div>
     <div className="frame-editor-body">
       <div className="frame-left">
         <div className="frame-canvas" style={{ background: item.frameBackground }}>
-          <CollageSlideStage item={item} />
+          <CollageSlideStage item={item} replayKey={replayKey} />
           {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
+          <button type="button" className="collage-replay" title="Restart the preview from the first photo" onClick={() => setReplayKey(k => k + 1)}><RotateCcw size={12}/> Replay</button>
         </div>
         <div className="collage-strip">
           {photos.map((photo, i) => <div className={`collage-chip${dragOverChip === i ? ' over' : ''}`} key={`${photo.path}-${i}`}
@@ -3577,7 +3589,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         <div className="collage-choices-group"><FieldLabel>Photo animation</FieldLabel>
           <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
           <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small></div>
-        <div className="collage-choices-group"><FieldLabel>Photo timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></FieldLabel>
+        <div className="collage-choices-group"><FieldLabel>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></FieldLabel>
           {spec.animation === 'none'
             ? <small>With no entrance animation every photo is on screen from the first frame, so there is nothing to time. Pick an entrance to stagger the photos.</small>
             : <>
@@ -3585,9 +3597,16 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 {photos.map((photo, i) => <div className="collage-timing-row" key={`${photo.path}-${i}`}>
                   <img src={collagePhotoUrl(photo)} alt="" loading="lazy" />
                   <span className="name" title={photo.name || photo.path}>{photo.name || photo.path.split('/').pop() || `photo ${i + 1}`}</span>
-                  <label title={i === 0 ? 'Seconds after the slide starts before this photo appears' : 'Seconds after the previous photo appears before this one appears'}>{i === 0 ? 'after start' : 'waits'}</label>
-                  <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.1} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
-                  <label>sec</label>
+                  <span className="ctl" title={i === 0 ? 'Seconds after the slide starts before this photo appears' : 'Seconds after the previous photo appears before this one appears'}>
+                    <label>{i === 0 ? 'after start' : 'waits'}</label>
+                    <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.1} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
+                    <label>sec</label>
+                  </span>
+                  <span className="ctl" title="This photo's mat size — 100 % is the layout default; larger photos overlap their neighbours, smaller ones tuck in">
+                    <label>size</label>
+                    <NumberStepper value={Math.round(photoSize(spec, i) * 100)} min={50} max={150} step={5} ariaLabel={`Photo ${i + 1} size`} onChange={v => setSize(i, v / 100)} />
+                    <label>%</label>
+                  </span>
                 </div>)}
                 {photos.length === 0 && <small className="collage-timing-empty">Pick photos to set when each one appears.</small>}
               </div>
@@ -3595,9 +3614,12 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 <span title="How long the finished collage stays on screen after the last photo has landed">Hold after last</span>
                 <NumberStepper value={spec.hold ?? 2} min={0} max={60} step={0.5} ariaLabel="Hold after the last photo" onChange={v => setSpec({ hold: Math.max(0, v) })} />
                 <span>sec</span>
-                <button type="button" className="btn ghost small" title="Reset every wait to the even auto-stagger" onClick={spreadEvenly}>Spread evenly</button>
+                <span className="collage-timing-actions">
+                  <button type="button" className="btn ghost small" title="Reset every wait to the even auto-stagger" onClick={spreadEvenly}>Spread evenly</button>
+                  <button type="button" className="btn ghost small" title="Reset every photo to the layout's default size" onClick={resetSizes}>Reset sizes</button>
+                </span>
               </div>
-              <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold — {total}s in total. The storyline duration follows automatically.</small>
+              <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold — {total}s in total. The storyline duration follows automatically. Size is per photo: bigger photos overlap their neighbours, smaller ones tuck in.</small>
             </>}</div>
         <div className="collage-choices-group"><FieldLabel>Photo shape</FieldLabel>
           <div className="collage-choices">{COLLAGE_SHAPES.map(s => <button key={s.id} type="button" className={spec.shape === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ shape: s.id })}>{s.label}</button>)}</div>

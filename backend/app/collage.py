@@ -69,12 +69,17 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         return min(cell_w * 0.8, cell_h * 0.82 * aspect / k)
 
     layout = str(spec.get("layout") or "stack")
+    # Per-photo size: each photo's mat is the layout width times its
+    # multiplier (bigger photos overlap their neighbours — that is the point).
+    def width_of(base: float, i: int) -> float:
+        return base * photo_size(spec, i)
+
     if layout == "grid":
         cols, _, cell_w, cell_h = cells(n)
         w = fit_width(cell_w, cell_h)
         for i in range(n):
             col, row = i % cols, i // cols
-            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": w, "rot": 0.0})
+            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": 0.0})
     elif layout == "scatter":
         cols, _, cell_w, cell_h = cells(n)
         w = fit_width(cell_w, cell_h) * 0.94
@@ -82,19 +87,19 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
             col, row = i % cols, i // cols
             cx = 7 + cell_w * (col + 0.28 + 0.44 * hash01(seed, i, 29))
             cy = 12 + cell_h * (row + 0.28 + 0.44 * hash01(seed, i, 31))
-            out.append({"cx": cx, "cy": cy, "w": w, "rot": (hash01(seed, i, 37) - 0.5) * 26})
+            out.append({"cx": cx, "cy": cy, "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 26})
     else:  # stack
         w = 42.0 if n <= 3 else (34.0 if n <= 6 else 30.0)
         for i in range(n):
             if i == 0:
-                out.append({"cx": 50.0, "cy": 46.0, "w": w, "rot": (hash01(seed, i, 17) - 0.5) * 22})
+                out.append({"cx": 50.0, "cy": 46.0, "w": width_of(w, i), "rot": (hash01(seed, i, 17) - 0.5) * 22})
                 continue
             ang = hash01(seed, i, 11) * 2 * math.pi
             r = 5 + hash01(seed, i, 13) * 8
             out.append({
                 "cx": 50 + math.cos(ang) * r * 0.9,
                 "cy": 46 + math.sin(ang) * r / aspect,
-                "w": w,
+                "w": width_of(w, i),
                 "rot": (hash01(seed, i, 17) - 0.5) * 22,
             })
     return out
@@ -121,6 +126,21 @@ def photo_delay(spec: dict[str, Any], i: int) -> float:
     if not math.isfinite(d):
         d = default_delay(len(photos), i)
     return max(0.0, min(30.0, d))
+
+
+def photo_size(spec: dict[str, Any], i: int) -> float:
+    """Photo i's mat size multiplier — stored value (clamped to 0.5..1.5) or 1."""
+    photos = spec.get("photos") or []
+    raw = photos[i].get("size") if i < len(photos) else None
+    v = float("nan")
+    if raw is not None and not isinstance(raw, bool) and not (isinstance(raw, str) and raw.strip() == ""):
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            v = float("nan")
+    if not math.isfinite(v):
+        v = 1.0
+    return max(0.5, min(1.5, v))
 
 
 def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
@@ -230,6 +250,13 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         entry = {"path": path, "name": str(p.get("name") or "")}
         if delay is not None:
             entry["delay"] = delay
+        size = p.get("size")
+        try:
+            size = float(size) if size is not None and not isinstance(size, bool) else None
+        except (TypeError, ValueError):
+            size = None
+        if size is not None and math.isfinite(size):
+            entry["size"] = max(0.5, min(1.5, size))
         photos.append(entry)
         if len(photos) >= MAX_COLLAGE_PHOTOS:
             break
@@ -383,20 +410,24 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             mid = "null"
 
         # Anchor: the canvas centre lands on the mat centre, or on the pin
-        # (top edge of the mat) for swinging photos.
+        # (top edge of the mat) for swinging photos. FFmpeg's overlay x/y is
+        # the overlay's TOP-LEFT corner, so every expression subtracts half
+        # the canvas — exactly the translate(-50%, …) the DOM preview uses.
         ax_px = pl["cx"] / 100 * width
         ay_px = pl["cy"] / 100 * height - (mat_h / 2 if pin else 0)
         if anim == "drop":
             q = f"min(max((t-{_n(t0)})/0.55,0),1)"
-            x_expr = _n(ax_px)
-            y_expr = f"{_n(ay_px)}-{_n(0.26 * height)}*pow(1-{q},3)"
+            x_expr = _n(ax_px - cw / 2)
+            y_expr = f"{_n(ay_px - ch / 2)}-{_n(0.26 * height)}*pow(1-{q},3)"
         elif anim == "pop":
             q = f"min(max((t-{_n(t0)})/0.5,0),1)"
             scale = f"(0.55+0.45*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
             x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{scale}"
             y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{scale}"
         else:
-            x_expr, y_expr = _n(ax_px), _n(ay_px)
+            # swing / none: a static centre-anchored sprite (swing rotates
+            # around the pin, which is the canvas centre — see above).
+            x_expr, y_expr = _n(ax_px - cw / 2), _n(ay_px - ch / 2)
         enable = f":enable='gte(t,{_n(t0)})'" if anim != "none" else ""
 
         m, t_, s = f"m{i}", f"t{i}", f"s{i}"
@@ -412,7 +443,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             f"pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0,boxblur={max(2, border // 2)}:2[{s}];"
         )
         lines.append(f"[{m}b]pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[{t_}];")
-        lines.append(f"[{s}][{t_}]overlay=x={mat_x}:y={mat_y}[sp{i}];")
+        # Both streams are already padded to the full canvas with the mat in
+        # place, so the mat lands on its shadow at (0, 0) — any other offset
+        # would shift the mat within its own sprite and off its anchor.
+        lines.append(f"[{s}][{t_}]overlay=x=0:y=0[sp{i}];")
         lines.append(f"[sp{i}]{mid}[sp{i}r];")
         lines.append(f"[{prev}][sp{i}r]overlay=x='{x_expr}':y='{y_expr}'{enable}[o{i}];")
         prev = f"o{i}"

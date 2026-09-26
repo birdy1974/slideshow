@@ -22,6 +22,9 @@ export interface CollagePhoto {
    *  visible hold starts). Missing = the auto stagger default. The slide's
    *  duration follows from these: total = Σ delays + entrance + hold. */
   delay?: number
+  /** Mat size multiplier for this photo (1 = the layout's default width,
+   *  0.5 = half, 1.5 = larger). Missing = 1. */
+  size?: number
 }
 
 export interface CollageSpec {
@@ -106,13 +109,16 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const byHeight = cellH * 0.82 * aspect / k
     return Math.min(byWidth, byHeight)
   }
+  // Per-photo size: each photo's mat is the layout width times its multiplier
+  // (bigger photos overlap their neighbours — that is the point).
+  const widthOf = (base: number, i: number): number => base * photoSize(spec, i)
   if (spec.layout === 'grid') {
     const { cols, cellW, cellH } = cells(n)
     const w = fitWidth(cellW, cellH)
     for (let i = 0; i < n; i++) {
       const col = i % cols
       const row = Math.floor(i / cols)
-      out.push({ cx: 7 + cellW * (col + 0.5), cy: 12 + cellH * (row + 0.5), w, rot: 0 })
+      out.push({ cx: 7 + cellW * (col + 0.5), cy: 12 + cellH * (row + 0.5), w: widthOf(w, i), rot: 0 })
     }
   } else if (spec.layout === 'scatter') {
     const { cols, cellW, cellH } = cells(n)
@@ -122,19 +128,19 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       const row = Math.floor(i / cols)
       const cx = 7 + cellW * (col + 0.28 + 0.44 * hash01(seed, i, 29))
       const cy = 12 + cellH * (row + 0.28 + 0.44 * hash01(seed, i, 31))
-      out.push({ cx, cy, w, rot: (hash01(seed, i, 37) - 0.5) * 26 })
+      out.push({ cx, cy, w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 26 })
     }
   } else {
     // stack: overlapping polaroids around the middle, seeded tilts
     const w = n <= 3 ? 42 : n <= 6 ? 34 : 30
     for (let i = 0; i < n; i++) {
-      if (i === 0) { out.push({ cx: 50, cy: 46, w, rot: (hash01(seed, i, 17) - 0.5) * 22 }); continue }
+      if (i === 0) { out.push({ cx: 50, cy: 46, w: widthOf(w, i), rot: (hash01(seed, i, 17) - 0.5) * 22 }); continue }
       const ang = hash01(seed, i, 11) * 2 * Math.PI
       const r = 5 + hash01(seed, i, 13) * 8
       out.push({
         cx: 50 + Math.cos(ang) * r * 0.9,
         cy: 46 + Math.sin(ang) * r / aspect,
-        w,
+        w: widthOf(w, i),
         rot: (hash01(seed, i, 17) - 0.5) * 22,
       })
     }
@@ -159,6 +165,16 @@ export function photoDelay (spec: CollageSpec, i: number): number {
   if (raw !== undefined && raw !== null && typeof raw !== 'boolean' && !(typeof raw === 'string' && raw.trim() === '')) d = Number(raw)
   if (!Number.isFinite(d)) d = defaultDelay(photos.length, i)
   return Math.max(0, Math.min(30, d))
+}
+
+/** Photo i's mat size multiplier — the stored value if present (clamped to
+ *  0.5..1.5), 1 otherwise. */
+export function photoSize (spec: CollageSpec, i: number): number {
+  const raw = (spec.photos ?? [])[i]?.size as number | string | boolean | undefined | null
+  let v = NaN
+  if (raw !== undefined && raw !== null && typeof raw !== 'boolean' && !(typeof raw === 'string' && raw.trim() === '')) v = Number(raw)
+  if (!Number.isFinite(v)) v = 1
+  return Math.max(0.5, Math.min(1.5, v))
 }
 
 /** When photo i starts its entrance (seconds from segment start): the sum of
@@ -234,6 +250,15 @@ export function pinAnchor (spec: CollageSpec): boolean {
 /** Normalise a stored collage spec: unknown layouts/anims fall back, the
  *  photo list is capped and deduplicated by path, the seed defaults, the
  *  timing/background fields are sanitised. */
+/** Strict number: booleans and blank strings are "not set" (the Python twin
+ *  reads them the same way), anything numeric-looking is parsed. */
+function num (v: unknown): number | undefined {
+  if (v === undefined || v === null || typeof v === 'boolean') return undefined
+  if (typeof v === 'string' && v.trim() === '') return undefined
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
+}
+
 export function normalizeCollage (raw: unknown): CollageSpec | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const c = raw as Partial<CollageSpec>
@@ -243,21 +268,27 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     if (!p || typeof p.path !== 'string' || !p.path) continue
     if (seen.has(p.path)) continue
     seen.add(p.path)
-    const delay = Number(p.delay)
-    photos.push({ path: p.path, name: typeof p.name === 'string' ? p.name : undefined, delay: Number.isFinite(delay) ? Math.max(0, Math.min(30, delay)) : undefined })
+    const delay = num(p.delay)
+    const size = num(p.size)
+    photos.push({
+      path: p.path,
+      name: typeof p.name === 'string' ? p.name : undefined,
+      delay: delay !== undefined ? Math.max(0, Math.min(30, delay)) : undefined,
+      size: size !== undefined ? Math.max(0.5, Math.min(1.5, size)) : undefined,
+    })
     if (photos.length >= MAX_COLLAGE_PHOTOS) break
   }
   if (!photos.length) return undefined
-  const hold = Number(c.hold)
-  const blur = Number(c.backgroundBlur)
+  const hold = num(c.hold)
+  const blur = num(c.backgroundBlur)
   return {
     photos,
     layout: (['stack', 'grid', 'scatter'] as const).includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
     animation: (['drop', 'pop', 'swing', 'none'] as const).includes(c.animation as CollageAnim) ? c.animation as CollageAnim : 'drop',
     shape: (['4:3', 'square', '3:4'] as const).includes(c.shape as CollageShape) ? c.shape as CollageShape : '4:3',
-    seed: Number.isFinite(c.seed) ? Math.trunc(c.seed as number) : 1,
-    hold: Number.isFinite(hold) ? Math.max(0, Math.min(120, hold)) : undefined,
+    seed: Number.isFinite(Number(c.seed)) ? Math.trunc(Number(c.seed)) : 1,
+    hold: hold !== undefined ? Math.max(0, Math.min(120, hold)) : undefined,
     backgroundImage: typeof c.backgroundImage === 'string' && c.backgroundImage ? c.backgroundImage : undefined,
-    backgroundBlur: Number.isFinite(blur) ? clamp01(blur) : undefined,
+    backgroundBlur: blur !== undefined ? clamp01(blur) : undefined,
   }
 }

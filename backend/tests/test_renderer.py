@@ -885,6 +885,19 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertNotIn("boxblur", head)
         self.assertIn("[0:v]scale=1920:1080", head)
 
+    def test_collage_per_photo_size_scales_the_mats(self) -> None:
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        media = self._collage_media()
+        media["photos"] = [{"path": "/photos/a.jpg", "name": "a.jpg", "size": 1.5},
+                           {"path": "/photos/b.jpg", "name": "b.jpg", "size": 0.5}]
+        commands = self._segment_commands([media])
+        graph = commands[0][commands[0].index("-filter_complex") + 1]
+        pads = re.findall(r"pad=(\d+):\d+:\d+:\d+:color=white", graph)
+        self.assertEqual(2, len(pads), graph[:200])
+        # the 1.5x mat is three times the 0.5x mat, give or take rounding
+        self.assertGreater(int(pads[0]), int(pads[1]))
+        self.assertAlmostEqual(int(pads[0]) / int(pads[1]), 3.0, delta=int(pads[1]) * 0.05 + 2)
+
     def test_collage_with_missing_background_fails_the_segment(self) -> None:
         media = self._collage_media(backgroundImage="/photos/gone.jpg")
         project = {"id": 1, "media": [media], "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}

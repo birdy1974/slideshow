@@ -24,6 +24,7 @@ from app.collage import (
     mat_height,
     normalize_collage,
     photo_delay,
+    photo_size,
     photo_start,
     photo_state,
     pin_anchor,
@@ -46,12 +47,14 @@ def _run_node(cases: dict) -> list:
 
 
 def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
-          delays: list | None = None, hold: float | None = None) -> dict:
+          delays: list | None = None, hold: float | None = None, sizes: list | None = None) -> dict:
     photos = []
     for k in range(count):
         p = {"path": f"/photos/p{k}.jpg", "name": f"p{k}.jpg"}
         if delays is not None and k < len(delays) and delays[k] is not None:
             p["delay"] = delays[k]
+        if sizes is not None and k < len(sizes) and sizes[k] is not None:
+            p["size"] = sizes[k]
         photos.append(p)
     spec = {"photos": photos, "layout": layout, "animation": animation, "shape": shape, "seed": seed}
     if hold is not None:
@@ -104,6 +107,20 @@ def _cases() -> list[dict]:
         "spec": _spec("scatter", "swing", "3:4", 3, 2, delays=[0.5, 0.5, 0.5], hold=1.5),
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.6, 1.5, 3.0, 4.5],
         "hashArgs": [2, 3, 11], "matW": 30,
+    })
+    # per-photo sizes: bigger photos overlap their neighbours (junk values
+    # must fall back to 1 identically in both engines)
+    cases.append({
+        "id": "sized-scatter-drop",
+        "spec": _spec("scatter", "drop", "4:3", 6, 77, sizes=[1.2, 0.6, None, 1.5, 0.5, True]),
+        "aspect": 16 / 9, "leadIn": 0.3, "times": [0.0, 0.5, 1.3, 2.8],
+        "hashArgs": [77, 6, 29], "matW": 34,
+    })
+    cases.append({
+        "id": "sized-stack-grid",
+        "spec": _spec("grid", "pop", "square", 4, 8, sizes=[0.5, 1.5, 1.0, "1.25"], hold=1),
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.4, 1.6],
+        "hashArgs": [8, 4, 29], "matW": 30,
     })
     return cases
 
@@ -178,6 +195,30 @@ def test_delay_junk_falls_back_to_defaults():
     assert photo_delay(spec, 4) == 30.0                      # clamped
 
 
+def test_photo_size_junk_falls_back_to_one():
+    spec = {"photos": [{"path": "/photos/a.jpg"}, {"path": "/photos/b.jpg", "size": True},
+                       {"path": "/photos/c.jpg", "size": ""}, {"path": "/photos/d.jpg", "size": "0.8"},
+                       {"path": "/photos/e.jpg", "size": 9}, {"path": "/photos/f.jpg", "size": 0.1}],
+            "layout": "stack", "animation": "drop", "shape": "4:3", "seed": 1}
+    assert photo_size(spec, 0) == 1.0                       # default
+    assert photo_size(spec, 1) == 1.0                       # True → default
+    assert photo_size(spec, 2) == 1.0                       # "" → default
+    assert abs(photo_size(spec, 3) - 0.8) < TOL             # numeric string accepted
+    assert photo_size(spec, 4) == 1.5                       # clamped high
+    assert photo_size(spec, 5) == 0.5                       # clamped low
+
+
+def test_photo_size_scales_the_mat_width():
+    base = placements(_spec("grid", "none", "4:3", 3, 5), 16 / 9)
+    sized = placements(_spec("grid", "none", "4:3", 3, 5, sizes=[1.5, 0.5, None]), 16 / 9)
+    assert abs(sized[0]["w"] - base[0]["w"] * 1.5) < TOL
+    assert abs(sized[1]["w"] - base[1]["w"] * 0.5) < TOL
+    assert abs(sized[2]["w"] - base[2]["w"]) < TOL
+    # size never moves the centre — only the mat grows around it
+    for a, b in zip(base, sized):
+        assert abs(a["cx"] - b["cx"]) < TOL and abs(a["cy"] - b["cy"]) < TOL
+
+
 def test_bg_blur_mapping():
     assert bg_blur_radius(0) == 1
     assert bg_blur_radius(0.5) == 16
@@ -237,6 +278,15 @@ def test_normalize_collage():
     assert bg["backgroundImage"] == "/photos/bg.jpg"
     assert abs(bg["backgroundBlur"] - 0.3) < TOL
     assert abs(bg["hold"] - 2.5) < TOL
+    # per-photo size: sanitised, clamped, junk dropped
+    sized = normalize_collage({"collage": {"photos": [
+        {"path": "/photos/a.jpg", "size": 1.25}, {"path": "/photos/b.jpg", "size": 4},
+        {"path": "/photos/c.jpg", "size": True}, {"path": "/photos/d.jpg", "size": "0.6"}]}})
+    assert sized is not None
+    assert abs(sized["photos"][0]["size"] - 1.25) < TOL
+    assert sized["photos"][1]["size"] == 1.5
+    assert "size" not in sized["photos"][2]
+    assert abs(sized["photos"][3]["size"] - 0.6) < TOL
 
 
 def test_graph_builds_for_every_animation():
@@ -253,6 +303,62 @@ def test_graph_builds_for_every_animation():
             # every photo input is referenced
             for k in (1, 2, 3, 4):
                 assert f"[{k}:v]scale=" in graph
+
+
+def test_graph_overlays_are_centre_anchored():
+    """FFmpeg's overlay x/y is the overlaid sprite's TOP-LEFT corner, so the
+    expressions must subtract half the canvas — the same translate(-50%, …)
+    the DOM preview applies. Placing the anchor there instead (the Phase-1
+    bug) shifts every photo down-right by half its sprite and pushes large
+    mats off-screen."""
+    import re
+    # grid => rot 0, single photo => cx 50 %, cy 50 % (640/360 at 1280x720)
+    for anim in ("none", "swing"):
+        item = {"collage": _spec("grid", anim, "4:3", 1, 5)}
+        lines, _ = collage_graph(item, 1280, 720, 25.0, 3.0, 0.0, 1, "cb")
+        graph = "".join(lines)
+        m = re.search(r"overlay=x='(-?[\d.]+)':y='(-?[\d.]+)'", graph)
+        assert m, (anim, graph[-200:])
+        x, y = float(m.group(1)), float(m.group(2))
+        assert x < 640, f"{anim}: overlay left edge {x} must be left of the anchor (640)"
+        assert y < 360, f"{anim}: overlay top edge {y} must be above the anchor (360)"
+    # drop: y is '<rest-top>-<fall>*pow(…)' — the constant must sit above the anchor
+    item = {"collage": _spec("grid", "drop", "4:3", 1, 5)}
+    lines, _ = collage_graph(item, 1280, 720, 25.0, 3.0, 0.0, 1, "cb")
+    graph = "".join(lines)
+    m = re.search(r"overlay=x='(-?[\d.]+)':y='(-?[\d.]+)-", graph)
+    assert m, graph[-200:]
+    assert float(m.group(1)) < 640 and float(m.group(2)) < 360, (m.group(1), m.group(2))
+
+
+def test_graph_places_the_mat_centre_on_the_anchor():
+    """Parse the generated graph and prove the mat's centre lands on the
+    layout anchor — the same translate(-50%, …) the DOM preview applies.
+    Catches both Phase-1 positioning bugs: overlaying at the anchor instead
+    of anchor-minus-half-canvas, and re-offsetting the mat inside its own
+    sprite (shadow + mat are both pre-padded, so their overlay is at 0:0)."""
+    import re
+    for layout in ("grid", "stack", "scatter"):
+        item = {"collage": _spec(layout, "none", "4:3", 3, 5)}
+        W, H = 1280, 720
+        spec = normalize_collage(item)
+        pls = placements(spec, 16 / 9)
+        lines, _ = collage_graph(item, W, H, 25.0, 3.0, 0.0, 1, "cb")
+        graph = "".join(lines)
+        mats = re.findall(r"pad=(\d+):(\d+):\d+:\d+:color=white", graph)
+        canvases = re.findall(r"pad=(\d+):(\d+):(\d+):(\d+):color=black@0.0", graph)   # shadow + mat pad: 2 per photo
+        overs = re.findall(r"overlay=x=(\d+):y=(\d+)\[sp\d+\]", graph)
+        finals = re.findall(r"overlay=x='(-?[\d.]+)':y='(-?[\d.]+)'", graph)
+        assert len(mats) == 3 and len(canvases) == 6 and len(overs) == 3 and len(finals) == 3, (layout, len(mats), len(canvases), len(overs), len(finals))
+        for i in range(3):
+            mat_w, mat_h = int(mats[i][0]), int(mats[i][1])
+            cw, ch, mat_x, mat_y = (int(v) for v in canvases[2 * i])
+            assert (int(overs[i][0]), int(overs[i][1])) == (0, 0), f"{layout}: sprite assembly must not re-offset the mat"
+            fx, fy = float(finals[i][0]), float(finals[i][1])
+            cx_screen = fx + mat_x + mat_w / 2
+            cy_screen = fy + mat_y + mat_h / 2
+            assert abs(cx_screen - pls[i]["cx"] / 100 * W) <= 1.5, (layout, i, cx_screen)
+            assert abs(cy_screen - pls[i]["cy"] / 100 * H) <= 1.5, (layout, i, cy_screen)
 
 
 def test_graph_none_without_collage():
