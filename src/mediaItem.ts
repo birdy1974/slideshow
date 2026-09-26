@@ -1,9 +1,16 @@
 // The storyline item: one photo, movie, or generated text frame.
 // Shared by App.tsx and the media/movie editors.
 import type { TextFxLayer } from './textMotionCore'
+import type { CollageSpec } from './collageCore'
 
 export type MediaItem = {
   id: number; name: string; path: string; src: string; type: 'image' | 'video' | 'title';
+  // Photo collage (docs/multi-photo-collage-effects-options.md, Phase 1): a
+  // title-style frame carrying up to 12 library photos, laid out and
+  // choreographed by src/collageCore.ts — the twin of backend/app/collage.py
+  // that renders the same numbers with FFmpeg. An empty/missing photos list
+  // means "plain text frame"; the caption fields below work unchanged on top.
+  collage?: CollageSpec;
   duration: number; effect: string; transition: string; transitionTime: number;
   // Extended transition config for custom ffmpeg (xfade-easing): per-clip GL params, easing and reverse
   transitionParams?: Record<string, string | number>;

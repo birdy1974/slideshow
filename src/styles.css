@@ -1464,3 +1464,56 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 
 /* --- Header nav jumps: keep the target clear of the sticky top bar --- */
 #section-storyline,#section-transitions,#section-soundtrack,#section-output,#section-render{scroll-margin-top:80px}
+
+/* --- Photo collage (Phase 1): DOM twin of the FFmpeg composite --- */
+.collage-photos{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.collage-layer{position:absolute;top:0;left:0;transform-origin:0 0}
+.collage-mat{position:absolute;background:#fff;border-radius:2px;box-sizing:border-box;box-shadow:0 6px 18px rgba(0,0,0,.38),0 2px 5px rgba(0,0,0,.25);will-change:transform,opacity}
+.collage-mat img{display:block;border-radius:1px;object-fit:cover;background:#dcdcd8}
+.collage-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#cfd4ca;font-size:11px}
+.collage-empty .btn{pointer-events:auto}
+.collage-strip{display:flex;gap:6px;overflow-x:auto;padding:2px;scrollbar-width:thin}
+.collage-chip{position:relative;flex:0 0 auto;width:54px;height:54px;border-radius:6px;overflow:hidden;border:1px solid #4a4e45;background:#20231f;cursor:grab}
+.collage-chip.over{border-color:var(--lime)}
+.collage-chip img{width:100%;height:100%;object-fit:cover;pointer-events:none}
+.collage-chip .chip-num{position:absolute;left:2px;top:2px;z-index:2;background:#0009;color:#fff;font-size:8px;font-weight:700;border-radius:3px;padding:0 3px}
+.collage-chip .chip-actions{position:absolute;inset:auto 0 0 0;display:flex;justify-content:space-between;background:#000a;opacity:0;transition:opacity .12s}
+.collage-chip:hover .chip-actions{opacity:1}
+.chip-actions button{border:0;background:none;color:#fff;cursor:pointer;display:grid;place-items:center;padding:2px}
+.chip-actions button:disabled{opacity:.3;cursor:default}
+.chip-actions .chip-remove:hover{color:#ff8f8f}
+.collage-add{flex:0 0 auto;min-width:86px;height:54px;border:1px dashed #6b7263;border-radius:6px;background:none;color:#c9cec2;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:4px;cursor:pointer}
+.collage-add:hover{border-color:var(--lime);color:var(--lime)}
+.collage-full{flex:0 0 auto;align-self:center;color:#989d93;font-size:9px;display:flex;gap:5px;align-items:center}
+.collage-choices-group{margin-bottom:14px}
+.collage-choices-group small{display:flex;gap:5px;color:#92978e;font-size:8px;line-height:1.5;margin-top:5px}
+.collage-choices{display:flex;gap:6px;flex-wrap:wrap}
+.collage-choices button{border:1px solid #494e45;background:#20231f;color:#c9cec2;border-radius:6px;padding:6px 11px;font-size:10px;font-weight:700;cursor:pointer}
+.collage-choices button.active{border-color:var(--lime);color:var(--lime);background:#2a3324}
+.collage-seed{display:flex;gap:7px;align-items:center}
+.collage-symbol{position:relative;display:block;width:100%;height:100%}
+.collage-symbol img{position:absolute;top:12%;width:42%;height:76%;object-fit:cover;background:#fff;padding:6%;box-sizing:border-box;border-radius:2px;box-shadow:0 2px 6px #0006}
+.collage-symbol b{position:absolute;right:4%;bottom:6%;z-index:4;background:#0009;color:#fff;font-size:8px;border-radius:3px;padding:0 3px}
+.collage-editor aside textarea{height:52px}
+
+/* --- Collage: background picture + per-photo timing --- */
+.collage-bg{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;transform:scale(1.12);transform-origin:center}
+.collage-bg-row{display:flex;gap:7px;align-items:center}
+.collage-bg-row .custom-bg{flex:1;margin-top:0}
+.collage-bg-pick{display:flex;gap:9px;border:1px solid #494e45;border-radius:6px;padding:7px;background:#20231f}
+.collage-bg-pick>img{width:64px;height:40px;object-fit:cover;border-radius:4px;flex:0 0 auto}
+.collage-bg-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
+.collage-bg-meta strong{font-size:9px;color:#c9cec2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.collage-blur{display:flex;align-items:center;gap:7px;font-size:9px;color:#b8bcb2}
+.collage-blur input[type=range]{flex:1;accent-color:var(--lime)}
+.collage-blur b{width:30px;text-align:right;color:#d9ddd3}
+.collage-bg-actions{display:flex;gap:6px}
+.collage-timing{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent;padding-right:2px}
+.collage-timing-row{display:grid;grid-template-columns:26px minmax(0,1fr) auto auto auto;gap:6px;align-items:center;border:1px solid #3d423a;border-radius:5px;padding:3px 6px;background:#23261f}
+.collage-timing-row img{width:26px;height:18px;object-fit:cover;border-radius:2px}
+.collage-timing-row .name{font-size:9px;color:#c9cec2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.collage-timing-row label{font-size:8px;color:#8f948b;white-space:nowrap}
+.collage-timing-empty{color:#8f948b}
+.collage-timing-total{display:flex;gap:7px;align-items:center;margin-top:8px;font-size:9px;color:#b8bcb2;flex-wrap:wrap}
+.collage-timing-total .btn{margin-left:auto}
+.collage-choices-group .collage-total{float:right;font-style:normal;font-size:8px;color:var(--lime);letter-spacing:.5px}

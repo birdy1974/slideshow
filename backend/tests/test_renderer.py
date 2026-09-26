@@ -783,6 +783,121 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertNotIn("transpose", filters[3])
         self.assertNotIn("transpose", filters[4], "rotation is a photo-only control")
 
+    # ---- photo collages: generated frames with photo inputs + overlay graph ----
+
+    def _collage_media(self, **override) -> dict:
+        item = {"id": 1, "type": "collage", "path": "Generated frame", "duration": 5, "text": "Memories",
+                "effect": "None", "transition": "Fade", "transitionTime": 1, "frameBackground": "#20261e",
+                "photos": [{"path": "/photos/a.jpg", "name": "a.jpg"}, {"path": "/photos/b.jpg", "name": "b.jpg"}],
+                "layout": "stack", "animation": "drop", "shape": "4:3", "seed": 7}
+        item.update(override)
+        return item
+
+    def test_collage_item_opens_photo_inputs_and_filter_complex(self) -> None:
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        commands = self._segment_commands([self._collage_media()])
+        collage = commands[0]
+        inputs = [collage[i + 1] for i, arg in enumerate(collage) if arg == "-i"]
+        self.assertEqual(3, len(inputs), "colour base + two photos")
+        self.assertIn("color=c=0x20261e", inputs[0])
+        self.assertTrue(str(inputs[1]).endswith("photos/a.jpg"), inputs)
+        self.assertTrue(str(inputs[2]).endswith("photos/b.jpg"), inputs)
+        self.assertNotIn("-vf", collage)
+        self.assertIn("-map", collage)
+        graph = collage[collage.index("-filter_complex") + 1]
+        # the colour base, the two photo sprites and their overlays, the caption tail
+        self.assertTrue(graph.startswith("[0:v]"), graph[:40])
+        self.assertIn("[1:v]scale=", graph)
+        self.assertIn("[2:v]scale=", graph)
+        self.assertIn("pad=", graph, "polaroid mat")
+        self.assertIn("colorchannelmixer=aa=0.34", graph, "soft shadow")
+        self.assertIn("[cb][sp0r]overlay=", graph)
+        self.assertIn("[o0][sp1r]overlay=", graph)
+        self.assertTrue(graph.rstrip(";").endswith("[v]"), graph[-120:])
+        self.assertIn("drawtext", graph, "caption rides the collage graph")
+
+    def test_collage_with_colour_change_composites_photos_on_the_xfade_head(self) -> None:
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        commands = self._segment_commands([self._collage_media(
+            frameBackground2="#aabbcc", frameTransition="Wipe left", frameTransitionTime=1.5, frameTransitionStart=2)])
+        collage = commands[0]
+        inputs = [collage[i + 1] for i, arg in enumerate(collage) if arg == "-i"]
+        self.assertEqual(4, len(inputs), "colour A + colour B + two photos")
+        self.assertIn("color=c=0xaabbcc", inputs[1])
+        self.assertTrue(str(inputs[3]).endswith("photos/b.jpg"), inputs)
+        graph = collage[collage.index("-filter_complex") + 1]
+        self.assertIn("[0:v][1:v]xfade=", graph)
+        self.assertIn("[bg]scale=", graph)
+        self.assertIn("[cb][sp0r]overlay=", graph, "photos land on the xfaded colour, not on colour A")
+
+    def test_title_frame_with_nested_collage_spec_also_renders_photos(self) -> None:
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        nested = self._collage_media()
+        nested["type"] = "title"
+        nested["collage"] = {"photos": nested.pop("photos"), "layout": "grid", "animation": "swing", "shape": "square", "seed": 3}
+        commands = self._segment_commands([nested])
+        inputs = [commands[0][i + 1] for i, arg in enumerate(commands[0]) if arg == "-i"]
+        self.assertEqual(3, len(inputs), "colour base + two photos")
+        graph = commands[0][commands[0].index("-filter_complex") + 1]
+        self.assertIn("rotate=", graph, "swing animates the rotation")
+        self.assertIn("exp(-1.3*", graph, "damped swing curve")
+
+    def test_collage_with_missing_photo_fails_the_segment(self) -> None:
+        media = self._collage_media()
+        media["photos"] = [{"path": "/photos/missing.jpg", "name": "missing.jpg"}]
+        project = {"id": 1, "media": [media], "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=lambda command, cancelled, log_file: Path(command[-1]).write_bytes(b"segment")), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(RenderError) as raised:
+                self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        self.assertIn("missing", str(raised.exception))
+
+    def test_collage_background_picture_replaces_colour_bed(self) -> None:
+        (self.settings.photos_dir / "bg.jpg").write_bytes(b"x" * 64)
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        # colour B is set too — a picture background has no colour xfade
+        commands = self._segment_commands([self._collage_media(
+            backgroundImage="/photos/bg.jpg", backgroundBlur=0.5,
+            frameBackground2="#aabbcc", frameTransition="Wipe left", frameTransitionTime=1.5, frameTransitionStart=2)])
+        collage = commands[0]
+        inputs = [collage[i + 1] for i, arg in enumerate(collage) if arg == "-i"]
+        self.assertEqual(3, len(inputs), "background picture + two photos")
+        self.assertTrue(str(inputs[0]).endswith("photos/bg.jpg"), inputs)
+        self.assertNotIn("color=", " ".join(inputs))
+        graph = collage[collage.index("-filter_complex") + 1]
+        # input 0 is filled to the frame and blurred; photos land on top
+        self.assertIn("[0:v]scale=1920:1080", graph)
+        self.assertIn("boxblur=16:2", graph)
+        self.assertNotIn("xfade=", graph, "no colour-change xfade on a picture background")
+        self.assertIn("[cb][sp0r]overlay=", graph)
+
+    def test_collage_background_picture_without_blur(self) -> None:
+        (self.settings.photos_dir / "bg.jpg").write_bytes(b"x" * 64)
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        commands = self._segment_commands([self._collage_media(backgroundImage="/photos/bg.jpg")])
+        graph = commands[0][commands[0].index("-filter_complex") + 1]
+        # the photo shadows blur themselves; the background chain must not
+        head = graph.split("[cb];", 1)[0]
+        self.assertNotIn("boxblur", head)
+        self.assertIn("[0:v]scale=1920:1080", head)
+
+    def test_collage_with_missing_background_fails_the_segment(self) -> None:
+        media = self._collage_media(backgroundImage="/photos/gone.jpg")
+        project = {"id": 1, "media": [media], "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=lambda command, cancelled, log_file: Path(command[-1]).write_bytes(b"segment")), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
+            work = self.settings.work_dir / "job"
+            work.mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(RenderError) as raised:
+                self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        self.assertIn("background", str(raised.exception))
+
 
 class TransitionPreviewTrimTest(unittest.TestCase):
     """The popup sample is the transition itself — no hold on either side."""

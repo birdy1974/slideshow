@@ -83,13 +83,20 @@ pipeline stage:
 
 ```
 item: { type: 'collage', duration, transition, transitionTime,
-        photos: [{ path, slot? }, …]        // references into the photo library, like titles reference fonts
+        photos: [{ path, delay? }, …]       // references into the photo library; delay = seconds
+                                           // after the PREVIOUS photo appears (photo 0: after the
+                                           // hold starts). Missing = auto stagger.
         layout: 'stack' | 'grid' | 'masonry' | 'scatter' | 'filmstrip' | 'fan',
         animation: 'drop' | 'pop' | 'swing' | 'deal' | 'none',
         background: '#hex' | 'none',
+        backgroundImage: '/photos/x.jpg',   // optional library picture behind the photos
+        backgroundBlur: 0..1,                // blur strength for that picture
+        hold: number,                        // seconds the finished collage stays after the last photo
         seed: number,                        // deterministic placement — the transloadit lesson
         beatSync: boolean,                   // stagger photos to music onsets
         caption fields… }                    // existing text stack works on top, unchanged
+        // duration is DERIVED: Σ delays + entrance length + hold (implemented;
+        //   the editor recomputes the slide duration on every timing change)
 ```
 
 A collage behaves like any other slide in the timeline: normal 2-input
@@ -156,6 +163,21 @@ nominal stagger time. Also useful later for text effects (word-pop on beat).
 ---
 
 ## 4. Phasing & effort
+
+> **Status — Phase 1 implemented** (branch `arena/01a0de4d-slideshow`): collage
+> slides with stack/grid/scatter, drop/pop/swing/none, photo shape 4:3 /
+> square / 3:4, seeded determinism, polaroid mats + soft shadows, per-photo
+> FFmpeg expression graphs, the TS/Python twin
+> (`src/collageCore.ts` ↔ `backend/app/collage.py`, cross-checked at 1e-9 by
+> `backend/tests/test_collage_twin.py`), the editor with photo picker +
+> DOM-transform preview, and captions riding the existing text stack.
+> **Timing update:** per-photo appearance waits (`delay`) with a hold after
+> the last photo — the slide duration is derived from them
+> (`collageDuration`, auto-synced by the editor). **Background update:** an
+> optional library picture behind the photos with a blur strength
+> (`backgroundImage` / `backgroundBlur`; replaces the colour bed and its
+> change). The editor round-trips items as title frames with a `collage`
+> spec; the backend also accepts the top-level `type: 'collage'` shape below.
 
 | Phase | Contents | Effort |
 | --- | --- | --- |

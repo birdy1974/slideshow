@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import mimetypes
 
 from .config import settings
+from .collage import normalize_collage
 from .database import Database
 from .media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, UnsafePath, browse, create_media_folder, delete_media_entry, mounted_path, safe_path, source_path
 from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_file_info, write_project_file
@@ -92,7 +93,27 @@ def validate_mount_references(payload: dict[str, Any]) -> None:
     except UnsafePath as exc:
         raise HTTPException(422, f"Invalid output path: {exc}") from exc
     for item in payload.get("media", []):
-        if item.get("type") == "title":
+        if item.get("type") in ("title", "collage"):
+            # A collage (photo slide with a photo set) validates its photos
+            # here so a missing file fails the request, not minutes later
+            # during the render.
+            collage = normalize_collage(item)
+            if collage is not None:
+                for photo in collage["photos"]:
+                    try:
+                        src = source_path(settings, photo)
+                        if not src.is_file():
+                            raise HTTPException(422, f"Collage photo is missing: {photo.get('name') or photo['path']}")
+                    except UnsafePath as exc:
+                        raise HTTPException(422, f"Invalid collage photo path for {photo.get('name','photo')}: {exc}") from exc
+                bg = str(collage.get("backgroundImage") or "")
+                if bg:
+                    try:
+                        src = source_path(settings, {"path": bg, "name": ""})
+                        if not src.is_file():
+                            raise HTTPException(422, f"Collage background picture is missing: {bg}")
+                    except UnsafePath as exc:
+                        raise HTTPException(422, f"Invalid collage background path: {bg}") from exc
             continue
         try:
             source_path(settings, item)
