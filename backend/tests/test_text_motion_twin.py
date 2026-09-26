@@ -50,7 +50,8 @@ def _caption_json(cap: Caption) -> dict:
         "frameW": cap.frame_w, "frameH": cap.frame_h, "steady": cap.steady,
         "bg": None if cap.bg is None else {"colourA": cap.bg.colour_a, "colourB": cap.bg.colour_b,
                                            "transition": cap.bg.transition, "start": cap.bg.start, "time": cap.bg.time},
-        "motion": None if cap.motion is None else {"points": [list(p) for p in cap.motion.points], "easing": cap.motion.easing},
+        "motion": None if cap.motion is None else {"points": [list(p) for p in cap.motion.points], "easing": cap.motion.easing,
+                                                   "rotateAlong": bool(cap.motion.rotate_along)},
     }
 
 
@@ -131,6 +132,12 @@ def _cases() -> list[tuple[str, Caption]]:
         ("3d-org", cap([L("flip-words"), L("blurry-spin", unit="line"), L("fold-out")])),
         ("motion+wipe", cap([L("wipe-from-left"), L("motion-path"), L("wipe-out-right")],
                             motion=MotionPath([(20.0, 30.0), (80.0, 70.0)], "smooth"))),
+        ("motion-rotate-along", cap([L("fade"), L("motion-path"), L("fade-out")],
+                                    motion=MotionPath([(15.0, 70.0), (40.0, 25.0), (60.0, 60.0), (85.0, 30.0)], "linear", rotate_along=True))),
+        ("motion-rotate-along-loop", cap([L("motion-path", loop="loop")],
+                                         motion=MotionPath([(50.0, 50.0), (80.0, 30.0), (50.0, 70.0), (20.0, 30.0), (50.0, 50.0)], "linear", rotate_along=True))),
+        ("motion-path-letters-stagger", cap([L("fade"), L("motion-path", unit="char", stagger=0.35), L("fade-out")],
+                                            motion=MotionPath([(25.0, 65.0), (50.0, 25.0), (75.0, 60.0)], "ease-in-out", rotate_along=True))),
     ]
     return out
 

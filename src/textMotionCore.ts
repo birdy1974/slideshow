@@ -81,7 +81,7 @@ export interface Unit {
 }
 export interface Layout { units: Record<string, Unit[]>; lines: string[]; lineH: number; em: number; align: string }
 export interface BgChange { colourA: string; colourB: string; transition: string; start: number; time: number }
-export interface MotionPath { points: [number, number][]; easing: string }
+export interface MotionPath { points: [number, number][]; easing: string; rotateAlong?: boolean }
 export interface Caption {
   stack: TextFxLayer[]
   em: number
@@ -518,7 +518,7 @@ export function compileStack (cap: Caption, layout: Layout, effects: Record<stri
       content[L.phase] = L
     }
   }
-  const whole = Object.values(content).filter(L => L.fx.content.type === 'count' || L.fx.content.type === 'countdown')
+  const whole = Object.values(content).filter(L => ['count', 'countdown', 'swap'].includes(L.fx.content.type))
   if (whole.length) {
     for (const L of resolved) {
       if (L.unit !== 'text') {
@@ -530,7 +530,7 @@ export function compileStack (cap: Caption, layout: Layout, effects: Record<stri
   }
   let need: string[] = ['line']
   for (const L of resolved) need.push(L.unit.startsWith('g') ? 'word' : L.unit)
-  for (const L of Object.values(content)) if (L.fx.content.type === 'scramble' || L.fx.content.type === 'flap') need.push('char')
+  for (const L of Object.values(content)) if (L.fx.content.type === 'scramble' || L.fx.content.type === 'flap' || L.fx.content.type === 'roll') need.push('char')
   if (resolved.some(L => L.fx.caret)) need.push('char')
   if (whole.length) need = ['text']
   const gran = need.reduce((a, b) => levelRank(b) < levelRank(a) ? b : a)
@@ -688,6 +688,15 @@ function generator (ctx: Ctx, L: ResolvedLayer, spec: any, u: number, tl: number
     const idx = Math.min(n - 1, Math.trunc(Math.floor(pu * n)))
     const s = pu < 1 ? pu * n - idx : 1
     v = -height * (1 - d) ** idx * 4 * s * (1 - s)
+  } else if (spec.physics) {
+    // Ballistics over the layer's own progress: s = clamp01(u)·time seconds of
+    // flight, then v = base + velocity·s + ½·gravity·s². Pick velocity and
+    // gravity so the curve ends at 0 and it is a settle (in-phase); give it a
+    // large gravity and it is an accelerating exit (out-phase). Twin of the
+    // "physics" branch in text_motion.py.
+    const g = spec.physics
+    const s = clamp01(u) * Math.max(0.05, pnum(L, g.time ?? 1, 1))
+    v = pnum(L, g.base ?? 0, 0) + pnum(L, g.velocity ?? 0, 0) * s + 0.5 * pnum(L, g.gravity ?? 0, 0) * s * s
   } else {
     v = 0
   }
@@ -754,6 +763,40 @@ function contentOf (ctx: Ctx, L: ResolvedLayer, e: Unit, u: number, tl: number, 
     }
     return [e.text, {}]
   }
+  if (kind === 'roll') {
+    // Slot machine / rolodex: each unit cycles through the charset while the
+    // current glyph slides up into place (y offset + a slight squash). The
+    // y override rides the add-channel support of the mods merge.
+    if (u > 0 && u < 1) {
+      const rolls = Math.trunc(c.rolls ?? 7)
+      const pos = u * rolls
+      const n = Math.trunc(pos), p = pos - Math.trunc(pos)
+      const cs: string = c.charset || 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+      const ch = cs[Math.trunc(hash01(n, useed, 17) * cs.length)]
+      return [ch, { y: (1 - p) * 0.55, sy: 0.6 + 0.4 * p }]
+    }
+    return [e.text, {}]
+  }
+  if (kind === 'swap') {
+    // Phrase swap (Remotion Value Swap / CapCut text swap): the unit's text
+    // cycles through a pipe-separated phrase list; every swap slides the new
+    // phrase in from just below with a quick fade. Timed by tl (seconds since
+    // the unit's local start), so it runs for the whole layer window.
+    let raw = ''
+    if (typeof c.phrases === 'string' && c.phrases.startsWith('$')) raw = String(L.param(c.phrases.slice(1), '') ?? '')
+    else if (typeof c.phrases === 'string') raw = c.phrases
+    else if (Array.isArray(c.phrases)) raw = c.phrases.filter((s: unknown) => typeof s === 'string').join('|')
+    const phrases = raw.split('|').map(s => s.trim()).filter(s => s.length)
+    if (phrases.length) {
+      const every = Math.max(0.05, pnum(L, c.every ?? 0.45, 0.45))
+      const tt = Math.max(0, tl)
+      const slot = Math.floor(tt / every)
+      const p = tt / every - slot
+      const q = Math.min(1, p * 3)
+      return [phrases[slot % phrases.length], { y: (1 - q) * 0.35, opacity: q }]
+    }
+    return [e.text, {}]
+  }
   if (kind === 'count') {
     const easing = String(L.param('easing', c.easing || 'linear') || 'linear')
     const f = (EASE[easing] || EASE.linear)(u)
@@ -817,6 +860,20 @@ export function evaluate (ctx: Ctx, e: Unit, t: number): State {
         const [px, py] = pathPoint(cap.motion.points, f)
         acc[lvl].px += px / 100 * cap.frameW - a.cx
         acc[lvl].py += py / 100 * cap.frameH - a.cy
+        if (cap.motion.rotateAlong && cap.motion.points.length >= 2) {
+          // tangent angle (degrees) just ahead on the path; at the very end
+          // look backwards instead — twin of the 'path' branch in text_motion.py
+          const f2 = f + 0.02
+          let dx: number, dy: number
+          if (f2 > 1) {
+            const [qx, qy] = pathPoint(cap.motion.points, Math.max(0, f - 0.02))
+            dx = px - qx; dy = py - qy
+          } else {
+            const [qx, qy] = pathPoint(cap.motion.points, f2)
+            dx = qx - px; dy = qy - py
+          }
+          if (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) acc[lvl].rz += Math.atan2(dy, dx) * 180 / Math.PI
+        }
         continue
       }
       if (ch === 'clip') {
@@ -905,7 +962,13 @@ export function evaluate (ctx: Ctx, e: Unit, t: number): State {
       else tot[ch] += v
     }
   }
-  for (const k2 of Object.keys(mods)) tot[k2] = (k2 in tot ? tot[k2] : 1) * mods[k2]
+  for (const k2 of Object.keys(mods)) {
+    // Add channels (y, rz, …) start at 0, so a multiply would cancel them;
+    // content overrides on add channels ADD instead. No v1 content ever
+    // returned an add channel, so this changes nothing for saved projects.
+    if (k2 in NEUTRAL && !MUL_SET.has(k2) && !MAX_SET.has(k2)) tot[k2] += mods[k2]
+    else tot[k2] = (k2 in tot ? tot[k2] : 1) * mods[k2]
+  }
   tot.opacity *= maskMix
   const sq = tot.squash
   tot.sy *= sq

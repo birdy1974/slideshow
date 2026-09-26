@@ -57,12 +57,17 @@ export type MediaItem = {
   textMoveFromX?: number; textMoveFromY?: number;
   textMoveToX?: number; textMoveToY?: number;
   textMovePath?: [number, number][];
-  textMovePathType?: 'straight' | 'freehand' | 'circle' | 'sine' | 'star' | 'diamond' | 'triangle' | 'polyline' | 'sine-vertical' | 'bounce';
+  textMovePathType?: 'straight' | 'freehand' | 'circle' | 'sine' | 'star' | 'diamond' | 'triangle' | 'polyline' | 'sine-vertical' | 'bounce' | 'spiral' | 'figure-8' | 'lissajous' | 'zigzag' | 'heart' | 'polygon' | 'pendulum';
   textMoveEasing?: 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'smooth';
   textMoveCircleRadius?: number;
   textMoveCircleTurns?: number;
   textMoveSineAmplitude?: number;
   textMoveSineFrequency?: number;
+  // Lissajous only: the vertical frequency (the horizontal one is
+  // textMoveSineFrequency).
+  textMoveLissajousFreqY?: number;
+  // Rotate the whole caption so it follows the direction of the path.
+  textMoveRotateAlongPath?: boolean;
   // Symbol paths: reuse circleRadius as size, add star inner ratio / rotation
   textMoveStarPoints?: number;
   textMoveStarInnerRatio?: number;

@@ -665,8 +665,154 @@ function generateBouncePointsMotion(fromX: number, fromY: number, toX: number, t
   pts.push([clampPctMotion(toX), clampPctMotion(toY)])
   return pts
 }
-function bouncyOffset(progress: number, height: number, bounces: number, damping: number): number {
-  const h = Math.max(0, Math.min(30, height ?? 12))
+// ---- New path shapes (2026-09 round). Each has a bit-identical twin in
+// backend/app/text_effects.py (the renderer) and in TextMotionPathEditor.tsx
+// (the editor canvas) — same formulas, same sample counts, so preview and
+// MP4 travel exactly the same curve. ----
+function generateSpiralPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, turns: number, num = 96): [number, number][] {
+  // With an explicit radius the spiral collapses into the start point;
+  // otherwise it starts at the start handle and winds into the end handle.
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  let cx: number, cy: number, r0: number, startAng: number
+  if (radius != null && radius > 2) { cx = fromX; cy = fromY; r0 = radius; startAng = -Math.PI / 2 }
+  else if (d > 0.5) { cx = toX; cy = toY; r0 = d; startAng = Math.atan2(fromY - cy, fromX - cx) }
+  else { cx = fromX; cy = fromY; r0 = 15; startAng = -Math.PI / 2 }
+  const t = Math.max(0.2, Math.min(6, turns))
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const ang = startAng + p * t * 2 * Math.PI
+    const r = r0 * (1 - p)
+    pts.push([clampPctMotion(cx + r * Math.cos(ang)), clampPctMotion(cy + r * Math.sin(ang))])
+  }
+  pts.push([clampPctMotion(cx), clampPctMotion(cy)])
+  return pts
+}
+function generateFigure8PointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, num = 120): [number, number][] {
+  // Lemniscate of Bernoulli: x = a·cos t/(1+sin²t), y = a·sin t·cos t/(1+sin²t)
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  const explicit = radius != null && radius > 2
+  const cx = explicit ? fromX : (fromX + toX) / 2
+  const cy = explicit ? fromY : (fromY + toY) / 2
+  const a = explicit ? radius as number : Math.max(10, d * 0.4)
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const t = (i / num) * 2 * Math.PI
+    const s = Math.sin(t), c = Math.cos(t)
+    const den = 1 + s * s
+    pts.push([clampPctMotion(cx + a * c / den), clampPctMotion(cy + a * s * c / den)])
+  }
+  return pts
+}
+function generateLissajousPointsMotion(fromX: number, fromY: number, toX: number, toY: number, amp: number, freqX: number, freqY: number, num = 140): [number, number][] {
+  const ax = Math.max(2, Math.min(40, amp || 14))
+  const ay = ax * 0.7
+  const f1 = Math.max(0.5, Math.min(8, freqX || 3))
+  const f2 = Math.max(0.5, Math.min(8, freqY || 2))
+  const cx = fromX, cy = fromY
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const t = i / num
+    pts.push([clampPctMotion(cx + ax * Math.sin(2 * Math.PI * f1 * t + Math.PI / 2)), clampPctMotion(cy + ay * Math.sin(2 * Math.PI * f2 * t))])
+  }
+  return pts
+}
+function generateZigzagPointsMotion(fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 96): [number, number][] {
+  const amp = Math.max(0, Math.min(40, amplitude ?? 10))
+  const freq = Math.max(0.5, Math.min(10, frequency ?? 3))
+  const dx = toX - fromX, dy = toY - fromY
+  const len = Math.hypot(dx, dy)
+  const ux = len < 1e-6 ? 1 : dx / len, uy = len < 1e-6 ? 0 : dy / len
+  const px = -uy, py = ux
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const s = p * freq
+    const f = s - Math.floor(s)
+    const tri = f < 0.5 ? f * 4 - 1 : 3 - f * 4
+    const off = amp * tri
+    pts.push([clampPctMotion(fromX + dx * p + px * off), clampPctMotion(fromY + dy * p + py * off)])
+  }
+  return pts
+}
+function generateHeartPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number, num = 120): [number, number][] {
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  const explicit = radius != null && radius > 2
+  const cx = explicit ? fromX : (fromX + toX) / 2
+  const cy = explicit ? fromY : (fromY + toY) / 2
+  const r = explicit ? radius as number : Math.max(10, d * 0.4)
+  const s = r / 16
+  const rot = (rotation || 0) * Math.PI / 180
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const t = (i / num) * 2 * Math.PI
+    const hx = 16 * Math.pow(Math.sin(t), 3)
+    const hy = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)
+    const x = s * hx, y = -s * hy
+    pts.push([clampPctMotion(cx + x * Math.cos(rot) - y * Math.sin(rot)), clampPctMotion(cy + x * Math.sin(rot) + y * Math.cos(rot))])
+  }
+  return pts
+}
+function generatePolygonPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, sides: number, rotation: number, numPerSeg = 24): [number, number][] {
+  // Regular n-gon — generalises diamond (4) and triangle (3).
+  const n = Math.max(3, Math.min(10, Math.round(sides || 5)))
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  let cx: number, cy: number, r: number
+  if (radius != null && radius > 2) { cx = fromX; cy = fromY; r = radius }
+  else { cx = (fromX + toX) / 2; cy = (fromY + toY) / 2; r = Math.max(10, d * 0.5) }
+  const rot = (rotation || 0) * Math.PI / 180
+  const vertices: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    const ang = rot - Math.PI / 2 + i * (2 * Math.PI / n)
+    vertices.push([clampPctMotion(cx + r * Math.cos(ang)), clampPctMotion(cy + r * Math.sin(ang))])
+  }
+  vertices.push(vertices[0])
+  const pts: [number, number][] = []
+  for (let i = 0; i < vertices.length - 1; i++) {
+    const a = vertices[i], b = vertices[i + 1]
+    for (let k = 0; k < numPerSeg; k++) {
+      const t = k / numPerSeg
+      pts.push([clampPctMotion(a[0] + (b[0] - a[0]) * t), clampPctMotion(a[1] + (b[1] - a[1]) * t)])
+    }
+  }
+  pts.push(vertices[vertices.length - 1])
+  return pts
+}
+function generatePendulumPointsMotion(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, num = 60): [number, number][] {
+  // Arc under a pivot above the midpoint; the sweep always passes through the
+  // lowest point, whichever side the handles are on.
+  const arm = radius != null && radius > 2 ? radius : 20
+  const px = (fromX + toX) / 2, py = (fromY + toY) / 2 - arm
+  const d0 = Math.hypot(fromX - px, fromY - py)
+  const d1 = Math.hypot(toX - px, toY - py)
+  const r = Math.max(2, (d0 + d1) / 2)
+  let a0 = Math.atan2(fromY - py, fromX - px)
+  let a1 = Math.atan2(toY - py, toX - px)
+  if (d0 < 0.5 && d1 < 0.5) { a0 = Math.PI / 2 - 0.5; a1 = Math.PI / 2 + 0.5 }
+  const norm2pi = (a: number) => { let x = a % (2 * Math.PI); if (x < 0) x += 2 * Math.PI; return x }
+  const crosses = (start: number, delta: number, target: number) => {
+    const t = norm2pi(target - start)
+    const span = Math.abs(delta)
+    return delta >= 0 ? t <= span + 1e-9 : (2 * Math.PI - t) <= span + 1e-9
+  }
+  let cw = norm2pi(a1 - a0)
+  if (cw < 1e-9) cw = 2 * Math.PI
+  const ccw = cw - 2 * Math.PI
+  const cwPasses = crosses(a0, cw, Math.PI / 2)
+  const ccwPasses = crosses(a0, ccw, Math.PI / 2)
+  let delta: number
+  if (cwPasses && ccwPasses) delta = Math.abs(cw) <= Math.abs(ccw) ? cw : ccw
+  else if (cwPasses) delta = cw
+  else if (ccwPasses) delta = ccw
+  else delta = Math.abs(cw) <= Math.abs(ccw) ? cw : ccw
+  const pts: [number, number][] = []
+  for (let i = 0; i <= num; i++) {
+    const ang = a0 + (i / num) * delta
+    pts.push([clampPctMotion(px + r * Math.cos(ang)), clampPctMotion(py + r * Math.sin(ang))])
+  }
+  return pts
+}
+function bouncyOffset(progress: number, height: number, bounces: number, damping: number): number {  const h = Math.max(0, Math.min(30, height ?? 12))
   const n = Math.max(1, Math.min(8, Math.round(bounces ?? 3)))
   const d = Math.max(0, Math.min(0.95, damping ?? 0.35))
   if (h < 0.2) return 0
@@ -688,7 +834,7 @@ function applySinusUpDownMotion(points: [number,number][], enabled: boolean, amp
   for(let i=0;i<=num;i++){ const p=i/num; const b=pointAlong(points,p); const off=amp*Math.sin(freq*2*Math.PI*p); out.push([clampPctMotion(b[0]), clampPctMotion(b[1]+off)]) }
   return out
 }
-function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInnerRatio?: number, symbolRotation?: number, sinusEnabled?: boolean, sinusAmp?: number, sinusFreq?: number, bounceHeight?: number, bounceCount?: number, bounceDamping?: number): [number, number][] {
+function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: number, path: [number, number][] | undefined, pathType: string, circleRadius: number | undefined, circleTurns: number, sineAmp: number, sineFreq: number, starPoints?: number, starInnerRatio?: number, symbolRotation?: number, sinusEnabled?: boolean, sinusAmp?: number, sinusFreq?: number, bounceHeight?: number, bounceCount?: number, bounceDamping?: number, lissajousFreqY?: number): [number, number][] {
   let base: [number, number][]
   if ((pathType === 'freehand' || pathType === 'polyline') && path && path.length >= 2) base = path
   else if (pathType === 'circle') base = generateCirclePointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
@@ -698,6 +844,13 @@ function effectiveMotionPoints(fromX: number, fromY: number, toX: number, toY: n
   else if (pathType === 'diamond') base = generateDiamondPointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
   else if (pathType === 'triangle') base = generateTrianglePointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
   else if (pathType === 'bounce') base = generateBouncePointsMotion(fromX, fromY, toX, toY, bounceHeight ?? 14, bounceCount ?? 4, bounceDamping ?? 0.35)
+  else if (pathType === 'spiral') base = generateSpiralPointsMotion(fromX, fromY, toX, toY, circleRadius, circleTurns)
+  else if (pathType === 'figure-8') base = generateFigure8PointsMotion(fromX, fromY, toX, toY, circleRadius)
+  else if (pathType === 'lissajous') base = generateLissajousPointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq, lissajousFreqY ?? 2)
+  else if (pathType === 'zigzag') base = generateZigzagPointsMotion(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'heart') base = generateHeartPointsMotion(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'polygon') base = generatePolygonPointsMotion(fromX, fromY, toX, toY, circleRadius, starPoints ?? 5, symbolRotation ?? 0)
+  else if (pathType === 'pendulum') base = generatePendulumPointsMotion(fromX, fromY, toX, toY, circleRadius)
   else if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base = [[fromX, fromY]]
   else base = [[fromX, fromY], [toX, toY]]
   if (sinusEnabled) base = applySinusUpDownMotion(base, true, sinusAmp ?? 6, sinusFreq ?? 2)
@@ -2739,7 +2892,7 @@ function motionPathFor(item: MediaItem) {
   const it: any = item
   const points = effectiveMotionPoints(fromX, fromY, toX, toY, it.textMovePath, it.textMovePathType || (it.textMovePath && it.textMovePath.length >= 2 ? 'freehand' : 'straight'),
     it.textMoveCircleRadius, it.textMoveCircleTurns ?? 1, it.textMoveSineAmplitude ?? 8, it.textMoveSineFrequency ?? 2, it.textMoveStarPoints, it.textMoveStarInnerRatio,
-    it.textMoveSymbolRotation, it.textMoveSinusUpDownEnabled, it.textMoveSinusAmplitude, it.textMoveSinusFrequency, it.textMoveBounceHeight, it.textMoveBounceCount, it.textMoveBounceDamping)
+    it.textMoveSymbolRotation, it.textMoveSinusUpDownEnabled, it.textMoveSinusAmplitude, it.textMoveSinusFrequency, it.textMoveBounceHeight, it.textMoveBounceCount, it.textMoveBounceDamping, it.textMoveLissajousFreqY)
   return { points, fromX, fromY, toX, toY }
 }
 
@@ -2753,7 +2906,7 @@ function sceneInputFor(item: MediaItem, defaults?: Partial<CaptionDefaults> | nu
   const timing = normalizedTextTiming(item)
   const x = Number(pick(item.textX, d.textX, 50))
   const y = Number(pick(item.textY, d.textY, title ? 50 : 72))
-  const motion = hasMotionPath(layers) ? { points: motionPathFor(item).points as [number, number][], easing: (item.textMoveEasing as string) || 'linear' } : null
+  const motion = hasMotionPath(layers) ? { points: motionPathFor(item).points as [number, number][], easing: (item.textMoveEasing as string) || 'linear', rotateAlong: !!(item as any).textMoveRotateAlongPath } : null
   return {
     text: item.text || '', stack: layers,
     family: String(pick(item.fontFamily || undefined, d.fontFamily, 'Montserrat')),
@@ -3002,6 +3155,8 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
               bounceHeight={(draft as any).textMoveBounceHeight}
               bounceCount={(draft as any).textMoveBounceCount}
               bounceDamping={(draft as any).textMoveBounceDamping}
+              lissajousFreqY={(draft as any).textMoveLissajousFreqY}
+              rotateAlong={!!(draft as any).textMoveRotateAlongPath}
               rotateFrom={layerParam('rotate', 'from')}
               rotateTo={layerParam('rotate', 'to')}
               squishFrom={layerParam('squash', 'from')}

@@ -742,6 +742,7 @@ class MotionPath:
     """The motion path editor's path, in percent of the frame, plus easing."""
     points: list[tuple[float, float]]
     easing: str = "linear"
+    rotate_along: bool = False   # text turns to follow the path tangent
 
 
 @dataclass
@@ -895,7 +896,7 @@ def compile_stack(cap: Caption, layout: Layout) -> Ctx:
                                 f"(both rewrite the text in the {L.phase} phase)")
                 conflicts[prev.src] = f"replaced by {L.fx.get('label')}"
             content[L.phase] = L
-    whole = [L for L in content.values() if L.fx["content"].get("type") in ("count", "countdown")]
+    whole = [L for L in content.values() if L.fx["content"].get("type") in ("count", "countdown", "swap")]
     if whole:
         for L in resolved:
             if L.unit != "text":
@@ -907,7 +908,7 @@ def compile_stack(cap: Caption, layout: Layout) -> Ctx:
     for L in resolved:
         need.append(L.unit if not L.unit.startswith("g") else "word")
     for L in content.values():
-        if L.fx["content"].get("type") in ("scramble", "flap"):
+        if L.fx["content"].get("type") in ("scramble", "flap", "roll"):
             need.append("char")
     if any("caret" in L.fx for L in resolved):
         need.append("char")
@@ -1081,6 +1082,14 @@ def _generator(ctx: Ctx, L: _L, spec: dict, u: float, tl: float, useed: int) -> 
         idx = min(n - 1, int(math.floor(pu * n)))
         s = (pu * n) - idx if pu < 1 else 1.0
         v = -height * (1 - d) ** idx * 4 * s * (1 - s)
+    elif "physics" in spec:
+        # Ballistics over the layer's own progress — twin of the "physics"
+        # branch in textMotionCore.ts.
+        g = spec["physics"]
+        s = _clamp01(u) * max(0.05, _pnum(ctx, L, g.get("time", 1.0), 1.0))
+        v = (_pnum(ctx, L, g.get("base", 0.0), 0.0)
+             + _pnum(ctx, L, g.get("velocity"), 0.0) * s
+             + 0.5 * _pnum(ctx, L, g.get("gravity"), 0.0) * s * s)
     else:
         v = 0.0
     if "env" in spec:
@@ -1128,6 +1137,34 @@ def _content(ctx: Ctx, L: _L, e: Unit, u: float, tl: float, t: float, useed: int
             cs = c.get("charset") or "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             ch = cs[int(hash01(n, useed, 11) * len(cs))]
             return ch, {"sy": max(0.12, abs(math.cos(math.pi * p)) ** 0.7)}
+        return e.text, {}
+    if kind == "roll":
+        # Slot machine / rolodex: twin of the 'roll' branch in textMotionCore.ts.
+        if 0 < u < 1:
+            rolls = int(c.get("rolls", 7))
+            pos = u * rolls
+            n, p = int(pos), pos - int(pos)
+            cs = c.get("charset") or "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            ch = cs[int(hash01(n, useed, 17) * len(cs))]
+            return ch, {"y": (1 - p) * 0.55, "sy": 0.6 + 0.4 * p}
+        return e.text, {}
+    if kind == "swap":
+        # Phrase swap: twin of the 'swap' branch in textMotionCore.ts.
+        raw = ""
+        if isinstance(c.get("phrases"), str) and c["phrases"].startswith("$"):
+            raw = str(L.param(c["phrases"][1:], "") or "")
+        elif isinstance(c.get("phrases"), str):
+            raw = c["phrases"]
+        elif isinstance(c.get("phrases"), list):
+            raw = "|".join(s for s in c["phrases"] if isinstance(s, str))
+        phrases = [s.strip() for s in raw.split("|") if s.strip()]
+        if phrases:
+            every = max(0.05, _pnum(ctx, L, c.get("every", 0.45), 0.45))
+            tt = max(0.0, tl)
+            slot = int(math.floor(tt / every))
+            p = tt / every - slot
+            q = min(1.0, p * 3.0)
+            return phrases[slot % len(phrases)], {"y": (1 - q) * 0.35, "opacity": q}
         return e.text, {}
     if kind == "count":
         easing = str(L.param("easing", c.get("easing", "linear")) or "linear")
@@ -1191,6 +1228,18 @@ def evaluate(ctx: Ctx, e: Unit, t: float) -> dict[str, Any]:
                 px, py = path_point(cap.motion.points, f)
                 acc[lvl]["px"] += px / 100 * cap.frame_w - a.cx
                 acc[lvl]["py"] += py / 100 * cap.frame_h - a.cy
+                if cap.motion.rotate_along and len(cap.motion.points) >= 2:
+                    # tangent angle (degrees) just ahead on the path; at the
+                    # very end look backwards instead — twin of textMotionCore.ts
+                    f2 = f + 0.02
+                    if f2 > 1.0:
+                        qx, qy = path_point(cap.motion.points, max(0.0, f - 0.02))
+                        dx, dy = px - qx, py - qy
+                    else:
+                        qx, qy = path_point(cap.motion.points, f2)
+                        dx, dy = qx - px, qy - py
+                    if abs(dx) > 1e-9 or abs(dy) > 1e-9:
+                        acc[lvl]["rz"] += math.degrees(math.atan2(dy, dx))
                 continue
             if ch == "clip":
                 running = (L.phase == "in" and u < 1) or (L.phase == "out" and u > 0) or L.phase == "hold"
@@ -1302,7 +1351,12 @@ def evaluate(ctx: Ctx, e: Unit, t: float) -> dict[str, Any]:
             else:
                 tot[ch] += v
     for k2, v2 in mods.items():
-        tot[k2] = tot.get(k2, 1.0) * v2
+        # Add channels (y, rz, …) start at 0, so a multiply would cancel them;
+        # content overrides on add channels ADD instead — same as the TS twin.
+        if k2 in NEUTRAL and k2 not in MUL and k2 not in MAXC:
+            tot[k2] += v2
+        else:
+            tot[k2] = tot.get(k2, 1.0) * v2
     tot["opacity"] *= mask_mix
     # squash: < 1 flat and wide, like a stamp press
     sq = tot["squash"]
@@ -1538,10 +1592,13 @@ class Compiler:
             return []
         events: list[str] = []
         base_layer = self.cap.layer
-        copies = [(L, spec) for L in ctx.stack for spec in (L.fx.get("copies") or []) if spec.get("type") != "box"]
+        copies = [(L, spec) for L in ctx.stack for spec in (L.fx.get("copies") or []) if spec.get("type") not in ("box", "bubble")]
         boxes = [(L, spec) for L in ctx.stack for spec in (L.fx.get("copies") or []) if spec.get("type") == "box"]
+        bubbles = [(L, spec) for L in ctx.stack for spec in (L.fx.get("copies") or []) if spec.get("type") == "bubble"]
         for L, spec in boxes:
             events += self._box_events(L, spec, times, base_layer - 2 if spec.get("below", True) else base_layer + 1)
+        for L, spec in bubbles:
+            events += self._bubble_events(L, spec, times, base_layer - 2 if spec.get("below", True) else base_layer + 1)
         if ctx.gran in ("char", "word"):
             # Letters / words get their own events only while a letter-level
             # layer makes them differ from their line; the rest of the time the
@@ -1802,6 +1859,56 @@ class Compiler:
             events += self._emit(draws, times, layer)
             if gaps:
                 events += self._emit(gaps, times, layer)
+        return events
+
+    def _bubble_events(self, L: _L, spec: dict, times: list[float], layer: int) -> list[str]:
+        """Bubbles: a fully rounded pill behind each unit of the layer's level,
+        popping in with an outBack overshoot (Remotion bubble-pop-text). Twin
+        of drawBubble() in src/textMotionScene.ts."""
+        ctx = self.ctx
+        em = self.cap.em
+        events: list[str] = []
+        colour_v = _param_str(L, spec.get("colour", "#ffffff"))
+        alpha = _clamp01(float(spec.get("alpha", 1.0)))
+        for u in ctx.units.get(L.unit, []):
+            if not _in_range(L, u) or L.ranks.get(u.index) is None:
+                continue
+            if u.level in ("char", "word") and not u.text.strip():
+                continue
+            pw = float((spec.get("pad") or [0.22, 0.0])[0])
+            w = u.w + 2 * pw * em
+            h = float(spec.get("height", 1.15)) * em
+            off = float(spec.get("offsetY", 0.0)) * em
+            valign = spec.get("valign", "center")
+            if valign == "baseline":
+                off += self.baseline
+            elif valign == "cap":
+                off += self.baseline - self.cap_h / 2
+            # ellipse drawn as four cubic beziers (kappa approximation of a circle)
+            rx, ry = w / 2.0, h / 2.0
+            k = 0.5523
+            drawing = (f"m {rx:.1f} 0 b {rx:.1f} {k * ry:.1f} {k * rx:.1f} {ry:.1f} 0 {ry:.1f} "
+                       f"b {-k * rx:.1f} {ry:.1f} {-rx:.1f} {k * ry:.1f} {-rx:.1f} 0 "
+                       f"b {-rx:.1f} {-k * ry:.1f} {-k * rx:.1f} {-ry:.1f} 0 {-ry:.1f} "
+                       f"b {k * rx:.1f} {-ry:.1f} {rx:.1f} {-k * ry:.1f} {rx:.1f} 0")
+            draws: list[_Draw] = []
+            for t in times:
+                s = evaluate(ctx, u, t)
+                lu, _ = local_u(ctx, L, L.ranks[u.index], t)
+                col = colour_token(ctx, colour_v, s["colour"])
+                op = _clamp01(s["tot"]["opacity"]) * alpha
+                sc = 1.0
+                if spec.get("pop", True):
+                    sc = max(0.0, EASE["outBack"](_clamp01(lu / 0.6)))
+                    op = op * _clamp01(lu * 5.0)
+                cx, cy = s["x"], s["y"] + off
+                d = _Draw(x=cx, y=cy, text="{\\p1}" + drawing + "{\\p0}", pre="", post="",
+                          a1=255 * (1 - op), a3=255.0, a4=255.0, fscx=100.0 * sc, fscy=100.0 * sc, frz=-s["tot"]["rz"],
+                          frx=0.0, fry=0.0, fax=0.0, blur=0.0, bord=0.0, shad=0.0, fsp=0.0, c1=tuple(col), c3=tuple(col),
+                          clip=None, iclip=False, vclip=None, org=None, vis=op > 0.004 and sc > 0.002,
+                          an=5, drawing=True)
+                draws.append(d)
+            events += self._emit(draws, times, layer)
         return events
 
     # -------------------------------------------------------------- caret
@@ -2097,9 +2204,11 @@ def _motion_for(item: dict[str, Any], def_x: float, def_y: float) -> MotionPath 
         _clamp(_num(item.get("textMoveSinusFrequency"), 2.0) or 2.0, 0.1, 10),
         _clamp(_num(item.get("textMoveBounceHeight"), 14.0) or 0.0, 0, 30), _clamp(_num(item.get("textMoveBounceCount"), 4.0) or 4.0, 1, 8),
         _clamp(_num(item.get("textMoveBounceDamping"), 0.35) or 0.0, 0, 0.9),
+        _clamp(_num(item.get("textMoveLissajousFreqY"), 2.0) or 2.0, 1, 6),
     )
     easing = str(item.get("textMoveEasing") or "linear").lower()
-    return MotionPath(points=[(float(x), float(y)) for x, y in pts], easing=easing if easing in PATH_EASE else "linear")
+    return MotionPath(points=[(float(x), float(y)) for x, y in pts], easing=easing if easing in PATH_EASE else "linear",
+                      rotate_along=bool(item.get("textMoveRotateAlongPath")))
 
 
 def caption_for_item(item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, fps: float,

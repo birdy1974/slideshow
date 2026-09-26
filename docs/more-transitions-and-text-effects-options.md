@@ -1,20 +1,28 @@
 # More slide transitions, text effects and text motions — options
 
 Research round (2026-09-26): deep web search for anything we could still add.
-**Options only — no code changed.** Every option below lists source, what it
-would add, and an effort estimate. Effort legend: S = hours, M = days, L = weeks.
+Every option below lists source, what it would add, and an effort estimate.
+Effort legend: S = hours, M = days, L = weeks.
 
-What we have today (baseline):
+**Implementation status (2026-09-26, same day):** the transitions review found
+nothing to do (see §1b). The text-effects and motion options are now largely
+implemented — both engines, twin-verified: 25 new effects (§2: 154 total,
+22 presets) incl. the `roll`/`swap` content types, the `physics` generator and
+`bubble` copies; 7 new motion-path shapes (§3: 17 total) plus
+rotate-along-path and per-letter staggered path following. Still open:
+§2g audio-reactive, parts of §2f, Bézier path editing (§3, stretch).
+
+What we have today:
 
 | Area | Count | Source |
 | --- | --- | --- |
 | Slide transitions | **191** — 58 native xfade + 133 GL | FFmpeg built-ins + scriptituk/xfade-easing port |
 | Easings | 50+ incl. CSS, elastic/back/bounce, flipelastic/flipback | xfade-easing |
-| Text effects | **129 stackable** (in/hold/out) + 19 presets, 15 categories | registry/text-effects.json |
-| Text motion paths | 10 — straight, freehand, polyline, circle, sine, sine-vertical, star, diamond, triangle, bounce | TextMotionPathEditor |
+| Text effects | **154 stackable** (in/hold/out) + 22 presets, 15 categories | registry/text-motion.json |
+| Text motion paths | 17 — straight, freehand, polyline, circle, sine, sine-vertical, star, diamond, triangle, bounce, spiral, figure-8, lissajous, zigzag, heart, polygon, pendulum | TextMotionPathEditor |
 
 Architecture constraint that applies to every text option: the registry v2
-(`registry/text-effects.json`) is interpreted by **two engines that must agree
+(`registry/text-motion.json`) is interpreted by **two engines that must agree
 bit-for-bit** — `backend/app/text_motion.py` (Python → libass/ASS for the MP4)
 and `src/textMotionCore.ts` (live preview). So every new effect is implemented
 twice, plus the GL preview page (`docs/mockups/text-effects-stack.html`).
@@ -28,15 +36,13 @@ The 58 native xfade transitions we register is the **full built-in set**;
 FFmpeg 7.x/8.x added no new xfade transitions (upstream lists still match ours
 exactly). Sources: FFmpeg xfade docs, ayosec list, OTTVerse overview.
 
-### 1b. Official gl-transitions collection: 1 transition missing
+### 1b. Official gl-transitions collection — already complete
 The official collection (gl-transitions.com) currently holds **125** GLSL
 transitions. Diffed against our 133 GL ports (which include scriptituk's 15
-custom shaders), only **one** is genuinely missing:
-
-- **`coord-from-in`** (by haiyoucuv) — a pixel-coordinate morph: the outgoing
-  frame's *colour values* are used as coordinates to look up the incoming
-  frame, producing a liquid RGB-warp melt. ~40 lines of GLSL.
-  Effort **S**. Source: transitions/coord-from-in.glsl.
+custom shaders), **nothing is missing**: the one gap found during research,
+`coord-from-in`, had in fact already been ported — it ships as **"Coordinate
+Morph"** (id `gl_coord_from_in`) in `registry/transitions.json`. Trust
+registry ids, not labels.
 
 The remaining diffs are deliberate duplicates of native xfade (GL `wipeLeft/
 Right/Up/Down`, `CircleCrop`, `Radial`, `dissolve`, `pixelize`) — not worth
@@ -94,9 +100,8 @@ recommended now.
 
 ### Recommendation (transitions)
 1. **1c sync** (fixes + new parameters = most value, zero GUI redesign)
-2. **1b port `coord-from-in`** (cheap, one nice effect)
-3. **1d mask wipes** (genuinely new category, great for slideshows)
-4. 1e as filler; 1f skip.
+2. **1d mask wipes** (genuinely new category, great for slideshows)
+3. 1e as filler; 1f skip. (1b is done — nothing to port.)
 
 ---
 

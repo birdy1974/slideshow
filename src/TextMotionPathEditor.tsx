@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Eraser, Move, Pencil, Trash2, Play, Pause, Route, Circle, Waves, Zap, Star, Diamond, Triangle, GitBranch, Plus, Minus, ArrowUpDown } from 'lucide-react'
+import { Check, Eraser, Move, Pencil, Trash2, Play, Pause, Route, Circle, Waves, Zap, Star, Diamond, Triangle, GitBranch, Plus, Minus, ArrowUpDown, Shell, Infinity as InfinityIcon, Activity, Heart, Hexagon, Undo2 } from 'lucide-react'
 import type { MediaItem } from './mediaItem'
 import { backdropBlurPx, useFrameScale } from './useFrameScale'
 
 type Point = [number, number]
-type PathType = 'straight' | 'freehand' | 'circle' | 'sine' | 'star' | 'diamond' | 'triangle' | 'polyline' | 'sine-vertical' | 'bounce'
+type PathType = 'straight' | 'freehand' | 'circle' | 'sine' | 'star' | 'diamond' | 'triangle' | 'polyline' | 'sine-vertical' | 'bounce' | 'spiral' | 'figure-8' | 'lissajous' | 'zigzag' | 'heart' | 'polygon' | 'pendulum'
 type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'smooth'
 
 function clampPct(v: number) {
@@ -283,6 +283,146 @@ function generateBouncePoints(fromX: number, fromY: number, toX: number, toY: nu
   return pts
 }
 
+// ---- New path shapes (2026-09 round): twins of the App.tsx generators the
+// preview and the renderer use — same formulas and sample counts. ----
+function generateSpiralPoints(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, turns: number, num = 96): Point[] {
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  let cx: number, cy: number, r0: number, startAng: number
+  if (radius != null && radius > 2) { cx = fromX; cy = fromY; r0 = radius; startAng = -Math.PI / 2 }
+  else if (d > 0.5) { cx = toX; cy = toY; r0 = d; startAng = Math.atan2(fromY - cy, fromX - cx) }
+  else { cx = fromX; cy = fromY; r0 = 15; startAng = -Math.PI / 2 }
+  const t = Math.max(0.2, Math.min(6, turns))
+  const pts: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const ang = startAng + p * t * 2 * Math.PI
+    const r = r0 * (1 - p)
+    pts.push([clampPct(cx + r * Math.cos(ang)), clampPct(cy + r * Math.sin(ang))])
+  }
+  pts.push([clampPct(cx), clampPct(cy)])
+  return pts
+}
+function generateFigure8Points(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, num = 120): Point[] {
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  const explicit = radius != null && radius > 2
+  const cx = explicit ? fromX : (fromX + toX) / 2
+  const cy = explicit ? fromY : (fromY + toY) / 2
+  const a = explicit ? radius as number : Math.max(10, d * 0.4)
+  const pts: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const t = (i / num) * 2 * Math.PI
+    const s = Math.sin(t), c = Math.cos(t)
+    const den = 1 + s * s
+    pts.push([clampPct(cx + a * c / den), clampPct(cy + a * s * c / den)])
+  }
+  return pts
+}
+function generateLissajousPoints(fromX: number, fromY: number, toX: number, toY: number, amp: number, freqX: number, freqY: number, num = 140): Point[] {
+  const ax = Math.max(2, Math.min(40, amp || 14))
+  const ay = ax * 0.7
+  const f1 = Math.max(0.5, Math.min(8, freqX || 3))
+  const f2 = Math.max(0.5, Math.min(8, freqY || 2))
+  const cx = fromX, cy = fromY
+  const pts: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const t = i / num
+    pts.push([clampPct(cx + ax * Math.sin(2 * Math.PI * f1 * t + Math.PI / 2)), clampPct(cy + ay * Math.sin(2 * Math.PI * f2 * t))])
+  }
+  return pts
+}
+function generateZigzagPoints(fromX: number, fromY: number, toX: number, toY: number, amplitude: number, frequency: number, num = 96): Point[] {
+  const amp = Math.max(0, Math.min(40, amplitude ?? 10))
+  const freq = Math.max(0.5, Math.min(10, frequency ?? 3))
+  const dx = toX - fromX, dy = toY - fromY
+  const len = Math.hypot(dx, dy)
+  const ux = len < 1e-6 ? 1 : dx / len, uy = len < 1e-6 ? 0 : dy / len
+  const px = -uy, py = ux
+  const pts: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const p = i / num
+    const s = p * freq
+    const f = s - Math.floor(s)
+    const tri = f < 0.5 ? f * 4 - 1 : 3 - f * 4
+    const off = amp * tri
+    pts.push([clampPct(fromX + dx * p + px * off), clampPct(fromY + dy * p + py * off)])
+  }
+  return pts
+}
+function generateHeartPoints(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, rotation: number, num = 120): Point[] {
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  const explicit = radius != null && radius > 2
+  const cx = explicit ? fromX : (fromX + toX) / 2
+  const cy = explicit ? fromY : (fromY + toY) / 2
+  const r = explicit ? radius as number : Math.max(10, d * 0.4)
+  const s = r / 16
+  const rot = (rotation || 0) * Math.PI / 180
+  const pts: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const t = (i / num) * 2 * Math.PI
+    const hx = 16 * Math.pow(Math.sin(t), 3)
+    const hy = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)
+    const x = s * hx, y = -s * hy
+    pts.push([clampPct(cx + x * Math.cos(rot) - y * Math.sin(rot)), clampPct(cy + x * Math.sin(rot) + y * Math.cos(rot))])
+  }
+  return pts
+}
+function generatePolygonPoints(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, sides: number, rotation: number, numPerSeg = 24): Point[] {
+  const n = Math.max(3, Math.min(10, Math.round(sides || 5)))
+  const d = Math.hypot(toX - fromX, toY - fromY)
+  let cx: number, cy: number, r: number
+  if (radius != null && radius > 2) { cx = fromX; cy = fromY; r = radius }
+  else { cx = (fromX + toX) / 2; cy = (fromY + toY) / 2; r = Math.max(10, d * 0.5) }
+  const rot = (rotation || 0) * Math.PI / 180
+  const vertices: Point[] = []
+  for (let i = 0; i < n; i++) {
+    const ang = rot - Math.PI / 2 + i * (2 * Math.PI / n)
+    vertices.push([clampPct(cx + r * Math.cos(ang)), clampPct(cy + r * Math.sin(ang))])
+  }
+  vertices.push(vertices[0])
+  const pts: Point[] = []
+  for (let i = 0; i < vertices.length - 1; i++) {
+    const a = vertices[i], b = vertices[i + 1]
+    for (let k = 0; k < numPerSeg; k++) {
+      const t = k / numPerSeg
+      pts.push([clampPct(a[0] + (b[0] - a[0]) * t), clampPct(a[1] + (b[1] - a[1]) * t)])
+    }
+  }
+  pts.push(vertices[vertices.length - 1])
+  return pts
+}
+function generatePendulumPoints(fromX: number, fromY: number, toX: number, toY: number, radius: number | undefined, num = 60): Point[] {
+  const arm = radius != null && radius > 2 ? radius : 20
+  const px = (fromX + toX) / 2, py = (fromY + toY) / 2 - arm
+  const d0 = Math.hypot(fromX - px, fromY - py)
+  const d1 = Math.hypot(toX - px, toY - py)
+  const r = Math.max(2, (d0 + d1) / 2)
+  let a0 = Math.atan2(fromY - py, fromX - px)
+  let a1 = Math.atan2(toY - py, toX - px)
+  if (d0 < 0.5 && d1 < 0.5) { a0 = Math.PI / 2 - 0.5; a1 = Math.PI / 2 + 0.5 }
+  const norm2pi = (a: number) => { let x = a % (2 * Math.PI); if (x < 0) x += 2 * Math.PI; return x }
+  const crosses = (start: number, delta: number, target: number) => {
+    const t = norm2pi(target - start)
+    const span = Math.abs(delta)
+    return delta >= 0 ? t <= span + 1e-9 : (2 * Math.PI - t) <= span + 1e-9
+  }
+  let cw = norm2pi(a1 - a0)
+  if (cw < 1e-9) cw = 2 * Math.PI
+  const ccw = cw - 2 * Math.PI
+  const cwPasses = crosses(a0, cw, Math.PI / 2)
+  const ccwPasses = crosses(a0, ccw, Math.PI / 2)
+  let delta: number
+  if (cwPasses && ccwPasses) delta = Math.abs(cw) <= Math.abs(ccw) ? cw : ccw
+  else if (cwPasses) delta = cw
+  else if (ccwPasses) delta = ccw
+  else delta = Math.abs(cw) <= Math.abs(ccw) ? cw : ccw
+  const pts: Point[] = []
+  for (let i = 0; i <= num; i++) {
+    const ang = a0 + (i / num) * delta
+    pts.push([clampPct(px + r * Math.cos(ang)), clampPct(py + r * Math.sin(ang))])
+  }
+  return pts
+}
+
 function applySinusUpDown(points: Point[], enabled: boolean, amplitude: number, frequency: number): Point[] {
   if (!enabled || points.length < 2) return points
   const amp = Math.max(0, Math.min(20, amplitude ?? 6))
@@ -319,6 +459,7 @@ function effectivePoints(
   bounceHeight?: number,
   bounceCount?: number,
   bounceDamping?: number,
+  lissajousFreqY?: number,
 ): Point[] {
   let base: Point[]
   if ((pathType === 'freehand' || pathType === 'polyline') && path && path.length >= 2) base = path
@@ -329,6 +470,13 @@ function effectivePoints(
   else if (pathType === 'diamond') base = generateDiamondPoints(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
   else if (pathType === 'triangle') base = generateTrianglePoints(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
   else if (pathType === 'bounce') base = generateBouncePoints(fromX, fromY, toX, toY, bounceHeight ?? 14, bounceCount ?? 4, bounceDamping ?? 0.35)
+  else if (pathType === 'spiral') base = generateSpiralPoints(fromX, fromY, toX, toY, circleRadius, circleTurns)
+  else if (pathType === 'figure-8') base = generateFigure8Points(fromX, fromY, toX, toY, circleRadius)
+  else if (pathType === 'lissajous') base = generateLissajousPoints(fromX, fromY, toX, toY, sineAmp, sineFreq, lissajousFreqY ?? 2)
+  else if (pathType === 'zigzag') base = generateZigzagPoints(fromX, fromY, toX, toY, sineAmp, sineFreq)
+  else if (pathType === 'heart') base = generateHeartPoints(fromX, fromY, toX, toY, circleRadius, symbolRotation ?? 0)
+  else if (pathType === 'polygon') base = generatePolygonPoints(fromX, fromY, toX, toY, circleRadius, starPoints ?? 5, symbolRotation ?? 0)
+  else if (pathType === 'pendulum') base = generatePendulumPoints(fromX, fromY, toX, toY, circleRadius)
   else if (pathType === 'polyline' && path && path.length >= 2) base = path
   else {
     if (Math.abs(fromX - toX) < 0.01 && Math.abs(fromY - toY) < 0.01) base = [[fromX, fromY]]
@@ -362,6 +510,10 @@ type MotionEditorProps = {
   bounceHeight?: number
   bounceCount?: number
   bounceDamping?: number
+  // Lissajous only: vertical frequency (the horizontal one is sineFrequency).
+  lissajousFreqY?: number
+  // Caption turns to follow the path tangent (item: textMoveRotateAlongPath).
+  rotateAlong?: boolean
   // Rotate/squash preview: undefined pair = off. The moving caption tilts and
   // squashes over the same loop as the path, around its own centre.
   rotateFrom?: number
@@ -396,6 +548,8 @@ export function TextMotionPathEditor({
   bounceHeight = 14,
   bounceCount = 4,
   bounceDamping = 0.35,
+  lissajousFreqY = 2,
+  rotateAlong = false,
   rotateFrom,
   rotateTo,
   rotateSpeed,
@@ -423,8 +577,8 @@ export function TextMotionPathEditor({
   const curEasing: Easing = easing || 'linear'
 
   const effectivePath: Point[] = useMemo(() => {
-    return effectivePoints(fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency, starPoints, starInnerRatio, symbolRotation, sinusEnabled, sinusAmplitude, sinusFrequency, bounceHeight, bounceCount, bounceDamping)
-  }, [fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency, starPoints, starInnerRatio, symbolRotation, sinusEnabled, sinusAmplitude, sinusFrequency, bounceHeight, bounceCount, bounceDamping])
+    return effectivePoints(fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency, starPoints, starInnerRatio, symbolRotation, sinusEnabled, sinusAmplitude, sinusFrequency, bounceHeight, bounceCount, bounceDamping, lissajousFreqY)
+  }, [fromX, fromY, toX, toY, path, curPathType, circleRadius, circleTurns, sineAmplitude, sineFrequency, starPoints, starInnerRatio, symbolRotation, sinusEnabled, sinusAmplitude, sinusFrequency, bounceHeight, bounceCount, bounceDamping, lissajousFreqY])
 
   useEffect(() => {
     if (!enabled || !playing) return
@@ -442,19 +596,38 @@ export function TextMotionPathEditor({
 
   const easedProgress = useMemo(() => easeProgress(progress, curEasing), [progress, curEasing])
   const currentPos = useMemo(() => pointAlongPath(effectivePath, easedProgress), [effectivePath, easedProgress])
+  // Tangent angle of the path at the current position, in the canvas's own
+  // pixel space (so it matches the render, which measures the angle in frame
+  // pixels). Twin of the 'path' branch in textMotionCore.ts / text_motion.py.
+  const rotateAlongAngle = useMemo(() => {
+    if (!rotateAlong || effectivePath.length < 2) return 0
+    const rect = containerRef.current?.getBoundingClientRect()
+    const w = rect?.width || 16
+    const h = rect?.height || 9
+    const f = easedProgress
+    let dx: number, dy: number
+    if (f + 0.02 > 1) {
+      const q = pointAlongPath(effectivePath, Math.max(0, f - 0.02))
+      dx = (currentPos[0] - q[0]) * w; dy = (currentPos[1] - q[1]) * h
+    } else {
+      const q = pointAlongPath(effectivePath, f + 0.02)
+      dx = (q[0] - currentPos[0]) * w; dy = (q[1] - currentPos[1]) * h
+    }
+    return (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) ? Math.atan2(dy, dx) * 180 / Math.PI : 0
+  }, [rotateAlong, effectivePath, easedProgress, currentPos])
   // Rotate/squash the moving caption over the same loop (linear, full window —
   // the main canvas and the MP4 do the same; the path easing only shapes the
   // position). Off (undefined) pairs leave the caption untouched.
   const rotEn = rotateFrom !== undefined && rotateTo !== undefined
   const sqEn = squishFrom !== undefined && squishTo !== undefined
-  const captionTransform = (rotEn || sqEn)
+  const captionTransform = (rotEn || sqEn || (rotateAlong && effectivePath.length >= 2))
     ? (() => {
         // This canvas loops every 3 s, so that is its "window" for the speed
         // math (the main canvas and the MP4 use the real text window).
         const rotProg = rotEn && rotateSpeed && rotateSpeed > 0
           ? Math.max(0, Math.min(1, (progress * 3) / rotateSpeed))
           : progress
-        const angle = rotEn ? rotateFrom! + (rotateTo! - rotateFrom!) * rotProg : 0
+        const angle = rotateAlongAngle + (rotEn ? rotateFrom! + (rotateTo! - rotateFrom!) * rotProg : 0)
         const f = sqEn ? squishFrom! + (squishTo! - squishFrom!) * progress : 1
         return `translate(-50%,-50%) rotate(${angle.toFixed(2)}deg) scale(${(1 + (1 - f) * 0.5).toFixed(3)}, ${f.toFixed(3)})`
       })()
@@ -674,6 +847,13 @@ export function TextMotionPathEditor({
           <button type="button" className={`btn ghost small ${curPathType==='diamond'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'diamond' })} title="Diamond path"><Diamond size={12}/> Diamond</button>
           <button type="button" className={`btn ghost small ${curPathType==='triangle'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'triangle' })} title="Triangle path"><Triangle size={12}/> Triangle</button>
           <button type="button" className={`btn ghost small ${curPathType==='bounce'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'bounce' })} title="Bouncy parabolic arcs — each bounce can be damped"><ArrowUpDown size={12}/> Bounce</button>
+          <button type="button" className={`btn ghost small ${curPathType==='spiral'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'spiral' })} title="Spiral that winds inward — into the start point, or into the end handle"><Shell size={12}/> Spiral</button>
+          <button type="button" className={`btn ghost small ${curPathType==='figure-8'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'figure-8' })} title="Figure-8 / infinity loop around the path"><InfinityIcon size={12}/> Figure 8</button>
+          <button type="button" className={`btn ghost small ${curPathType==='lissajous'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'lissajous' })} title="Lissajous curve — two independent frequencies make loops and pretzels"><Activity size={12}/> Lissajous</button>
+          <button type="button" className={`btn ghost small ${curPathType==='zigzag'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'zigzag' })} title="Sharp zigzag between start and end"><Zap size={12}/> Zigzag</button>
+          <button type="button" className={`btn ghost small ${curPathType==='heart'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'heart' })} title="Heart-shaped loop"><Heart size={12}/> Heart</button>
+          <button type="button" className={`btn ghost small ${curPathType==='polygon'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'polygon' })} title="Regular polygon with 3–10 sides — generalises diamond and triangle"><Hexagon size={12}/> Polygon</button>
+          <button type="button" className={`btn ghost small ${curPathType==='pendulum'?'active':''}`} onClick={()=>onChange({ textMovePathType: 'pendulum' })} title="Pendulum swing — an arc under a pivot, always through the lowest point"><Undo2 size={12}/> Pendulum</button>
         </div>
       </div>
 
@@ -713,6 +893,37 @@ export function TextMotionPathEditor({
         <label>Damping <input type="range" min={0} max={0.85} step={0.05} value={bounceDamping} onChange={e=>onChange({ textMoveBounceDamping: Number(e.target.value) })} /> <em>{bounceDamping.toFixed(2)}{bounceDamping>0.01 ? ' damped' : ' no damp'}</em></label>
       </div>}
 
+      {curPathType === 'spiral' && <div className="motion-params">
+        <label>Radius <input type="range" min={3} max={40} step={1} value={circleRadius ?? 18} onChange={e=>onChange({ textMoveCircleRadius: Number(e.target.value), textMovePathType: 'spiral' })} /> <em>{Math.round(circleRadius ?? 18)}%</em></label>
+        <label>Turns <input type="range" min={0.25} max={4} step={0.25} value={circleTurns} onChange={e=>onChange({ textMoveCircleTurns: Number(e.target.value) })} /> <em>{circleTurns}×</em></label>
+      </div>}
+
+      {(curPathType === 'figure-8' || curPathType === 'heart') && <div className="motion-params">
+        <label>Size <input type="range" min={5} max={40} step={1} value={circleRadius ?? 18} onChange={e=>onChange({ textMoveCircleRadius: Number(e.target.value), textMovePathType: curPathType })} /> <em>{Math.round(circleRadius ?? 18)}%</em></label>
+        {curPathType === 'heart' && <label>Rotation <input type="range" min={0} max={360} step={5} value={symbolRotation} onChange={e=>onChange({ textMoveSymbolRotation: Number(e.target.value) })} /> <em>{symbolRotation}°</em></label>}
+      </div>}
+
+      {curPathType === 'lissajous' && <div className="motion-params">
+        <label>Width <input type="range" min={3} max={40} step={1} value={sineAmplitude} onChange={e=>onChange({ textMoveSineAmplitude: Number(e.target.value) })} /> <em>{sineAmplitude}%</em></label>
+        <label>Freq X <input type="range" min={1} max={6} step={1} value={sineFrequency} onChange={e=>onChange({ textMoveSineFrequency: Number(e.target.value) })} /> <em>{sineFrequency}</em></label>
+        <label>Freq Y <input type="range" min={1} max={6} step={1} value={lissajousFreqY} onChange={e=>onChange({ textMoveLissajousFreqY: Number(e.target.value) })} /> <em>{lissajousFreqY}</em></label>
+      </div>}
+
+      {curPathType === 'zigzag' && <div className="motion-params">
+        <label>Amplitude <input type="range" min={2} max={30} step={1} value={sineAmplitude} onChange={e=>onChange({ textMoveSineAmplitude: Number(e.target.value) })} /> <em>{sineAmplitude}%</em></label>
+        <label>Zigs <input type="range" min={1} max={10} step={1} value={sineFrequency} onChange={e=>onChange({ textMoveSineFrequency: Number(e.target.value) })} /> <em>{sineFrequency}×</em></label>
+      </div>}
+
+      {curPathType === 'polygon' && <div className="motion-params">
+        <label>Size <input type="range" min={5} max={40} step={1} value={circleRadius ?? 18} onChange={e=>onChange({ textMoveCircleRadius: Number(e.target.value) })} /> <em>{Math.round(circleRadius ?? 18)}%</em></label>
+        <label>Sides <input type="range" min={3} max={10} step={1} value={starPoints} onChange={e=>onChange({ textMoveStarPoints: Number(e.target.value) })} /> <em>{starPoints}</em></label>
+        <label>Rotation <input type="range" min={0} max={360} step={5} value={symbolRotation} onChange={e=>onChange({ textMoveSymbolRotation: Number(e.target.value) })} /> <em>{symbolRotation}°</em></label>
+      </div>}
+
+      {curPathType === 'pendulum' && <div className="motion-params">
+        <label>Arm <input type="range" min={5} max={40} step={1} value={circleRadius ?? 20} onChange={e=>onChange({ textMoveCircleRadius: Number(e.target.value), textMovePathType: 'pendulum' })} /> <em>{Math.round(circleRadius ?? 20)}%</em></label>
+      </div>}
+
       {curPathType === 'polyline' && <div className="motion-params polyline-params">
         <span className="polyline-info"><GitBranch size={12}/> {path?.length ?? 2} points — click on canvas to insert, drag points to move</span>
         <button type="button" className="btn ghost small" onClick={handlePolyAddMid}><Plus size={12}/> Add middle point</button>
@@ -732,6 +943,14 @@ export function TextMotionPathEditor({
           <label>Up/down amp <input type="range" min={0} max={20} step={1} value={sinusAmplitude} onChange={e=>onChange({ textMoveSinusAmplitude: Number(e.target.value) })} /> <em>{sinusAmplitude}%</em></label>
           <label>Freq <input type="range" min={0.5} max={6} step={0.5} value={sinusFrequency} onChange={e=>onChange({ textMoveSinusFrequency: Number(e.target.value) })} /> <em>{sinusFrequency}</em></label>
         </div>}
+      </div>
+
+      <div className="motion-type-row">
+        <label className="check-label" style={{fontSize:'13px'}}>
+          <input type="checkbox" checked={rotateAlong} onChange={e=>onChange({ textMoveRotateAlongPath: e.target.checked })} />
+          <span><Check size={11}/></span>
+          Rotate along path <small style={{opacity:.7}}>caption turns to follow the path direction</small>
+        </label>
       </div>
 
 
