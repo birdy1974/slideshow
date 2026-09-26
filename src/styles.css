@@ -1491,6 +1491,13 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-choices button{border:1px solid #494e45;background:#20231f;color:#c9cec2;border-radius:6px;padding:6px 11px;font-size:10px;font-weight:700;cursor:pointer}
 .collage-choices button.active{border-color:var(--lime);color:var(--lime);background:#2a3324}
 .collage-seed{display:flex;gap:7px;align-items:center}
+/* Checkbox rows in the collage editor (depth push-back, beat sync) */
+.collage-check{display:flex;align-items:flex-start;gap:7px;margin-top:8px;font-size:9.5px;line-height:1.45;color:#d7dbd2;cursor:pointer}
+.collage-check input{width:13px;height:13px;margin-top:1px;flex:none;accent-color:#8f7ff0;cursor:pointer}
+.collage-check.disabled{opacity:.45;cursor:not-allowed}
+.collage-check.disabled input{cursor:not-allowed}
+/* Beat-synced arrival time under a timing row's photo name */
+.collage-timing-row .name em{display:block;font-style:normal;font-size:8px;color:#8f7ff0;letter-spacing:.02em}
 .collage-symbol{position:relative;display:block;width:100%;height:100%}
 .collage-symbol img{position:absolute;top:12%;width:42%;height:76%;object-fit:cover;background:#fff;padding:6%;box-sizing:border-box;border-radius:2px;box-shadow:0 2px 6px #0006}
 .collage-symbol b{position:absolute;right:4%;bottom:6%;z-index:4;background:#0009;color:#fff;font-size:8px;border-radius:3px;padding:0 3px}

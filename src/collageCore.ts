@@ -11,7 +11,7 @@
 // The engines convert to their own pixels: CSS in the preview, FFmpeg
 // filter expressions in the renderer.
 
-export type CollageLayout = 'stack' | 'grid' | 'scatter'
+export type CollageLayout = 'stack' | 'grid' | 'scatter' | 'filmstrip' | 'fan' | 'masonry'
 export type CollageAnim = 'drop' | 'pop' | 'swing' | 'none'
 export type CollageShape = '4:3' | 'square' | '3:4'
 
@@ -37,6 +37,17 @@ export interface CollageSpec {
    *  landed. Missing = 2. The slide duration is derived from the photo
    *  timings plus this hold (collageDuration). */
   hold?: number
+  /** Snap photo arrivals to the music: with this on, each photo's nominal
+   *  arrival rolls forward to the next stored beat (see `beats`). */
+  beatSync?: boolean
+  /** Beat times in the slide's own hold clock (0 = the hold starts, i.e.
+   *  before the first photo appears), seconds, ascending. The editor maps
+   *  the soundtrack's detected onsets into this clock and stores the result
+   *  here — the render uses the stored list, so preview and MP4 agree. */
+  beats?: number[]
+  /** Depth push-back: when a new photo lands, the photos already on the
+   *  pile shrink back a little and dim (drop / pop animations only). */
+  depth?: boolean
   /** Optional library picture behind the photos (path like /photos/x.jpg).
    *  Missing = plain background colour. */
   backgroundImage?: string
@@ -53,7 +64,7 @@ export interface Placement { cx: number; cy: number; w: number; rot: number }
 /** Animated offsets of one photo at time t (seconds since the slide's own
  *  segment start, lead-in handles included — pass leadIn so entrances start
  *  after the incoming transition handle). */
-export interface PhotoState { dx: number; dy: number; rot: number; scale: number; alpha: number }
+export interface PhotoState { dx: number; dy: number; rot: number; scale: number; alpha: number; dim: number }
 
 // Deterministic pseudo-random number in [0, 1) — bit-identical to
 // hash01() in backend/app/collage.py (and the text engines' hash).
@@ -130,6 +141,68 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       const cy = 12 + cellH * (row + 0.28 + 0.44 * hash01(seed, i, 31))
       out.push({ cx, cy, w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 26 })
     }
+  } else if (spec.layout === 'filmstrip') {
+    // A horizontal band of overlapping frames, like film frames edge to
+    // edge — one row up to 5 photos, two rows beyond.
+    const rows = n <= 5 ? 1 : 2
+    const perRow = Math.ceil(n / rows)
+    const firstRow = n - perRow * (rows - 1)
+    const k = 0.91 / photoAspect(spec.shape) + 0.25
+    for (let i = 0; i < n; i++) {
+      const row = i < firstRow ? 0 : 1
+      const cols = row === 0 ? firstRow : perRow
+      const col = row === 0 ? i : i - firstRow
+      const cellWr = (100 - 2 * 5) / cols
+      const cellH = (100 - 2 * 12) / rows
+      const w = Math.min(cellWr * 1.1, cellH * 0.82 * aspect / k)
+      out.push({ cx: 5 + cellWr * (col + 0.5), cy: 12 + cellH * (row + 0.5), w: widthOf(w, i), rot: 0 })
+    }
+  } else if (spec.layout === 'fan') {
+    // Cards fanned out from a point below the frame — each card tilts
+    // along its spoke, like a hand of cards offered to the viewer.
+    const L = 46
+    const spread = Math.min(48, 10 + 7 * n)
+    const w = n <= 3 ? 36 : n <= 6 ? 30 : 26
+    for (let i = 0; i < n; i++) {
+      const a = n === 1 ? 0 : (spread * (i / (n - 1) - 0.5)) * Math.PI / 180
+      out.push({
+        cx: 50 + L * aspect * Math.sin(a),
+        cy: 96 - L * Math.cos(a),
+        w: widthOf(w, i),
+        rot: a * 180 / Math.PI,
+      })
+    }
+  } else if (spec.layout === 'masonry') {
+    // Pinterest-style columns: seeded size variety, each photo stacked into
+    // the shortest column (a single photo is simply centred).
+    if (n === 1) {
+      out.push({ cx: 50, cy: 50, w: widthOf(40, 0), rot: 0 })
+    } else {
+      const cols = n <= 2 ? 2 : n <= 9 ? 3 : 4
+      const marginX = 6
+      const cellW = (100 - 2 * marginX) / cols
+      const k = 0.91 / photoAspect(spec.shape) + 0.25
+      const base = cellW * 0.88
+      const ws: number[] = []
+      for (let i = 0; i < n; i++) ws.push(base * (0.82 + 0.36 * hash01(seed, i, 41)) * photoSize(spec, i))
+      const simulate = (scale: number) => {
+        const fills = new Array<number>(cols).fill(0)
+        const res: { cx: number; cy: number }[] = []
+        const gap = 2.5 * scale
+        for (let i = 0; i < n; i++) {
+          let c = 0
+          for (let j = 1; j < cols; j++) if (fills[j] < fills[c] - 1e-9) c = j
+          const mh = ws[i] * scale * k / aspect
+          res.push({ cx: marginX + cellW * (c + 0.5), cy: 12 + fills[c] + gap / 2 + mh / 2 })
+          fills[c] += gap + mh
+        }
+        return { res, maxFill: Math.max(...fills) }
+      }
+      let sim = simulate(1)
+      let fit = 1
+      if (sim.maxFill > 76) { fit = 76 / sim.maxFill; sim = simulate(fit) }
+      for (let i = 0; i < n; i++) out.push({ cx: sim.res[i].cx, cy: sim.res[i].cy, w: ws[i] * fit, rot: 0 })
+    }
   } else {
     // stack: overlapping polaroids around the middle, seeded tilts
     const w = n <= 3 ? 42 : n <= 6 ? 34 : 30
@@ -177,12 +250,26 @@ export function photoSize (spec: CollageSpec, i: number): number {
   return Math.max(0.5, Math.min(1.5, v))
 }
 
+/** The next stored beat at or after time t (in the hold clock), or null when
+ *  the beat list runs out first. */
+export function nextBeat (beats: number[], t: number): number | null {
+  for (const b of beats) if (b >= t - 1e-9) return b
+  return null
+}
+
 /** When photo i starts its entrance (seconds from segment start): the sum of
- *  the delays of photos 0..i plus the lead-in handle. */
+ *  the delays of photos 0..i plus the lead-in handle. With beat sync on, the
+ *  nominal time rolls forward to the next stored beat — several photos may
+ *  share a beat (the "pile lands on the drop" reveal). */
 export function photoStart (spec: CollageSpec, i: number, leadIn = 0): number {
-  let t = leadIn
-  for (let k = 0; k <= i; k++) t += photoDelay(spec, k)
-  return t
+  let hold = 0
+  for (let k = 0; k <= i; k++) hold += photoDelay(spec, k)
+  if (spec.beatSync === true) {
+    const beats = (Array.isArray(spec.beats) ? spec.beats : []).filter(b => typeof b === 'number' && Number.isFinite(b))
+    const snapped = nextBeat(beats, hold)
+    if (snapped !== null) hold = snapped
+  }
+  return leadIn + hold
 }
 
 /** How long an entrance takes from its start until the photo is fully at
@@ -220,26 +307,68 @@ export function bgBlurRadius (blur: number): number {
 /** Animated state of photo i at segment time t. */
 export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0): PhotoState {
   const t0 = photoStart(spec, i, leadIn)
+  const push = pushDepth(spec, i, t, leadIn)
   if (spec.animation === 'drop') {
     const q = clamp01((t - t0) / 0.55)
     const settle = Math.pow(1 - q, 3)          // 1 → 0, outCubic
-    return { dx: 0, dy: -26 * settle, rot: -7 * settle, scale: 1, alpha: clamp01((t - t0) / 0.22) }
+    return { dx: 0, dy: -26 * settle, rot: -7 * settle, scale: 1 - DEPTH.scale * push, alpha: clamp01((t - t0) / 0.22), dim: DEPTH.dim * push }
   }
   if (spec.animation === 'pop') {
     const q = clamp01((t - t0) / 0.5)
     const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    return { dx: 0, dy: 0, rot: 0, scale: 0.55 + 0.45 * back, alpha: clamp01((t - t0) / 0.18) }
+    return { dx: 0, dy: 0, rot: 0, scale: (0.55 + 0.45 * back) * (1 - DEPTH.scale * push), alpha: clamp01((t - t0) / 0.18), dim: DEPTH.dim * push }
   }
   if (spec.animation === 'swing') {
     const tau = Math.max(0, t - t0)
     // Damped pendulum around the pin: 14° amplitude, ~1.6 s period, settles
     // in a few swings (the "pinned photo gallery" motion).
     const rot = 14 * Math.exp(-1.3 * tau) * Math.cos(2 * Math.PI * tau / 1.6)
-    return { dx: 0, dy: 0, rot, scale: 1, alpha: clamp01(tau / 0.15) }
+    return { dx: 0, dy: 0, rot, scale: 1, alpha: clamp01(tau / 0.15), dim: 0 }
   }
   // none: the photos are simply part of the slide from the first frame,
   // incoming transition included.
-  return { dx: 0, dy: 0, rot: 0, scale: 1, alpha: 1 }
+  return { dx: 0, dy: 0, rot: 0, scale: 1, alpha: 1, dim: 0 }
+}
+
+/** Depth push-back: how many "pushed back" units photo i has accumulated by
+ *  time t — every photo that lands after it pushes it back a little (eased
+ *  over DEPTH.span seconds, starting partway through the newcomer's
+ *  entrance), capped at DEPTH.max. 0 unless the spec asks for depth and the
+ *  animation can show it (drop / pop). */
+export function pushDepth (spec: CollageSpec, i: number, t: number, leadIn = 0): number {
+  if (spec.depth !== true) return 0
+  const anim = spec.animation
+  if (anim !== 'drop' && anim !== 'pop') return 0
+  const E = ENTRANCE_LENGTH[anim]
+  const n = spec.photos?.length ?? 0
+  let p = 0
+  for (let j = i + 1; j < n; j++) {
+    const tj = photoStart(spec, j, leadIn)
+    const q = clamp01((t - (tj + DEPTH.delay * E)) / DEPTH.span)
+    p += q * q * (3 - 2 * q)                   // smoothstep
+  }
+  return Math.min(DEPTH.max, p)
+}
+
+/** Depth push-back tuning — mirrored as DEPTH in backend/app/collage.py. */
+export const DEPTH = { scale: 0.06, dim: 0.11, max: 4, delay: 0.4, span: 0.35 }
+
+/** Map music-track beat times (file-local seconds) into a slide's own hold
+ *  clock (0 = the hold starts). The track's kept region [trimStart, trimEnd)
+ *  plays at trackStartTimeline on the timeline; the slide's hold starts at
+ *  holdStartTimeline. Pure data mapping — the editor runs it and stores the
+ *  result as the spec's `beats`, which both engines then use verbatim. */
+export function slideLocalBeats (beats: number[], trackStartTimeline: number, trimStart: number, trimEnd: number, holdStartTimeline: number): number[] {
+  const out: number[] = []
+  for (const b of beats) {
+    if (!Number.isFinite(b)) continue
+    if (b < trimStart) continue
+    if (trimEnd > 0 && b >= trimEnd) continue
+    const local = trackStartTimeline + (b - trimStart) - holdStartTimeline
+    if (local < 0 || local > 600) continue
+    out.push(Math.round(local * 1000) / 1000)
+  }
+  return out.sort((a, b) => a - b)
 }
 
 /** Rotation pivot: swinging photos hang from a pin at the mat's top edge. */
@@ -281,13 +410,26 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
   if (!photos.length) return undefined
   const hold = num(c.hold)
   const blur = num(c.backgroundBlur)
+  // Beat list: finite numbers, clamped, rounded to ms, ascending, de-duped.
+  const rawBeats = Array.isArray(c.beats) ? c.beats : []
+  const beatsIn: number[] = []
+  for (const b of rawBeats) {
+    const v = num(b)
+    if (v === undefined) continue
+    beatsIn.push(Math.round(Math.max(0, Math.min(600, v)) * 1000) / 1000)
+  }
+  beatsIn.sort((a, b) => a - b)
+  const beats = beatsIn.filter((b, i) => i === 0 || b - beatsIn[i - 1] > 0.001).slice(0, 1200)
   return {
     photos,
-    layout: (['stack', 'grid', 'scatter'] as const).includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
+    layout: (['stack', 'grid', 'scatter', 'filmstrip', 'fan', 'masonry'] as const).includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
     animation: (['drop', 'pop', 'swing', 'none'] as const).includes(c.animation as CollageAnim) ? c.animation as CollageAnim : 'drop',
     shape: (['4:3', 'square', '3:4'] as const).includes(c.shape as CollageShape) ? c.shape as CollageShape : '4:3',
     seed: Number.isFinite(Number(c.seed)) ? Math.trunc(Number(c.seed)) : 1,
     hold: hold !== undefined ? Math.max(0, Math.min(120, hold)) : undefined,
+    beatSync: c.beatSync === true ? true : undefined,
+    beats: beats.length ? beats : undefined,
+    depth: c.depth === true ? true : undefined,
     backgroundImage: typeof c.backgroundImage === 'string' && c.backgroundImage ? c.backgroundImage : undefined,
     backgroundBlur: blur !== undefined ? clamp01(blur) : undefined,
   }

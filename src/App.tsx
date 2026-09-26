@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, collageDuration, defaultDelay, normalizeCollage, photoDelay, photoSize, photoStart, photoState, pinAnchor, placements, type CollageSpec } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, collageDuration, defaultDelay, normalizeCollage, photoDelay, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageSpec } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
@@ -2642,7 +2642,7 @@ function App() {
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} defaultStack={defaultStack} setDefaultStack={setDefaultStack} onClose={()=>setShowTextStyles(false)}/>} 
     {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>}
-    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onOpenCaption={() => { closeCollageEditor(false); setEditingTextFrame(editingCollageFrame) }}/>}
+    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onOpenCaption={() => { closeCollageEditor(false); setEditingTextFrame(editingCollageFrame) }} audioTracks={audioTracks} audioLoop={audioPolicy === 'Loop & trim'} holdStart={(() => { const idx = media.findIndex(x => x.id === editingCollageFrame); if (idx <= 0) return 0; const { starts } = timelineModel(media); return starts[idx] })()}/>}
     {collagePickerFor !== null && <MediaBrowser photoPick onClose={()=>setCollagePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
       // Merge the chosen photos into the collage (deduped, capped at 12);
       // order of picking is order on the pile — later photos on top. The
@@ -3089,6 +3089,7 @@ function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typ
         el.style.transformOrigin = pin ? '50% 0' : '50% 50%'
         el.style.transform = `translate(-50%, ${pin ? '0' : '-50%'}) rotate(${st.rot}deg) scale(${st.scale})`
         el.style.opacity = String(st.alpha)
+        el.style.filter = st.dim > 0.004 ? `brightness(${(1 - st.dim).toFixed(3)})` : ''
       })
     })
   }, [spec, geo, clock])
@@ -3488,10 +3489,28 @@ function UploadTray({ items, onCancel, onClear }: { items: UploadItem[], onCance
 // styling lives in the regular text frame editor (a collage is a title frame
 // with photos); "Style & effects…" hands over to it.
 // ---------------------------------------------------------------------------
+// Detected onsets of a music track, cached per library path (the backend
+// caches too — this keeps re-opening a collage editor instant).
+const trackBeatsCache = new Map<string, number[]>()
+async function fetchTrackBeats(track: { path: string; name: string }): Promise<number[]> {
+  const rel = mediaRelativePath('music', mediaItemPath(track))
+  const cached = trackBeatsCache.get(rel)
+  if (cached) return cached
+  const response = await fetch(`/api/media/beats?root=music&path=${encodeURIComponent(rel)}`)
+  if (!response.ok) throw new Error(await readApiError(response, 'Beat analysis failed'))
+  const data = await response.json()
+  const beats: number[] = Array.isArray(data?.beats) ? data.beats.filter((v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)) : []
+  trackBeatsCache.set(rel, beats)
+  return beats
+}
+
 const COLLAGE_LAYOUTS: { id: CollageSpec['layout']; label: string; hint: string }[] = [
   { id: 'stack', label: 'Stack', hint: 'A loose pile of polaroids — one photo on top, the rest scattered around it' },
   { id: 'grid', label: 'Grid', hint: 'Even rows and columns, every photo straight' },
   { id: 'scatter', label: 'Scatter', hint: 'Grid cells with seeded jitter — photos drift and tilt inside their slot' },
+  { id: 'filmstrip', label: 'Filmstrip', hint: 'A strip of overlapping frames across the middle — one row up to 5 photos, two rows beyond' },
+  { id: 'fan', label: 'Fan', hint: 'Cards fanned out from a point below the frame, each tilted along its spoke' },
+  { id: 'masonry', label: 'Masonry', hint: 'Pinterest-style columns with seeded size variety — photos stack into the shortest column' },
 ]
 const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string }[] = [
   { id: 'drop', label: 'Drop in', hint: 'Photos fall in from above, straightening as they land' },
@@ -3505,7 +3524,7 @@ const COLLAGE_SHAPES: { id: CollageSpec['shape']; label: string; hint: string }[
   { id: '3:4', label: '3:4', hint: 'Portrait photos (crop to 3:4)' },
 ]
 
-function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption }: {
+function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, audioTracks = [], holdStart = 0, audioLoop = true }: {
   item: MediaItem
   isNew?: boolean
   stacked?: boolean
@@ -3515,6 +3534,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   onPickPhotos: () => void
   onPickBackground: () => void
   onOpenCaption: () => void
+  audioTracks?: AudioTrack[]
+  holdStart?: number
+  audioLoop?: boolean
 }) {
   const spec: CollageSpec = item.collage ?? { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 }
   const photos = spec.photos ?? []
@@ -3555,6 +3577,66 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const total = photos.length ? collageDuration(spec) : 0
   const entrance = ENTRANCE_LENGTH[spec.animation] ?? 0
   const [replayKey, setReplayKey] = useState(0)
+  // Beat sync: fetch the soundtrack's detected onsets and map them into this
+  // slide's own hold clock (0 = the hold starts). The stored list is the data
+  // BOTH engines then use, so the preview shows exactly what the MP4 does.
+  const [beatStatus, setBeatStatus] = useState<'idle' | 'analysing' | 'done' | 'nomusic' | 'error'>('idle')
+  const lastBeatsRef = useRef('')
+  useEffect(() => {
+    if (spec.beatSync !== true) { setBeatStatus('idle'); return }
+    let cancelled = false
+    const run = async () => {
+      if (!audioTracks.length) { setBeatStatus('nomusic'); return }
+      setBeatStatus('analysing')
+      try {
+        // Tracks play back-to-back (their kept regions concatenated); with
+        // 'Loop & trim' the whole concatenation repeats to fill the video,
+        // so the beats repeat with that period too.
+        const kept: number[] = []
+        for (const track of audioTracks) kept.push(trackKeptSeconds(track))
+        const total = kept.reduce((sum, v) => sum + v, 0)
+        const merged: number[] = []
+        const mapPass = async (passStart: number) => {
+          let trackStart = passStart
+          for (let k = 0; k < audioTracks.length; k++) {
+            const range = trackKeptRange(audioTracks[k])
+            const fileBeats = await fetchTrackBeats(audioTracks[k])
+            merged.push(...slideLocalBeats(fileBeats, trackStart, range.start, range.end, holdStart))
+            trackStart += kept[k]
+          }
+        }
+        await mapPass(0)
+        if (audioLoop && total > 0.05) {
+          const horizon = holdStart + 600
+          for (let passStart = total; passStart < horizon && merged.length < 12000; passStart += total) await mapPass(passStart)
+        }
+        if (cancelled) return
+        merged.sort((a, b) => a - b)
+        const clean = merged.filter((b, i) => i === 0 || b - merged[i - 1] > 0.02)
+        setBeatStatus('done')
+        const key = JSON.stringify(clean)
+        if (key !== lastBeatsRef.current && key !== JSON.stringify(spec.beats ?? [])) {
+          lastBeatsRef.current = key
+          setSpec({ beats: clean })
+        }
+      } catch {
+        if (!cancelled) setBeatStatus('error')
+      }
+    }
+    run()
+    return () => { cancelled = true }
+    // spec/setSpec identities change per render; the beat list itself is
+    // deliberately NOT a dependency — writing it must not re-run the fetch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec.beatSync, audioTracks, holdStart])
+  const beatsReady = spec.beatSync === true && (spec.beats?.length ?? 0) > 0
+  const beatHint = spec.beatSync !== true
+    ? 'Turn on to roll every photo landing forward to the next beat of the soundtrack — photos can share a beat, the “pile lands on the drop” reveal.'
+    : beatStatus === 'analysing' ? 'Analysing the music…'
+    : beatStatus === 'nomusic' ? 'No music on the timeline yet — add a soundtrack track first; until then photos keep their waits.'
+    : beatStatus === 'error' ? 'Could not analyse the music (unreadable audio?) — photos keep their waits.'
+    : beatsReady ? `${spec.beats?.length} beats mapped into this slide — the “lands” time on each row is the real arrival.`
+    : 'No beats detected in the music — photos keep their waits.'
   return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`} onMouseDown={onClose}><div className="frame-editor collage-editor" onMouseDown={e => e.stopPropagation()}>
     <div className="preview-top"><div><strong>{isNew ? 'New photo collage' : 'Photo collage'}</strong><span>PICK UP TO {MAX_COLLAGE_PHOTOS} PHOTOS · THE PREVIEW IS THE RENDER ENGINE</span></div><div className="frame-head-actions"><button onClick={onClose} title={isNew ? 'Discard this collage' : 'Discard changes and close'}><X size={20}/></button></div></div>
     <div className="frame-editor-body">
@@ -3588,7 +3670,11 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <small>{COLLAGE_LAYOUTS.find(l => l.id === spec.layout)?.hint}</small></div>
         <div className="collage-choices-group"><FieldLabel>Photo animation</FieldLabel>
           <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
-          <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small></div>
+          <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
+          <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' ? '' : ' disabled'}`}>
+            <input type="checkbox" checked={spec.depth === true} disabled={spec.animation !== 'drop' && spec.animation !== 'pop'} onChange={e => setSpec({ depth: e.target.checked })} />
+            <span>Depth push-back — photos already landed shrink back and dim a little as each new one lands</span>
+          </label></div>
         <div className="collage-choices-group"><FieldLabel>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></FieldLabel>
           {spec.animation === 'none'
             ? <small>With no entrance animation every photo is on screen from the first frame, so there is nothing to time. Pick an entrance to stagger the photos.</small>
@@ -3596,7 +3682,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
               <div className="collage-timing">
                 {photos.map((photo, i) => <div className="collage-timing-row" key={`${photo.path}-${i}`}>
                   <img src={collagePhotoUrl(photo)} alt="" loading="lazy" />
-                  <span className="name" title={photo.name || photo.path}>{photo.name || photo.path.split('/').pop() || `photo ${i + 1}`}</span>
+                  <span className="name" title={photo.name || photo.path}>{photo.name || photo.path.split('/').pop() || `photo ${i + 1}`}{beatsReady && <em title={`Nominal wait ${photoDelay(spec, i).toFixed(2)}s — the beat snaps it to ${photoStart(spec, i, 0).toFixed(2)}s`}>lands {photoStart(spec, i, 0).toFixed(2)}s</em>}</span>
                   <span className="ctl" title={i === 0 ? 'Seconds after the slide starts before this photo appears' : 'Seconds after the previous photo appears before this one appears'}>
                     <label>{i === 0 ? 'after start' : 'waits'}</label>
                     <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.1} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
@@ -3621,6 +3707,12 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
               </div>
               <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold — {total}s in total. The storyline duration follows automatically. Size is per photo: bigger photos overlap their neighbours, smaller ones tuck in.</small>
             </>}</div>
+        <div className="collage-choices-group"><FieldLabel>Beat sync</FieldLabel>
+          <label className={`collage-check${spec.animation === 'none' ? ' disabled' : ''}`}>
+            <input type="checkbox" checked={spec.beatSync === true} disabled={spec.animation === 'none'} onChange={e => setSpec({ beatSync: e.target.checked })} />
+            <span>Snap photo landings to the music — each photo waits for the next beat</span>
+          </label>
+          <small>{beatHint}</small></div>
         <div className="collage-choices-group"><FieldLabel>Photo shape</FieldLabel>
           <div className="collage-choices">{COLLAGE_SHAPES.map(s => <button key={s.id} type="button" className={spec.shape === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ shape: s.id })}>{s.label}</button>)}</div>
           <small>{COLLAGE_SHAPES.find(s => s.id === spec.shape)?.hint}</small></div>

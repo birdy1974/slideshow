@@ -96,7 +96,14 @@ item: { type: 'collage', duration, transition, transitionTime,
         backgroundBlur: 0..1,                // blur strength for that picture
         hold: number,                        // seconds the finished collage stays after the last photo
         seed: number,                        // deterministic placement — the transloadit lesson
-        beatSync: boolean,                   // stagger photos to music onsets
+        beatSync: boolean,                   // snap photo arrivals to the music's onsets
+        beats: number[],                     // onset times mapped into the slide's hold clock
+                                             // (the editor fetches /api/media/beats and stores the
+                                             //  result — the render uses the stored list, no audio
+                                             //  analysis at render time; several photos may share
+                                             //  a beat: the "pile lands on the drop" reveal)
+        depth: boolean,                      // push-back: photos already landed shrink + dim as
+                                             // each new one lands (drop / pop)
         caption fields… }                    // existing text stack works on top, unchanged
         // duration is DERIVED: Σ delays + entrance length + hold (implemented;
         //   the editor recomputes the slide duration on every timing change)
@@ -178,7 +185,21 @@ nominal stagger time. Also useful later for text effects (word-pop on beat).
 > the last photo — the slide duration is derived from them
 > (`collageDuration`, auto-synced by the editor). **Size update:** each
 > photo can scale its mat (50–150 %, `photos[].size`) — the anchor stays
-> put. **Background update:** an
+> put. **Phase 2 update (this round):** three new layouts — **filmstrip**
+> (a band of overlapping frames), **fan** (cards fanned from below the
+> frame) and **masonry** (Pinterest columns with seeded size variety) —
+> plus **beat sync** (energy-based onset detection at
+> `GET /api/media/beats`; the editor maps the onsets into the slide's hold
+> clock and stores them as `beats`, both engines snap arrivals to the next
+> stored beat) and **depth push-back** (`depth: true` — landed photos
+> shrink 6 % and dim per later arrival, capped at 4, drop/pop only; the
+> FFmpeg twin tracks the shrink in the overlay anchors and dims through a
+> per-photo `sendcmd` ladder driving `eq` — eq expressions evaluate only
+> once, so the dim rides per-frame commands whose multiplicative
+> contrast/saturation/brightness triple is the CSS `brightness()` the
+> preview applies). Deal/shuffle & sweep-out exits and per-photo
+> replace/reorder from the Phase 2 row remain future work.
+> **Background update:** an
 > optional library picture behind the photos with a blur strength
 > (`backgroundImage` / `backgroundBlur`; replaces the colour bed and its
 > change). The editor round-trips items as title frames with a `collage`

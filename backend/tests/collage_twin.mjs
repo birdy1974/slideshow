@@ -26,6 +26,9 @@ for (const c of input.cases) {
     duration: core.collageDuration(spec),
     placements: pls,
     states,
+    mapBeats: c.mapBeats
+      ? core.slideLocalBeats(c.mapBeats.beats, c.mapBeats.trackStart, c.mapBeats.trimStart, c.mapBeats.trimEnd, c.mapBeats.holdStart)
+      : null,
   })
 }
 process.stdout.write(JSON.stringify(out))

@@ -88,6 +88,69 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
             cx = 7 + cell_w * (col + 0.28 + 0.44 * hash01(seed, i, 29))
             cy = 12 + cell_h * (row + 0.28 + 0.44 * hash01(seed, i, 31))
             out.append({"cx": cx, "cy": cy, "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 26})
+    elif layout == "filmstrip":
+        # A horizontal band of overlapping frames, like film frames edge to
+        # edge — one row up to 5 photos, two rows beyond.
+        rows = 1 if n <= 5 else 2
+        per_row = math.ceil(n / rows)
+        first_row = n - per_row * (rows - 1)
+        k = 0.91 / _photo_aspect(shape) + 0.25
+        for i in range(n):
+            row = 0 if i < first_row else 1
+            cols = first_row if row == 0 else per_row
+            col = i if row == 0 else i - first_row
+            cell_wr = (100 - 2 * 5) / cols
+            cell_h = (100 - 2 * 12) / rows
+            w = min(cell_wr * 1.1, cell_h * 0.82 * aspect / k)
+            out.append({"cx": 5 + cell_wr * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": 0.0})
+    elif layout == "fan":
+        # Cards fanned out from a point below the frame — each card tilts
+        # along its spoke, like a hand of cards offered to the viewer.
+        spoke = 46.0
+        spread = min(48.0, 10 + 7 * n)
+        w = 36.0 if n <= 3 else (30.0 if n <= 6 else 26.0)
+        for i in range(n):
+            a = 0.0 if n == 1 else math.radians(spread * (i / (n - 1) - 0.5))
+            out.append({
+                "cx": 50 + spoke * aspect * math.sin(a),
+                "cy": 96 - spoke * math.cos(a),
+                "w": width_of(w, i),
+                "rot": math.degrees(a),
+            })
+    elif layout == "masonry":
+        # Pinterest-style columns: seeded size variety, each photo stacked
+        # into the shortest column (a single photo is simply centred).
+        if n == 1:
+            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(40.0, 0), "rot": 0.0})
+        else:
+            cols = 2 if n <= 2 else (3 if n <= 9 else 4)
+            margin_x = 6.0
+            cell_w = (100 - 2 * margin_x) / cols
+            k = 0.91 / _photo_aspect(shape) + 0.25
+            base = cell_w * 0.88
+            ws = [base * (0.82 + 0.36 * hash01(seed, i, 41)) * photo_size(spec, i) for i in range(n)]
+
+            def simulate(scale: float):
+                fills = [0.0] * cols
+                res = []
+                gap = 2.5 * scale
+                for i in range(n):
+                    c = 0
+                    for j in range(1, cols):
+                        if fills[j] < fills[c] - 1e-9:
+                            c = j
+                    mh = ws[i] * scale * k / aspect
+                    res.append({"cx": margin_x + cell_w * (c + 0.5), "cy": 12 + fills[c] + gap / 2 + mh / 2})
+                    fills[c] += gap + mh
+                return res, max(fills)
+
+            sim, max_fill = simulate(1.0)
+            fit = 1.0
+            if max_fill > 76:
+                fit = 76 / max_fill
+                sim, _ = simulate(fit)
+            for i in range(n):
+                out.append({"cx": sim[i]["cx"], "cy": sim[i]["cy"], "w": ws[i] * fit, "rot": 0.0})
     else:  # stack
         w = 42.0 if n <= 3 else (34.0 if n <= 6 else 30.0)
         for i in range(n):
@@ -143,13 +206,28 @@ def photo_size(spec: dict[str, Any], i: int) -> float:
     return max(0.5, min(1.5, v))
 
 
+def next_beat(beats: list[float], t: float) -> float | None:
+    """The next stored beat at or after time t (hold clock), or None."""
+    for b in beats:
+        if b >= t - 1e-9:
+            return b
+    return None
+
+
 def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
     """When photo i starts its entrance: the sum of the delays of photos 0..i
-    plus the lead-in handle — twin of photoStart() in collageCore.ts."""
-    t = lead_in
+    plus the lead-in handle — twin of photoStart() in collageCore.ts. With
+    beat sync on, the nominal time rolls forward to the next stored beat."""
+    hold = 0.0
     for k in range(i + 1):
-        t += photo_delay(spec, k)
-    return t
+        hold += photo_delay(spec, k)
+    if spec.get("beatSync") is True:
+        beats = spec.get("beats")
+        beats = [b for b in beats if isinstance(b, (int, float)) and not isinstance(b, bool)] if isinstance(beats, list) else []
+        snapped = next_beat(beats, hold)
+        if snapped is not None:
+            hold = snapped
+    return lead_in + hold
 
 
 # How long an entrance runs until the photo is fully at rest.
@@ -194,23 +272,47 @@ def bg_blur_radius(blur: float) -> int:
     return max(1, round(bg_blur_css_px(blur) / 2))
 
 
+# Depth push-back tuning — mirrored as DEPTH in collageCore.ts.
+DEPTH = {"scale": 0.06, "dim": 0.11, "max": 4.0, "delay": 0.4, "span": 0.35}
+
+
+def push_depth(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> float:
+    """Depth push-back units on photo i at time t: every photo that lands
+    after it pushes it back a little (eased, capped) — twin of pushDepth().
+    0 unless the spec asks for depth and the animation can show it."""
+    if spec.get("depth") is not True:
+        return 0.0
+    anim = str(spec.get("animation") or "drop")
+    if anim not in ("drop", "pop"):
+        return 0.0
+    e = ENTRANCE_LENGTH[anim]
+    n = len(spec.get("photos") or [])
+    p = 0.0
+    for j in range(i + 1, n):
+        tj = photo_start(spec, j, lead_in)
+        q = _clamp01((t - (tj + DEPTH["delay"] * e)) / DEPTH["span"])
+        p += q * q * (3 - 2 * q)
+    return min(DEPTH["max"], p)
+
+
 def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> dict[str, float]:
     """Animated offsets of photo i at segment time t — twin of photoState()."""
     t0 = photo_start(spec, i, lead_in)
+    push = push_depth(spec, i, t, lead_in)
     anim = str(spec.get("animation") or "drop")
     if anim == "drop":
         q = _clamp01((t - t0) / 0.55)
         settle = (1 - q) ** 3
-        return {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1.0, "alpha": _clamp01((t - t0) / 0.22)}
+        return {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1 - DEPTH["scale"] * push, "alpha": _clamp01((t - t0) / 0.22), "dim": DEPTH["dim"] * push}
     if anim == "pop":
         q = _clamp01((t - t0) / 0.5)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        return {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.55 + 0.45 * back, "alpha": _clamp01((t - t0) / 0.18)}
+        return {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": (0.55 + 0.45 * back) * (1 - DEPTH["scale"] * push), "alpha": _clamp01((t - t0) / 0.18), "dim": DEPTH["dim"] * push}
     if anim == "swing":
         tau = max(0.0, t - t0)
         rot = 14 * math.exp(-1.3 * tau) * math.cos(2 * math.pi * tau / 1.6)
-        return {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "alpha": _clamp01(tau / 0.15)}
-    return {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "alpha": 1.0}
+        return {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "alpha": _clamp01(tau / 0.15), "dim": 0.0}
+    return {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "alpha": 1.0, "dim": 0.0}
 
 
 def pin_anchor(spec: dict[str, Any]) -> bool:
@@ -262,13 +364,25 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             break
     if not photos:
         return None
-    layout = raw.get("layout") if raw.get("layout") in ("stack", "grid", "scatter") else "stack"
+    layout = raw.get("layout") if raw.get("layout") in ("stack", "grid", "scatter", "filmstrip", "fan", "masonry") else "stack"
     animation = raw.get("animation") if raw.get("animation") in ("drop", "pop", "swing", "none") else "drop"
     shape = raw.get("shape") if raw.get("shape") in ("4:3", "square", "3:4") else "4:3"
     try:
         seed = int(raw.get("seed") or 1)
     except (TypeError, ValueError):
         seed = 1
+    # Beat list: finite numbers, clamped, rounded to ms, ascending, de-duped.
+    beats_in = []
+    if isinstance(raw.get("beats"), list):
+        for b in raw["beats"]:
+            try:
+                v = float(b) if b is not None and not isinstance(b, bool) else None
+            except (TypeError, ValueError):
+                v = None
+            if v is not None and math.isfinite(v):
+                beats_in.append(math.floor(max(0.0, min(600.0, v)) * 1000 + 0.5) / 1000)
+    beats_in.sort()
+    beats = [b for k, b in enumerate(beats_in) if k == 0 or b - beats_in[k - 1] > 0.001][:1200]
     hold = raw.get("hold")
     try:
         hold = float(hold) if hold is not None and not isinstance(hold, bool) else None
@@ -292,6 +406,12 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     spec = {"photos": photos, "layout": layout, "animation": animation, "shape": shape, "seed": seed}
     if hold is not None:
         spec["hold"] = hold
+    if raw.get("beatSync") is True:
+        spec["beatSync"] = True
+    if beats:
+        spec["beats"] = beats
+    if raw.get("depth") is True:
+        spec["depth"] = True
     if bg is not None:
         spec["backgroundImage"] = bg
     if blur is not None:
@@ -356,6 +476,53 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
     aspect = width / height
     pls = placements(spec, aspect)
     pin = pin_anchor(spec)
+    anim = spec["animation"]
+    # Depth push-back: a per-photo expression for how many "pushed back"
+    # units have accumulated by time t (each later photo's landing adds an
+    # eased term, capped). The sprite scale uses it directly and the overlay
+    # anchors track the same scale so the mat stays centred.
+    depth_on = spec.get("depth") is True and anim in ("drop", "pop")
+
+    def push_expr(i: int) -> str | None:
+        if not depth_on:
+            return None
+        e = ENTRANCE_LENGTH[anim]
+        terms = []
+        for j in range(i + 1, len(pls)):
+            tj = photo_start(spec, j, lead_in)
+            q = f"min(max((t-{_n(tj + DEPTH['delay'] * e)})/{_n(DEPTH['span'])},0),1)"
+            terms.append(f"(pow({q},2)*(3-2*{q}))")
+        if not terms:
+            return None
+        return f"(min({_n(DEPTH['max'])}," + "+".join(terms) + "))"
+
+    def dim_ladder(i: int) -> str | None:
+        """Per-frame eq commands that dim photo i as later photos land.
+
+        eq's options accept expressions but evaluate them once, so the dim
+        rides sendcmd instead: one command per video frame inside the push
+        windows. contrast = saturation = M with brightness = 128*(M-1)/255
+        is exactly multiplicative luma AND chroma scaling — the same
+        brightness(M) the DOM preview applies via CSS filter.
+        """
+        if not depth_on or i >= len(pls) - 1:
+            return None
+        e = ENTRANCE_LENGTH[anim]
+        first = photo_start(spec, i + 1, lead_in) + DEPTH["delay"] * e
+        last = photo_start(spec, len(pls) - 1, lead_in) + DEPTH["delay"] * e + DEPTH["span"]
+        cmds: list[str] = []
+        prev_m: float | None = None
+        for k in range(max(0, math.floor(first * fps)), math.ceil(last * fps) + 1):
+            t = k / fps
+            m = 1 - DEPTH["dim"] * push_depth(spec, i, t, lead_in)
+            if prev_m is not None and abs(m - prev_m) <= 1e-4:
+                continue
+            cmds.append(f"{_n(t)} eq@dim{i} contrast {_n(m)}")
+            cmds.append(f"{_n(t)} eq@dim{i} saturation {_n(m)}")
+            cmds.append(f"{_n(t)} eq@dim{i} brightness {_n(128 * (m - 1) / 255)}")
+            prev_m = m
+        return ";".join(cmds) if cmds else None
+
     lines: list[str] = []
     prev = base_label
     for i, pl in enumerate(pls):
@@ -370,7 +537,6 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # Rotation headroom: the sprite canvas must fit the mat (plus shadow
         # margin) at the largest angle the animation reaches. The canvas size
         # is constant, so the overlay positions stay simple expressions.
-        anim = spec["animation"]
         rest = math.radians(pl["rot"])
         if anim == "swing":
             max_ang = abs(rest) + math.radians(16)
@@ -391,14 +557,20 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         mat_y = above
 
         t0 = photo_start(spec, i, lead_in)
+        push = push_expr(i)
+        shrink = f"(1-{_n(DEPTH['scale'])}*{push})" if push is not None else None
         mid = ""                                # fade + rotate/scale chain
         if anim == "drop":
             q = f"min(max((t-{_n(t0)})/0.55,0),1)"
             ang = f"({_n(pl['rot'])}-7*pow(1-{q},3))*PI/180"
             mid = f"fade=t=in:st={_n(t0)}:d=0.22:alpha=1,rotate='{ang}':c=black@0.0"
+            if shrink is not None:
+                mid += f",scale=w='{_n(cw)}*{shrink}':h=-2:eval=frame"
         elif anim == "pop":
             q = f"min(max((t-{_n(t0)})/0.5,0),1)"
             scale = f"(0.55+0.45*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
+            if shrink is not None:
+                scale = f"{scale}*{shrink}"
             mid = f"fade=t=in:st={_n(t0)}:d=0.18:alpha=1,scale=w='{_n(cw)}*{scale}':h=-2:eval=frame"
         elif anim == "swing":
             tau = f"max(t-{_n(t0)},0)"
@@ -417,11 +589,19 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         ay_px = pl["cy"] / 100 * height - (mat_h / 2 if pin else 0)
         if anim == "drop":
             q = f"min(max((t-{_n(t0)})/0.55,0),1)"
-            x_expr = _n(ax_px - cw / 2)
-            y_expr = f"{_n(ay_px - ch / 2)}-{_n(0.26 * height)}*pow(1-{q},3)"
+            if shrink is None:
+                x_expr = _n(ax_px - cw / 2)
+                y_expr = f"{_n(ay_px - ch / 2)}-{_n(0.26 * height)}*pow(1-{q},3)"
+            else:
+                # The sprite shrinks as later photos land on top; the anchor
+                # tracks the same scale so the mat stays centred on it.
+                x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{shrink}"
+                y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{shrink}-{_n(0.26 * height)}*pow(1-{q},3)"
         elif anim == "pop":
             q = f"min(max((t-{_n(t0)})/0.5,0),1)"
             scale = f"(0.55+0.45*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
+            if shrink is not None:
+                scale = f"{scale}*{shrink}"
             x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{scale}"
             y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{scale}"
         else:
@@ -431,10 +611,17 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         enable = f":enable='gte(t,{_n(t0)})'" if anim != "none" else ""
 
         m, t_, s = f"m{i}", f"t{i}", f"s{i}"
+        # Depth push-back dims the mat itself (the shadow silhouette is black
+        # either way): the ladder drives a per-photo eq (multiplicative, the
+        # CSS brightness() equivalent) before the rgba split, so alpha is
+        # untouched.
+        ladder = dim_ladder(i)
+        dim_seg = (f"sendcmd=commands='{ladder}',eq@dim{i}=contrast=1:saturation=1:brightness=0,"
+                   if ladder is not None else "")
         lines.append(
             f"[{inp}:v]scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
             f"crop={photo_w}:{photo_h},pad={mat_w}:{mat_h}:{border}:{border}:color=white,"
-            f"format=rgba,split[{m}a][{m}b];"
+            f"{dim_seg}format=rgba,split[{m}a][{m}b];"
         )
         # Soft shadow: the mat silhouette, black and translucent, blurred and
         # padded onto the same canvas position the mat itself occupies.

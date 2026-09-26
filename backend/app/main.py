@@ -558,6 +558,35 @@ def media_loudness(root: str = Query(pattern="^(music|videos|photos)$"), path: s
     return {"integrated": round(stats["input_i"], 1), "truePeak": round(stats["input_tp"], 1), "range": round(stats["input_lra"], 1)}
 
 
+# Beat analysis is pure reads of a file's audio — cache it so toggling beat
+# sync on and off (or re-opening the collage editor) never re-decodes a song.
+_beats_cache: dict[tuple[str, int, int], list[float]] = {}
+
+
+@app.get("/api/media/beats")
+def media_beats(root: str = Query(pattern="^(music|videos|photos)$"), path: str = "") -> dict[str, Any]:
+    """Onset (beat) times of an audio file — the data behind collage beat sync.
+
+    Used by the collage editor to snap photo arrivals to the music: the
+    editor maps these file-local times onto the slide's own clock and stores
+    the result in the collage spec (so the render needs no audio analysis).
+    """
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS: raise HTTPException(415, "File has no supported audio")
+    if target.stat().st_size == 0: raise HTTPException(422, "File is empty (0 bytes)")
+    stat = target.stat()
+    key = (str(target), stat.st_mtime_ns, stat.st_size)
+    beats = _beats_cache.get(key)
+    if beats is None:
+        beats = renderer.detect_beats(target)
+        if len(_beats_cache) > 32:
+            _beats_cache.clear()
+        _beats_cache[key] = beats
+    return {"beats": beats, "count": len(beats)}
+
+
 @app.get("/api/media/cropdetect")
 def media_cropdetect(
     root: str = Query(pattern="^(photos|videos|uploads)$"),

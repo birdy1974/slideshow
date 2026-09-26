@@ -735,6 +735,59 @@ def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1
     )
 
 
+def _detect_beats_pcm(ffmpeg_bin: str, source: Path, max_beats: int = 1200) -> list[float]:
+    """Energy-based onset detection over mono 8 kHz PCM (see Renderer.detect_beats).
+
+    The signal is cut into 16 ms hops; each hop's mean-square energy goes
+    through a log, and positive frame-to-frame jumps (onset strength) that
+    exceed 1.5x the trailing ~1.6 s average plus a small absolute floor mark
+    onsets, thinned to >= 0.22 s apart. A file that starts loud begins on its
+    downbeat, so t=0 is an onset too. Precision is one hop (16 ms) — well
+    below a 25 fps frame.
+    """
+    import array as _array
+
+    command = [ffmpeg_bin, "-hide_banner", "-nostats", "-i", str(source),
+               "-map", "0:a:0?", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"]
+    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg exited with {proc.returncode}")
+    count = len(proc.stdout) // 2
+    if count < 8000:            # under a second of audio — nothing to sync to
+        return []
+    samples = _array.array("h")
+    samples.frombytes(proc.stdout[: count * 2])
+
+    hop, win, min_gap = 128, 100, 0.22
+    frames = count // hop
+    env = []
+    for k in range(frames):
+        acc = 0
+        for v in samples[k * hop:(k + 1) * hop]:
+            acc += v * v
+        env.append(math.log(1.0 + 1e-2 * acc / hop))
+    strength = [env[0]] + [max(0.0, env[k] - env[k - 1]) for k in range(1, frames)]
+
+    onsets: list[float] = [0.0] if env[0] > 1.0 else []   # loud start = downbeat
+    last = onsets[0] if onsets else -1.0
+    run = 0.0
+    for k in range(1, frames - 1):
+        run += strength[k]
+        if k > win:
+            run -= strength[k - win - 1]
+        s = strength[k]
+        mean = run / min(k + 1, win + 1)
+        if (s > 0.05 and s > strength[k - 1] and s >= strength[k + 1]
+                and s > 1.5 * mean and env[k] > 1.0):
+            t = round(k * hop / 8000.0, 3)
+            if t - last >= min_gap:
+                onsets.append(t)
+                last = t
+                if len(onsets) >= max_beats:
+                    break
+    return onsets
+
+
 class Renderer:
     def __init__(self, db: Database, settings: Settings):
         self.db, self.settings = db, settings
@@ -2265,6 +2318,21 @@ class Renderer:
             raise RenderError(f"{mux_stage} failed — {exc}") from exc
         progress(98, "Finalizing MP4 — done")
         return output
+
+    def detect_beats(self, source: Path) -> list[float]:
+        """Onset (beat) times of a music file, in seconds — the beat-sync data.
+
+        Energy-based detection with no extra dependencies: the file is decoded
+        to mono 8 kHz PCM, short-time energy jumps in the log domain that beat
+        an adaptive threshold become onsets, thinned to at least 0.22 s apart.
+        Returns [] for a file with no (audible) audio; raises RenderError when
+        FFmpeg cannot decode the file at all.
+        """
+        try:
+            beats = _detect_beats_pcm(self.settings.ffmpeg_bin, source)
+        except (OSError, RuntimeError) as exc:
+            raise RenderError(f"Beat analysis of '{source.name}' failed — {exc}") from exc
+        return beats
 
     def measure_loudness(self, source: Path, target: float, edit_filter: str = "", cancelled: threading.Event | None = None, log_file: Path | None = None) -> dict[str, float] | None:
         """First loudnorm pass: integrated loudness / true peak / LRA of a file.

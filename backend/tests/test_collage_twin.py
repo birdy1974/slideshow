@@ -26,6 +26,7 @@ from app.collage import (
     photo_delay,
     photo_size,
     photo_start,
+    push_depth,
     photo_state,
     pin_anchor,
     placements,
@@ -47,7 +48,8 @@ def _run_node(cases: dict) -> list:
 
 
 def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
-          delays: list | None = None, hold: float | None = None, sizes: list | None = None) -> dict:
+          delays: list | None = None, hold: float | None = None, sizes: list | None = None,
+          depth: bool = False, beat_sync: bool = False, beats: list | None = None) -> dict:
     photos = []
     for k in range(count):
         p = {"path": f"/photos/p{k}.jpg", "name": f"p{k}.jpg"}
@@ -59,6 +61,12 @@ def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
     spec = {"photos": photos, "layout": layout, "animation": animation, "shape": shape, "seed": seed}
     if hold is not None:
         spec["hold"] = hold
+    if depth:
+        spec["depth"] = True
+    if beat_sync:
+        spec["beatSync"] = True
+        if beats is not None:
+            spec["beats"] = beats
     return spec
 
 
@@ -66,7 +74,7 @@ def _cases() -> list[dict]:
     cases = []
     times = [0.0, 0.15, 0.31, 0.5, 0.7, 1.0, 1.37, 2.0, 3.5]
     idx = 0
-    for layout in ("stack", "grid", "scatter"):
+    for layout in ("stack", "grid", "scatter", "filmstrip", "fan", "masonry"):
         for animation in ("drop", "pop", "swing", "none"):
             for shape in ("4:3", "square", "3:4"):
                 for count, seed in ((1, 1), (3, 7), (6, 42), (10, 2026)):
@@ -122,6 +130,55 @@ def _cases() -> list[dict]:
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.4, 1.6],
         "hashArgs": [8, 4, 29], "matW": 30,
     })
+    # depth push-back: earlier photos shrink and dim as later ones land
+    # (and swing/none ignore the flag — nothing to push)
+    for anim in ("drop", "pop", "swing", "none"):
+        cases.append({
+            "id": f"depth-{anim}",
+            "spec": _spec("stack", anim, "4:3", 5, 4, delays=[0.1, 0.6, 0.2, 0.9, 0.3], hold=2, depth=True),
+            "aspect": 16 / 9, "leadIn": 0.5,
+            "times": [0.0, 0.3, 0.75, 1.3, 1.9, 2.7, 4.4],
+            "hashArgs": [4, 5, 11], "matW": 34,
+        })
+    cases.append({
+        "id": "depth-pop-sized",
+        "spec": _spec("fan", "pop", "square", 6, 11, delays=[0.4, 0.4, 0.4, 0.4, 0.4, 0.4], sizes=[1.5, 0.6, 1, 1.2, 0.8, 1], hold=1, depth=True),
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.6, 1.4, 2.2, 3.1],
+        "hashArgs": [11, 6, 11], "matW": 30,
+    })
+    # beat sync: nominal starts roll forward to the next stored beat; several
+    # photos may share a beat, and a beat list that runs out keeps nominal
+    cases.append({
+        "id": "beats-drop",
+        "spec": _spec("masonry", "drop", "4:3", 4, 5, delays=[0.15, 0.2, 2.0, 0.1], hold=1.5, beat_sync=True, beats=[0.4, 0.8, 1.6, 2.4, 3.2]),
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, 0.4, 0.8, 1.65, 2.45, 3.3, 4.5],
+        "hashArgs": [5, 4, 11], "matW": 30,
+    })
+    cases.append({
+        "id": "beats-shared-and-exhausted",
+        "spec": _spec("filmstrip", "pop", "square", 5, 3, delays=[0.1, 0.2, 0.15, 0.3, 0.2], hold=1, beat_sync=True, beats=[0.5, 1.0]),
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.55, 1.05, 1.8],
+        "hashArgs": [3, 5, 11], "matW": 30,
+    })
+    cases.append({
+        "id": "beats-ignored-without-flag",
+        "spec": _spec("grid", "drop", "4:3", 3, 6, delays=[0.15, 0.2, 0.2], hold=1, beat_sync=False, beats=[1.0, 2.0, 3.0]),
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.5, 1.05],
+        "hashArgs": [6, 3, 11], "matW": 30,
+    })
+    # the editor's track→slide beat mapping, evaluated in the TS twin
+    for i, mb in enumerate([
+        {"beats": [0.0, 0.5, 1.0, 1.5, 2.0], "trackStart": 0.0, "trimStart": 0.0, "trimEnd": 0.0, "holdStart": 1.25},
+        {"beats": [10.0, 10.5, 11.0, 11.5], "trackStart": 12.0, "trimStart": 10.0, "trimEnd": 11.4, "holdStart": 5.0},
+        {"beats": [0.2, 3.0, "x", True, 7.5], "trackStart": 2.0, "trimStart": 0.5, "trimEnd": 0.0, "holdStart": 1.0},
+    ]):
+        cases.append({
+            "id": f"map-beats-{i}",
+            "spec": _spec("stack", "drop", "4:3", 1, 1),
+            "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0], "hashArgs": [1, 1, 11], "matW": 30,
+            "mapBeats": mb,
+        })
     return cases
 
 
@@ -152,8 +209,19 @@ def test_collage_twin_engines_agree():
             for i in range(len(spec["photos"])):
                 py = photo_state(spec, i, t, lead_in)
                 ts = got["states"][ti][i]
-                for key in ("dx", "dy", "rot", "scale", "alpha"):
+                for key in ("dx", "dy", "rot", "scale", "alpha", "dim"):
                     assert abs(ts[key] - py[key]) < TOL, f"{where} t={t} photo {i} {key}: {ts[key]} != {py[key]}"
+        # slideLocalBeats (editor-only helper): expected values computed here
+        if case.get("mapBeats"):
+            mb = case["mapBeats"]
+            # hand-computed: local = trackStart + (b - trimStart) - holdStart,
+            # beats outside the kept region or before the hold are dropped
+            expect = {
+                0: [0.25, 0.75],                                     # beats at/before 1.25-1.0 fall before the hold
+                1: [7.0, 7.5, 8.0],                                  # 11.5 is past trimEnd 11.4
+                2: [3.5, 8.0],                                       # 0.2 < trimStart 0.5; junk skipped
+            }[int(case["id"].rsplit("-", 1)[1])]
+            assert got["mapBeats"] == pytest.approx(expect, abs=TOL), f"{where} mapBeats: {got['mapBeats']} != {expect}"
 
 
 def test_untouched_collage_keeps_the_legacy_stagger():
@@ -228,12 +296,12 @@ def test_bg_blur_mapping():
 
 
 def test_placements_are_sane():
-    for layout in ("stack", "grid", "scatter"):
+    for layout in ("stack", "grid", "scatter", "filmstrip", "fan", "masonry"):
         spec = _spec(layout, "drop", "4:3", 9, 5)
         for pl in placements(spec, 16 / 9):
             assert 4 <= pl["cx"] <= 96 and 8 <= pl["cy"] <= 92, (layout, pl)
             assert 15 <= pl["w"] <= 45, (layout, pl)
-            assert abs(pl["rot"]) <= 15, (layout, pl)
+            assert abs(pl["rot"]) <= 25, (layout, pl)                            # fan spokes tilt up to 24
 
 
 def test_normalize_collage():
@@ -287,6 +355,131 @@ def test_normalize_collage():
     assert sized["photos"][1]["size"] == 1.5
     assert "size" not in sized["photos"][2]
     assert abs(sized["photos"][3]["size"] - 0.6) < TOL
+    # the three new layouts are accepted, junk still falls back to stack
+    for layout in ("filmstrip", "fan", "masonry"):
+        assert normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}], "layout": layout}})["layout"] == layout
+    assert normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}], "layout": "spiral"}})["layout"] == "stack"
+    # beat sync + beats: strict flags, sanitised list (clamped, sorted, deduped)
+    b = normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}],
+                                       "beatSync": True, "depth": True,
+                                       "beats": [3, 1.0001, 1, "x", True, -5, 700, 2.0001]}})
+    assert b["beatSync"] is True and b["depth"] is True
+    assert b["beats"] == [0.0, 1.0, 2.0, 3.0, 600.0]            # 2.0001 rounds to 2.0 first
+    loose = normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}],
+                                           "beatSync": "yes", "depth": 1, "beats": [1]}})
+    assert "beatSync" not in loose and "depth" not in loose
+    assert loose["beats"] == [1.0]        # the list is data — kept even with the flag off
+
+
+def test_filmstrip_is_a_band_of_overlapping_frames():
+    # up to 5 photos: one centred row, all mats equally wide and overlapping
+    pls = placements(_spec("filmstrip", "none", "4:3", 5, 1), 16 / 9)
+    assert all(abs(p["cy"] - 50) < TOL and abs(p["rot"]) < TOL for p in pls)
+    assert len({round(p["w"], 6) for p in pls}) == 1
+    for a, b in zip(pls, pls[1:]):
+        assert b["cx"] - a["cx"] < a["w"]                       # neighbours overlap
+    assert pls[0]["cx"] > 4 and pls[-1]["cx"] < 96              # inside the frame
+    # beyond 5: two rows
+    assert len({round(p["cy"], 6) for p in placements(_spec("filmstrip", "none", "4:3", 7, 1), 16 / 9)}) == 2
+    # portrait frames shrink the mats to keep the band inside
+    for aspect in (4 / 3, 1.0, 9 / 16):
+        for p in placements(_spec("filmstrip", "none", "3:4", 6, 1), aspect):
+            assert 10 <= p["cx"] <= 90 and 12 <= p["cy"] <= 88, (aspect, p)
+
+
+def test_fan_radiates_from_below_the_frame():
+    for n in (2, 3, 6, 12):
+        pls = placements(_spec("fan", "none", "4:3", n, 1), 16 / 9)
+        # symmetric spread around x=50, tilts follow the spoke angles
+        for a, b in zip(pls, pls[::-1]):
+            assert abs((a["cx"] - 50) + (b["cx"] - 50)) < 1e-6
+            assert abs(a["rot"] + b["rot"]) < 1e-6
+        for p in pls:
+            assert -25 <= p["rot"] <= 25
+            assert 10 < p["cx"] < 90
+            assert p["cy"] < 96                                  # above the pivot
+        # the middle card is the most upright
+        mid = pls[(n - 1) // 2]
+        assert abs(mid["rot"]) <= max(abs(p["rot"]) for p in pls) + TOL
+    # a single photo is simply centred and upright
+    solo = placements(_spec("fan", "none", "4:3", 1, 1), 16 / 9)[0]
+    assert abs(solo["cx"] - 50) < TOL and abs(solo["rot"]) < TOL
+
+
+def test_masonry_stacks_columns_with_varied_sizes():
+    for n, shape in ((4, "4:3"), (9, "4:3"), (12, "3:4"), (12, "square")):
+        spec = _spec("masonry", "none", shape, n, 5)
+        pls = placements(spec, 16 / 9)
+        for p in pls:
+            assert 4 <= p["cx"] <= 96 and 10 <= p["cy"] <= 90, (n, shape, p)
+        # seeded size variety (a plain grid this is not)
+        assert len({round(p["w"], 4) for p in pls}) > 1
+        # the stack must fit the frame: the deepest column stays inside
+        k = 0.91 / (1.0 if shape == "square" else (0.75 if shape == "3:4" else 4 / 3)) + 0.25
+        cols = {}
+        for p in pls:
+            cols.setdefault(round(p["cx"], 3), []).append(p)
+        for cx, group in cols.items():
+            deepest = max(p["cy"] + p["w"] * k / (16 / 9) / 2 for p in group)
+            assert deepest <= 88.5, (n, shape, cx, deepest)
+    # two photos: side-by-side columns
+    two = placements(_spec("masonry", "none", "4:3", 2, 9), 16 / 9)
+    assert abs(two[0]["cy"] - two[1]["cy"]) < 5 and abs(two[0]["cx"] - two[1]["cx"]) > 20
+
+
+def test_beat_sync_snaps_arrivals_to_the_next_beat():
+    spec = _spec("grid", "drop", "4:3", 4, 1, delays=[0.15, 0.2, 0.3, 0.2], beat_sync=True,
+                 beats=[0.4, 0.8, 1.6, 2.4])
+    # nominal starts 0.15/0.35/0.65/0.85 → snapped 0.4/0.4/0.8/1.6
+    assert [round(photo_start(spec, i), 6) for i in range(4)] == [0.4, 0.4, 0.8, 1.6]
+    # lead-in shifts everything (the beats are in the hold clock)
+    assert [round(photo_start(spec, i, 0.5), 6) for i in range(4)] == [0.9, 0.9, 1.3, 2.1]
+    # a beat exactly at the nominal time is kept (no roll-forward)
+    exact = _spec("grid", "drop", "4:3", 1, 1, delays=[0.4], beat_sync=True, beats=[0.4, 1.0])
+    assert abs(photo_start(exact, 0) - 0.4) < TOL
+    # beat list exhausted → later photos fall back to nominal timing
+    tail = _spec("grid", "drop", "4:3", 2, 1, delays=[0.1, 0.1], beat_sync=True, beats=[0.15])
+    assert abs(photo_start(tail, 0) - 0.15) < TOL and abs(photo_start(tail, 1) - 0.2) < TOL
+    # junk in the list is ignored, not fatal
+    junk = _spec("grid", "drop", "4:3", 2, 1, delays=[0.1, 0.1], beat_sync=True,
+                 beats=["x", True, 0.3, None])
+    assert abs(photo_start(junk, 0) - 0.3) < TOL
+    # without the flag the beats sit unused
+    off = _spec("grid", "drop", "4:3", 2, 1, delays=[0.1, 0.1], beat_sync=False, beats=[5.0])
+    assert abs(photo_start(off, 0) - 0.1) < TOL and abs(photo_start(off, 1) - 0.2) < TOL
+    # the derived duration follows the snapped start
+    assert abs(collage_duration(spec) - (1.6 + 0.55 + 2)) < TOL     # hold defaults to 2
+
+
+def test_depth_push_back_shrinks_and_dims_the_pile():
+    spec = _spec("stack", "drop", "4:3", 4, 1, delays=[0.1, 1.0, 1.0, 1.0], depth=True)
+    # photo 0 lands at 0.1 and is alone until photo 1 starts at 1.1: no push yet
+    assert push_depth(spec, 0, 1.0) == 0.0
+    assert photo_state(spec, 0, 1.0)["scale"] == 1.0
+    assert photo_state(spec, 0, 1.0)["dim"] == 0.0
+    # photo 1's entrance is 40% through at 1.1+0.22 — the push starts there
+    # and eases over 0.35 s (smoothstep: 0.5 at the window's midpoint)
+    assert push_depth(spec, 0, 1.32) == 0.0                          # push begins
+    assert abs(push_depth(spec, 0, 1.495) - 0.5) < 0.02              # mid-push
+    done = photo_state(spec, 0, 1.7)                                 # push 1 complete (window ends 1.67)
+    assert abs(done["scale"] - (1 - 0.06)) < TOL and abs(done["dim"] - 0.11) < TOL
+    # all three later photos landed → push capped at 4 (only 3 here)
+    late = photo_state(spec, 0, 9.9)
+    assert abs(late["scale"] - (1 - 0.06 * 3)) < TOL and abs(late["dim"] - 0.11 * 3) < TOL
+    # the last photo is never pushed
+    assert push_depth(spec, 3, 9.9) == 0.0
+    # a big pile caps at 4 pushes
+    pile = _spec("stack", "drop", "4:3", 12, 1, depth=True)
+    assert abs(push_depth(pile, 0, 999.0) - 4.0) < TOL
+    # swing and none have no arrivals to react to — the flag is inert
+    for anim in ("swing", "none"):
+        inert = _spec("stack", anim, "4:3", 5, 1, depth=True)
+        assert push_depth(inert, 0, 99.0) == 0.0
+        assert photo_state(inert, 0, 99.0)["scale"] == 1.0
+    # pop multiplies its spring by the push-back
+    pop = _spec("stack", "pop", "4:3", 3, 1, delays=[0.05, 1.0, 1.0], depth=True)
+    settled = photo_state(pop, 0, 2.0)     # between photo 1's push and photo 2's
+    assert abs(settled["scale"] - (1 - 0.06)) < TOL and abs(settled["dim"] - 0.11) < TOL
 
 
 def test_graph_builds_for_every_animation():
@@ -338,7 +531,7 @@ def test_graph_places_the_mat_centre_on_the_anchor():
     of anchor-minus-half-canvas, and re-offsetting the mat inside its own
     sprite (shadow + mat are both pre-padded, so their overlay is at 0:0)."""
     import re
-    for layout in ("grid", "stack", "scatter"):
+    for layout in ("grid", "stack", "scatter", "filmstrip", "fan", "masonry"):
         item = {"collage": _spec(layout, "none", "4:3", 3, 5)}
         W, H = 1280, 720
         spec = normalize_collage(item)
@@ -359,6 +552,38 @@ def test_graph_places_the_mat_centre_on_the_anchor():
             cy_screen = fy + mat_y + mat_h / 2
             assert abs(cx_screen - pls[i]["cx"] / 100 * W) <= 1.5, (layout, i, cx_screen)
             assert abs(cy_screen - pls[i]["cy"] / 100 * H) <= 1.5, (layout, i, cy_screen)
+
+
+def test_graph_depth_push_back():
+    """Depth adds a per-frame shrink the overlay anchors track, and dims the
+    mat through a per-photo sendcmd ladder (eq expressions evaluate only
+    once, so the dim cannot be a static expression). Only photos that
+    actually get landed on carry the ladder — and never swing/none."""
+    item = {"collage": _spec("stack", "drop", "4:3", 4, 7, delays=[0.1, 0.5, 0.5, 0.5], depth=True)}
+    lines, _ = collage_graph(item, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
+    graph = "".join(lines)
+    assert graph.count("eq@dim") >= 3 and graph.count("sendcmd=commands=") == 3   # last photo has no pusher
+    assert graph.count("scale=w=") == 3
+    # the anchor tracks the same shrink so the mat stays centred on it
+    assert graph.count("*(1-0.06*(min(4,") == 9                   # mid-chain + x + y per pushed photo
+    # the ladder drives eq per frame: multiplicative M = 1 - 0.11*pushes,
+    # brightness 128*(M-1)/255 — the CSS brightness() equivalent
+    assert " eq@dim0 contrast 0.67" in graph                      # 3 pushes: 1 - 0.33
+    assert " eq@dim0 brightness -0.165" in graph                  # 128*(0.67-1)/255
+    assert " eq@dim0 saturation 0.67" in graph
+    assert " eq@dim1 contrast 0.78" in graph and " eq@dim2 contrast 0.89" in graph
+    pop = {"collage": _spec("stack", "pop", "4:3", 3, 7, depth=True)}
+    plines, _ = collage_graph(pop, 1280, 720, 25.0, 6.0, 0.0, 1, "cb")
+    pgraph = "".join(plines)
+    assert pgraph.count("sendcmd=commands=") == 2 and pgraph.count("scale=w=") == 3   # pop always scales
+    for anim in ("swing", "none"):
+        inert = {"collage": _spec("stack", anim, "4:3", 4, 7, depth=True)}
+        ilines, _ = collage_graph(inert, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
+        assert "eq@dim" not in "".join(ilines)
+    # depth off: the plain Phase-1 graph, untouched
+    plain = {"collage": _spec("stack", "drop", "4:3", 4, 7, depth=False)}
+    glines, _ = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
+    assert "eq@dim" not in "".join(glines) and "scale=w=" not in "".join(glines)
 
 
 def test_graph_none_without_collage():
