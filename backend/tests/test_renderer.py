@@ -811,8 +811,8 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertIn("[2:v]scale=", graph)
         self.assertIn("pad=", graph, "polaroid mat")
         self.assertIn("colorchannelmixer=aa=0.34", graph, "soft shadow")
-        self.assertIn("[cb][sp0r]overlay=", graph)
-        self.assertIn("[o0][sp1r]overlay=", graph)
+        self.assertIn("[cb][lv0_0]overlay=", graph)
+        self.assertIn("[o0][lv1_0]overlay=", graph)
         self.assertTrue(graph.rstrip(";").endswith("[v]"), graph[-120:])
         self.assertIn("drawtext", graph, "caption rides the collage graph")
 
@@ -828,7 +828,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         graph = collage[collage.index("-filter_complex") + 1]
         self.assertIn("[0:v][1:v]xfade=", graph)
         self.assertIn("[bg]scale=", graph)
-        self.assertIn("[cb][sp0r]overlay=", graph, "photos land on the xfaded colour, not on colour A")
+        self.assertIn("[cb][lv0_0]overlay=", graph, "photos land on the xfaded colour, not on colour A")
 
     def test_title_frame_with_nested_collage_spec_also_renders_photos(self) -> None:
         (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
@@ -873,7 +873,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertIn("[0:v]scale=1920:1080", graph)
         self.assertIn("boxblur=16:2", graph)
         self.assertNotIn("xfade=", graph, "no colour-change xfade on a picture background")
-        self.assertIn("[cb][sp0r]overlay=", graph)
+        self.assertIn("[cb][lv0_0]overlay=", graph)
 
     def test_collage_background_picture_without_blur(self) -> None:
         (self.settings.photos_dir / "bg.jpg").write_bytes(b"x" * 64)

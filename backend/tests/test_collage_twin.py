@@ -9,6 +9,7 @@ tolerance far below anything visible on screen.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -630,13 +631,15 @@ def test_graph_builds_for_every_animation():
             built = collage_graph(item, 1280, 720, 25.0, 3.0, 0.5, 1, "cb")
             assert built is not None, (animation, layout)
             lines, last = built
-            assert len(lines) == 4 * 6, (animation, layout)   # 6 lines per photo
             assert last == "o3"
             graph = "".join(lines)
-            assert "[cb][sp0r]overlay=" in graph
-            # every photo input is referenced
+            assert "[cb][lv0_0]overlay=" in graph
+            # every photo input is referenced, and every photo's ladder
+            # chains into the single composition chain that ends at o3
             for k in (1, 2, 3, 4):
                 assert f"[{k}:v]scale=" in graph
+            assert graph.count("]overlay=x='") >= 4   # one per photo, more when laddered
+            assert "[o3]" in lines[-1]
 
 
 def test_graph_overlays_are_centre_anchored():
@@ -704,9 +707,18 @@ def test_graph_depth_push_back():
     lines, _ = collage_graph(item, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
     graph = "".join(lines)
     assert graph.count("eq@dim") >= 3 and graph.count("sendcmd=commands=") == 3   # last photo has no pusher
-    assert graph.count("scale=w=") == 3
-    # the anchor tracks the same shrink so the mat stays centred on it
-    assert graph.count("*(1-0.06*(min(4,") == 9                   # mid-chain + x + y per pushed photo
+    # the shrink itself is a ladder of static sizes (scale freezes its
+    # output size at init, so the shrink cannot be an expression): every
+    # pushed photo carries one, ending below its full canvas size
+    assert graph.count("split=") == 3                            # last photo has no pusher
+    for i in range(3):
+        cw = int(re.search(rf"\[m{i}b\]pad=(\d+):", graph).group(1))
+        sizes = [int(m) for m in re.findall(rf"\[b{i}_\d+\]scale=(\d+):", graph)]
+        assert 1 < len(sizes) < 80, (i, len(sizes))
+        # photo i is pushed by the 3-i photos after it: it settles at
+        # (1 - 0.06*(3-i)) of its canvas, give or take a pixel of rounding
+        settled = (1 - 0.06 * (3 - i)) * cw
+        assert abs(min(sizes) - settled) <= 2 and max(sizes) <= cw, (i, cw, sizes)
     # the ladder drives eq per frame: multiplicative M = 1 - 0.11*pushes,
     # brightness 128*(M-1)/255 — the CSS brightness() equivalent
     assert " eq@dim0 contrast 0.67" in graph                      # 3 pushes: 1 - 0.33
@@ -716,15 +728,16 @@ def test_graph_depth_push_back():
     pop = {"collage": _spec("stack", "pop", "4:3", 3, 7, depth=True)}
     plines, _ = collage_graph(pop, 1280, 720, 25.0, 6.0, 0.0, 1, "cb")
     pgraph = "".join(plines)
-    assert pgraph.count("sendcmd=commands=") == 2 and pgraph.count("scale=w=") == 3   # pop always scales
+    # pop always scales: every photo carries a ladder even without a pusher
+    assert pgraph.count("sendcmd=commands=") == 2 and pgraph.count("split=") == 3
     for anim in ("swing", "none"):
         inert = {"collage": _spec("stack", anim, "4:3", 4, 7, depth=True)}
-        ilines, _ = collage_graph(inert, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
-        assert "eq@dim" not in "".join(ilines)
+        igraph = "".join(collage_graph(inert, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")[0])
+        assert "eq@dim" not in igraph and "split=" not in igraph   # size never varies
     # depth off: the plain Phase-1 graph, untouched
     plain = {"collage": _spec("stack", "drop", "4:3", 4, 7, depth=False)}
-    glines, _ = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
-    assert "eq@dim" not in "".join(glines) and "scale=w=" not in "".join(glines)
+    ggraph = "".join(collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")[0])
+    assert "eq@dim" not in ggraph and "split=" not in ggraph
 
 
 def test_graph_exits_and_flip_and_camera():
@@ -745,7 +758,19 @@ def test_graph_exits_and_flip_and_camera():
     flip = {"collage": _spec("grid", "flip", "4:3", 2, 3, depth=True)}
     flines, _ = collage_graph(flip, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
     fgraph = "".join(flines)
-    assert "scale=w='max(1," in fgraph and "rotate='(-4*(1-" in fgraph
+    assert "rotate='(-4*(1-" in fgraph
+    # flip + depth: the twin's pushDepth covers flip too, so the render
+    # must dim it like drop/pop do (the sizes already come from photoState)
+    assert "sendcmd=commands=" in fgraph and "eq@dim0" in fgraph
+    # flip's width run is a ladder of static scales with windowed enables;
+    # the width climbs from edge-on to the full canvas width
+    flevels = re.findall(r"\[b0_\d+\]scale=(\d+):(\d+)", fgraph)
+    assert 5 < len(flevels) < 80
+    full_w = int(re.search(r"\[m0b\]pad=(\d+):", fgraph).group(1))
+    assert min(int(w) for w, _ in flevels) < 0.35 * full_w    # edge-on start
+    assert abs(int(flevels[-1][0]) - 0.94 * full_w) <= 2    # depth: 1 pusher shrinks it
+    assert max(int(w) for w, _ in flevels) > full_w           # outBack overshoot
+    assert fgraph.count("enable='between(t,") >= len(flevels)  # every window
     # camera: pan → a moving crop, zoom family → zoompan into the last anchor
     pan = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2, camera="pan")}
     plines, plast = collage_graph(pan, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
@@ -759,6 +784,29 @@ def test_graph_exits_and_flip_and_camera():
     plain = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2)}
     gglines, gglast = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
     assert gglast == "o3" and "zoompan" not in "".join(gglines)
+
+
+def test_graph_ladder_handles_repeated_settle_size():
+    """The entrance's settle size often repeats a size it crossed earlier —
+    outBack passes through scale 1.0 on the way up and settles there — which
+    merges the final (open-ended) run into an early level's windows. That
+    level is not last in first-appearance order, so the open window must be
+    handled wherever it lands (regression: min(None, t_end) raised TypeError
+    and pop+deal previews died at 2%)."""
+    def merged_count(spec, fps):
+        lines, last = collage_graph({"collage": spec}, 1280, 720, fps, 4.0, 0.5, 1, "cb")
+        return sum(1 for l in lines if "enable='" in l
+                   and "+" in l.split("enable='")[1].split("'")[0]), last
+    base = {"photos": [{"path": "/photos/p0.jpg"}, {"path": "/photos/p1.jpg"},
+                       {"path": "/photos/p2.jpg"}],
+            "layout": "grid", "animation": "pop", "shape": "4:3", "seed": 1, "hold": 2}
+    n, last = merged_count(base, 24.0)                     # no exit: open window
+    assert n >= 1 and last == "o2"
+    n, last = merged_count({**base, "exit": "deal"}, 24.0)  # exit: windowed to t_end
+    assert n >= 1 and last == "o2"
+    # the open window resolves to gte/between, never to a bare None
+    g = "".join(collage_graph({"collage": {**base, "exit": "deal"}}, 1280, 720, 24.0, 4.0, 0.5, 1, "cb")[0])
+    assert "None" not in g
 
 
 def test_graph_none_without_collage():

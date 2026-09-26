@@ -588,24 +588,9 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
     pls = placements(spec, aspect)
     pin = pin_anchor(spec)
     anim = spec["animation"]
-    # Depth push-back: a per-photo expression for how many "pushed back"
-    # units have accumulated by time t (each later photo's landing adds an
-    # eased term, capped). The sprite scale uses it directly and the overlay
-    # anchors track the same scale so the mat stays centred.
-    depth_on = spec.get("depth") is True and anim in ("drop", "pop")
-
-    def push_expr(i: int) -> str | None:
-        if not depth_on:
-            return None
-        e = ENTRANCE_LENGTH[anim]
-        terms = []
-        for j in range(i + 1, len(pls)):
-            tj = photo_start(spec, j, lead_in)
-            q = f"min(max((t-{_n(tj + DEPTH['delay'] * e)})/{_n(DEPTH['span'])},0),1)"
-            terms.append(f"(pow({q},2)*(3-2*{q}))")
-        if not terms:
-            return None
-        return f"(min({_n(DEPTH['max'])}," + "+".join(terms) + "))"
+    # Depth push-back applies to drop / pop / flip — the same set the twin's
+    # pushDepth() covers (swing/none never push back).
+    depth_on = spec.get("depth") is True and anim in ("drop", "pop", "flip")
 
     def dim_ladder(i: int) -> str | None:
         """Per-frame eq commands that dim photo i as later photos land.
@@ -670,8 +655,6 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         mat_y = above
 
         t0 = photo_start(spec, i, lead_in)
-        push = push_expr(i)
-        shrink = f"(1-{_n(DEPTH['scale'])}*{push})" if push is not None else None
         # Exit: when this photo flies out (None when it stays until the
         # transition). The exit terms are appended to every entrance's
         # position/rotation expressions — the twin's photoState() defines
@@ -703,6 +686,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 ex_dx = 75 * math.cos(a) / 100 * width
                 ex_dy = 55 * math.sin(a) / 100 * height
                 ex_rot = (hash01(seed, i, 75) - 0.5) * 40
+
         def fly_term(value: float, expr: str) -> str:
             # Sign-aware term so generated expressions never contain '+-'.
             return (f"-{_n(abs(value))}" if value < 0 else f"+{_n(value)}") + f"*{expr}"
@@ -711,84 +695,104 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 else fly_term(ex_dy, f"sin(PI*{qe})")) if ex_dy is not None else ""
         ex_r = fly_term(ex_rot, qe) if ex_rot is not None else ""
 
-        mid = ""                                # fade + rotate/scale chain
+        # Time-varying rotation: the entrance's settle plus the exit spin,
+        # one expression per animation (empty when the photo never rotates).
+        q_drop = f"min(max((t-{_n(t0)})/0.55,0),1)"
+        q_flip = f"min(max((t-{_n(t0)})/0.45,0),1)"
         if anim == "drop":
-            q = f"min(max((t-{_n(t0)})/0.55,0),1)"
-            ang = f"({_n(pl['rot'])}-7*pow(1-{q},3){ex_r})*PI/180"
-            mid = f"fade=t=in:st={_n(t0)}:d=0.22:alpha=1,rotate='{ang}':c=black@0.0"
-            if shrink is not None:
-                mid += f",scale=w='{_n(cw)}*{shrink}':h=-2:eval=frame"
-        elif anim == "pop":
-            q = f"min(max((t-{_n(t0)})/0.5,0),1)"
-            scale = f"(0.55+0.45*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
-            if shrink is not None:
-                scale = f"{scale}*{shrink}"
-            mid = f"fade=t=in:st={_n(t0)}:d=0.18:alpha=1,scale=w='{_n(cw)}*{scale}':h=-2:eval=frame"
-            if ex_r:
-                mid += f",rotate='({ex_r[1:]})*PI/180':c=black@0.0"
+            ang = f"({_n(pl['rot'])}-7*pow(1-{q_drop},3){ex_r})*PI/180"
         elif anim == "flip":
-            # Card flipping open edge-on: width follows the outBack curve,
-            # height only the uniform depth shrink — the anchor tracks both.
-            q = f"min(max((t-{_n(t0)})/0.45,0),1)"
-            sx = f"max(0.04,0.04+0.96*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
-            su = shrink if shrink is not None else "1"
-            mid = (f"fade=t=in:st={_n(t0)}:d=0.15:alpha=1,"
-                   f"scale=w='max(1,{_n(cw)}*{sx}*{su})':h='max(1,{_n(ch)}*{su})':eval=frame,"
-                   f"rotate='(-4*(1-{q}){ex_r})*PI/180':c=black@0.0")
+            ang = f"(-4*(1-{q_flip}){ex_r})*PI/180"
         elif anim == "swing":
             tau = f"max(t-{_n(t0)},0)"
             ang = f"{_n(pl['rot'])}*PI/180+14*PI/180*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}*PI/180"
-            mid = f"fade=t=in:st={_n(t0)}:d=0.15:alpha=1,rotate='{ang}':c=black@0.0"
         elif ex_r or abs(pl["rot"]) > 0.01:
-            base_r = _n(pl["rot"]) if abs(pl["rot"]) > 0.01 else "0"
-            mid = f"rotate='({base_r}{ex_r})*PI/180':c=black@0.0"
-        if not mid:
-            mid = "null"
-        mid += fade_out
+            ang = f"({_n(pl['rot']) if abs(pl['rot']) > 0.01 else '0'}{ex_r})*PI/180"
+        else:
+            ang = ""
+        rot_seg = f",rotate='{ang}':c=black@0.0" if ang else ""
 
-        # Anchor: the canvas centre lands on the mat centre, or on the pin
-        # (top edge of the mat) for swinging photos. FFmpeg's overlay x/y is
-        # the overlay's TOP-LEFT corner, so every expression subtracts half
-        # the canvas — exactly the translate(-50%, …) the DOM preview uses.
+        # Alpha only rides the mid chain — the per-frame SIZE cannot: FFmpeg's
+        # scale filter freezes its output dimensions at init even with
+        # eval=frame (verified on the render binary), so pop's spring, flip's
+        # edge-on width and the depth shrink are rendered as a LADDER of
+        # static scales whose overlay enable windows partition time. The
+        # sizes are sampled from the twin's photoState() at frame resolution,
+        # so the MP4 shows what the preview shows, frame for frame.
+        fade_d_in = {"drop": 0.22, "pop": 0.18, "flip": 0.15, "swing": 0.15}.get(anim)
+        mid = (f"fade=t=in:st={_n(t0)}:d={_n(fade_d_in)}:alpha=1" if fade_d_in else "null") + fade_out
+
+        # The anchor: the canvas centre lands on the mat centre (or the pin
+        # for swinging photos). With the size ladder each level knows its own
+        # literal W/H, so the anchor is exact per level.
         ax_px = pl["cx"] / 100 * width
         ay_px = pl["cy"] / 100 * height - (mat_h / 2 if pin else 0)
-        if anim == "drop":
-            q = f"min(max((t-{_n(t0)})/0.55,0),1)"
-            if shrink is None:
-                x_expr = f"{_n(ax_px - cw / 2)}{ex_x}"
-                y_expr = f"{_n(ay_px - ch / 2)}-{_n(0.26 * height)}*pow(1-{q},3){ex_y}"
-            else:
-                # The sprite shrinks as later photos land on top; the anchor
-                # tracks the same scale so the mat stays centred on it.
-                x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{shrink}{ex_x}"
-                y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{shrink}-{_n(0.26 * height)}*pow(1-{q},3){ex_y}"
-        elif anim == "pop":
-            q = f"min(max((t-{_n(t0)})/0.5,0),1)"
-            scale = f"(0.55+0.45*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
-            if shrink is not None:
-                scale = f"{scale}*{shrink}"
-            x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{scale}{ex_x}"
-            y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{scale}{ex_y}"
-        elif anim == "flip":
-            q = f"min(max((t-{_n(t0)})/0.45,0),1)"
-            sx = f"max(0.04,0.04+0.96*(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
-            su = shrink if shrink is not None else "1"
-            x_expr = f"{_n(ax_px)}-{_n(cw / 2)}*{sx}*{su}{ex_x}"
-            y_expr = f"{_n(ay_px)}-{_n(ch / 2)}*{su}{ex_y}"
-        else:
-            # swing / none: a static centre-anchored sprite (swing rotates
-            # around the pin, which is the canvas centre — see above).
-            x_expr = f"{_n(ax_px - cw / 2)}{ex_x}"
-            y_expr = f"{_n(ay_px - ch / 2)}{ex_y}"
-        if t_end is not None:
-            # The photo leaves at t_end: 'none' photos are on screen from the
-            # very first frame, everyone else from their entrance start.
-            enable_from = _n(t0) if anim != "none" else "0"
-            enable = f":enable='between(t,{enable_from},{_n(t_end)})'"
-        else:
-            enable = f":enable='gte(t,{_n(t0)})'" if anim != "none" else ""
+        fall = f"-{_n(0.26 * height)}*pow(1-{q_drop},3)" if anim == "drop" else ""
 
-        m, t_, s = f"m{i}", f"t{i}", f"s{i}"
+        # --- size ladder ---------------------------------------------------
+        def size_levels() -> list[tuple[int, int, list[list[float]]]]:
+            """Distinct (W, H) sprite sizes photo i shows, each with the
+            [start, end) frame windows it is on screen. The last window is
+            open-ended (end=None)."""
+            varies = anim in ("pop", "flip") or depth_on
+            if not varies:
+                return [(cw, ch, [[0.0, None]])]
+            # the timeline only moves during the entrance and the depth push
+            # windows — sample the twin at frame resolution up to there
+            last_var = t0 + ENTRANCE_LENGTH[anim]
+            if depth_on:
+                e = ENTRANCE_LENGTH[anim]
+                for j in range(i + 1, len(pls)):
+                    tj = photo_start(spec, j, lead_in)
+                    last_var = max(last_var, tj + DEPTH["delay"] * e + DEPTH["span"])
+            n_frames = max(1, math.ceil(last_var * fps))
+            runs: list[list] = []           # [start_frame, end_frame, W, H]
+            for k in range(n_frames + 1):
+                st = photo_state(spec, i, k / fps, lead_in, aspect)
+                w_ = max(2, int(round(cw * st["scale"] * st["scaleX"])))
+                h_ = max(2, int(round(ch * st["scale"])))
+                if runs and runs[-1][2] == w_ and runs[-1][3] == h_:
+                    runs[-1][1] = k
+                else:
+                    runs.append([k, k, w_, h_])
+            levels: dict[tuple[int, int], list[list[float]]] = {}
+            order: list[tuple[int, int]] = []
+            for k0, k1, w_, h_ in runs:
+                key = (w_, h_)
+                if key not in levels:
+                    levels[key] = []
+                    order.append(key)
+                # windows cut at frame midpoints, padded a few ms either way:
+                # ffmpeg computes t as pts*(1/fps) which can land one ulp below
+                # the exact k/fps an expression boundary would use, and a
+                # boundary exactly on a frame time made that frame match no
+                # window at all (the photo blinked out for a frame)
+                a = max(0.0, k0 / fps - 0.003)
+                b = None if k1 == n_frames else k1 / fps + 0.5 / fps + 0.003
+                levels[key].append([a, b])
+            return [(w_, h_, levels[(w_, h_)]) for w_, h_ in order]
+
+        def enable_expr(windows: list[list[float]]) -> str:
+            # Any level can carry the open-ended window: the entrance's
+            # settle size often repeats a size it crossed earlier (outBack
+            # passes through 1.0 on the way up and settles there), which
+            # merges the final run into an early level's windows.
+            parts = []
+            for a, b in windows:
+                if b is None:                  # runs to the end of the segment
+                    parts.append(f"between(t,{_n(a)},{_n(t_end + 0.003)})" if t_end is not None
+                                 else f"gte(t,{_n(a - 0.003)})")
+                else:
+                    if t_end is not None:
+                        b = min(b, t_end + 0.003)
+                    parts.append(f"between(t,{_n(a)},{_n(b)})")
+            if parts == ["gte(t,0)"] or parts == ["gte(t,-0.003)"]:
+                parts = []                     # always on: no window at all
+            return ":" + "enable='" + "+".join(parts) + "'" if parts else ""
+
+        levels = size_levels()
+
+        m, t_, sh = f"m{i}", f"t{i}", f"s{i}"
         # Depth push-back dims the mat itself (the shadow silhouette is black
         # either way): the ladder drives a per-photo eq (multiplicative, the
         # CSS brightness() equivalent) before the rgba split, so alpha is
@@ -805,16 +809,34 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # padded onto the same canvas position the mat itself occupies.
         lines.append(
             f"[{m}a]lutrgb=r=0:g=0:b=0,colorchannelmixer=aa=0.34,"
-            f"pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0,boxblur={max(2, border // 2)}:2[{s}];"
+            f"pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0,boxblur={max(2, border // 2)}:2[{sh}];"
         )
         lines.append(f"[{m}b]pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[{t_}];")
         # Both streams are already padded to the full canvas with the mat in
         # place, so the mat lands on its shadow at (0, 0) — any other offset
         # would shift the mat within its own sprite and off its anchor.
-        lines.append(f"[{s}][{t_}]overlay=x=0:y=0[sp{i}];")
-        lines.append(f"[sp{i}]{mid}[sp{i}r];")
-        lines.append(f"[{prev}][sp{i}r]overlay=x='{x_expr}':y='{y_expr}'{enable}[o{i}];")
-        prev = f"o{i}"
+        lines.append(f"[{sh}][{t_}]overlay=x=0:y=0[sp{i}];")
+        lines.append(f"[sp{i}]{mid},format=rgba[sp{i}f];")
+        if len(levels) > 1:
+            lines.append(f"[sp{i}f]split={len(levels)}" +
+                         "".join(f"[b{i}_{k}]" for k in range(len(levels))) + ";")
+
+        # The size ladder: one static scale per distinct size, each enabled
+        # only for its frame windows. Later levels overlay earlier ones, and
+        # the windows partition time, so exactly one size per photo is ever
+        # on screen.
+        for k, (W, H, windows) in enumerate(levels):
+            is_last = k == len(levels) - 1
+            src = f"sp{i}f" if len(levels) == 1 else f"b{i}_{k}"
+            # the final level closes photo i's chain, so its output keeps the
+            # short label the camera/caption chains consume
+            out = f"o{i}" if is_last else f"o{i}_{k}"
+            lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
+            x_expr = f"{_n(ax_px - W / 2)}{ex_x}"
+            y_expr = f"{_n(ay_px - H / 2)}{fall}{ex_y}"
+            enable = enable_expr(windows)
+            lines.append(f"[{prev}][lv{i}_{k}]overlay=x='{x_expr}':y='{y_expr}'{enable}[{out}];")
+            prev = out
 
     # Virtual camera over the composed scene — the last thing before the
     # caption: 'pan' drifts a constant window across the frame (crop), the
@@ -828,7 +850,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             ow, oh = max(2, int(width / 1.09)), max(2, int(height / 1.09))
             p = f"min(max((t-{_n(lead_in)})/{_n(d)},0),1)"
             lines.append(
-                f"[{prev}]crop={ow}:{oh}:x='(iw-ow)*(54-8*{p})/100':y='(ih-oh)/2',"
+                f"[{prev}]crop={ow}:{oh}:x='(54-8*{p})*iw/100-ow/2':y='(ih-oh)/2',"
                 f"scale={width}:{height},setsar=1[cam];"
             )
         else:
