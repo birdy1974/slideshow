@@ -81,7 +81,7 @@ export interface Unit {
 }
 export interface Layout { units: Record<string, Unit[]>; lines: string[]; lineH: number; em: number; align: string }
 export interface BgChange { colourA: string; colourB: string; transition: string; start: number; time: number }
-export interface MotionPath { points: [number, number][]; easing: string; rotateAlong?: boolean }
+export interface MotionPath { points: [number, number][]; easing: string; rotateAlong?: boolean; rotateAlongUnit?: UnitLevel }
 export interface Caption {
   stack: TextFxLayer[]
   em: number
@@ -532,6 +532,10 @@ export function compileStack (cap: Caption, layout: Layout, effects: Record<stri
   for (const L of resolved) need.push(L.unit.startsWith('g') ? 'word' : L.unit)
   for (const L of Object.values(content)) if (L.fx.content.type === 'scramble' || L.fx.content.type === 'flap' || L.fx.content.type === 'roll') need.push('char')
   if (resolved.some(L => L.fx.caret)) need.push('char')
+  if (cap.motion?.rotateAlong) {
+    const ru = cap.motion.rotateAlongUnit || 'text'
+    if (ru === 'line' || ru === 'word' || ru === 'char') need.push(ru)
+  }
   if (whole.length) need = ['text']
   const gran = need.reduce((a, b) => levelRank(b) < levelRank(a) ? b : a)
   const groups = Object.keys(units).filter(k => k.startsWith('g')).sort()
@@ -704,6 +708,29 @@ function generator (ctx: Ctx, L: ResolvedLayer, spec: any, u: number, tl: number
   return v
 }
 
+export function pathLen (points: [number, number][]): number {
+  let n = 0
+  for (let i = 1; i < points.length; i++) n += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1])
+  return n
+}
+
+/** Tangent angle in degrees at arc-length fraction f. Twin of path_tangent() in text_motion.py. */
+export function pathTangent (points: [number, number][], f: number): number {
+  if (points.length < 2) return 0
+  const [px, py] = pathPoint(points, f)
+  const f2 = f + 0.02
+  let dx: number, dy: number
+  if (f2 > 1) {
+    const [qx, qy] = pathPoint(points, Math.max(0, f - 0.02))
+    dx = px - qx; dy = py - qy
+  } else {
+    const [qx, qy] = pathPoint(points, f2)
+    dx = qx - px; dy = qy - py
+  }
+  if (Math.abs(dx) <= 1e-9 && Math.abs(dy) <= 1e-9) return 0
+  return Math.atan2(dy, dx) * 180 / Math.PI
+}
+
 export function pathPoint (points: [number, number][], f: number): [number, number] {
   if (!points.length) return [50, 50]
   if (points.length === 1) return points[0]
@@ -857,22 +884,26 @@ export function evaluate (ctx: Ctx, e: Unit, t: number): State {
       if (ch === 'path') {
         if (!cap.motion || !cap.motion.points.length) continue
         const f = (PATH_EASE[cap.motion.easing] || PATH_EASE.linear)(u)
-        const [px, py] = pathPoint(cap.motion.points, f)
-        acc[lvl].px += px / 100 * cap.frameW - a.cx
-        acc[lvl].py += py / 100 * cap.frameH - a.cy
+        const rotUnit = cap.motion.rotateAlong ? (cap.motion.rotateAlongUnit || 'text') : 'text'
+        const pathLvl = (rotUnit !== 'text' && rotUnit in acc) ? rotUnit : lvl
+        let aPath = a
+        let fPath = f
+        if (pathLvl !== lvl) {
+          aPath = ancestor(ctx, e, pathLvl) || a
+          const textU = ancestor(ctx, e, 'text')
+          if (textU && Math.abs(textU.w) > 1e-6) {
+            const rel = (aPath.cx - textU.cx) / cap.frameW
+            const plen = pathLen(cap.motion.points)
+            fPath = clamp01(f + rel * 100 / Math.max(plen, 1e-3))
+          }
+        }
+        const [px, py] = pathPoint(cap.motion.points, fPath)
+        acc[pathLvl].px += px / 100 * cap.frameW - aPath.cx
+        acc[pathLvl].py += py / 100 * cap.frameH - aPath.cy
         if (cap.motion.rotateAlong && cap.motion.points.length >= 2) {
           // tangent angle (degrees) just ahead on the path; at the very end
           // look backwards instead — twin of the 'path' branch in text_motion.py
-          const f2 = f + 0.02
-          let dx: number, dy: number
-          if (f2 > 1) {
-            const [qx, qy] = pathPoint(cap.motion.points, Math.max(0, f - 0.02))
-            dx = px - qx; dy = py - qy
-          } else {
-            const [qx, qy] = pathPoint(cap.motion.points, f2)
-            dx = qx - px; dy = qy - py
-          }
-          if (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) acc[lvl].rz += Math.atan2(dy, dx) * 180 / Math.PI
+          acc[pathLvl].rz += pathTangent(cap.motion.points, fPath)
         }
         continue
       }

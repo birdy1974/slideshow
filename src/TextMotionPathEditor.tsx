@@ -514,6 +514,7 @@ type MotionEditorProps = {
   lissajousFreqY?: number
   // Caption turns to follow the path tangent (item: textMoveRotateAlongPath).
   rotateAlong?: boolean
+  rotateAlongUnit?: 'text' | 'line' | 'word' | 'char'
   // Rotate/squash preview: undefined pair = off. The moving caption tilts and
   // squashes over the same loop as the path, around its own centre.
   rotateFrom?: number
@@ -550,6 +551,7 @@ export function TextMotionPathEditor({
   bounceDamping = 0.35,
   lissajousFreqY = 2,
   rotateAlong = false,
+  rotateAlongUnit = 'text',
   rotateFrom,
   rotateTo,
   rotateSpeed,
@@ -949,8 +951,14 @@ export function TextMotionPathEditor({
         <label className="check-label" style={{fontSize:'13px'}}>
           <input type="checkbox" checked={rotateAlong} onChange={e=>onChange({ textMoveRotateAlongPath: e.target.checked })} />
           <span><Check size={11}/></span>
-          Rotate along path <small style={{opacity:.7}}>caption turns to follow the path direction</small>
+          Rotate along path <small style={{opacity:.7}}>turns to follow the path direction</small>
         </label>
+        {rotateAlong && <div className="collage-choices" style={{marginTop:6}}>
+          {([['text', 'Whole caption'], ['line', 'Sentence'], ['word', 'Word'], ['char', 'Letter']] as const).map(([id, label]) =>
+            <button type="button" key={id} className={(rotateAlongUnit || 'text') === id ? 'active' : ''}
+              title={id === 'text' ? 'The whole caption rotates as one block' : `Each ${label.toLowerCase()} follows the path and rotates to the local tangent`}
+              onClick={() => onChange({ textMoveRotateAlongUnit: id })}>{label}</button>)}
+        </div>}
       </div>
 
 

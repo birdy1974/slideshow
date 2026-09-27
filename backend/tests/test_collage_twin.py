@@ -29,6 +29,7 @@ from app.collage import (
     hash01,
     mat_height,
     normalize_collage,
+    photo_frame,
     photo_delay,
     photo_size,
     photo_start,
@@ -170,6 +171,27 @@ def _cases() -> list[dict]:
     })
     # beat sync: nominal starts roll forward to the next stored beat; several
     # photos may share a beat, and a beat list that runs out keeps nominal
+    for layout in ("honeycomb", "zigzag", "arc", "photowall", "booth", "silhouette", "cube"):
+        cases.append({
+            "id": f"{layout}-none-4:3-n6",
+            "spec": _spec(layout, "none", "4:3", 6, 11),
+            "aspect": 16 / 9, "leadIn": 0.0, "times": times, "hashArgs": [11, 6, 29], "matW": 28,
+        })
+    for animation in ("fade", "slide", "rise", "tumble", "zoom", "fold", "glitch", "ink", "brush"):
+        cases.append({
+            "id": f"grid-{animation}-4:3-n4",
+            "spec": _spec("grid", animation, "4:3", 4, 5, hold=2),
+            "aspect": 16 / 9, "leadIn": 0.3, "times": times, "hashArgs": [5, 4, 11], "matW": 30,
+        })
+    kb = _spec("grid", "drop", "4:3", 4, 8, delays=[0.2, 0.4, 0.4, 0.4], hold=3)
+    kb["kenBurns"] = True
+    kb["sway"] = True
+    cases.append({
+        "id": "kenburns-sway",
+        "spec": kb,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.4, 1.2, 2.5, 4.0, 6.0],
+        "hashArgs": [8, 4, 11], "matW": 30,
+    })
     cases.append({
         "id": "beats-drop",
         "spec": _spec("masonry", "drop", "4:3", 4, 5, delays=[0.15, 0.2, 2.0, 0.1], hold=1.5, beat_sync=True, beats=[0.4, 0.8, 1.6, 2.4, 3.2]),
@@ -370,7 +392,7 @@ class CollageTwinTest(unittest.TestCase):
             for pl in placements(spec, 16 / 9):
                 assert 4 <= pl["cx"] <= 96 and 8 <= pl["cy"] <= 92, (layout, pl)
                 assert 15 <= pl["w"] <= 45, (layout, pl)
-                assert abs(pl["rot"]) <= 25, (layout, pl)                            # fan spokes tilt up to 24
+                assert abs(pl["rot"]) <= 32, (layout, pl)                            # fan spokes + seed offset
 
 
     def test_normalize_collage(self):
@@ -425,9 +447,19 @@ class CollageTwinTest(unittest.TestCase):
         assert "size" not in sized["photos"][2]
         assert abs(sized["photos"][3]["size"] - 0.6) < TOL
         # the three new layouts are accepted, junk still falls back to stack
-        for layout in ("filmstrip", "fan", "masonry"):
+        for layout in ("filmstrip", "fan", "masonry", "honeycomb", "zigzag", "arc", "photowall",
+                       "booth", "silhouette", "cube"):
             assert normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}], "layout": layout}})["layout"] == layout
         assert normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}], "layout": "spiral"}})["layout"] == "stack"
+        for anim in ("fade", "slide", "rise", "tumble", "zoom", "fold", "glitch", "ink", "brush"):
+            assert normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}], "animation": anim}})["animation"] == anim
+        framed = normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg", "frame": {"shape": "heart", "width": 5, "color": "#ff00aa"}}],
+                                                "frame": {"shape": "circle", "width": 2, "color": "#112233"},
+                                                "gap": 3, "kenBurns": True, "sway": True, "stickers": "tape"}})
+        assert framed["frame"]["shape"] == "circle" and framed["frame"]["width"] == 2
+        assert framed["photos"][0]["frame"]["shape"] == "heart"
+        assert framed["gap"] == 3 and framed["kenBurns"] is True and framed["sway"] is True
+        assert framed["stickers"] == "tape"
         # beat sync + beats: strict flags, sanitised list (clamped, sorted, deduped)
         b = normalize_collage({"collage": {"photos": [{"path": "/photos/a.jpg"}],
                                            "beatSync": True, "depth": True,
@@ -443,7 +475,7 @@ class CollageTwinTest(unittest.TestCase):
     def test_filmstrip_is_a_band_of_overlapping_frames(self):
         # up to 5 photos: one centred row, all mats equally wide and overlapping
         pls = placements(_spec("filmstrip", "none", "4:3", 5, 1), 16 / 9)
-        assert all(abs(p["cy"] - 50) < TOL and abs(p["rot"]) < TOL for p in pls)
+        assert all(abs(p["cy"] - 50) < TOL and abs(p["rot"]) <= 4 for p in pls)
         assert len({round(p["w"], 6) for p in pls}) == 1
         for a, b in zip(pls, pls[1:]):
             assert b["cx"] - a["cx"] < a["w"]                       # neighbours overlap
@@ -459,13 +491,10 @@ class CollageTwinTest(unittest.TestCase):
     def test_fan_radiates_from_below_the_frame(self):
         for n in (2, 3, 6, 12):
             pls = placements(_spec("fan", "none", "4:3", n, 1), 16 / 9)
-            # symmetric spread around x=50, tilts follow the spoke angles
-            for a, b in zip(pls, pls[::-1]):
-                assert abs((a["cx"] - 50) + (b["cx"] - 50)) < 1e-6
-                assert abs(a["rot"] + b["rot"]) < 1e-6
+            # tilts follow the spoke angles; a seeded offset can rotate the whole fan
             for p in pls:
-                assert -25 <= p["rot"] <= 25
-                assert 10 < p["cx"] < 90
+                assert -32 <= p["rot"] <= 32
+                assert 8 < p["cx"] < 92
                 assert p["cy"] < 96                                  # above the pivot
             # the middle card is the most upright
             mid = pls[(n - 1) // 2]
@@ -643,7 +672,7 @@ class CollageTwinTest(unittest.TestCase):
 
 
     def test_graph_builds_for_every_animation(self):
-        for animation in ("drop", "pop", "swing", "none"):
+        for animation in ("drop", "pop", "swing", "none", "fade", "slide", "zoom", "fold", "glitch", "ink"):
             for layout in ("stack", "grid", "scatter"):
                 item = {"collage": _spec(layout, animation, "square", 4, 9)}
                 built = collage_graph(item, 1280, 720, 25.0, 3.0, 0.5, 1, "cb")
@@ -789,7 +818,8 @@ class CollageTwinTest(unittest.TestCase):
         assert abs(int(flevels[-1][0]) - 0.94 * full_w) <= 2    # depth: 1 pusher shrinks it
         assert max(int(w) for w, _ in flevels) > full_w           # outBack overshoot
         assert fgraph.count("enable='between(t,") >= len(flevels)  # every window
-        # camera: pan → a moving crop, zoom family → zoompan into the last anchor
+        # camera: pan → a moving crop, zoom family → crop+scale into the last
+        # anchor (no zoompan — it stutters; crop expressions follow t).
         pan = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2, camera="pan")}
         plines, plast = collage_graph(pan, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         pgraph = "".join(plines)
@@ -797,7 +827,8 @@ class CollageTwinTest(unittest.TestCase):
         zoom = {"collage": _spec("masonry", "drop", "4:3", 5, 5, hold=2, camera="zoom")}
         zlines, zlast = collage_graph(zoom, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         zgraph = "".join(zlines)
-        assert "zoompan=z='(1+0.35*" in zgraph and "d=1:s=1280x720" in zgraph and zlast == "cam"
+        assert "crop=w='max(2,floor(iw/(1+0.35*" in zgraph and "scale=1280:720:flags=bicubic" in zgraph and zlast == "cam"
+        assert "zoompan" not in zgraph
         # no camera → the composed photos label is the result, no crop/zoompan
         plain = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2)}
         gglines, gglast = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
@@ -830,3 +861,29 @@ class CollageTwinTest(unittest.TestCase):
     def test_graph_none_without_collage(self):
         assert collage_graph({"collage": {"photos": []}}, 1280, 720, 25.0, 3.0, 0.0, 1, "cb") is None
         assert collage_graph({}, 1280, 720, 25.0, 3.0, 0.0, 1, "cb") is None
+
+    def test_photo_frame_defaults_and_override(self):
+        d = photo_frame({}, None)
+        assert d["shape"] == "polaroid" and abs(d["width"] - 4.5) < TOL and d["color"] == "#ffffff" and d["shadow"] is True
+        spec = {"frame": {"shape": "circle", "width": 6, "color": "#00ff00", "shadow": False}}
+        assert photo_frame(spec, None)["shape"] == "circle"
+        assert photo_frame(spec, {"frame": {"shape": "heart"}})["shape"] == "heart"
+        assert abs(mat_height(34, "4:3", 16 / 9) - mat_height(34, "4:3", 16 / 9, {"shape": "polaroid"})) < TOL
+
+    def test_new_layouts_place_photos(self):
+        for layout in ("honeycomb", "zigzag", "arc", "photowall", "booth", "silhouette", "cube"):
+            spec = _spec(layout, "none", "4:3", 6, 5)
+            pls = placements(spec, 16 / 9)
+            assert len(pls) == 6, layout
+            for pl in pls:
+                assert 0 <= pl["cx"] <= 100 and 0 <= pl["cy"] <= 100, (layout, pl)
+                assert 6 <= pl["w"] <= 80, (layout, pl)
+
+    def test_graph_shape_mask_and_no_shadow(self):
+        item = {"collage": {**_spec("grid", "none", "4:3", 2, 1),
+                            "frame": {"shape": "heart", "color": "#ff88aa", "width": 3, "shadow": False}}}
+        built = collage_graph(item, 1280, 720, 25.0, 3.0, 0.0, 1, "cb")
+        assert built is not None
+        graph = "".join(built[0])
+        assert "geq=" in graph and "0xff88aa" in graph
+        assert "boxblur" not in graph

@@ -4,7 +4,7 @@ The editor offers 191 transitions (58 native xfade + 133 ported GL ones) and a
 name like "GL · Angular" tells you nothing about what it looks like. Rendering
 a real FFmpeg sample for each one while the user scrolls the picker would be
 far too slow, so every transition is rendered **exactly once** — between two
-tiny synthetic images — and the MP4 is stored on the config volume next to the
+tiny synthetic photos — and the MP4 is stored on the config volume next to the
 database. After the first pass browsing the catalogue costs nothing: the
 frontend just streams static files.
 
@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .filter_values import quote_filter_value
 from .renderer import (
     Renderer,
     XFADE,
@@ -47,11 +46,9 @@ from .renderer import (
 log = logging.getLogger(__name__)
 
 # Bump to invalidate every cached clip after a change to the example frames or
-# to the encoding settings below. Version 2: the v1 manifest is full of
-# "failed" records from the .part-output bug (see docs/transition-preview-fix.md)
-# and ensure() refuses to retry failed entries, so old manifests must be
-# forgotten for the fixed command to rebuild the cache.
-CACHE_VERSION = 2
+# to the encoding settings below. Version 3: example frames are two simple
+# photos (sky/ground/sun) instead of the A/B letter cards.
+CACHE_VERSION = 3
 
 # Preview geometry. Deliberately small: 191 clips have to fit on a NAS volume.
 WIDTH, HEIGHT, FPS = 640, 360, 25
@@ -63,10 +60,30 @@ TRANSITION_SECONDS = 0.8
 # ffmpeg must never hold the build thread forever.
 RENDER_TIMEOUT = 90
 
-# The two example frames: cool outgoing, warm incoming, each labelled so a
-# wipe/slide/flip is unmistakable even at thumbnail size.
-EXAMPLE_A = {"name": "a", "colour": "0x2E5E4E", "label": "A"}
-EXAMPLE_B = {"name": "b", "colour": "0xB4552D", "label": "B"}
+# Two simple photo-like stills (no letters): a cool landscape and a warm one,
+# so a wipe/slide/flip is unmistakable even at thumbnail size.
+EXAMPLE_A = {
+    "name": "a",
+    "sky": "0x6BA3C7",
+    "ground": "0x3E6B3A",
+    "orb": "0xF2D56B",
+    "horizon": 0.58,
+    "orb_x": 0.20,
+    "orb_y": 0.26,
+    "orb_r": 48,
+    "colour": "0x6BA3C7",
+}
+EXAMPLE_B = {
+    "name": "b",
+    "sky": "0xD9894A",
+    "ground": "0x5A3A28",
+    "orb": "0xF6E7C1",
+    "horizon": 0.62,
+    "orb_x": 0.74,
+    "orb_y": 0.22,
+    "orb_r": 38,
+    "colour": "0xD9894A",
+}
 
 
 class PreviewUnavailable(RuntimeError):
@@ -227,40 +244,29 @@ class TransitionPreviewCache:
 
     # --------------------------------------------------------- example sources
 
-    def _font_file(self) -> str | None:
-        fonts_dir = self.settings.fonts_dir
-        try:
-            candidates = sorted(fonts_dir.glob("*.ttf"))
-        except OSError:
-            return None
-        for path in candidates:
-            if "Bold" in path.name or "Regular" in path.name:
-                return str(path)
-        return str(candidates[0]) if candidates else None
-
-    def _render_example(self, spec: dict[str, str]) -> Path:
-        """Draw one synthetic example frame (solid colour + a big letter)."""
+    def _render_example(self, spec: dict[str, Any]) -> Path:
+        """Draw one synthetic photo-like example frame (sky, ground, sun)."""
         target = self.src_dir / f"{spec['name']}.png"
-        font = self._font_file()
-        filters = [f"scale={WIDTH}:{HEIGHT}"]
-        if font:
-            filters.append(
-                "drawtext=fontfile=" + quote_filter_value(font.replace("\\", "/"))
-                + f":text={quote_filter_value(spec['label'])}:fontsize=200:fontcolor=0xFFFFFF"
-                ":x=(w-text_w)/2:y=(h-text_h)/2"
-            )
+        hy = int(HEIGHT * float(spec["horizon"]))
+        ox = int(WIDTH * float(spec["orb_x"]))
+        oy = int(HEIGHT * float(spec["orb_y"]))
+        r = int(spec["orb_r"])
+        filters = [
+            f"scale={WIDTH}:{HEIGHT}",
+            f"drawbox=x=0:y={hy}:w={WIDTH}:h={HEIGHT - hy}:color={spec['ground']}:t=fill",
+            f"drawbox=x={max(0, ox - r)}:y={max(0, oy - r)}:w={r * 2}:h={r * 2}:color={spec['orb']}:t=fill",
+        ]
         command = [
             self.settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i", f"color=c={spec['colour']}:s={WIDTH}x{HEIGHT}:d=1",
+            "-f", "lavfi", "-i", f"color=c={spec['sky']}:s={WIDTH}x{HEIGHT}:d=1",
             "-frames:v", "1", "-vf", ",".join(filters), str(target),
         ]
         try:
             subprocess.run(command, capture_output=True, text=True, timeout=60, check=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-            # No usable drawtext/font (or no ffmpeg): fall back to a plain
-            # colour field. The transition is still perfectly readable because
-            # the two examples are strongly contrasting colours.
-            log.warning("Could not draw the labelled example frame; using a plain colour for %s", spec["name"])
+            # geq/drawbox unavailable: two contrasting colour fields still
+            # make every wipe/slide/flip readable at thumbnail size.
+            log.warning("Could not draw the photo example frame; using a plain colour for %s", spec["name"])
             command = [
                 self.settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
                 "-f", "lavfi", "-i", f"color=c={spec['colour']}:s={WIDTH}x{HEIGHT}:d=1",

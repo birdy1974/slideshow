@@ -10,7 +10,7 @@
 // ("replaces Typewriter") and "needs colour B" for the background effects.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { Check, LayoutGrid, Search, Sparkles, Star, X } from 'lucide-react'
+import { Check, LayoutGrid, Search, Star, X } from 'lucide-react'
 import type { BgChange } from './textMotionCore'
 import {
   CATEGORIES, CATEGORY_BY_ID, EFFECTS, EFFECT_LIST, PHASE_LABEL, PRESETS, UNIT_LABEL, UNIT_SHORT,
@@ -40,7 +40,7 @@ export interface BrowserRequest {
   replacing?: TextFxLayer | null
 }
 
-const TILE_SECONDS = 2.4
+const TILE_SECONDS = 1.4
 const TILE_BG: BgChange = { colourA: '#26372f', colourB: '#e9c46a', transition: 'wiperight', start: 0.45, time: 1.1 }
 
 function tileText(fx: EffectDef | undefined, caption: BrowserCaption) {
@@ -55,7 +55,7 @@ function tileText(fx: EffectDef | undefined, caption: BrowserCaption) {
 function tileInput(stack: TextFxLayer[], caption: BrowserCaption, text: string, font?: MotionPreset['font']): SceneInput {
   return {
     text, stack, family: font?.family || caption.family, bold: font?.bold ?? caption.bold, italic: font?.italic ?? caption.italic,
-    underline: false, colour: caption.colour, fontSize: text.includes('\n') ? 210 : 290, x: 50, y: 50, align: 'center', outline: false,
+    underline: false, colour: caption.colour, fontSize: 200, x: 50, y: 50, align: 'center', outline: false,
     start: 0, end: TILE_SECONDS, steady: 0, bg: null, motion: null,
   }
 }
@@ -73,7 +73,7 @@ function matches(fx: EffectDef, needle: string) {
   return `${fx.label} ${cat} ${fx.source || ''} ${(fx.tags || []).join(' ')} ${fx.notes || ''} ${PHASE_LABEL[fx.phase as Phase]}`.toLowerCase().includes(needle)
 }
 
-export function EffectBrowserBody({ request, stack, caption, onPick, onPreset, onHover, onFocus, footerExtra, compact = false, autoplayDefault = false }: {
+export function EffectBrowserBody({ request, stack, caption, onPick, onPreset, onHover, onFocus, footerExtra, compact = false, autoplayDefault = true }: {
   request: BrowserRequest
   stack: TextFxLayer[]
   caption: BrowserCaption
@@ -288,10 +288,18 @@ export function TextEffectGallery({ request, stack, caption, sceneFor, onPick, o
   onPreset: (preset: MotionPreset) => void
   onClose: () => void
 }) {
-  const [candidate, setCandidate] = useState<{ effect: string | null; preset: MotionPreset | null }>({ effect: null, preset: null })
+  const [parked, setParked] = useState<{ effect: string | null; preset: MotionPreset | null }>({ effect: null, preset: null })
+  const [hover, setHover] = useState<{ effect: string | null; preset: MotionPreset | null }>({ effect: null, preset: null })
   const [focus, setFocus] = useState<{ fx: EffectDef | null; preset: MotionPreset | null }>({ fx: null, preset: null })
+  const candidate = hover.effect || hover.preset ? hover : parked
+  const cancel = () => onClose()
+  const apply = () => {
+    if (parked.preset) onPreset(parked.preset)
+    else if (parked.effect) onPick(parked.effect, EFFECTS[parked.effect].phase as Phase)
+    onClose()
+  }
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); cancel() } }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [onClose])
@@ -302,16 +310,21 @@ export function TextEffectGallery({ request, stack, caption, sceneFor, onPick, o
     return [...stack, { id: 'candidate', effect: candidate.effect }]
   }, [candidate, stack, request])
   const scene = sceneFor(previewStack)
-  const clock = useMotionClock(scene.duration)
-  const flag = candidate.preset ? `Preset: ${candidate.preset.label}` : candidate.effect ? `${request.mode === 'replace' ? 'Swap →' : 'Previewing +'} ${EFFECTS[candidate.effect]?.label}` : null
+  const stageInput = { ...scene.input, fontSize: 200 }
+  const replaySeconds = Math.min(Math.max(0.8, scene.duration), 1.6)
+  const clock = useMotionClock(replaySeconds)
+  useEffect(() => { clock.seek(0) }, [previewStack, clock])
+  const flag = parked.preset ? `Parked preset: ${parked.preset.label}` : parked.effect ? `Parked · ${EFFECTS[parked.effect]?.label}` : candidate.preset ? `Preset: ${candidate.preset.label}` : candidate.effect ? `Previewing + ${EFFECTS[candidate.effect]?.label}` : null
   const fx = focus.fx
   const info = fx ? describe(fx) : null
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}>
+  const parkEffect = (id: string) => { setParked({ effect: id, preset: null }); setFocus({ fx: EFFECTS[id] || null, preset: null }) }
+  const parkPreset = (p: MotionPreset) => { setParked({ effect: null, preset: p }); setFocus({ fx: null, preset: p }) }
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={cancel}>
     <div className="transition-gallery text-effect-gallery" onMouseDown={e => e.stopPropagation()}>
-      <div className="preview-top"><div><strong>Text effects gallery</strong><span>HOVER A TILE TO PREVIEW IT ON TOP OF YOUR STACK · CLICK TO ADD</span></div><button type="button" onClick={onClose} aria-label="Close gallery"><X size={20} /></button></div>
+      <div className="preview-top"><div><strong>Text effects gallery</strong><span>CLICK A TILE TO PARK IT ON THE EXAMPLE · CLOSE APPLIES · CANCEL RESTORES</span></div><button type="button" onClick={cancel} aria-label="Cancel gallery"><X size={20} /></button></div>
       <div className="gallery-body text-effect-gallery-body">
         <div className="gallery-left">
-          <MotionStage className="gallery-motion-stage" input={scene.input} clock={clock} background={scene.background} bg={scene.bg} flag={flag} />
+          <MotionStage className="gallery-motion-stage" input={stageInput} clock={clock} background={scene.background} bg={scene.bg} flag={flag} />
           <div className="gallery-detail">
             {fx ? <>
               <strong><span className="tile-symbol">{fx.symbol}</span> {fx.label}</strong>
@@ -319,26 +332,26 @@ export function TextEffectGallery({ request, stack, caption, sceneFor, onPick, o
               <div className="detail-tags">{info!.channels.map(c => <em key={c}>{c}</em>)}{info!.extras.map(c => <em key={c} className="extra">{c}</em>)}{fx.approx ? <em className="approx">≈ {fx.approx}</em> : <em className="exact">exact in the render</em>}</div>
               {fx.notes && <small>{fx.notes}</small>}
               {fx.source && <small>Source: {fx.source}</small>}
-              <small>{fx.content ? 'Rewrites the text: only one text-rewriting effect per lane; everything else still stacks.' : effectNeedsBg(fx) ? 'Needs a text frame with a colour change (colour B): it follows the frame transition exactly.' : 'Combines with every other effect: channels are composed, not overwritten.'}</small>
-              <div className="detail-actions">
-                <button type="button" className="btn dark small" onClick={() => onPick(fx.id, fx.phase as Phase)}><Sparkles size={12} /> {request.mode === 'replace' && request.replacing && EFFECTS[request.replacing.effect]?.phase === fx.phase ? 'Swap in' : `Add to ${PHASE_LABEL[fx.phase as Phase]}`}</button>
-              </div>
+              <small>{parked.effect === fx.id ? 'Parked on the example. Close applies it to the caption; Cancel keeps the old stack.' : 'Click the tile to park this on the example without applying yet.'}</small>
             </> : focus.preset ? <>
               <strong><span className="tile-symbol">{focus.preset.symbol}</span> {focus.preset.label}</strong>
               <span>{focus.preset.description}</span>
               <div className="detail-tags">{focus.preset.layers.map((l, i) => <em key={i}>{PHASE_LABEL[EFFECTS[l.effect]?.phase as Phase]}: {EFFECTS[l.effect]?.label}</em>)}</div>
               {focus.preset.font && <small>Sets the font to {focus.preset.font.family}.</small>}
               {focus.preset.frame && <small>Sets the frame colours and the A → B transition ({focus.preset.frame.transition}).</small>}
-              <div className="detail-actions"><button type="button" className="btn dark small" onClick={() => onPreset(focus.preset!)}><Sparkles size={12} /> Use this preset</button></div>
-            </> : <span>Hover a tile to see what it animates and how it combines. The stage shows your own caption and stack.</span>}
+              <small>{parked.preset?.id === focus.preset.id ? 'Parked on the example. Close applies this preset; Cancel keeps the old stack.' : 'Click the tile to park this preset on the example.'}</small>
+            </> : <span>Click a tile to park it on the example. Close applies the parked choice; Cancel restores the previous stack.</span>}
           </div>
         </div>
         <div className="transition-browser text-effect-browser in-gallery">
-          <EffectBrowserBody request={request} stack={stack} caption={caption} autoplayDefault={false}
-            onPick={id => onPick(id, EFFECTS[id].phase as Phase)} onPreset={onPreset}
-            onHover={(id, preset) => { if (id || preset) setCandidate({ effect: id, preset: preset || null }) }}
+          <EffectBrowserBody request={request} stack={stack} caption={caption} autoplayDefault
+            onPick={parkEffect} onPreset={parkPreset}
+            onHover={(id, preset) => setHover({ effect: id, preset: preset || null })}
             onFocus={(f, p) => setFocus({ fx: f, preset: p || null })}
-            footerExtra={<button type="button" className="btn ghost small" onClick={onClose}>Close</button>} />
+            footerExtra={<>
+              <button type="button" className="btn ghost small" onClick={cancel}>Cancel</button>
+              <button type="button" className="btn dark small" onClick={apply}><Check size={12} /> Close</button>
+            </>} />
         </div>
       </div>
     </div>

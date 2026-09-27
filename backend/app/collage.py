@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from .media import source_path
+from .picture_crop import crop_filters, normalize_crop
+from .picture_filters import picture_look
 
 MAX_COLLAGE_PHOTOS = 12
 
@@ -39,14 +41,168 @@ def _photo_aspect(shape: str) -> float:
         return 1.0
     if shape == "3:4":
         return 3.0 / 4.0
+    if shape == "16:9":
+        return 16.0 / 9.0
+    if shape == "9:16":
+        return 9.0 / 16.0
+    if shape == "3:2":
+        return 3.0 / 2.0
+    if shape == "2:3":
+        return 2.0 / 3.0
     return 4.0 / 3.0
 
 
-def mat_height(w: float, shape: str, aspect: float) -> float:
+# Twin of COLLAGE_TEMPLATES in src/collageCore.ts — keep slot numbers identical.
+COLLAGE_TEMPLATES: list[dict[str, Any]] = [
+    {"id": "split-v", "family": "magazine", "slots": [
+        {"cx": 26, "cy": 50, "w": 46, "rot": 0}, {"cx": 74, "cy": 50, "w": 46, "rot": 0},
+    ]},
+    {"id": "split-h", "family": "magazine", "slots": [
+        {"cx": 50, "cy": 27, "w": 70, "rot": 0}, {"cx": 50, "cy": 73, "w": 70, "rot": 0},
+    ]},
+    {"id": "triptych", "family": "magazine", "slots": [
+        {"cx": 18, "cy": 50, "w": 30, "rot": 0}, {"cx": 50, "cy": 50, "w": 30, "rot": 0}, {"cx": 82, "cy": 50, "w": 30, "rot": 0},
+    ]},
+    {"id": "trio-left", "family": "magazine", "slots": [
+        {"cx": 30, "cy": 50, "w": 54, "rot": 0}, {"cx": 78, "cy": 28, "w": 36, "rot": 0}, {"cx": 78, "cy": 72, "w": 36, "rot": 0},
+    ]},
+    {"id": "trio-right", "family": "magazine", "slots": [
+        {"cx": 22, "cy": 28, "w": 36, "rot": 0}, {"cx": 22, "cy": 72, "w": 36, "rot": 0}, {"cx": 70, "cy": 50, "w": 54, "rot": 0},
+    ]},
+    {"id": "trio-top", "family": "magazine", "slots": [
+        {"cx": 50, "cy": 28, "w": 88, "rot": 0}, {"cx": 26, "cy": 74, "w": 42, "rot": 0}, {"cx": 74, "cy": 74, "w": 42, "rot": 0},
+    ]},
+    {"id": "quad", "family": "magazine", "slots": [
+        {"cx": 26, "cy": 28, "w": 44, "rot": 0}, {"cx": 74, "cy": 28, "w": 44, "rot": 0},
+        {"cx": 26, "cy": 72, "w": 44, "rot": 0}, {"cx": 74, "cy": 72, "w": 44, "rot": 0},
+    ]},
+    {"id": "one-plus-three", "family": "magazine", "slots": [
+        {"cx": 32, "cy": 50, "w": 56, "rot": 0}, {"cx": 80, "cy": 20, "w": 32, "rot": 0},
+        {"cx": 80, "cy": 50, "w": 32, "rot": 0}, {"cx": 80, "cy": 80, "w": 32, "rot": 0},
+    ]},
+    {"id": "hero-row", "family": "magazine", "slots": [
+        {"cx": 50, "cy": 30, "w": 90, "rot": 0}, {"cx": 18, "cy": 76, "w": 28, "rot": 0},
+        {"cx": 50, "cy": 76, "w": 28, "rot": 0}, {"cx": 82, "cy": 76, "w": 28, "rot": 0},
+    ]},
+    {"id": "five-mosaic", "family": "magazine", "slots": [
+        {"cx": 32, "cy": 50, "w": 56, "rot": 0}, {"cx": 78, "cy": 18, "w": 30, "rot": 0},
+        {"cx": 78, "cy": 50, "w": 30, "rot": 0}, {"cx": 78, "cy": 82, "w": 30, "rot": 0}, {"cx": 32, "cy": 86, "w": 28, "rot": 0},
+    ]},
+    {"id": "six-grid", "family": "magazine", "slots": [
+        {"cx": 18, "cy": 28, "w": 30, "rot": 0}, {"cx": 50, "cy": 28, "w": 30, "rot": 0}, {"cx": 82, "cy": 28, "w": 30, "rot": 0},
+        {"cx": 18, "cy": 72, "w": 30, "rot": 0}, {"cx": 50, "cy": 72, "w": 30, "rot": 0}, {"cx": 82, "cy": 72, "w": 30, "rot": 0},
+    ]},
+    {"id": "polaroid-pile", "family": "polaroid", "slots": [
+        {"cx": 42, "cy": 48, "w": 34, "rot": -11}, {"cx": 58, "cy": 44, "w": 34, "rot": 8},
+        {"cx": 48, "cy": 56, "w": 36, "rot": 3}, {"cx": 36, "cy": 40, "w": 30, "rot": -18},
+        {"cx": 64, "cy": 58, "w": 30, "rot": 14}, {"cx": 50, "cy": 38, "w": 28, "rot": -4},
+    ]},
+    {"id": "polaroid-diagonal", "family": "polaroid", "slots": [
+        {"cx": 22, "cy": 28, "w": 32, "rot": -8}, {"cx": 40, "cy": 40, "w": 32, "rot": 4},
+        {"cx": 58, "cy": 52, "w": 32, "rot": -5}, {"cx": 74, "cy": 66, "w": 32, "rot": 7},
+        {"cx": 50, "cy": 24, "w": 26, "rot": 12},
+    ]},
+    {"id": "polaroid-rows", "family": "polaroid", "slots": [
+        {"cx": 22, "cy": 32, "w": 30, "rot": -7}, {"cx": 50, "cy": 28, "w": 30, "rot": 5}, {"cx": 78, "cy": 34, "w": 30, "rot": -4},
+        {"cx": 28, "cy": 70, "w": 30, "rot": 6}, {"cx": 56, "cy": 74, "w": 30, "rot": -8}, {"cx": 82, "cy": 68, "w": 30, "rot": 3},
+    ]},
+    {"id": "polaroid-stairs", "family": "polaroid", "slots": [
+        {"cx": 20, "cy": 70, "w": 30, "rot": -6}, {"cx": 36, "cy": 56, "w": 30, "rot": 4},
+        {"cx": 52, "cy": 42, "w": 30, "rot": -3}, {"cx": 68, "cy": 28, "w": 30, "rot": 7},
+        {"cx": 82, "cy": 18, "w": 26, "rot": -10},
+    ]},
+    {"id": "polaroid-heart", "family": "polaroid", "slots": [
+        {"cx": 32, "cy": 32, "w": 28, "rot": -14}, {"cx": 68, "cy": 32, "w": 28, "rot": 14},
+        {"cx": 22, "cy": 52, "w": 26, "rot": -8}, {"cx": 78, "cy": 52, "w": 26, "rot": 8},
+        {"cx": 50, "cy": 48, "w": 30, "rot": 2}, {"cx": 50, "cy": 76, "w": 28, "rot": -3},
+    ]},
+    {"id": "polaroid-strip", "family": "polaroid", "slots": [
+        {"cx": 16, "cy": 50, "w": 28, "rot": -6}, {"cx": 34, "cy": 46, "w": 28, "rot": 5},
+        {"cx": 52, "cy": 52, "w": 28, "rot": -4}, {"cx": 70, "cy": 47, "w": 28, "rot": 7},
+        {"cx": 86, "cy": 53, "w": 26, "rot": -5},
+    ]},
+    {"id": "polaroid-corners", "family": "polaroid", "slots": [
+        {"cx": 20, "cy": 22, "w": 30, "rot": -10}, {"cx": 80, "cy": 22, "w": 30, "rot": 9},
+        {"cx": 20, "cy": 78, "w": 30, "rot": 7}, {"cx": 80, "cy": 78, "w": 30, "rot": -8},
+        {"cx": 50, "cy": 50, "w": 36, "rot": 3},
+    ]},
+]
+
+
+def collage_template(tid: str | None) -> dict[str, Any]:
+    for t in COLLAGE_TEMPLATES:
+        if t["id"] == tid:
+            return t
+    return COLLAGE_TEMPLATES[0]
+
+
+def _template_slots(tid: str | None, n: int) -> list[dict[str, float]]:
+    slots = collage_template(tid)["slots"]
+    out: list[dict[str, float]] = []
+    for i in range(n):
+        if i < len(slots):
+            out.append(dict(slots[i]))
+            continue
+        base = slots[i % len(slots)]
+        k = i // len(slots)
+        out.append({
+            "cx": max(8.0, min(92.0, base["cx"] + (hash01(i, 11) - 0.5) * 10 * k)),
+            "cy": max(10.0, min(90.0, base["cy"] + (hash01(i, 13) - 0.5) * 10 * k)),
+            "w": base["w"] * 0.85,
+            "rot": base["rot"] + (hash01(i, 17) - 0.5) * 14,
+        })
+    return out
+
+
+def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolved frame for a photo — twin of photoFrame()."""
+    a = (spec or {}).get("frame") if isinstance((spec or {}).get("frame"), dict) else {}
+    b = (photo or {}).get("frame") if isinstance((photo or {}).get("frame"), dict) else {}
+    shape = b.get("shape") if b.get("shape") in FRAME_SHAPES else (a.get("shape") if a.get("shape") in FRAME_SHAPES else "polaroid")
+
+    def _num(src: dict, key: str) -> float | None:
+        v = src.get(key)
+        if v is None or isinstance(v, bool):
+            return None
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return None
+        return n if math.isfinite(n) else None
+
+    raw_w = _num(b, "width")
+    if raw_w is None:
+        raw_w = _num(a, "width")
+    if raw_w is None:
+        width = 4.5 if shape == "polaroid" else (0.0 if shape == "none" else 3.0)
+    else:
+        width = max(0.0, min(12.0, raw_w))
+    color = b.get("color") if isinstance(b.get("color"), str) and len(b.get("color")) == 7 and b.get("color").startswith("#") else (
+        a.get("color") if isinstance(a.get("color"), str) and len(a.get("color")) == 7 and a.get("color").startswith("#") else "#ffffff")
+    raw_r = _num(b, "radius")
+    if raw_r is None:
+        raw_r = _num(a, "radius")
+    radius = 12.0 if raw_r is None else max(0.0, min(50.0, raw_r))
+    shadow = True
+    if "shadow" in b:
+        shadow = b.get("shadow") is not False
+    elif "shadow" in a:
+        shadow = a.get("shadow") is not False
+    return {"shape": shape, "width": width, "color": color, "radius": radius, "shadow": shadow}
+
+
+def frame_border_frac(frame: dict[str, Any]) -> float:
+    if frame.get("shape") == "none":
+        return 0.0
+    return max(0.0, min(0.12, float(frame.get("width") or 0.0) / 100.0))
+
+
+def mat_height(w: float, shape: str, aspect: float, frame: dict[str, Any] | None = None) -> float:
     """Mat height in % of frame height for a mat width of w % of frame width."""
-    border = 0.045 * w
-    bottom = 0.205 * w
-    photo_w = w - 2 * border
+    fr = photo_frame({"frame": frame} if frame else {}, None)
+    border = frame_border_frac(fr) * w
+    bottom = 0.205 * w if fr["shape"] == "polaroid" else border
+    photo_w = max(1e-6, w - 2 * border)
     photo_h = photo_w / _photo_aspect(shape)
     return (photo_h + border + bottom) / aspect
 
@@ -79,7 +235,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         w = fit_width(cell_w, cell_h)
         for i in range(n):
             col, row = i % cols, i // cols
-            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": 0.0})
+            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 10})
     elif layout == "scatter":
         cols, _, cell_w, cell_h = cells(n)
         w = fit_width(cell_w, cell_h) * 0.94
@@ -102,15 +258,16 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
             cell_wr = (100 - 2 * 5) / cols
             cell_h = (100 - 2 * 12) / rows
             w = min(cell_wr * 1.1, cell_h * 0.82 * aspect / k)
-            out.append({"cx": 5 + cell_wr * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": 0.0})
+            out.append({"cx": 5 + cell_wr * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 8})
     elif layout == "fan":
         # Cards fanned out from a point below the frame — each card tilts
         # along its spoke, like a hand of cards offered to the viewer.
         spoke = 46.0
         spread = min(48.0, 10 + 7 * n)
+        a0 = 0.0 if n == 1 else (hash01(seed, 0, 19) - 0.5) * 10
         w = 36.0 if n <= 3 else (30.0 if n <= 6 else 26.0)
         for i in range(n):
-            a = 0.0 if n == 1 else math.radians(spread * (i / (n - 1) - 0.5))
+            a = math.radians((0.0 if n == 1 else (spread * (i / (n - 1) - 0.5))) + a0)
             out.append({
                 "cx": 50 + spoke * aspect * math.sin(a),
                 "cy": 96 - spoke * math.cos(a),
@@ -150,7 +307,118 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
                 fit = 76 / max_fill
                 sim, _ = simulate(fit)
             for i in range(n):
-                out.append({"cx": sim[i]["cx"], "cy": sim[i]["cy"], "w": ws[i] * fit, "rot": 0.0})
+                out.append({"cx": sim[i]["cx"], "cy": sim[i]["cy"], "w": ws[i] * fit, "rot": (hash01(seed, i, 37) - 0.5) * 6})
+    elif layout == "honeycomb":
+        cols = n if n <= 2 else (3 if n <= 6 else 4)
+        rows = math.ceil(n / cols)
+        try:
+            gap = float(spec.get("gap")) if spec.get("gap") is not None and not isinstance(spec.get("gap"), bool) else 1.6
+        except (TypeError, ValueError):
+            gap = 1.6
+        gap = max(0.0, min(12.0, gap if math.isfinite(gap) else 1.6))
+        cell_w = (100 - 8) / (cols + 0.5)
+        cell_h = (100 - 16) / max(1, rows)
+        k = 0.91 / _photo_aspect(shape) + 0.25
+        w = min(cell_w - gap, cell_h * 0.82 * aspect / k)
+        for i in range(n):
+            row, col = divmod(i, cols)
+            ox = (row % 2) * cell_w * 0.5
+            out.append({"cx": 6 + ox + cell_w * (col + 0.5), "cy": 10 + cell_h * (row + 0.5),
+                        "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 4})
+    elif layout == "zigzag":
+        cols = max(1, math.ceil(math.sqrt(n)))
+        rows = math.ceil(n / cols)
+        cell_w = (100 - 12) / cols
+        cell_h = (100 - 18) / rows
+        w = fit_width(cell_w, cell_h) * 0.92
+        for i in range(n):
+            col, row = i % cols, i // cols
+            ox = (row % 2) * cell_w * 0.28
+            sign = 1 if (row + col) % 2 else -1
+            out.append({"cx": 6 + ox + cell_w * (col + 0.5), "cy": 10 + cell_h * (row + 0.5),
+                        "w": width_of(w, i), "rot": sign * (6 + 4 * hash01(seed, i, 37))})
+    elif layout == "arc":
+        w = 28.0 if n <= 4 else 22.0
+        for i in range(n):
+            t = 0.5 if n == 1 else i / (n - 1)
+            a = (12 + 156 * t) * math.pi / 180
+            out.append({"cx": 50 + 40 * math.cos(a), "cy": 62 - 34 * math.sin(a),
+                        "w": width_of(w, i), "rot": 90 - a * 180 / math.pi})
+    elif layout == "photowall":
+        cols = max(1, math.ceil(math.sqrt(n)))
+        rows = math.ceil(n / cols)
+        try:
+            gap = float(spec.get("gap")) if spec.get("gap") is not None and not isinstance(spec.get("gap"), bool) else 0.7
+        except (TypeError, ValueError):
+            gap = 0.7
+        gap = max(0.0, min(12.0, gap if math.isfinite(gap) else 0.7))
+        cell_w = (100 - gap) / cols
+        cell_h = (100 - gap) / rows
+        k = 0.91 / _photo_aspect(shape) + 0.25
+        w = min(cell_w - gap, cell_h * aspect / k)
+        for i in range(n):
+            col, row = i % cols, i // cols
+            out.append({"cx": gap / 2 + cell_w * (col + 0.5), "cy": gap / 2 + cell_h * (row + 0.5),
+                        "w": width_of(w, i), "rot": 0.0})
+    elif layout == "booth":
+        w = min(22.0, 90.0 / max(1, n))
+        for i in range(n):
+            out.append({"cx": 50.0, "cy": 14 + (72 / max(1, n)) * (i + 0.5),
+                        "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 2})
+    elif layout == "silhouette":
+        w = 22.0 if n <= 4 else (16.0 if n <= 8 else 12.0)
+        for i in range(n):
+            t = (i / max(1, n)) * 2 * math.pi
+            hx = 16 * math.sin(t) ** 3
+            hy = 13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)
+            out.append({
+                "cx": 50 + hx * 2.1 + (hash01(seed, i, 29) - 0.5) * 3,
+                "cy": 48 - hy * 1.7 + (hash01(seed, i, 31) - 0.5) * 3,
+                "w": width_of(w, i),
+                "rot": (hash01(seed, i, 37) - 0.5) * 14,
+            })
+    elif layout == "cube":
+        faces = [
+            {"cx": 48, "cy": 48, "w": 34, "rot": 0},
+            {"cx": 70, "cy": 44, "w": 20, "rot": 8},
+            {"cx": 48, "cy": 28, "w": 28, "rot": -6},
+        ]
+        for i in range(n):
+            if i < 3:
+                out.append({"cx": faces[i]["cx"], "cy": faces[i]["cy"], "w": width_of(faces[i]["w"], i), "rot": faces[i]["rot"]})
+            else:
+                k = i - 3
+                m = n - 3
+                out.append({"cx": 18 + (64 / max(1, m)) * (k + 0.5), "cy": 84, "w": width_of(16, i),
+                            "rot": (hash01(seed, i, 37) - 0.5) * 6})
+    elif layout == "free":
+        w = 42.0 if n <= 3 else (34.0 if n <= 6 else 30.0)
+        photos = spec.get("photos") or []
+        for i in range(n):
+            p = photos[i] if i < len(photos) else {}
+            try:
+                cx = float(p.get("cx")) if p.get("cx") is not None and not isinstance(p.get("cx"), bool) else 50.0
+            except (TypeError, ValueError):
+                cx = 50.0
+            try:
+                cy = float(p.get("cy")) if p.get("cy") is not None and not isinstance(p.get("cy"), bool) else 50.0
+            except (TypeError, ValueError):
+                cy = 50.0
+            try:
+                rot = float(p.get("rot")) if p.get("rot") is not None and not isinstance(p.get("rot"), bool) else 0.0
+            except (TypeError, ValueError):
+                rot = 0.0
+            if not math.isfinite(cx):
+                cx = 50.0
+            if not math.isfinite(cy):
+                cy = 50.0
+            if not math.isfinite(rot):
+                rot = 0.0
+            out.append({"cx": max(0.0, min(100.0, cx)), "cy": max(0.0, min(100.0, cy)), "w": width_of(w, i), "rot": rot})
+    elif layout == "template":
+        slots = _template_slots(spec.get("template"), n)
+        for i in range(n):
+            out.append({"cx": slots[i]["cx"], "cy": slots[i]["cy"], "w": width_of(slots[i]["w"], i), "rot": slots[i]["rot"]})
     else:  # stack
         w = 42.0 if n <= 3 else (34.0 if n <= 6 else 30.0)
         for i in range(n):
@@ -192,7 +460,11 @@ def photo_delay(spec: dict[str, Any], i: int) -> float:
 
 
 def photo_size(spec: dict[str, Any], i: int) -> float:
-    """Photo i's mat size multiplier — stored value (clamped to 0.5..1.5) or 1."""
+    """Photo i's mat size multiplier — stored value (clamped to 0.5..1.5) or 1.
+
+    When randomSize is on and this photo has no explicit size, a seeded value
+    between randomSizeMin and randomSizeMax is used (twin of photoSize()).
+    """
     photos = spec.get("photos") or []
     raw = photos[i].get("size") if i < len(photos) else None
     v = float("nan")
@@ -201,6 +473,23 @@ def photo_size(spec: dict[str, Any], i: int) -> float:
             v = float(raw)
         except (TypeError, ValueError):
             v = float("nan")
+    if not math.isfinite(v) and spec.get("randomSize") is True:
+        try:
+            lo = float(spec.get("randomSizeMin")) if spec.get("randomSizeMin") is not None and not isinstance(spec.get("randomSizeMin"), bool) else 0.7
+        except (TypeError, ValueError):
+            lo = 0.7
+        try:
+            hi = float(spec.get("randomSizeMax")) if spec.get("randomSizeMax") is not None and not isinstance(spec.get("randomSizeMax"), bool) else 1.3
+        except (TypeError, ValueError):
+            hi = 1.3
+        if not math.isfinite(lo):
+            lo = 0.7
+        if not math.isfinite(hi):
+            hi = 1.3
+        lo = max(0.5, min(1.5, lo))
+        hi = max(0.5, min(1.5, hi))
+        a, b = min(lo, hi), max(lo, hi)
+        v = a + (b - a) * hash01(int(spec.get("seed") or 1), i, 41)
     if not math.isfinite(v):
         v = 1.0
     return max(0.5, min(1.5, v))
@@ -231,7 +520,17 @@ def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
 
 
 # How long an entrance runs until the photo is fully at rest.
-ENTRANCE_LENGTH = {"drop": 0.55, "pop": 0.5, "swing": 2.0, "flip": 0.45, "none": 0.0}
+ENTRANCE_LENGTH = {
+    "drop": 0.55, "pop": 0.5, "swing": 2.0, "flip": 0.45, "none": 0.0,
+    "fade": 0.45, "slide": 0.5, "rise": 0.5, "tumble": 0.6, "zoom": 0.55,
+    "fold": 0.55, "glitch": 0.5, "ink": 0.55, "brush": 0.5,
+}
+LAYOUTS = ("stack", "grid", "scatter", "filmstrip", "fan", "masonry", "free", "template",
+           "honeycomb", "zigzag", "arc", "photowall", "booth", "silhouette", "cube")
+ANIMS = ("drop", "pop", "swing", "flip", "none", "fade", "slide", "rise", "tumble",
+         "zoom", "fold", "glitch", "ink", "brush")
+FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart", "star",
+                "diamond", "hexagon", "triangle", "octagon", "cloud", "arch", "ticket")
 
 # Exits - how the photos leave after the hold. Twin of collageCore.ts.
 EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4}
@@ -301,6 +600,23 @@ def collage_duration(spec: dict[str, Any]) -> float:
     return _round2(base_duration(spec) + exit_total(spec))
 
 
+def bg_fit_filter(fit: str | None, width: int, height: int) -> str:
+    """How a background picture fills the frame — twin of bgFitStyle()."""
+    f = fit if fit in ("fill", "fit", "stretch", "tile", "center", "span") else "fill"
+    if f == "fit":
+        return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
+    if f == "stretch":
+        return f"scale={width}:{height},setsar=1"
+    if f == "tile":
+        return (f"loop=loop=63:size=1,tile=8x8,crop={width}:{height}:0:0,setsar=1")
+    if f == "center":
+        return (f"scale='min(iw,{width})':'min(ih,{height})':force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
+    # fill and span: cover the frame, cropping overflow
+    return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+
+
 def bg_blur_css_px(blur: float) -> float:
     """Background blur as a CSS blur() radius in px on the 1920-wide stage."""
     v = float(blur) if isinstance(blur, (int, float)) and math.isfinite(blur) else 0.0
@@ -345,7 +661,8 @@ def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: f
     if mode == "none":
         return {"z": 1.0, "cx": 50.0, "cy": 50.0}
     d = max(0.2, collage_duration(spec))
-    p = _clamp01((t - lead_in) / d)
+    raw = _clamp01((t - lead_in) / d)
+    p = raw * raw * (3 - 2 * raw)
     if mode == "pan":
         return {"z": 1.09, "cx": 54 - 8 * p, "cy": 50.0}
     pls = placements(spec, aspect)
@@ -353,9 +670,9 @@ def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: f
     if mode == "zoom":
         z = 1 + 0.35 * p
     elif mode == "telescope":
-        z = 1 + 0.9 * (p * p * (3 - 2 * p))
+        z = 1 + 0.9 * p
     else:
-        z = 1 + 1.1 * (p ** 2.2)
+        z = 1 + 1.1 * (p ** 1.4)
     half = 50.0 / z
     return {
         "z": z,
@@ -387,8 +704,57 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         tau = max(0.0, t - t0)
         rot = 14 * math.exp(-1.3 * tau) * math.cos(2 * math.pi * tau / 1.6)
         st = {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01(tau / 0.15), "dim": 0.0}
+    elif anim == "fade":
+        q = _clamp01((t - t0) / 0.45)
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": q * q * (3 - 2 * q), "dim": 0.0}
+    elif anim == "slide":
+        q = _clamp01((t - t0) / 0.5)
+        settle = (1 - q) ** 3
+        st = {"dx": -28 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": 0.0}
+    elif anim == "rise":
+        q = _clamp01((t - t0) / 0.5)
+        settle = (1 - q) ** 3
+        st = {"dx": 0.0, "dy": 22 * settle, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": 0.0}
+    elif anim == "tumble":
+        q = _clamp01((t - t0) / 0.6)
+        settle = (1 - q) ** 3
+        st = {"dx": 10 * settle, "dy": -18 * settle, "rot": 28 * settle, "scale": 1 - 0.15 * settle, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+    elif anim == "zoom":
+        q = _clamp01((t - t0) / 0.55)
+        back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.2 + 0.8 * back, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+    elif anim == "fold":
+        q = _clamp01((t - t0) / 0.55)
+        back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / 0.14), "dim": 0.0}
+    elif anim == "glitch":
+        q = _clamp01((t - t0) / 0.5)
+        j = (1 - q) * (1 - q)
+        seed = int(spec.get("seed") or 1)
+        st = {"dx": (hash01(seed, i, 61) - 0.5) * 10 * j, "dy": (hash01(seed, i, 63) - 0.5) * 6 * j,
+              "rot": (hash01(seed, i, 65) - 0.5) * 8 * j, "scale": 1.0,
+              "scaleX": 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, "alpha": _clamp01((t - t0) / 0.12), "dim": 0.15 * j}
+    elif anim == "ink":
+        q = _clamp01((t - t0) / 0.55)
+        blob = q * q * (3 - 2 * q)
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.35 + 0.65 * blob, "scaleX": 1.0, "alpha": blob, "dim": 0.0}
+    elif anim == "brush":
+        q = _clamp01((t - t0) / 0.5)
+        settle = (1 - q) ** 3
+        st = {"dx": -36 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.12, 1 - 0.55 * settle),
+              "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
     else:
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0}
+    if spec.get("kenBurns") is True:
+        land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+        dur = collage_duration(spec)
+        kb = _clamp01((t - land) / max(0.8, dur * 0.7))
+        seed = int(spec.get("seed") or 1)
+        st["scale"] *= 1 + 0.08 * kb
+        st["dx"] += (hash01(seed, i, 51) - 0.5) * 5 * kb
+        st["dy"] += (hash01(seed, i, 53) - 0.5) * 3.5 * kb
+    if spec.get("sway") is True and (t - t0) > ENTRANCE_LENGTH.get(anim, 0.0) * 0.7:
+        st["rot"] += 1.5 * math.sin(t * 2.15 + i * 0.9)
     # Exit: after the hold (and every entrance) the photos leave the frame.
     mode = exit_mode(spec)
     if mode != "none":
@@ -464,16 +830,37 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             size = None
         if size is not None and math.isfinite(size):
             entry["size"] = max(0.5, min(1.5, size))
+        for key, lo, hi, fallback in (("cx", 0.0, 100.0, None), ("cy", 0.0, 100.0, None), ("rot", -45.0, 45.0, None)):
+            try:
+                v = float(p.get(key)) if p.get(key) is not None and not isinstance(p.get(key), bool) else None
+            except (TypeError, ValueError):
+                v = None
+            if v is not None and math.isfinite(v):
+                entry[key] = max(lo, min(hi, v))
+        if isinstance(p.get("filter"), str) and p.get("filter"):
+            entry["filter"] = p["filter"]
+        try:
+            amt = float(p.get("filterAmount")) if p.get("filterAmount") is not None and not isinstance(p.get("filterAmount"), bool) else None
+        except (TypeError, ValueError):
+            amt = None
+        if amt is not None and math.isfinite(amt):
+            entry["filterAmount"] = _clamp01(amt)
+        if isinstance(p.get("filterAdjust"), dict):
+            entry["filterAdjust"] = p["filterAdjust"]
+        if isinstance(p.get("crop"), dict):
+            entry["crop"] = p["crop"]
+        if isinstance(p.get("frame"), dict):
+            entry["frame"] = photo_frame({"frame": p["frame"]}, None)
         photos.append(entry)
         if len(photos) >= MAX_COLLAGE_PHOTOS:
             break
     if not photos:
         return None
-    layout = raw.get("layout") if raw.get("layout") in ("stack", "grid", "scatter", "filmstrip", "fan", "masonry") else "stack"
-    animation = raw.get("animation") if raw.get("animation") in ("drop", "pop", "swing", "flip", "none") else "drop"
+    layout = raw.get("layout") if raw.get("layout") in LAYOUTS else "stack"
+    animation = raw.get("animation") if raw.get("animation") in ANIMS else "drop"
     exit_ = raw.get("exit") if raw.get("exit") in ("sweep", "deal", "shuffle") else None
     camera = raw.get("camera") if raw.get("camera") in ("pan", "zoom", "telescope", "droste") else None
-    shape = raw.get("shape") if raw.get("shape") in ("4:3", "square", "3:4") else "4:3"
+    shape = raw.get("shape") if raw.get("shape") in ("4:3", "square", "3:4", "16:9", "9:16", "3:2", "2:3") else "4:3"
     try:
         seed = int(raw.get("seed") or 1)
     except (TypeError, ValueError):
@@ -527,6 +914,38 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         spec["backgroundImage"] = bg
     if blur is not None:
         spec["backgroundBlur"] = blur
+    fit = raw.get("backgroundFit")
+    if fit in ("fill", "fit", "stretch", "tile", "center", "span"):
+        spec["backgroundFit"] = fit
+    look = raw.get("backgroundLook")
+    if isinstance(look, dict):
+        spec["backgroundLook"] = look
+    if raw.get("randomSize") is True:
+        spec["randomSize"] = True
+        for key in ("randomSizeMin", "randomSizeMax"):
+            try:
+                v = float(raw.get(key)) if raw.get(key) is not None and not isinstance(raw.get(key), bool) else None
+            except (TypeError, ValueError):
+                v = None
+            if v is not None and math.isfinite(v):
+                spec[key] = max(0.5, min(1.5, v))
+    tid = raw.get("template")
+    if isinstance(tid, str) and any(t["id"] == tid for t in COLLAGE_TEMPLATES):
+        spec["template"] = tid
+    if isinstance(raw.get("frame"), dict):
+        spec["frame"] = photo_frame({"frame": raw["frame"]}, None)
+    try:
+        gap = float(raw.get("gap")) if raw.get("gap") is not None and not isinstance(raw.get("gap"), bool) else None
+    except (TypeError, ValueError):
+        gap = None
+    if gap is not None and math.isfinite(gap):
+        spec["gap"] = max(0.0, min(12.0, gap))
+    if raw.get("kenBurns") is True:
+        spec["kenBurns"] = True
+    if raw.get("sway") is True:
+        spec["sway"] = True
+    if raw.get("stickers") in ("tape", "pin", "mix"):
+        spec["stickers"] = raw["stickers"]
     return spec
 
 
@@ -569,6 +988,49 @@ def collage_background(settings, item: dict[str, Any]) -> Path | None:
     if not src.is_file():
         raise FileNotFoundError(f"Collage background picture is missing: {bg}")
     return src
+
+
+def _shape_mask(fr: dict[str, Any], w: int, h: int) -> str:
+    """Alpha geq that clips the mat to a decorative shape. Twin of frameClipPath()."""
+    shape = fr.get("shape") or "polaroid"
+    if shape in ("polaroid", "rect", "none"):
+        return ""
+    nx, ny = "(2*X/W-1)", "(1-2*Y/H)"
+    if shape == "rounded":
+        r = max(2, int(round((fr.get("radius") or 12) / 100 * min(w, h))))
+        expr = (f"if(between(X,{r},W-{r})*between(Y,0,H)+between(Y,{r},H-{r})*between(X,0,W),"
+                f"alpha(X,Y),if(lt(hypot(X-{r},Y-{r}),{r})+lt(hypot(X-(W-{r}),Y-{r}),{r})"
+                f"+lt(hypot(X-{r},Y-(H-{r})),{r})+lt(hypot(X-(W-{r}),Y-(H-{r})),{r}),alpha(X,Y),0))")
+    elif shape == "circle":
+        expr = f"if(lt(hypot(X-W/2,Y-H/2),min(W,H)/2),alpha(X,Y),0)"
+    elif shape == "oval":
+        expr = f"if(lt(pow((X-W/2)/(W/2),2)+pow((Y-H/2)/(H*0.42),2),1),alpha(X,Y),0)"
+    elif shape == "diamond":
+        expr = f"if(lt(abs({nx})+abs({ny}),1),alpha(X,Y),0)"
+    elif shape == "hexagon":
+        expr = f"if(lt(max(abs({nx}),abs({nx})*0.5+abs({ny})*0.866),0.92),alpha(X,Y),0)"
+    elif shape == "triangle":
+        expr = f"if(gte(Y,H*0.08)*lte(Y,H*0.92)*gte(X,W/2-(Y-H*0.08)/(H*0.84)*W/2)*lte(X,W/2+(Y-H*0.08)/(H*0.84)*W/2),alpha(X,Y),0)"
+    elif shape == "octagon":
+        expr = f"if(lt(max(abs({nx}),abs({ny}),(abs({nx})+abs({ny}))*0.707),0.92),alpha(X,Y),0)"
+    elif shape == "star":
+        # 5-point star via polar radius; good enough at collage sizes.
+        expr = (f"if(lt(hypot({nx},{ny}),0.38+0.22*abs(cos(5*atan2({ny},{nx})))),alpha(X,Y),0)")
+    elif shape == "heart":
+        expr = (f"if(lt(pow(pow({nx}*1.1,2)+pow({ny}*1.15+0.15,2)-1,3)"
+                f"-pow({nx}*1.1,2)*pow({ny}*1.15+0.15,3),0),alpha(X,Y),0)")
+    elif shape == "cloud":
+        expr = (f"if(lt(hypot(X-W*0.32,Y-H*0.52),H*0.34)+lt(hypot(X-W*0.68,Y-H*0.48),H*0.32)"
+                f"+lt(hypot(X-W*0.5,Y-H*0.62),H*0.36),alpha(X,Y),0)")
+    elif shape == "arch":
+        expr = f"if(gte(Y,H/2)*between(X,W*0.08,W*0.92)+lt(hypot(X-W/2,Y-H/2),W*0.42)*lte(Y,H/2),alpha(X,Y),0)"
+    elif shape == "ticket":
+        expr = (f"if(between(X,W*0.06,W*0.94)*between(Y,0,H)"
+                f"+between(Y,H*0.12,H*0.88)*between(X,0,W)"
+                f"-lt(hypot(X,Y-H/2),H*0.08)-lt(hypot(X-W,Y-H/2),H*0.08),alpha(X,Y),0)")
+    else:
+        return ""
+    return f",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{expr}'"
 
 
 def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
@@ -625,12 +1087,18 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
     ex_mode = exit_mode(spec)
     for i, pl in enumerate(pls):
         inp = first_input + i
+        photo = spec["photos"][i] if i < len(spec["photos"]) else {}
+        fr = photo_frame(spec, photo)
         mat_w = max(24, round(pl["w"] / 100 * width))
-        border = max(2, round(0.045 * mat_w))
-        bottom = max(3, round(0.205 * mat_w))
-        photo_w = mat_w - 2 * border
+        border = max(0, round(frame_border_frac(fr) * mat_w))
+        if fr["shape"] == "none":
+            border = 0
+        bottom = max(0, round(0.205 * mat_w)) if fr["shape"] == "polaroid" else border
+        photo_w = max(2, mat_w - 2 * border)
         photo_h = max(2, round(photo_w / _photo_aspect(spec["shape"])))
         mat_h = photo_h + border + bottom
+        hex_c = fr["color"][1:] if isinstance(fr.get("color"), str) and fr["color"].startswith("#") and len(fr["color"]) == 7 else "ffffff"
+        pad_color = "white" if hex_c.lower() == "ffffff" else "0x" + hex_c
 
         # Rotation headroom: the sprite canvas must fit the mat (plus shadow
         # margin) at the largest angle the animation reaches. The canvas size
@@ -699,15 +1167,42 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # one expression per animation (empty when the photo never rotates).
         q_drop = f"min(max((t-{_n(t0)})/0.55,0),1)"
         q_flip = f"min(max((t-{_n(t0)})/0.45,0),1)"
+        q_slide = f"min(max((t-{_n(t0)})/0.5,0),1)"
+        q_tumble = f"min(max((t-{_n(t0)})/0.6,0),1)"
+        q_brush = f"min(max((t-{_n(t0)})/0.5,0),1)"
+        q_glitch = f"min(max((t-{_n(t0)})/0.5,0),1)"
+        extra_x = extra_y = extra_r = ""
+        if anim == "slide":
+            extra_x = f"-{_n(0.28 * width)}*pow(1-{q_slide},3)"
+        elif anim == "rise":
+            extra_y = f"+{_n(0.22 * height)}*pow(1-{q_slide},3)"
+        elif anim == "tumble":
+            extra_x = f"+{_n(0.10 * width)}*pow(1-{q_tumble},3)"
+            extra_y = f"-{_n(0.18 * height)}*pow(1-{q_tumble},3)"
+            extra_r = f"+28*pow(1-{q_tumble},3)"
+        elif anim == "brush":
+            extra_x = f"-{_n(0.36 * width)}*pow(1-{q_brush},3)"
+        elif anim == "glitch":
+            jg = f"pow(1-{q_glitch},2)"
+            extra_x = fly_term((hash01(seed, i, 61) - 0.5) * 0.10 * width, jg)
+            extra_y = fly_term((hash01(seed, i, 63) - 0.5) * 0.06 * height, jg)
+            extra_r = fly_term((hash01(seed, i, 65) - 0.5) * 8, jg)
+        if spec.get("kenBurns") is True:
+            land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+            span = max(0.8, collage_duration(spec) * 0.7)
+            kb = f"min(max((t-{_n(land)})/{_n(span)},0),1)"
+            extra_x = (extra_x or "") + fly_term((hash01(seed, i, 51) - 0.5) * 0.05 * width, kb)
+            extra_y = (extra_y or "") + fly_term((hash01(seed, i, 53) - 0.5) * 0.035 * height, kb)
+        sway_r = f"+1.5*sin(2.15*t+{_n(i * 0.9)})" if spec.get("sway") is True else ""
         if anim == "drop":
-            ang = f"({_n(pl['rot'])}-7*pow(1-{q_drop},3){ex_r})*PI/180"
+            ang = f"({_n(pl['rot'])}-7*pow(1-{q_drop},3){ex_r}{extra_r}{sway_r})*PI/180"
         elif anim == "flip":
-            ang = f"(-4*(1-{q_flip}){ex_r})*PI/180"
+            ang = f"(-4*(1-{q_flip}){ex_r}{extra_r}{sway_r})*PI/180"
         elif anim == "swing":
             tau = f"max(t-{_n(t0)},0)"
-            ang = f"{_n(pl['rot'])}*PI/180+14*PI/180*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}*PI/180"
-        elif ex_r or abs(pl["rot"]) > 0.01:
-            ang = f"({_n(pl['rot']) if abs(pl['rot']) > 0.01 else '0'}{ex_r})*PI/180"
+            ang = f"{_n(pl['rot'])}*PI/180+14*PI/180*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}*PI/180{sway_r}*PI/180"
+        elif extra_r or sway_r or ex_r or abs(pl["rot"]) > 0.01:
+            ang = f"({_n(pl['rot']) if abs(pl['rot']) > 0.01 else '0'}{ex_r}{extra_r}{sway_r})*PI/180"
         else:
             ang = ""
         rot_seg = f",rotate='{ang}':c=black@0.0" if ang else ""
@@ -719,7 +1214,9 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # static scales whose overlay enable windows partition time. The
         # sizes are sampled from the twin's photoState() at frame resolution,
         # so the MP4 shows what the preview shows, frame for frame.
-        fade_d_in = {"drop": 0.22, "pop": 0.18, "flip": 0.15, "swing": 0.15}.get(anim)
+        fade_d_in = {"drop": 0.22, "pop": 0.18, "flip": 0.15, "swing": 0.15,
+                     "fade": 0.45, "slide": 0.18, "rise": 0.18, "tumble": 0.16, "zoom": 0.16,
+                     "fold": 0.14, "glitch": 0.12, "ink": 0.4, "brush": 0.16}.get(anim)
         mid = (f"fade=t=in:st={_n(t0)}:d={_n(fade_d_in)}:alpha=1" if fade_d_in else "null") + fade_out
 
         # The anchor: the canvas centre lands on the mat centre (or the pin
@@ -734,7 +1231,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             """Distinct (W, H) sprite sizes photo i shows, each with the
             [start, end) frame windows it is on screen. The last window is
             open-ended (end=None)."""
-            varies = anim in ("pop", "flip") or depth_on
+            varies = anim in ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble") or depth_on or spec.get("kenBurns") is True
             if not varies:
                 return [(cw, ch, [[0.0, None]])]
             # the timeline only moves during the entrance and the depth push
@@ -800,22 +1297,31 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         ladder = dim_ladder(i)
         dim_seg = (f"sendcmd=commands='{ladder}',eq@dim{i}=contrast=1:saturation=1:brightness=0,"
                    if ladder is not None else "")
-        lines.append(
-            f"[{inp}:v]scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
-            f"crop={photo_w}:{photo_h},pad={mat_w}:{mat_h}:{border}:{border}:color=white,"
-            f"{dim_seg}format=rgba,split[{m}a][{m}b];"
-        )
-        # Soft shadow: the mat silhouette, black and translucent, blurred and
-        # padded onto the same canvas position the mat itself occupies.
-        lines.append(
-            f"[{m}a]lutrgb=r=0:g=0:b=0,colorchannelmixer=aa=0.34,"
-            f"pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0,boxblur={max(2, border // 2)}:2[{sh}];"
-        )
-        lines.append(f"[{m}b]pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[{t_}];")
-        # Both streams are already padded to the full canvas with the mat in
-        # place, so the mat lands on its shadow at (0, 0) — any other offset
-        # would shift the mat within its own sprite and off its anchor.
-        lines.append(f"[{sh}][{t_}]overlay=x=0:y=0[sp{i}];")
+        photo = spec["photos"][i] if i < len(spec["photos"]) else {}
+        look = picture_look(photo, photo_w, photo_h)
+        crop_chain = ",".join(crop_filters(normalize_crop({"crop": photo.get("crop")})))
+        pre = ",".join(x for x in (crop_chain, look) if x)
+        pre = (pre + ",") if pre else ""
+        use_shadow = fr.get("shadow") is not False and fr["shape"] != "none"
+        mask = _shape_mask(fr, mat_w, mat_h)
+        if use_shadow:
+            lines.append(
+                f"[{inp}:v]{pre}scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
+                f"crop={photo_w}:{photo_h},pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
+                f"{dim_seg}format=rgba{mask},split[{m}a][{m}b];"
+            )
+            lines.append(f"[{m}b]pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[{t_}];")
+            lines.append(
+                f"[{m}a]lutrgb=r=0:g=0:b=0,colorchannelmixer=aa=0.34,"
+                f"pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0,boxblur={max(2, max(border, 4) // 2)}:2[{sh}];"
+            )
+            lines.append(f"[{sh}][{t_}]overlay=x=0:y=0[sp{i}];")
+        else:
+            lines.append(
+                f"[{inp}:v]{pre}scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
+                f"crop={photo_w}:{photo_h},pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
+                f"{dim_seg}format=rgba{mask},pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[sp{i}];"
+            )
         lines.append(f"[sp{i}]{mid},format=rgba[sp{i}f];")
         if len(levels) > 1:
             lines.append(f"[sp{i}f]split={len(levels)}" +
@@ -832,43 +1338,41 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # short label the camera/caption chains consume
             out = f"o{i}" if is_last else f"o{i}_{k}"
             lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
-            x_expr = f"{_n(ax_px - W / 2)}{ex_x}"
-            y_expr = f"{_n(ay_px - H / 2)}{fall}{ex_y}"
+            x_expr = f"{_n(ax_px - W / 2)}{ex_x}{extra_x}"
+            y_expr = f"{_n(ay_px - H / 2)}{fall}{ex_y}{extra_y}"
             enable = enable_expr(windows)
             lines.append(f"[{prev}][lv{i}_{k}]overlay=x='{x_expr}':y='{y_expr}'{enable}[{out}];")
             prev = out
 
     # Virtual camera over the composed scene — the last thing before the
-    # caption: 'pan' drifts a constant window across the frame (crop), the
-    # zoom family zooms into the last photo's anchor (zoompan). The window
-    # maths is the twin's cameraState(); the clamps keep the window inside
-    # the frame so both engines see identical pixels.
+    # caption. Crop + bicubic scale (driven by t) replaces zoompan: zoompan
+    # snaps to integer pixels and stutters; crop expressions follow the same
+    # smoothstep curve camera_state() uses, so the MP4 matches the preview.
     cam = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
     if cam != "none" and pls:
         d = max(0.2, collage_duration(spec))
+        raw_p = f"min(max((t-{_n(lead_in)})/{_n(d)},0),1)"
+        p = f"({raw_p}*{raw_p}*(3-2*{raw_p}))"
         if cam == "pan":
             ow, oh = max(2, int(width / 1.09)), max(2, int(height / 1.09))
-            p = f"min(max((t-{_n(lead_in)})/{_n(d)},0),1)"
             lines.append(
                 f"[{prev}]crop={ow}:{oh}:x='(54-8*{p})*iw/100-ow/2':y='(ih-oh)/2',"
-                f"scale={width}:{height},setsar=1[cam];"
+                f"scale={width}:{height}:flags=bicubic,setsar=1[cam];"
             )
         else:
-            # zoompan has no t variable — 'on' is the output frame count and
-            # the output fps equals the input fps (d=1), so on/fps is time.
-            p = f"min(max((on/{_n(fps)}-{_n(lead_in)})/{_n(d)},0),1)"
             if cam == "zoom":
-                zexpr = f"(1+0.35*{p})"
+                zexpr = f"1+0.35*{p}"
             elif cam == "telescope":
-                zexpr = f"(1+0.9*({p}*{p}*(3-2*{p})))"
+                zexpr = f"1+0.9*{p}"
             else:
-                zexpr = f"(1+1.1*pow({p},2.2))"
+                zexpr = f"1+1.1*pow({p},1.4)"
             anchor = pls[-1]
             cx = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cx'])}))"
             cy = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cy'])}))"
             lines.append(
-                f"[{prev}]zoompan=z='{zexpr}':x='({cx}/100)*iw-iw/(2*{zexpr})'"
-                f":y='({cy}/100)*ih-ih/(2*{zexpr})':d=1:s={width}x{height}:fps={_n(fps)},setsar=1[cam];"
+                f"[{prev}]crop=w='max(2,floor(iw/({zexpr})/2)*2)':h='max(2,floor(ih/({zexpr})/2)*2)'"
+                f":x='({cx}/100)*iw-iw/(2*{zexpr})':y='({cy}/100)*ih-ih/(2*{zexpr})',"
+                f"scale={width}:{height}:flags=bicubic,setsar=1[cam];"
             )
         prev = "cam"
     return lines, prev

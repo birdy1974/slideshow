@@ -7,14 +7,14 @@ import {
   Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom, FolderUp, FolderPlus,
   Route,
 } from 'lucide-react'
-import { FieldLabel, Select, TimeField } from './ui'
+import { FieldLabel, Select, TimeField, useModalScrollLock } from './ui'
 import { formatClock, formatClockPrecise, formatTimecode, parseClock } from './time'
 import {
   clearRenderRates, estimateRenderSeconds, formatEstimate, loadRenderRates, nextEtaSample, remainingSeconds, saveRenderRate,
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, bgBlurCssPx, cameraState, collageDuration, defaultDelay, exitTotal, normalizeCollage, photoDelay, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageSpec } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, exitTotal, frameBorderFrac, frameClipPath, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
@@ -533,9 +533,13 @@ function frameColourChange(item: MediaItem) {
 function frameBackgroundStyle(item: MediaItem): React.CSSProperties {
   // A collage's background picture becomes the clip face (crisp at thumbnail
   // size; the real blurred preview lives in the editors and lightbox).
-  const bg = item.collage?.backgroundImage
-  if (item.type === 'title' && typeof bg === 'string' && bg) {
-    return { backgroundImage: `url(${collagePhotoUrl({ path: bg })})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+  const collageBg = item.collage?.backgroundImage
+  if (item.type === 'title' && typeof collageBg === 'string' && collageBg) {
+    return { backgroundImage: `url(${collagePhotoUrl({ path: collageBg })})`, ...bgFitStyle(item.collage?.backgroundFit) }
+  }
+  const frameBg = item.frameBackgroundImage
+  if (item.type === 'title' && typeof frameBg === 'string' && frameBg) {
+    return { backgroundImage: `url(${collagePhotoUrl({ path: frameBg })})`, ...bgFitStyle(item.frameBackgroundFit) }
   }
   const change = frameColourChange(item)
   return change ? { background: `linear-gradient(100deg, ${change.from} 0 46%, ${change.to} 54% 100%)` } : { background: item.frameBackground }
@@ -1435,6 +1439,10 @@ function App() {
   // swaps into that slot (two in-collage photos trade places), keeping the
   // slot's wait and size.
   const [replacePickerFor, setReplacePickerFor] = useState<{ id: number; index: number } | null>(null)
+  const [collageLook, setCollageLook] = useState<{ id: number; index: number | 'bg'; tab: 'filters' | 'crop' } | null>(null)
+  const [textBgPickerFor, setTextBgPickerFor] = useState<number | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; ids: number[] } | null>(null)
+  const [clipboard, setClipboard] = useState<{ items: MediaItem[]; mode: 'cut' | 'copy' } | null>(null)
   // Files uploading from this device into the NAS uploads volume ("Upload
   // from this device" in the media picker and drag & drop onto the storyline).
   const [uploads, setUploads] = useState<UploadItem[]>([])
@@ -2124,7 +2132,7 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
-    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0 }]) 
+    setMedia(items => [...items, { id, name: 'Text frame', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: 'Your title here', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: defaultTextY, frameBackground: '#30382a', fontFamily, fontSize: Number(fontSize) || 48, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 1, textCentered: true }]) 
     setPendingTextFrame(id)
     setEditingTextFrame(id)
   }
@@ -2143,7 +2151,7 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
-    setMedia(items => [...items, { id, name: 'Photo collage', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80, frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 0, collage: { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 + Math.floor(Math.random() * 9999) } }])
+    setMedia(items => [...items, { id, name: 'Photo collage', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80, frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 1, textCentered: true, collage: { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 + Math.floor(Math.random() * 9999) } }])
     setPendingCollageFrame(id)
     setEditingCollageFrame(id)
   }
@@ -2169,6 +2177,69 @@ function App() {
   // A generated slide's edit affordances open the right editor: the collage
   // editor for photo collages, the text frame editor for plain text frames.
   const openFrameEditor = (item: MediaItem) => isCollageItem(item) ? setEditingCollageFrame(item.id) : setEditingTextFrame(item.id)
+  const cloneItem = (item: MediaItem, id: number): MediaItem => ({ ...item, id, name: item.type === 'title' ? item.name : `${item.name}` })
+  const duplicateItems = (ids: number[]) => {
+    if (!ids.length) return
+    setMedia(items => {
+      const next = [...items]
+      const insertAt = Math.max(...ids.map(id => next.findIndex(x => x.id === id))) + 1
+      const copies = items.filter(x => ids.includes(x.id)).map((item, i) => cloneItem(item, Date.now() + i))
+      next.splice(Math.max(0, insertAt), 0, ...copies)
+      return next
+    })
+  }
+  const copyItems = (ids: number[], mode: 'cut' | 'copy') => {
+    const items = media.filter(x => ids.includes(x.id)).map(x => ({ ...x }))
+    if (!items.length) return
+    setClipboard({ items, mode })
+    if (mode === 'cut') {
+      setMedia(list => list.filter(x => !ids.includes(x.id)))
+      setSelectedIds(cur => cur.filter(id => !ids.includes(id)))
+    }
+  }
+  const pasteItems = () => {
+    if (!clipboard?.items.length) return
+    const copies = clipboard.items.map((item, i) => cloneItem(item, Date.now() + i))
+    const after = selectedIds.length ? Math.max(...selectedIds.map(id => media.findIndex(x => x.id === id))) + 1 : media.length
+    setMedia(items => {
+      const next = [...items]
+      next.splice(Math.max(0, after), 0, ...copies)
+      return next
+    })
+    setSelectedIds(copies.map(x => x.id))
+    if (clipboard.mode === 'cut') setClipboard(null)
+  }
+  const moveSelectedToCollage = (ids: number[]) => {
+    const photos = media.filter(x => ids.includes(x.id) && x.type === 'image').slice(0, MAX_COLLAGE_PHOTOS)
+    if (!photos.length) return
+    const firstIndex = media.findIndex(x => x.id === photos[0].id)
+    const remove = new Set(photos.map(x => x.id))
+    const id = Date.now()
+    const duration = clampSlideDefault(globalSlideDuration)
+    const transitionTime = clampTransitionDefault(globalDuration)
+    const collageItem: MediaItem = {
+      id, name: 'Photo collage', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime,
+      text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80,
+      frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline,
+      textSteadySeconds: 1, textCentered: true,
+      collage: { photos: photos.map(p => ({ path: p.path, name: p.name })), layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 + Math.floor(Math.random() * 9999) },
+    }
+    setMedia(items => {
+      const next = items.filter(x => !remove.has(x.id))
+      next.splice(Math.min(firstIndex, next.length), 0, collageItem)
+      return next
+    })
+    setSelectedIds([id])
+    setPendingCollageFrame(id)
+    setEditingCollageFrame(id)
+  }
+  const openItemContextMenu = (event: React.MouseEvent, item: MediaItem) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const ids = selectedIds.includes(item.id) && selectedIds.length > 1 ? selectedIds : [item.id]
+    if (!selectedIds.includes(item.id)) setSelectedIds([item.id])
+    setContextMenu({ x: event.clientX, y: event.clientY, ids })
+  }
   const dropAudioOn = (targetId: number) => {
     if (draggedAudioId === null || draggedAudioId === targetId) return setDraggedAudioId(null)
     setAudioTracks(items => { const next = [...items]; const from = next.findIndex(x => x.id === draggedAudioId); const to = next.findIndex(x => x.id === targetId); const [track] = next.splice(from, 1); next.splice(to, 0, track); return next })
@@ -2507,6 +2578,14 @@ function App() {
       ? 'measured on this machine'
       : 'first run · measured afterwards'
 
+  useModalScrollLock(!!(
+    editingTextFrame != null || editingCollageFrame != null || editingPictureText != null ||
+    editingMovieId != null || lookItemId != null || collageLook != null ||
+    showBrowser || showAudioBrowser || showTransitionGallery || showTextStyles ||
+    collagePickerFor != null || bgPickerFor != null || replacePickerFor != null ||
+    textBgPickerFor != null || showPreview || storyPreviewId != null || editingTrackId != null
+  ))
+
   return <div className="app-shell">
     {/* SVG feColorMatrix definitions the CSS filters point at for warmth; they
         must be mounted app-wide because thumbnails reference them too. */}
@@ -2556,7 +2635,7 @@ function App() {
               const lineStart = timeline.starts[firstIndex] ?? 0
               const lineEnd = (timeline.starts[lastIndex] ?? 0) + (timeline.durations[lastIndex] ?? 0)
               const lineDuration = lineEnd - lineStart
-              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `calc(${timelineZoom * 100}% - 18px)`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => setEditingTextFrame(item.id) : () => setEditingPictureText(item.id)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && openFrameEditor(item)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''} ${item.type === 'video' ? 'movie-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined}>{item.type === 'video' ? <MovieStrip item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} /> : <MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="clip-frame-edit" title={isCollageItem(item) ? `Edit collage · ${item.collage?.photos.length} photos · ${item.duration}s` : `Edit text frame · “${item.text}” · ${item.duration}s`} aria-label={isCollageItem(item) ? 'Edit collage' : 'Edit text frame'} onClick={e => { e.preventDefault(); e.stopPropagation(); openFrameEditor(item) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
+              return <div className={`timeline-line ${line.video ? 'video-line' : ''}`} key={lineIndex}><div className={`line-number ${line.video ? 'video' : ''}`} title={line.video ? 'Video row — movies are kept on their own row in story order' : undefined}>{lineIndex + 1}{line.video && <Video size={10}/>}</div><div className="line-content" style={{width: `calc(${timelineZoom * 100}% - 18px)`}}><div className="text-track">{line.items.map(item => <div className="text-lane" key={item.id} style={{flexGrow:item.duration}}><TimelineTextBox item={item} update={change=>patch(item.id,change)} selected={selectedTextTransitions} onSelect={edge=>toggleTextTransition(item.id,edge)} onEdit={item.type === 'title' ? () => openFrameEditor(item) : () => setEditingPictureText(item.id)}/></div>)}</div><div className="overview-track">{line.items.map(item => { const index=media.findIndex(x => x.id===item.id); const thumb = itemThumbUrl(item); return <div className="overview-segment-wrap" key={item.id} style={{flexGrow: item.duration}}><div draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onDoubleClick={() => item.type === 'title' && openFrameEditor(item)} className={`overview-clip ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${item.type === 'title' ? 'title-clip' : ''} ${item.type === 'video' ? 'movie-clip' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onContextMenu={e => openItemContextMenu(e, item)}>{item.type === 'video' ? <MovieStrip item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} /> : <MediaThumb item={item} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="clip-frame-edit" title={isCollageItem(item) ? `Edit collage · ${item.collage?.photos.length} photos · ${item.duration}s` : `Edit text frame · “${item.text}” · ${item.duration}s`} aria-label={isCollageItem(item) ? 'Edit collage' : 'Edit text frame'} onClick={e => { e.preventDefault(); e.stopPropagation(); openFrameEditor(item) }} onPointerDown={e => e.stopPropagation()}><Pencil size={11}/></button>}{item.type !== 'title' && thumb ? <button type="button" className="clip-zoom" title="View" onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }} onPointerDown={e => e.stopPropagation()}><ZoomIn size={11}/></button> : null}<button className="clip-select" title="Select clip" onClick={() => toggleSelected(item.id)}><span>{selectedIds.includes(item.id) && <Check size={10}/>}</span></button>{item.type !== 'title' && item.text.trim() !== '' && <button type="button" className={`clip-text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it' : 'Text is shown on this picture — click to hide it'} onClick={e => { e.preventDefault(); e.stopPropagation(); patch(item.id, { textEnabled: item.textEnabled === false }) }} onPointerDown={e => e.stopPropagation()}>{item.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</button>}<span>{String(index + 1).padStart(2,'0')} · {item.name}</span><small>{item.duration}s</small></div>{index < media.length - 1 && <button title={`${item.transition}${item.transitionEasing && item.transitionEasing!=='linear' ? ' · '+item.transitionEasing : ''}${item.transitionReverse ? ' · reverse':''} · ${item.transitionTime}s`} onClick={() => setTransitionPreviewId(item.id)} className={`transition-marker ${selectedTransitions.includes(item.id) ? 'selected' : ''} ${isGLTransition(item.transition)?'gl':''}`}><i>{transitionSymbol(item.transition)}</i><strong>{timelineZoom >= 1 ? item.transition.replace('GL · ','').replace('GLSL · ','') : ''}</strong><b>{item.transitionTime}s</b>{item.transitionEasing && item.transitionEasing!=='linear' ? <em>{item.transitionEasing}</em>:null}</button>}</div>})}</div><TimelineRuler start={lineStart} duration={lineDuration} zoom={timelineZoom} audioLength={lineIndex === timelineLines.length - 1 && audioTracks.length > 0 ? formatTimecode(audioTotalSeconds) : undefined}/></div></div>
             })}</div>
 
             {selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
@@ -2575,14 +2654,14 @@ function App() {
             {compactMediaView && <div className="compact-actions"><button className="btn soft" disabled={!media.length} onClick={() => setSelectedIds(media.map(x => x.id))} title="Select every frame in one go"><Check size={14}/> Select all</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>Clear selection</button><button className="btn soft" disabled={!selectedIds.length} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={14}/> Delete selected</button><span className="compact-count">{selectedIds.length} of {media.length} frame{media.length === 1 ? '' : 's'} selected</span></div>}
             {!compactMediaView && selectedTransitions.length > 0 && <TransitionInspector count={selectedTransitions.length} first={media.find(x => x.id === selectedTransitions[0])} onPatch={inspectorPatch => setMedia(items => items.map(item => selectedTransitions.includes(item.id) ? { ...item, ...inspectorPatch } : item))} onTime={updateSelectedTransitionTimes} onClear={() => setSelectedTransitions([])} onOpenGallery={() => setShowTransitionGallery(true)}/>}
             {!compactMediaView && <div className="timeline-head"><span className="head-select"><SelectAllSlides allSelected={allSlidesSelected} selectedCount={selectedIds.length} totalCount={media.length} onToggle={toggleAllSlides}/></span><span>MEDIA</span><span>SLIDE / CLIP</span><span>EXAMPLE</span><span>DURATION · TRANSITION TO NEXT</span><span></span></div>}
-            {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={e => { setDraggedId(item.id); e.dataTransfer.setData('text/plain', String(item.id)); e.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? frameBackgroundStyle(item) : undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <TitleClipFace item={item} /> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="compact-edit" title={isCollageItem(item) ? `Edit collage · ${item.collage?.photos.length} photos · ${item.duration}s` : `Edit text frame · “${item.text}” · ${item.duration}s`} aria-label={isCollageItem(item) ? 'Edit collage' : 'Edit text frame'} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openFrameEditor(item) }}><Pencil size={13}/></button>}<button type="button" className="compact-preview" title={item.type === 'title' ? `Preview this text frame · “${item.text}”` : `Preview · ${item.name}`} aria-label={`Open preview of ${item.name}`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }}><ZoomIn size={13}/></button><PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div><button className="compact-select" title="Select frame · Shift-click for a range" aria-label={selectedIds.includes(item.id) ? `Deselect ${item.name}` : `Select ${item.name}`} aria-pressed={selectedIds.includes(item.id)} onClick={e => { e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selectedIds.includes(item.id) && <Check size={11}/>}</span></button><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
+            {compactMediaView ? <div className="compact-grid" style={{ '--compactSize': compactZoom } as React.CSSProperties}>{media.map((item, index) => <div className={`compact-card ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={e => { setDraggedId(item.id); e.dataTransfer.setData('text/plain', String(item.id)); e.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onContextMenu={e => openItemContextMenu(e, item)}><div className={`compact-thumb ${item.type === 'title' ? 'title-thumb' : ''}`} style={item.type === 'title' ? frameBackgroundStyle(item) : undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <TitleClipFace item={item} /> : <MediaThumb item={item} onPointerDown={e => e.stopPropagation()} />}{item.type === 'title' && <button type="button" className="compact-edit" title={isCollageItem(item) ? `Edit collage · ${item.collage?.photos.length} photos · ${item.duration}s` : `Edit text frame · “${item.text}” · ${item.duration}s`} aria-label={isCollageItem(item) ? 'Edit collage' : 'Edit text frame'} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openFrameEditor(item) }}><Pencil size={13}/></button>}<button type="button" className="compact-preview" title={item.type === 'title' ? `Preview this text frame · “${item.text}”` : `Preview · ${item.name}`} aria-label={`Open preview of ${item.name}`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.preventDefault(); e.stopPropagation(); openMediaLightbox(item) }}><ZoomIn size={13}/></button><PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div><button className="compact-select" title="Select frame · Shift-click for a range" aria-label={selectedIds.includes(item.id) ? `Deselect ${item.name}` : `Select ${item.name}`} aria-pressed={selectedIds.includes(item.id)} onClick={e => { e.stopPropagation(); selectCompactRange(index, e.shiftKey) }}><span>{selectedIds.includes(item.id) && <Check size={11}/>}</span></button><button className="compact-delete" title={`Remove ${item.name}`} onClick={() => setMedia(m => m.filter(x => x.id !== item.id))}><Trash2 size={14}/></button></div>)}</div> : <div className="timeline-list">
               {media.map((item, index) => {
                 const thumb = itemThumbUrl(item)
                 const textHidden = item.type !== 'title' && item.textEnabled === false
-                return <div className={`timeline-item wide-transition ${item.type === 'video' ? 'movie-row' : item.type === 'title' ? 'title-row' : ''} ${textHidden ? 'text-hidden-row' : ''} ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }}>
+                return <div className={`timeline-item wide-transition ${item.type === 'video' ? 'movie-row' : item.type === 'title' ? 'title-row' : ''} ${textHidden ? 'text-hidden-row' : ''} ${draggedId === item.id ? 'dragging' : ''} ${selectedIds.includes(item.id) ? 'selected-row' : ''} ${flashIds.includes(item.id) ? 'just-moved' : ''}`} data-item-id={item.id} key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); dropOn(item.id); }} onContextMenu={e => openItemContextMenu(e, item)}>
                   <div className="row-select"><GripVertical className="grip" size={16}/><label title="Select for bulk changes"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)}/><span><Check size={9}/></span></label></div>
                   <div className="thumb-column">
-                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <TitleClipFace item={item} /> : <MediaThumb item={item} />}{item.type === 'image' && item.effect === 'None' && <button type="button" className="thumb-effect off" title="No motion on this photo — click to add a Ken Burns effect" onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/></button>}{item.type === 'image' && item.effect !== 'None' && <button type="button" className={`thumb-effect ${isKenBurns(item.effect) && Math.abs(kenBurnsZoomOf(item) - KEN_BURNS_DEFAULT_ZOOM) > 0.001 ? 'custom' : ''}`} title={`Motion: ${item.effect}${isKenBurns(item.effect) ? ` · strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} %` : ''} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={`Edit text frame · “${item.text}” · ${item.duration}s`} aria-label="Edit text frame" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTextFrame(item.id) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
+                  <div className={`thumb ${item.type === 'title' ? 'title-thumb' : ''} ${item.type !== 'title' && thumb ? 'thumb-open' : ''}`} style={item.type==='title'?frameBackgroundStyle(item):undefined} onClick={e => { e.stopPropagation(); openMediaLightbox(item) }} title={item.type === 'title' ? 'Preview this text frame' : 'View'}>{item.type === 'title' ? <TitleClipFace item={item} /> : <MediaThumb item={item} />}{item.type === 'image' && item.effect === 'None' && <button type="button" className="thumb-effect off" title="No motion on this photo — click to add a Ken Burns effect" onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/></button>}{item.type === 'image' && item.effect !== 'None' && <button type="button" className={`thumb-effect ${isKenBurns(item.effect) && Math.abs(kenBurnsZoomOf(item) - KEN_BURNS_DEFAULT_ZOOM) > 0.001 ? 'custom' : ''}`} title={`Motion: ${item.effect}${isKenBurns(item.effect) ? ` · strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} %` : ''} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); setEffectPicker(effectPicker === item.id ? null : item.id) }} onPointerDown={e => e.stopPropagation()}><Move size={10}/><span>{shortEffect(item.effect)}</span></button>}{item.type === 'video' && <span><Video size={12}/> {formatClock(item.duration)}</span>}{item.type === 'title' && <button type="button" className="thumb-edit" title={isCollageItem(item) ? `Edit collage · ${item.collage?.photos.length} photos · ${item.duration}s` : `Edit text frame · “${item.text}” · ${item.duration}s`} aria-label={isCollageItem(item) ? 'Edit collage' : 'Edit text frame'} onClick={e => { e.preventDefault(); e.stopPropagation(); openFrameEditor(item) }} onPointerDown={e => e.stopPropagation()}><Pencil size={10}/><span>Edit</span></button>}{item.type !== 'title' && <button type="button" className={`thumb-look ${hasLook(item) ? 'on' : ''}`} title={hasLook(item) ? `Picture look: ${lookSummary(item)} — click to change` : 'Add a filter or effect to this clip'} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'filters') }} onPointerDown={e => e.stopPropagation()}><Sparkles size={10}/><span>{hasLook(item) ? lookLabel(item) : 'Filter'}</span></button>}{item.type !== 'title' && hasCrop(item) && <button type="button" className="thumb-look on" title={`Cut & crop: ${cropSummary(item)} — click to change`} onClick={e => { e.preventDefault(); e.stopPropagation(); openLookEditor(item, 'crop') }} onPointerDown={e => e.stopPropagation()}><CropIcon size={10}/><span>{cropLabel(item)}</span></button>}<PositionBadge index={index} count={media.length} onMove={pos => moveItemsToPosition([item.id], pos)} /></div>
                   </div>
                   <div className="media-info"><strong>{item.name}</strong><span className="media-path">{item.path}{item.type === 'image' ? ' · photo' : item.type === 'video' ? ' · video' : ' · generated text frame'}</span>{item.type === 'image' && <div className="motion-inline" title={isKenBurns(item.effect) ? `Ken Burns: ${kenBurnsSummary(item)} — ⚙ opens strength and focus` : 'Ken Burns motion for this photo (default none)'}><Move size={10}/><select aria-label={`${item.name} Ken Burns motion`} className={isKenBurns(item.effect) ? 'on' : ''} value={item.effect} onChange={e => patch(item.id, { effect: e.target.value })}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x} value={x}>{x === 'None' ? 'None' : shortEffect(x)}</option>)}</select>{isKenBurns(item.effect) && <button type="button" aria-label="Ken Burns strength and focus" title={`Strength ${Math.round((kenBurnsZoomOf(item) - 1) * 100)} % — click for strength and focus`} onClick={() => setEffectPicker(effectPicker === item.id ? null : item.id)}><Settings2 size={10}/>{Math.round((kenBurnsZoomOf(item) - 1) * 100)}%</button>}</div>}<div className="item-text-edit">{item.type !== 'title' && <button type="button" className={`text-toggle ${item.textEnabled === false ? 'off' : ''}`} title={item.textEnabled === false ? 'Text is hidden on this picture — click to show it and edit it here' : 'Text is shown on this picture — click to hide it'} onClick={() => patch(item.id, { textEnabled: item.textEnabled === false })}>{item.textEnabled === false ? <EyeOff size={13}/> : <Eye size={13}/>}</button>}{item.type !== 'title' && <button type="button" className="edit-picture-text-button" title={`Edit this picture's text style, visibility and timing · ${formatClock(normalizedTextTiming(item).textStart)}–${formatClock(normalizedTextTiming(item).textEnd)}`} onClick={event => { event.preventDefault(); event.stopPropagation(); setEditingPictureText(item.id) }} onPointerDown={event => event.stopPropagation()}><Pencil size={11}/> Edit</button>}{item.type !== 'title' && item.textEnabled === false ? null : <>{(() => { const chip = laneChip(item.textFx, 'in'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='enter'?'selected':''}`} title={`Text appears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'enter'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}<input value={item.text} placeholder="Add text…" onChange={e => patch(item.id,{text:e.target.value})}/>{(() => { const chip = laneChip(item.textFx, 'out'); return <button className={`text-detail-transition ${detailTextEditor?.id===item.id&&detailTextEditor.edge==='exit'?'selected':''}`} title={`Text disappears — ${chip.title}`} onClick={()=>setDetailTextEditor({id:item.id,edge:'exit'})}>{chip.symbol}{chip.more > 0 && <sup>+{chip.more}</sup>}</button> })()}</>}{item.type==='title'&&<button type="button" className="edit-frame-button" title={isCollageItem(item) ? `Edit this collage · ${item.collage?.photos.length} photos` : `Edit this text frame · “${item.text}” — colours, font, position and timing`} onClick={()=>openFrameEditor(item)}>{isCollageItem(item) ? 'Edit collage' : 'Edit frame'}</button>}</div><div className="item-duration" title="How long this slide stays on screen before the next one · default 5 sec"><Clock3 size={11}/><span>Slide duration</span><div className="clip-duration slide-duration"><NumberStepper value={item.duration} min={MIN_CLIP_SECONDS} step={0.5} ariaLabel={`${item.name} slide duration`} onChange={v => updateDuration(item.id, v)} /><span>sec</span></div></div>{detailTextEditor?.id===item.id&&item.textEnabled!==false&&(() => {
                     const phase = detailTextEditor.edge === 'enter' ? 'in' : 'out'
@@ -2633,6 +2712,22 @@ function App() {
       </div>
     </main>}
 
+    {contextMenu && <StoryContextMenu x={contextMenu.x} y={contextMenu.y} ids={contextMenu.ids} media={media}
+      clipboard={clipboard} onClose={() => setContextMenu(null)}
+      onEdit={() => { const item = media.find(x => x.id === contextMenu.ids[0]); if (!item) return; if (item.type === 'title') openFrameEditor(item); else if (item.type === 'video') setEditingMovieId(item.id); else setEditingPictureText(item.id) }}
+      onDuplicate={() => duplicateItems(contextMenu.ids)}
+      onCut={() => copyItems(contextMenu.ids, 'cut')}
+      onCopy={() => copyItems(contextMenu.ids, 'copy')}
+      onPaste={pasteItems}
+      onDelete={() => { setMedia(m => m.filter(x => !contextMenu.ids.includes(x.id))); setSelectedIds(ids => ids.filter(id => !contextMenu.ids.includes(id))) }}
+      onMoveTo={pos => moveItemsToPosition(contextMenu.ids, pos)}
+      onAddMedia={() => setShowBrowser(true)}
+      onAddText={addTitleFrame}
+      onAddCollage={addCollageFrame}
+      onMakeCollage={() => moveSelectedToCollage(contextMenu.ids)}
+      onLook={() => { const item = media.find(x => x.id === contextMenu.ids[0]); if (item && item.type !== 'title') openLookEditor(item, 'filters') }}
+      onPreview={() => { const item = media.find(x => x.id === contextMenu.ids[0]); if (item) openMediaLightbox(item) }}
+    />}
     {editingTrackId != null && (() => { const track = audioTracks.find(x => x.id === editingTrackId); return track ? <SoundtrackEditor track={track} onChange={change => setAudioTracks(items => items.map(x => x.id === track.id ? { ...x, ...change } : x))} onClose={() => setEditingTrackId(null)} /> : null })()}
     {showTransitionGallery && <TransitionGallery onClose={() => setShowTransitionGallery(false)} />}
     {editingMovieId != null && (() => { const movie = media.find(x => x.id === editingMovieId); return movie && movie.type === 'video'
@@ -2641,12 +2736,31 @@ function App() {
     {lookItemId != null && (() => { const target = media.find(x => x.id === lookItemId); return target && target.type !== 'title'
       ? <PictureLookEditor item={target} src={itemThumbUrl(target) || ''} initialTab={lookTab} detectBars={detectBars} onChange={change => patch(target.id, change)} onClose={() => setLookItemId(null)} />
       : null })()}
+    {collageLook && (() => {
+      const host = media.find(x => x.id === collageLook.id)
+      if (!host?.collage) return null
+      const isBg = collageLook.index === 'bg'
+      const photo = isBg
+        ? { path: host.collage.backgroundImage || '', name: 'Background', ...(host.collage.backgroundLook || {}) }
+        : host.collage.photos[collageLook.index as number]
+      if (!photo?.path) return null
+      const fake: MediaItem = { ...host, type: 'image', name: photo.name || photo.path, path: photo.path, src: collagePhotoUrl(photo), filter: (photo as CollagePhoto).filter, filterAmount: (photo as CollagePhoto).filterAmount, filterAdjust: (photo as CollagePhoto).filterAdjust, crop: (photo as CollagePhoto).crop }
+      return <PictureLookEditor item={fake} src={collagePhotoUrl(photo)} initialTab={collageLook.tab} onChange={change => {
+        if (isBg) patchCollageItem(host.id, { collage: { ...host.collage!, backgroundLook: { filter: change.filter, filterAmount: change.filterAmount, filterAdjust: change.filterAdjust, crop: change.crop } } })
+        else {
+          const photos = [...host.collage!.photos]
+          const i = collageLook.index as number
+          photos[i] = { ...photos[i], filter: change.filter, filterAmount: change.filterAmount, filterAdjust: change.filterAdjust, crop: change.crop }
+          patchCollageItem(host.id, { collage: { ...host.collage!, photos } })
+        }
+      }} onClose={() => setCollageLook(null)} />
+    })()}
     {editingPictureText != null && (() => { const target = media.find(x => x.id === editingPictureText); return target && target.type !== 'title'
       ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} />
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} defaultStack={defaultStack} setDefaultStack={setDefaultStack} onClose={()=>setShowTextStyles(false)}/>} 
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)}/>}
-    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onOpenCaption={() => {
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)} onPickBackground={()=>setTextBgPickerFor(editingTextFrame)}/>}
+    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onEditPhoto={index => setCollageLook({ id: editingCollageFrame, index, tab: 'filters' })} onEditBackground={() => setCollageLook({ id: editingCollageFrame, index: 'bg', tab: 'filters' })} onOpenCaption={() => {
       // Switching to the caption editor is not a cancel: a brand-new collage
       // must survive the handover (closeCollageEditor(false) deletes pending
       // ones), so clear the pending flag instead of routing through cancel.
@@ -2679,6 +2793,12 @@ function App() {
       const file = files.find((f:any) => f.kind === 'image' && !f.empty)
       if (target && file) patchCollageItem(id, { collage: { ...(target.collage ?? { photos: [], layout: 'stack' as const, animation: 'drop' as const, shape: '4:3' as const, seed: 1 }), backgroundImage: String(file.path) } })
       setBgPickerFor(null)
+    }}/>}
+    {textBgPickerFor !== null && <MediaBrowser photoPick="background" aboveEditor onClose={()=>setTextBgPickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+      const id = textBgPickerFor
+      const file = files.find((f:any) => f.kind === 'image' && !f.empty)
+      if (file) patch(id, { frameBackgroundImage: String(file.path) } as any)
+      setTextBgPickerFor(null)
     }}/>}
     {replacePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setReplacePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
       const { id, index } = replacePickerFor
@@ -2803,7 +2923,12 @@ function TypeControls({ fontFamily, setFontFamily, fontSize, setFontSize, fontCo
 }) {
   return <div className="type-controls-stack">
     <div><FieldLabel>Font family <small>{Object.values(FONT_GROUPS).flat().length} fonts · incl. handwriting</small></FieldLabel><FontPicker value={fontFamily} onChange={setFontFamily} sample={sample} /><div className="font-sample" style={{ fontFamily: fontStack(fontFamily), fontWeight: bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 700 : 400, fontStyle: italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'italic' : 'normal', textDecoration: underline ? 'underline' : 'none' }} title="Live sample in the selected font">{sample || FONT_SAMPLE}</div></div>
-    <div><FieldLabel>Font size</FieldLabel><NumberStepper value={fontSize} min={8} max={350} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
+    <div><FieldLabel>Font size</FieldLabel>
+      <div className="font-size-presets">{[50, 100, 125, 150, 175, 200, 225, 250, 275, 300, 350].map(n =>
+        <button type="button" key={n} className={fontSize === n ? 'active' : ''} onClick={() => setFontSize(n)}>{n}</button>)}
+      </div>
+      <div className="font-size-slider"><input type="range" min={8} max={350} step={1} value={fontSize} aria-label="Font size" onChange={e => setFontSize(Number(e.target.value))} /><NumberStepper value={fontSize} min={8} max={350} step={1} suffix="px" ariaLabel="Font size" onChange={setFontSize} /></div>
+    </div>
     <div><FieldLabel>Text colour</FieldLabel><ColorSwatchPicker value={fontColor} onChange={setFontColor} /></div>
     <div><FieldLabel>Formatting</FieldLabel><div className="style-buttons"><button type="button" className={bold && !FONTS_WITHOUT_BOLD.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_BOLD.has(fontFamily)} title={FONTS_WITHOUT_BOLD.has(fontFamily) ? `${fontFamily} has a single weight` : 'Bold'} onClick={() => setBold(!bold)}><b>B</b></button><button type="button" className={italic && !FONTS_WITHOUT_ITALIC.has(fontFamily) ? 'active' : ''} disabled={FONTS_WITHOUT_ITALIC.has(fontFamily)} title={FONTS_WITHOUT_ITALIC.has(fontFamily) ? `${fontFamily} has no italic style` : 'Italic'} onClick={() => setItalic(!italic)}><i>I</i></button><button type="button" className={underline ? 'active' : ''} onClick={() => setUnderline(!underline)}><u>U</u></button></div></div>
   </div>
@@ -2831,6 +2956,58 @@ function PositionBadge({ index, count, onMove, className = '' }: { index: number
   const commit = () => { const v = Number(text); setEditing(false); if (Number.isFinite(v) && v >= 1 && Math.round(v) !== index + 1) onMove(v) }
   if (!editing) return <b className={`position-badge ${className}`} title={`Position ${index + 1} of ${count} · click to move to another position`} onClick={e => { e.stopPropagation(); setEditing(true) }} onPointerDown={e => e.stopPropagation()}>{String(index + 1).padStart(2, '0')}</b>
   return <input className={`position-input ${className}`} autoFocus type="number" min={1} max={count} value={text} aria-label="Move to position" title={`Enter a position 1–${count} and press Enter`} onChange={e => setText(e.target.value)} onFocus={e => e.target.select()} onBlur={commit} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} draggable={false} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); commit() } else if (e.key === 'Escape') { setText(String(index + 1)); setEditing(false) } }} />
+}
+
+function StoryContextMenu({ x, y, ids, media, clipboard, onClose, onEdit, onDuplicate, onCut, onCopy, onPaste, onDelete, onMoveTo, onAddMedia, onAddText, onAddCollage, onMakeCollage, onLook, onPreview }: {
+  x: number; y: number; ids: number[]; media: MediaItem[]
+  clipboard: { items: MediaItem[]; mode: 'cut' | 'copy' } | null
+  onClose: () => void
+  onEdit: () => void; onDuplicate: () => void; onCut: () => void; onCopy: () => void; onPaste: () => void
+  onDelete: () => void; onMoveTo: (pos: number) => void
+  onAddMedia: () => void; onAddText: () => void; onAddCollage: () => void; onMakeCollage: () => void
+  onLook: () => void; onPreview: () => void
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [moveOpen, setMoveOpen] = useState(false)
+  const [movePos, setMovePos] = useState(String((media.findIndex(m => m.id === ids[0]) + 1) || 1))
+  const first = media.find(m => m.id === ids[0])
+  const photoCount = media.filter(m => ids.includes(m.id) && m.type === 'image').length
+  const canLook = !!first && first.type !== 'title'
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose() }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('mousedown', onDown)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('mousedown', onDown) }
+  }, [onClose])
+  const run = (fn: () => void) => { fn(); onClose() }
+  const left = Math.max(8, Math.min(x, window.innerWidth - 240))
+  const top = Math.max(8, Math.min(y, window.innerHeight - 420))
+  const Item = ({ label, hint, onClick, disabled, danger }: { label: string; hint?: string; onClick: () => void; disabled?: boolean; danger?: boolean }) =>
+    <button type="button" className={danger ? 'danger' : ''} disabled={disabled} onClick={() => { if (!disabled) run(onClick) }}>{label}{hint && <small>{hint}</small>}</button>
+  return <div ref={ref} className="story-context-menu" style={{ left, top }} role="menu" onMouseDown={e => e.stopPropagation()}>
+    <Item label="Edit" hint={first?.type === 'title' ? (first.collage?.photos?.length ? 'collage' : 'text frame') : first?.type === 'video' ? 'trim movie' : 'caption'} onClick={onEdit} disabled={!first} />
+    <Item label="Duplicate" hint={ids.length > 1 ? `${ids.length} items` : undefined} onClick={onDuplicate} />
+    <Item label="Cut" onClick={onCut} />
+    <Item label="Copy" onClick={onCopy} />
+    <Item label="Paste" hint={clipboard ? `${clipboard.items.length}` : undefined} onClick={onPaste} disabled={!clipboard?.items.length} />
+    <Item label="Delete" onClick={onDelete} danger />
+    <div className="ctx-move">
+      <button type="button" className={moveOpen ? 'open' : ''} onClick={() => setMoveOpen(o => !o)}>Move to…</button>
+      {moveOpen && <form onSubmit={e => { e.preventDefault(); const n = Math.round(Number(movePos)); if (Number.isFinite(n) && n >= 1) run(() => onMoveTo(n)) }}>
+        <input type="number" min={1} max={media.length} value={movePos} onChange={e => setMovePos(e.target.value)} autoFocus aria-label="Move to position" />
+        <button type="submit">Go</button>
+      </form>}
+    </div>
+    <hr />
+    <Item label="Add media" onClick={onAddMedia} />
+    <Item label="Add text frame" onClick={onAddText} />
+    <Item label="Add collage" onClick={onAddCollage} />
+    <Item label="Make collage from selected" hint={photoCount ? `${photoCount} photo${photoCount === 1 ? '' : 's'}` : 'select photos'} onClick={onMakeCollage} disabled={photoCount < 1} />
+    <hr />
+    <Item label="Crop / filters" onClick={onLook} disabled={!canLook} />
+    <Item label="Preview" onClick={onPreview} disabled={!first} />
+  </div>
 }
 
 // m:ss.s text field that commits on blur/Enter (module-level so it keeps its
@@ -3033,7 +3210,7 @@ function sceneInputFor(item: MediaItem, defaults?: Partial<CaptionDefaults> | nu
   const timing = normalizedTextTiming(item)
   const x = Number(pick(item.textX, d.textX, 50))
   const y = Number(pick(item.textY, d.textY, title ? 50 : 72))
-  const motion = hasMotionPath(layers) ? { points: motionPathFor(item).points as [number, number][], easing: (item.textMoveEasing as string) || 'linear', rotateAlong: !!(item as any).textMoveRotateAlongPath } : null
+  const motion = hasMotionPath(layers) ? { points: motionPathFor(item).points as [number, number][], easing: (item.textMoveEasing as string) || 'linear', rotateAlong: !!(item as any).textMoveRotateAlongPath, rotateAlongUnit: (item as any).textMoveRotateAlongUnit } : null
   return {
     text: item.text || '', stack: layers,
     family: String(pick(item.fontFamily || undefined, d.fontFamily, 'Montserrat')),
@@ -3064,10 +3241,10 @@ function FrameMotionPreview({ item, defaults, playing = true, className = '' }: 
 // clock so photo choreography and caption play in sync.
 // ---------------------------------------------------------------------------
 
-const COLLAGE_ASPECT: Record<string, number> = { '4:3': 4 / 3, square: 1, '3:4': 3 / 4 }
+const COLLAGE_ASPECT: Record<string, number> = { '4:3': 4 / 3, square: 1, '3:4': 3 / 4, '16:9': 16 / 9, '9:16': 9 / 16, '3:2': 3 / 2, '2:3': 2 / 3 }
 
 /** The photo layer of a collage slide. Scaled to its host like MotionStage. */
-function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typeof useMotionClock> }) {
+function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const layerRef = useRef<HTMLDivElement | null>(null)
   const camRef = useRef<HTMLDivElement | null>(null)
@@ -3078,21 +3255,23 @@ function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typ
   const raw = item.collage
   const bg = typeof raw?.backgroundImage === 'string' && raw.backgroundImage ? raw.backgroundImage : ''
   const bgBlur = Math.max(0, Math.min(1, Number(raw?.backgroundBlur) || 0))
+  const bgFit = bgFitStyle(raw?.backgroundFit)
   const geo = useMemo(() => {
     if (!spec) return []
     const aspect = FRAME_W / FRAME_H
     const pin = pinAnchor(spec)
-    return placements(spec, aspect).map(pl => {
+    return placements(spec, aspect).map((pl, i) => {
+      const fr = photoFrame(spec, spec.photos[i])
       const wPx = pl.w / 100 * FRAME_W
-      const border = 0.045 * wPx
-      const bottom = 0.205 * wPx
-      const photoW = wPx - 2 * border
+      const border = frameBorderFrac(fr) * wPx
+      const bottom = fr.shape === 'polaroid' ? 0.205 * wPx : border
+      const photoW = Math.max(1, wPx - 2 * border)
       const photoH = photoW / (COLLAGE_ASPECT[spec.shape] ?? 4 / 3)
       const matH = photoH + border + bottom
       return {
         ax: pl.cx / 100 * FRAME_W,
         ay: pl.cy / 100 * FRAME_H - (pin ? matH / 2 : 0),
-        wPx, border, bottom, photoW, photoH, matH,
+        wPx, border, bottom, photoW, photoH, matH, fr,
       }
     })
   }, [spec])
@@ -3138,15 +3317,42 @@ function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typ
   return <div ref={hostRef} className="collage-photos stage-fill">
     <div ref={layerRef} className="collage-layer" style={{ width: FRAME_W, height: FRAME_H }}>
       <div ref={camRef} className="collage-camera">
-        {bg && <img className="collage-bg" src={collagePhotoUrl({ path: bg })} alt="" draggable={false}
-          style={{ filter: `blur(${bgBlurCssPx(bgBlur)}px)` }} />}
+        {bg && <div className="collage-bg" style={{
+          backgroundImage: `url(${collagePhotoUrl({ path: bg })})`,
+          ...bgFit,
+          ...pictureFilterStyle(raw?.backgroundLook),
+          filter: [pictureFilterStyle(raw?.backgroundLook).filter, bgBlur > 0.004 ? `blur(${bgBlurCssPx(bgBlur)}px)` : ''].filter(Boolean).join(' ') || undefined,
+          transform: (raw?.backgroundFit ?? 'fill') === 'fill' ? 'scale(1.12)' : undefined,
+        }} />}
         {(spec?.photos ?? []).map((photo, i) => {
           const g = geo[i]
           if (!g) return null
-          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className="collage-mat"
-            style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom }}>
-            <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy"
-              style={{ width: g.photoW, height: g.photoH, objectFit: 'cover' }} />
+          const look = pictureFilterStyle(photo)
+          const clip = frameClipPath(g.fr.shape)
+          const stickers = spec?.stickers
+          const tape = stickers === 'tape' || stickers === 'mix'
+          const pinDot = stickers === 'pin' || stickers === 'mix'
+          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
+            style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom, background: g.fr.shape === 'none' ? 'transparent' : g.fr.color, borderRadius: g.fr.shape === 'rounded' ? `${g.fr.radius}%` : g.fr.shape === 'circle' ? '50%' : undefined, boxShadow: g.fr.shadow === false ? 'none' : undefined, clipPath: clip, cursor: onMovePhoto ? 'grab' : undefined }}
+            onPointerDown={onMovePhoto ? e => {
+              e.preventDefault(); e.stopPropagation()
+              const host = hostRef.current
+              if (!host) return
+              const move = (ev: PointerEvent) => {
+                const r = host.getBoundingClientRect()
+                onMovePhoto(i, Math.max(0, Math.min(100, (ev.clientX - r.left) / r.width * 100)), Math.max(0, Math.min(100, (ev.clientY - r.top) / r.height * 100)))
+              }
+              const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+              window.addEventListener('pointermove', move)
+              window.addEventListener('pointerup', up)
+            } : undefined}>
+            {/\.(mp4|mov|webm|mkv|m4v|avi)$/i.test(photo.path)
+              ? <video src={collagePhotoUrl(photo)} muted loop playsInline autoPlay
+                  style={{ width: g.photoW, height: g.photoH, objectFit: 'cover', borderRadius: g.fr.shape === 'rounded' ? `${Math.max(0, g.fr.radius - 4)}%` : g.fr.shape === 'circle' ? '50%' : undefined, ...look }} />
+              : <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy"
+                  style={{ width: g.photoW, height: g.photoH, objectFit: 'cover', borderRadius: g.fr.shape === 'rounded' ? `${Math.max(0, g.fr.radius - 4)}%` : g.fr.shape === 'circle' ? '50%' : undefined, ...look }} />}
+            {tape && <span className="collage-tape" aria-hidden />}
+            {pinDot && <span className="collage-pin" aria-hidden />}
           </div>
         })}
       </div>
@@ -3158,14 +3364,14 @@ function CollagePhotos({ item, clock }: { item: MediaItem; clock: ReturnType<typ
  * Any change to the collage itself restarts the choreography from the top so
  * the new size / timing / animation can be watched from the first photo;
  * `replayKey` restarts it on demand (the editor's Replay button). */
-function CollageSlideStage({ item, defaults, playing = true, replayKey = 0 }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; replayKey?: number }) {
+function CollageSlideStage({ item, defaults, playing = true, replayKey = 0, onMovePhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; replayKey?: number; onMovePhoto?: (index: number, cx: number, cy: number) => void }) {
   const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
   const specKey = JSON.stringify(item.collage ?? null)
   useEffect(() => { clock.seek(0) }, [specKey, clock])
   useEffect(() => { clock.seek(0) }, [replayKey, clock])
   return <>
-    <CollagePhotos item={item} clock={clock} />
+    <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} />
     <MotionStage className="stage-fill" input={input} clock={clock} />
   </>
 }
@@ -3193,7 +3399,7 @@ function TitleClipFace({ item }: { item: MediaItem }) {
 // Picture mode keeps a local draft and writes on "Save"; frame mode patches the
 // storyline item live (so a stacked lightbox behind the editor updates as you
 // type) and "Cancel" reverts to the original.
-function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery }: {
+function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery, onPickBackground }: {
   mode: 'picture' | 'frame'
   item: MediaItem
   defaults?: CaptionDefaults
@@ -3204,6 +3410,7 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   onSave: (change: Partial<MediaItem>) => void
   onClose: () => void
   onOpenGallery?: () => void
+  onPickBackground?: () => void
 }) {
   const isFrame = mode === 'frame'
   const dd: CaptionDefaults = defaults ?? { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFx: defaultTextFx() }
@@ -3253,6 +3460,10 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
     setDraft(current => ({ ...current, ...change }))
     if (isFrame) livePatch?.(change)
   }
+  useEffect(() => {
+    if (!isFrame) return
+    setDraft(d => (d.frameBackgroundImage === item.frameBackgroundImage && d.frameBackgroundFit === item.frameBackgroundFit) ? d : { ...d, frameBackgroundImage: item.frameBackgroundImage, frameBackgroundFit: item.frameBackgroundFit })
+  }, [isFrame, item.frameBackgroundImage, item.frameBackgroundFit])
   const close = () => {
     if (isFrame && !isNew) {
       setDraft(original.current)
@@ -3363,9 +3574,14 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
     <div className="frame-editor-body">
       <div className="frame-left">
         <div className={`frame-canvas${isFrame ? '' : ' photo'}`} ref={canvasRef} style={{ background: isFrame ? draft.frameBackground : '#000' }}>
+          {isFrame && draft.frameBackgroundImage && <div className="collage-bg" style={{
+            backgroundImage: `url(${collagePhotoUrl({ path: draft.frameBackgroundImage })})`,
+            ...bgFitStyle(draft.frameBackgroundFit),
+            ...pictureFilterStyle(draft.frameBackgroundLook),
+          }} />}
           {!isFrame && src && <div className="stage-blur" style={{ backgroundImage: `url(${canvasPhoto.src})`, filter: `blur(${backdropBlurPx(frameScale).toFixed(1)}px) brightness(0.88) saturate(1.2)` }} />}
           {!isFrame && src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={canvasPhoto.src} alt="" draggable={false} />)}
-          <MotionStage className="stage-fill" input={input} clock={clock} background={isFrame ? draft.frameBackground : undefined} bg={bg} flag={candidate?.flag}
+          <MotionStage className="stage-fill" input={input} clock={clock} background={isFrame && !draft.frameBackgroundImage ? draft.frameBackground : undefined} bg={isFrame && !draft.frameBackgroundImage ? bg : null} flag={candidate?.flag}
             onPrepared={p => { setPrep(p); if (!candidate) setStackPrep(p) }}>
             {motionEnabled && motion.points.length > 1 && <svg className="frame-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={motion.points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt[0]} ${pt[1]}`).join(' ')} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType === 'straight' || !draft.textMovePathType) ? '1.2 1.2' : undefined} /></svg>}
             {motionEnabled && <><span className="motion-handle from small frame-handle" style={{ left: `${motion.fromX}%`, top: `${motion.fromY}%` }}><b>S</b></span><span className="motion-handle to small frame-handle" style={{ left: `${motion.toX}%`, top: `${motion.toY}%` }}><b>E</b></span></>}
@@ -3409,6 +3625,7 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
               bounceDamping={(draft as any).textMoveBounceDamping}
               lissajousFreqY={(draft as any).textMoveLissajousFreqY}
               rotateAlong={!!(draft as any).textMoveRotateAlongPath}
+              rotateAlongUnit={(draft as any).textMoveRotateAlongUnit}
               rotateFrom={layerParam('rotate', 'from')}
               rotateTo={layerParam('rotate', 'to')}
               squishFrom={layerParam('squash', 'from')}
@@ -3428,6 +3645,23 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
             </div>
           </div>
           {isFrame && <>
+            <div className="collage-choices-group">
+              <FieldLabel>Background picture</FieldLabel>
+              {draft.frameBackgroundImage
+                ? <div className="collage-bg-pick">
+                    <img src={collagePhotoUrl({ path: draft.frameBackgroundImage })} alt="" />
+                    <div className="collage-bg-meta">
+                      <strong title={draft.frameBackgroundImage}>{draft.frameBackgroundImage.split('/').pop()}</strong>
+                      <div className="collage-choices">{COLLAGE_BG_FITS.map(f => <button key={f.id} type="button" className={(draft.frameBackgroundFit ?? 'fill') === f.id ? 'active' : ''} title={f.hint} onClick={() => apply({ frameBackgroundFit: f.id } as any)}>{f.label}</button>)}</div>
+                      <div className="collage-bg-actions">
+                        <button type="button" className="btn ghost small" onClick={() => onPickBackground?.()}>Replace…</button>
+                        <button type="button" className="btn ghost small" onClick={() => apply({ frameBackgroundImage: undefined, frameBackgroundFit: undefined } as any)}>Use colour</button>
+                      </div>
+                    </div>
+                  </div>
+                : <button type="button" className="btn ghost small" onClick={() => onPickBackground?.()}><ImageIcon size={12}/> Picture instead of colour…</button>}
+              <small>{draft.frameBackgroundImage ? 'The picture fills the frame. Colour A → B is unused while a picture is set.' : 'A flat colour — or a library picture behind the text.'}</small>
+            </div>
             <div className="bg-columns">
               <div><FieldLabel>Colour A</FieldLabel><ColorSwatchPicker value={draft.frameBackground} onChange={v => apply({ frameBackground: v })} /></div>
               <div className={sameAsA ? 'dimmed' : ''}><FieldLabel>Colour B</FieldLabel><ColorSwatchPicker value={colourB} onChange={v => apply({ frameBackground2: v })} disabled={sameAsA} />
@@ -3548,18 +3782,59 @@ async function fetchTrackBeats(track: { path: string; name: string }): Promise<n
 
 const COLLAGE_LAYOUTS: { id: CollageSpec['layout']; label: string; hint: string }[] = [
   { id: 'stack', label: 'Stack', hint: 'A loose pile of polaroids — one photo on top, the rest scattered around it' },
-  { id: 'grid', label: 'Grid', hint: 'Even rows and columns, every photo straight' },
+  { id: 'grid', label: 'Grid', hint: 'Even rows and columns, every photo slightly tilted by the seed' },
   { id: 'scatter', label: 'Scatter', hint: 'Grid cells with seeded jitter — photos drift and tilt inside their slot' },
   { id: 'filmstrip', label: 'Filmstrip', hint: 'A strip of overlapping frames across the middle — one row up to 5 photos, two rows beyond' },
   { id: 'fan', label: 'Fan', hint: 'Cards fanned out from a point below the frame, each tilted along its spoke' },
   { id: 'masonry', label: 'Masonry', hint: 'Pinterest-style columns with seeded size variety — photos stack into the shortest column' },
+  { id: 'free', label: 'Free', hint: 'Drag each photo on the preview to place it yourself' },
+  { id: 'template', label: 'Templates', hint: 'A predefined magazine mosaic or polaroid-wall page' },
+  { id: 'honeycomb', label: 'Honeycomb', hint: 'Hex-packed rows — odd rows shifted half a cell' },
+  { id: 'zigzag', label: 'Zigzag', hint: 'Diagonal / staggered grid with alternating tilts' },
+  { id: 'arc', label: 'Arc', hint: 'Photos along a radial arc, each rotated to its spoke' },
+  { id: 'photowall', label: 'Photowall', hint: 'Edge-to-edge mosaic with a tiny gutter' },
+  { id: 'booth', label: 'Booth', hint: 'A vertical photo-booth strip of stacked frames' },
+  { id: 'silhouette', label: 'Silhouette', hint: 'Tiny photos packed into a heart shape' },
+  { id: 'cube', label: 'Cube', hint: 'Three isometric faces of a 3D cube, extras as a row' },
 ]
 const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string }[] = [
   { id: 'drop', label: 'Drop in', hint: 'Photos fall in from above, straightening as they land' },
   { id: 'pop', label: 'Pop in', hint: 'Photos pop up from 55% with a springy overshoot' },
   { id: 'swing', label: 'Swing', hint: 'Photos hang from a pin at the top of the mat and swing to rest' },
   { id: 'flip', label: 'Flip in', hint: 'Cards flip open edge-on with a springy overshoot' },
+  { id: 'fade', label: 'Fade in', hint: 'Photos dissolve in place' },
+  { id: 'slide', label: 'Slide in', hint: 'Photos slide in from the left' },
+  { id: 'rise', label: 'Rise', hint: 'Photos rise from below' },
+  { id: 'tumble', label: 'Tumble', hint: 'Photos tumble in with a spin' },
+  { id: 'zoom', label: 'Zoom in', hint: 'Photos scale up from a small origin' },
+  { id: 'fold', label: 'Origami', hint: 'Cards fold open like origami around the vertical axis' },
+  { id: 'glitch', label: 'Glitch', hint: 'A Canva-style digital glitch settle' },
+  { id: 'ink', label: 'Ink', hint: 'An ink-blot mask that grows to reveal the photo' },
+  { id: 'brush', label: 'Brush', hint: 'A brush-stroke wipe from the left' },
   { id: 'none', label: 'None', hint: 'Photos appear with the slide — no entrance animation' },
+]
+const COLLAGE_FRAMES: { id: CollageFrameShape; label: string; hint: string }[] = [
+  { id: 'polaroid', label: 'Polaroid', hint: 'Classic white mat with a caption strip' },
+  { id: 'none', label: 'None', hint: 'No border — the photo is the cell' },
+  { id: 'rect', label: 'Rect', hint: 'A rectangular colour border' },
+  { id: 'rounded', label: 'Rounded', hint: 'Rounded corners — radius is adjustable' },
+  { id: 'circle', label: 'Circle', hint: 'Cropped to a circle' },
+  { id: 'oval', label: 'Oval', hint: 'Cropped to an ellipse' },
+  { id: 'heart', label: 'Heart', hint: 'Cropped to a heart' },
+  { id: 'star', label: 'Star', hint: 'Cropped to a 5-point star' },
+  { id: 'diamond', label: 'Diamond', hint: 'Cropped to a diamond' },
+  { id: 'hexagon', label: 'Hexagon', hint: 'Cropped to a hexagon' },
+  { id: 'triangle', label: 'Triangle', hint: 'Cropped to a triangle' },
+  { id: 'octagon', label: 'Octagon', hint: 'Cropped to an octagon' },
+  { id: 'cloud', label: 'Cloud', hint: 'Cropped to a cloud' },
+  { id: 'arch', label: 'Arch', hint: 'An arched window' },
+  { id: 'ticket', label: 'Ticket', hint: 'A ticket / coupon stub' },
+]
+const COLLAGE_STICKERS: { id: CollageStickers | 'none'; label: string; hint: string }[] = [
+  { id: 'none', label: 'None', hint: 'No tape or pin' },
+  { id: 'tape', label: 'Tape', hint: 'Washi tape on a corner' },
+  { id: 'pin', label: 'Pin', hint: 'A push-pin at the top' },
+  { id: 'mix', label: 'Mix', hint: 'Tape and a pin' },
 ]
 const COLLAGE_EXITS: { id: NonNullable<CollageSpec['exit']>; label: string; hint: string }[] = [
   { id: 'none', label: 'Stay on', hint: 'The photos stay on screen until the next slide takes over' },
@@ -3575,12 +3850,24 @@ const COLLAGE_CAMERAS: { id: NonNullable<CollageSpec['camera']>; label: string; 
   { id: 'droste', label: 'Droste', hint: 'An accelerating deep zoom — the endless-zoom feel' },
 ]
 const COLLAGE_SHAPES: { id: CollageSpec['shape']; label: string; hint: string }[] = [
-  { id: '4:3', label: '4:3', hint: 'Landscape photos (crop to 4:3)' },
+  { id: '16:9', label: '16:9', hint: 'Widescreen landscape (crop to 16:9)' },
+  { id: '4:3', label: '4:3', hint: 'Classic landscape (crop to 4:3)' },
+  { id: '3:2', label: 'Landscape', hint: 'Still-camera landscape (crop to 3:2)' },
   { id: 'square', label: 'Square', hint: 'Square photos' },
+  { id: '2:3', label: 'Portrait', hint: 'Still-camera portrait (crop to 2:3)' },
   { id: '3:4', label: '3:4', hint: 'Portrait photos (crop to 3:4)' },
+  { id: '9:16', label: '9:16', hint: 'Tall / phone portrait (crop to 9:16)' },
+]
+const COLLAGE_BG_FITS: { id: CollageBgFit; label: string; hint: string }[] = [
+  { id: 'fill', label: 'Fill', hint: 'Cover the frame, cropping overflow' },
+  { id: 'fit', label: 'Fit', hint: 'Whole picture visible, letterboxed' },
+  { id: 'stretch', label: 'Stretch', hint: 'Stretch to the frame, ignoring aspect' },
+  { id: 'tile', label: 'Tile', hint: 'Repeat the picture across the frame' },
+  { id: 'center', label: 'Center', hint: 'Original size, centred' },
+  { id: 'span', label: 'Span', hint: 'Scale to the frame width, crop top and bottom if needed' },
 ]
 
-function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, onReplacePhoto, audioTracks = [], holdStart = 0, audioLoop = true }: {
+function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, onReplacePhoto, onEditPhoto, onEditBackground, audioTracks = [], holdStart = 0, audioLoop = true }: {
   item: MediaItem
   isNew?: boolean
   stacked?: boolean
@@ -3591,6 +3878,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   onPickBackground: () => void
   onOpenCaption: () => void
   onReplacePhoto: (index: number) => void
+  onEditPhoto?: (index: number) => void
+  onEditBackground?: () => void
   audioTracks?: AudioTrack[]
   holdStart?: number
   audioLoop?: boolean
@@ -3598,6 +3887,33 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const spec: CollageSpec = item.collage ?? { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 }
   const photos = spec.photos ?? []
   const setSpec = (change: Partial<CollageSpec>) => livePatch({ collage: { ...spec, ...change } })
+  const defFr = photoFrame(spec, null)
+  const setFrame = (change: Partial<NonNullable<CollageSpec['frame']>>) => setSpec({ frame: { ...defFr, ...change } })
+  const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => {
+    setSpec({ photos: photos.map((p, i) => i === index ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
+  }
+  const [uiLayout, setUiLayout] = useState<'sidebar' | 'below'>(() => {
+    try { return localStorage.getItem('collageEditorLayout') === 'below' ? 'below' : 'sidebar' } catch { return 'sidebar' }
+  })
+  useEffect(() => { try { localStorage.setItem('collageEditorLayout', uiLayout) } catch { /* ignore */ } }, [uiLayout])
+  const goLayout = (id: CollageSpec['layout']) => {
+    if (id === 'free') {
+      const from = spec.layout === 'free' ? { ...spec, layout: 'stack' as const } : spec
+      const pls = placements(from, FRAME_W / FRAME_H)
+      setSpec({ layout: 'free', photos: photos.map((p, i) => ({ ...p, cx: p.cx ?? pls[i]?.cx ?? 50, cy: p.cy ?? pls[i]?.cy ?? 50, rot: p.rot ?? pls[i]?.rot ?? 0 })) })
+      return
+    }
+    if (id === 'template') setSpec({ layout: 'template', template: spec.template || 'quad' })
+    else setSpec({ layout: id })
+  }
+  const moveFreePhoto = (index: number, cx: number, cy: number) => {
+    setSpec({ photos: photos.map((p, i) => i === index ? { ...p, cx, cy } : p) })
+  }
+  const setAllDelays = (v: number) => {
+    const n = photos.length
+    setSpec({ photos: photos.map((photo, k) => ({ ...photo, delay: Math.max(0, Math.min(30, v)) })) })
+    void n
+  }
   const [dragChip, setDragChip] = useState<number | null>(null)
   const [dragOverChip, setDragOverChip] = useState<number | null>(null)
   const dropChip = (onto: number) => {
@@ -3694,12 +4010,12 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     : beatStatus === 'error' ? 'Could not analyse the music (unreadable audio?) — photos keep their waits.'
     : beatsReady ? `${spec.beats?.length} beats mapped into this slide — the “lands” time on each row is the real arrival.`
     : 'No beats detected in the music — photos keep their waits.'
-  return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`} onMouseDown={onClose}><div className="frame-editor collage-editor" onMouseDown={e => e.stopPropagation()}>
-    <div className="preview-top"><div><strong>{isNew ? 'New photo collage' : 'Photo collage'}</strong><span>PICK UP TO {MAX_COLLAGE_PHOTOS} PHOTOS · THE PREVIEW IS THE RENDER ENGINE</span></div><div className="frame-head-actions"><button onClick={onClose} title={isNew ? 'Discard this collage' : 'Discard changes and close'}><X size={20}/></button></div></div>
+  return <div className={`modal-backdrop dark-backdrop${stacked ? ' stacked' : ''}`} onMouseDown={onClose}><div className={`frame-editor collage-editor${uiLayout === 'below' ? ' layout-below' : ''}`} onMouseDown={e => e.stopPropagation()}>
+    <div className="preview-top"><div><strong>{isNew ? 'New photo collage' : 'Photo collage'}</strong><span>PICK UP TO {MAX_COLLAGE_PHOTOS} PHOTOS · THE PREVIEW IS THE RENDER ENGINE</span></div><div className="frame-head-actions"><div className="frame-layout-toggle" role="group" aria-label="Editor layout"><button type="button" className={uiLayout === 'sidebar' ? 'active' : ''} title="Settings next to the example" onClick={() => setUiLayout('sidebar')}><PanelRight size={14}/><span>Next to</span></button><button type="button" className={uiLayout === 'below' ? 'active' : ''} title="Settings below the example" onClick={() => setUiLayout('below')}><PanelBottom size={14}/><span>Below</span></button></div><button onClick={onClose} title={isNew ? 'Discard this collage' : 'Discard changes and close'}><X size={20}/></button></div></div>
     <div className="frame-editor-body">
       <div className="frame-left">
         <div className="frame-canvas" style={{ background: item.frameBackground }}>
-          <CollageSlideStage item={item} replayKey={replayKey} />
+          <CollageSlideStage item={item} replayKey={replayKey} onMovePhoto={spec.layout === 'free' ? moveFreePhoto : undefined} />
           {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
           <button type="button" className="collage-replay" title="Restart the preview from the first photo" onClick={() => setReplayKey(k => k + 1)}><RotateCcw size={12}/> Replay</button>
         </div>
@@ -3724,14 +4040,37 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       </div>
       <aside>
         <div className="collage-choices-group"><FieldLabel>Layout</FieldLabel>
-          <div className="collage-choices">{COLLAGE_LAYOUTS.map(l => <button key={l.id} type="button" className={spec.layout === l.id ? 'active' : ''} title={l.hint} onClick={() => setSpec({ layout: l.id })}>{l.label}</button>)}</div>
-          <small>{COLLAGE_LAYOUTS.find(l => l.id === spec.layout)?.hint}</small></div>
+          <div className="collage-choices">{COLLAGE_LAYOUTS.map(l => <button key={l.id} type="button" className={spec.layout === l.id ? 'active' : ''} title={l.hint} onClick={() => goLayout(l.id)}>{l.label}</button>)}</div>
+          <small>{COLLAGE_LAYOUTS.find(l => l.id === spec.layout)?.hint}</small>
+          {spec.layout === 'template' && <div className="collage-templates">
+            {(['magazine', 'polaroid'] as const).map(family => <div key={family} className="collage-template-family">
+              <em>{family === 'magazine' ? 'Magazine mosaics' : 'Polaroid wall'}</em>
+              <div className="collage-choices">{COLLAGE_TEMPLATES.filter(t => t.family === family).map(t =>
+                <button key={t.id} type="button" className={spec.template === t.id ? 'active' : ''} title={t.hint} onClick={() => setSpec({ template: t.id })}>{t.label}</button>)}
+              </div>
+            </div>)}
+            <small>{collageTemplate(spec.template).hint}</small>
+          </div>}
+          {(spec.layout === 'honeycomb' || spec.layout === 'photowall') && <div className="collage-timing-total">
+            <span title="Gutter between photos">Gap</span>
+            <NumberStepper value={spec.gap ?? (spec.layout === 'photowall' ? 0.7 : spec.layout === 'honeycomb' ? 1.6 : 0)} min={0} max={12} step={0.5} ariaLabel="Grid gap" onChange={v => setSpec({ gap: v })} />
+            <span>%</span>
+          </div>}
+        </div>
         <div className="collage-choices-group"><FieldLabel>Photo animation</FieldLabel>
           <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
           <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
           <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' || spec.animation === 'flip' ? '' : ' disabled'}`}>
             <input type="checkbox" checked={spec.depth === true} disabled={spec.animation !== 'drop' && spec.animation !== 'pop' && spec.animation !== 'flip'} onChange={e => setSpec({ depth: e.target.checked })} />
             <span>Depth push-back — photos already landed shrink back and dim a little as each new one lands</span>
+          </label>
+          <label className="collage-check">
+            <input type="checkbox" checked={spec.kenBurns === true} onChange={e => setSpec({ kenBurns: e.target.checked || undefined })} />
+            <span>Ken Burns — each photo slowly pans and zooms after it lands</span>
+          </label>
+          <label className="collage-check">
+            <input type="checkbox" checked={spec.sway === true} onChange={e => setSpec({ sway: e.target.checked || undefined })} />
+            <span>Idle sway — a gentle corkboard wobble once photos have landed</span>
           </label></div>
         <div className="collage-choices-group"><FieldLabel>Photo exit</FieldLabel>
           <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
@@ -3746,7 +4085,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                   <span className="name" title={photo.name || photo.path}>{photo.name || photo.path.split('/').pop() || `photo ${i + 1}`}{beatsReady && <em title={`Nominal wait ${photoDelay(spec, i).toFixed(2)}s — the beat snaps it to ${photoStart(spec, i, 0).toFixed(2)}s`}>lands {photoStart(spec, i, 0).toFixed(2)}s</em>}</span>
                   <span className="ctl" title={i === 0 ? 'Seconds after the slide starts before this photo appears' : 'Seconds after the previous photo appears before this one appears'}>
                     <label>{i === 0 ? 'after start' : 'waits'}</label>
-                    <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.1} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
+                    <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.5} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
                     <label>sec</label>
                   </span>
                   <span className="ctl" title="This photo's mat size — 100 % is the layout default; larger photos overlap their neighbours, smaller ones tuck in">
@@ -3754,10 +4093,21 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                     <NumberStepper value={Math.round(photoSize(spec, i) * 100)} min={50} max={150} step={5} ariaLabel={`Photo ${i + 1} size`} onChange={v => setSize(i, v / 100)} />
                     <label>%</label>
                   </span>
+                  {onEditPhoto && <button type="button" className="btn ghost small" title="Crop and filter this photo" onClick={() => onEditPhoto(i)}><CropIcon size={11}/> Edit</button>}
+                  <span className="ctl" title="Override the default frame for this photo">
+                    <label>frame</label>
+                    <select value={photo.frame?.shape ?? 'default'} onChange={e => setPhotoFrame(i, e.target.value as CollageFrameShape | 'default')} aria-label={`Photo ${i + 1} frame`}>
+                      <option value="default">Default</option>
+                      {COLLAGE_FRAMES.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                    </select>
+                  </span>
                 </div>)}
                 {photos.length === 0 && <small className="collage-timing-empty">Pick photos to set when each one appears.</small>}
               </div>
               <div className="collage-timing-total">
+                <span title="Set every photo's wait to the same value">All waits</span>
+                <NumberStepper value={photos[0] ? photoDelay(spec, 0) : 0.5} min={0} max={30} step={0.5} ariaLabel="Wait for every photo" onChange={setAllDelays} />
+                <span>sec</span>
                 <span title="How long the finished collage stays on screen after the last photo has landed">Hold after last</span>
                 <NumberStepper value={spec.hold ?? 2} min={0} max={60} step={0.5} ariaLabel="Hold after the last photo" onChange={v => setSpec({ hold: Math.max(0, v) })} />
                 <span>sec</span>
@@ -3766,6 +4116,18 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                   <button type="button" className="btn ghost small" title="Reset every photo to the layout's default size" onClick={resetSizes}>Reset sizes</button>
                 </span>
               </div>
+              <label className="collage-check" title="Seeded random mat sizes. An explicit size on a row still wins.">
+                <input type="checkbox" checked={spec.randomSize === true} onChange={e => setSpec({ randomSize: e.target.checked })} />
+                <span>Random sizes</span>
+              </label>
+              {spec.randomSize && <div className="collage-timing-total">
+                <span>Min</span>
+                <NumberStepper value={Math.round((spec.randomSizeMin ?? 0.7) * 100)} min={50} max={150} step={5} ariaLabel="Random size minimum" onChange={v => setSpec({ randomSizeMin: v / 100 })} />
+                <span>%</span>
+                <span>Max</span>
+                <NumberStepper value={Math.round((spec.randomSizeMax ?? 1.3) * 100)} min={50} max={150} step={5} ariaLabel="Random size maximum" onChange={v => setSpec({ randomSizeMax: v / 100 })} />
+                <span>%</span>
+              </div>}
               <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold{exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — {total}s in total. The storyline duration follows automatically. Size is per photo: bigger photos overlap their neighbours, smaller ones tuck in.</small>
             </>}</div>
         <div className="collage-choices-group"><FieldLabel>Beat sync</FieldLabel>
@@ -3777,12 +4139,35 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         <div className="collage-choices-group"><FieldLabel>Photo shape</FieldLabel>
           <div className="collage-choices">{COLLAGE_SHAPES.map(s => <button key={s.id} type="button" className={spec.shape === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ shape: s.id })}>{s.label}</button>)}</div>
           <small>{COLLAGE_SHAPES.find(s => s.id === spec.shape)?.hint}</small></div>
+        <div className="collage-choices-group"><FieldLabel>Frame</FieldLabel>
+          <div className="collage-choices">{COLLAGE_FRAMES.map(f => <button key={f.id} type="button" className={defFr.shape === f.id ? 'active' : ''} title={f.hint} onClick={() => setFrame({ shape: f.id })}>{f.label}</button>)}</div>
+          <small>{COLLAGE_FRAMES.find(f => f.id === defFr.shape)?.hint} — this is the default for every photo; override one in the timing row.</small>
+          {defFr.shape !== 'none' && <div className="collage-timing-total">
+            <span>Thickness</span>
+            <NumberStepper value={defFr.width} min={0} max={12} step={0.5} ariaLabel="Frame thickness" onChange={v => setFrame({ width: v })} />
+            <span>%</span>
+            <label className="custom-bg" title="Frame colour"><input type="color" value={defFr.color} onChange={e => setFrame({ color: e.target.value })}/> {defFr.color.toUpperCase()}</label>
+            {defFr.shape === 'rounded' && <>
+              <span>Radius</span>
+              <NumberStepper value={defFr.radius} min={0} max={50} step={1} ariaLabel="Corner radius" onChange={v => setFrame({ radius: v })} />
+              <span>%</span>
+            </>}
+          </div>}
+          <label className="collage-check">
+            <input type="checkbox" checked={defFr.shadow} onChange={e => setFrame({ shadow: e.target.checked })} />
+            <span>Drop shadow under each photo</span>
+          </label>
+        </div>
+        <div className="collage-choices-group"><FieldLabel>Stickers</FieldLabel>
+          <div className="collage-choices">{COLLAGE_STICKERS.map(s => <button key={s.id} type="button" className={(spec.stickers ?? 'none') === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ stickers: s.id === 'none' ? undefined : s.id })}>{s.label}</button>)}</div>
+          <small>{COLLAGE_STICKERS.find(s => s.id === (spec.stickers ?? 'none'))?.hint}</small>
+        </div>
         <div className="collage-choices-group"><FieldLabel>Arrangement</FieldLabel>
           <div className="collage-seed">
             <NumberStepper value={spec.seed} min={1} max={999999} step={1} ariaLabel="Layout seed" onChange={v => setSpec({ seed: Math.max(1, Math.round(v)) || 1 })} />
             <button type="button" className="btn ghost" title="Re-roll the seeded arrangement — same number always gives the same layout" onClick={() => setSpec({ seed: 1 + Math.floor(Math.random() * 9999) })}><Shuffle size={13}/> Shuffle</button>
           </div>
-          <small>The seed pins the layout: the same number always arranges the photos identically — in the preview and in the render.</small></div>
+          <small>{spec.layout === 'free' ? 'Free layout ignores the seed — drag the photos on the preview.' : spec.layout === 'template' ? 'Templates are fixed slots. Shuffle does not move them; pick another template instead.' : spec.layout === 'grid' || spec.layout === 'filmstrip' || spec.layout === 'fan' || spec.layout === 'masonry' || spec.layout === 'stack' || spec.layout === 'scatter' ? 'Shuffle re-rolls the seed: tilts, jitter and (for stack/scatter/masonry) positions change, identically in the preview and the render.' : 'The seed pins the layout: the same number always arranges the photos identically.'}</small></div>
         <div className="collage-choices-group"><FieldLabel>Camera</FieldLabel>
           <div className="collage-choices">{COLLAGE_CAMERAS.map(c => <button key={c.id} type="button" className={(spec.camera ?? 'none') === c.id ? 'active' : ''} title={c.hint} onClick={() => setSpec({ camera: c.id === 'none' ? undefined : c.id })}>{c.label}</button>)}</div>
           <small>{COLLAGE_CAMERAS.find(c => c.id === (spec.camera ?? 'none'))?.hint}</small></div>
@@ -3800,9 +4185,11 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                     <input type="range" min={0} max={100} step={1} value={Math.round(Math.max(0, Math.min(1, spec.backgroundBlur ?? 0)) * 100)} onChange={e => setSpec({ backgroundBlur: Number(e.target.value) / 100 })} />
                     <b>{Math.round(Math.max(0, Math.min(1, spec.backgroundBlur ?? 0)) * 100)}%</b>
                   </label>
+                  <div className="collage-choices">{COLLAGE_BG_FITS.map(f => <button key={f.id} type="button" className={(spec.backgroundFit ?? 'fill') === f.id ? 'active' : ''} title={f.hint} onClick={() => setSpec({ backgroundFit: f.id })}>{f.label}</button>)}</div>
                   <div className="collage-bg-actions">
                     <button type="button" className="btn ghost small" onClick={onPickBackground}>Replace…</button>
-                    <button type="button" className="btn ghost small" onClick={() => setSpec({ backgroundImage: undefined, backgroundBlur: undefined })}>Use colour</button>
+                    {onEditBackground && <button type="button" className="btn ghost small" onClick={onEditBackground}><CropIcon size={11}/> Edit picture</button>}
+                    <button type="button" className="btn ghost small" onClick={() => setSpec({ backgroundImage: undefined, backgroundBlur: undefined, backgroundFit: undefined, backgroundLook: undefined })}>Use colour</button>
                   </div>
                 </div>
               </div>
@@ -4166,7 +4553,7 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?{background:currentItem.frameBackground}:undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/>{currentItem && isCollageItem(currentItem) ? <CollageSlideStage key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} /> : showCaption && currentItem && <FrameMotionPreview key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} />}<span className="preview-eyebrow">{isCollageItem(currentItem) ? 'PHOTO COLLAGE' : currentItem?.type === 'title' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <TitleClipFace item={m} /> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
+  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>{projectName || 'Untitled'}</strong><span>PREVIEW · LOW RESOLUTION</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><div className={`video-stage ${currentItem?.type === 'title' ? 'title-stage' : ''}`} style={currentItem?.type==='title'?frameBackgroundStyle(currentItem):undefined}>{stageFailed ? <div className="stage-fallback"><ImageOff size={28}/><span>This file is empty or unreadable — remove or replace it.</span></div> : currentUrl ? (currentItem?.type === 'video' ? <CropSpriteVideo item={currentItem} key={`${currentItem.id}-${stageUsePreview ? 'preview' : 'orig'}`} className={hasCrop(currentItem) ? '' : playing ? 'slow-zoom' : ''} windowClassName={playing ? 'slow-zoom' : ''} src={currentUrl} style={stageLook.style} autoPlay={playing} muted playsInline onEnded={() => { if (playing) advance() }} onError={() => { if (!stageUsePreview && previewStageUrl !== origUrl) setStageUsePreview(true); else setStageFailed(true) }} /> : <img className={playing ? 'slow-zoom' : ''} style={{ ...(stageTurned ? undefined : rotationStyle(currentItem?.rotation)), ...stageLook.style }} src={stageLook.src} alt={currentItem?.name || 'Preview'} onError={() => setStageFailed(true)}/>) : null}{stageLook.vignette && <i className="look-vignette" style={stageLook.vignette}/>}<div className="stage-shade"/>{currentItem && isCollageItem(currentItem) ? <CollageSlideStage key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} /> : showCaption && currentItem && <FrameMotionPreview key={`${currentItem.id}-${current}`} item={currentItem} defaults={defaults} playing={playing} />}<span className="preview-eyebrow">{isCollageItem(currentItem) ? 'PHOTO COLLAGE' : currentItem?.type === 'title' ? 'TITLE FRAME' : (projectName ? projectName.toUpperCase() : 'SLIDESHOW')}</span><button type="button" className="stage-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={25} fill="currentColor"/> : <Play size={25} fill="currentColor"/>}</button></div><div className="preview-controls"><button type="button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button><span>{formatClock(timelineModel(media).starts[current] || 0)}</span><div className="scrubber"><i style={{width: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/><b style={{left: `${media.length ? ((current + 1) / media.length * 100) : 0}%`}}/></div><span>{formatClock(timelineModel(media).total)}</span><Select value="720p"><option>360p</option><option>720p</option></Select></div><div className="preview-filmstrip">{media.map((m,i) => { const thumb = itemThumbUrl(m); return <button type="button" className={`${current === i ? 'active' : ''} ${m.type === 'title' ? 'title-clip' : ''}`} onClick={() => { setCurrent(i); setStageFailed(false) }} key={m.id} style={m.type==='title'?{background:m.frameBackground}:undefined}>{m.type === 'title' ? <TitleClipFace item={m} /> : <MediaThumb item={m} />}<span>{i+1}</span></button> })}</div><div className="preview-note"><Info size={14}/> Videos play to the end before the next picture. Preview approximates effects; the final render may differ slightly.<button type="button" className="btn dark" onClick={onClose}>Done</button></div></div></div>
 }
 
 

@@ -50,8 +50,11 @@ def _caption_json(cap: Caption) -> dict:
         "frameW": cap.frame_w, "frameH": cap.frame_h, "steady": cap.steady,
         "bg": None if cap.bg is None else {"colourA": cap.bg.colour_a, "colourB": cap.bg.colour_b,
                                            "transition": cap.bg.transition, "start": cap.bg.start, "time": cap.bg.time},
-        "motion": None if cap.motion is None else {"points": [list(p) for p in cap.motion.points], "easing": cap.motion.easing,
-                                                   "rotateAlong": bool(cap.motion.rotate_along)},
+        "motion": None if cap.motion is None else {k: v for k, v in {
+            "points": [list(p) for p in cap.motion.points], "easing": cap.motion.easing,
+            "rotateAlong": bool(cap.motion.rotate_along),
+            "rotateAlongUnit": cap.motion.rotate_along_unit if cap.motion.rotate_along_unit not in (None, "", "text") else None,
+        }.items() if v is not None},
     }
 
 
