@@ -1,3 +1,44 @@
+2026-09-27
+- Photo collage popup: make following improvements
+    - Photo size & timing: add option for random sizes (max and min to be set by user)
+    - Photo size & timing: increase time by 0.5 seconds (now 0.1)
+    - Photo size & timing: add option to change time of all photos with 1 time setting
+    - Photo size & timing: add option to edit (filter, crop) individual photos
+    - Photo shape: add more photo shapes, like 16:9, landscape, portrait
+    - Arrangement: check arrangement setting, does not seems to do anything
+    - Background: add options to fill, fit, stretch, tile, center, span
+    - Background: add option to edit picture (filters, crop, etc)
+    - add option to put all setting next to example or below example. default is next to example
+    - Layout: add option "free" so user can determine the location of the individual pictures
+    - Layout: add option for predefined fix layout (https://user-images.githubusercontent.com/122788406/214820320-8d724e83-e101-43e3-ae74-e9697278c424.jpeg)
+- Photo collage popup: in case camera motion is used can we make the quality of the camera motion in the final result more smooth as now the result is quite bumpy.
+- main window: enable right click; at least with the options: delete, move to, edit, duplicate, add media, add text frame, cut, past) give option what more to include in right click button and give logic order.
+- if multiple photos are selected enable right click option to move the selected photos to a photo collage
+- make example transition gallery with 2 simple photos instead of the A, B letters to better see the effects
+- New text frame: ADD QUICK SELECT FOR FONT SIZE (50, 100, 125, 150, 175, 200, 225, 250, 275, 300, 350) OR use SLIDER
+- Text effects gallery popup: if effect is clicked it should show the effect in the example. exit the popup with close and cancel button. close: selected effect will be used; cancel: old effect is used
+- Text effects gallery popup: make text size for example: 200
+- Text effects gallery popup: quicker replay the example and enable "Autoplay tiles" by default
+- new/edit text frame popup: add option for "Rotate along path - caption turns to follow the path direction" to do it per sentence, word, letter
+- new/edit text frame popup: in Text animation popup, by default enable "Autoplay tiles"
+- new/edit text frame popup: enable "Centre text in frame" by default
+- new/edit text frame popup: for default make "Hold steady at end" 1 Second
+- new/edit text frame popup: add option to use background picture/photo instead of background color
+- if you scroll outside a popup window it should not scroll the background window.
+- main window: detailed list: right bottom of the photo collage should open the edit Photo collage popup and not the text frame editor popup
+-
+- do a thorough deep search on the internet to see if there are any other photo collage effects that we do not have. first give an overview before you change any code. you can check the effects in Canva, and other photo collage maker apps.
+- give options to change the border of the photos (for all photos and individual): none, thickness/color of border, rounded, shapes (hart, circle, star, diamond, you advise more)
+
+
+
+
+
+
+
+---= DONE =---
+- check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
+
 2026-09-23
 - make max selectable font size bigger till 350 (instead of 200)
 - make default selectable colors the more fivit colors (RED, BLUE, YELLOW, PURPLE, white, black, etc) and a quick option to change to pastel colors
@@ -5,13 +46,6 @@
 - give rendering progress (Prepared slide 28/84: <filename> ....) also in rendering pane at the bottom during redering
 - "ready to generate" in main header does not jump to generate pane
 - in detailed transition list: move duration of the slide (default 5 second) to the right (under and in line with "text on picture" option) and make picture bigger (use whole height of row)
-- 
-
-
----= DONE =---
-- check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
-
-
 
 2026-09-25 — Stacked text effects implemented (P1–P4), 29 new fonts, text synced to the colour A → B background
 - implement everything, add new font (especially handwritten fonts) and integrate with the color transitions background
