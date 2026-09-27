@@ -979,6 +979,6 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     gap: num(c.gap) !== undefined ? Math.max(0, Math.min(12, num(c.gap)!)) : undefined,
     kenBurns: c.kenBurns === true ? true : undefined,
     sway: c.sway === true ? true : undefined,
-    stickers: (['tape', 'pin', 'mix'] as const).includes(c.stickers as CollageStickers) ? c.stickers as CollageStickers : undefined,
+    stickers: c.stickers === 'tape' || c.stickers === 'pin' || c.stickers === 'mix' ? c.stickers : undefined,
   }
 }
