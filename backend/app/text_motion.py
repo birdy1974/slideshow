@@ -743,6 +743,7 @@ class MotionPath:
     points: list[tuple[float, float]]
     easing: str = "linear"
     rotate_along: bool = False   # text turns to follow the path tangent
+    rotate_along_unit: str = "text"  # text | line | word | char
 
 
 @dataclass
@@ -912,6 +913,10 @@ def compile_stack(cap: Caption, layout: Layout) -> Ctx:
             need.append("char")
     if any("caret" in L.fx for L in resolved):
         need.append("char")
+    if cap.motion and cap.motion.rotate_along:
+        ru = cap.motion.rotate_along_unit or "text"
+        if ru in ("line", "word", "char"):
+            need.append(ru)
     if whole:
         # a counter replaces the whole text: one event for the whole block
         need = ["text"]
@@ -1097,6 +1102,29 @@ def _generator(ctx: Ctx, L: _L, spec: dict, u: float, tl: float, useed: int) -> 
     return v
 
 
+def path_len(points: list[tuple[float, float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+    return sum(math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]) for i in range(1, len(points)))
+
+
+def path_tangent(points: list[tuple[float, float]], f: float) -> float:
+    """Tangent angle in degrees at arc-length fraction f. Twin of pathTangent()."""
+    if len(points) < 2:
+        return 0.0
+    px, py = path_point(points, f)
+    f2 = f + 0.02
+    if f2 > 1.0:
+        qx, qy = path_point(points, max(0.0, f - 0.02))
+        dx, dy = px - qx, py - qy
+    else:
+        qx, qy = path_point(points, f2)
+        dx, dy = qx - px, qy - py
+    if abs(dx) <= 1e-9 and abs(dy) <= 1e-9:
+        return 0.0
+    return math.degrees(math.atan2(dy, dx))
+
+
 def path_point(points: list[tuple[float, float]], f: float) -> tuple[float, float]:
     """Point at arc-length fraction f along a polyline (percent coordinates)."""
     if not points:
@@ -1225,21 +1253,24 @@ def evaluate(ctx: Ctx, e: Unit, t: float) -> dict[str, Any]:
                 if cap.motion is None or not cap.motion.points:
                     continue
                 f = PATH_EASE.get(cap.motion.easing, PATH_EASE["linear"])(u)
-                px, py = path_point(cap.motion.points, f)
-                acc[lvl]["px"] += px / 100 * cap.frame_w - a.cx
-                acc[lvl]["py"] += py / 100 * cap.frame_h - a.cy
+                rot_unit = cap.motion.rotate_along_unit if cap.motion.rotate_along else "text"
+                path_lvl = rot_unit if (rot_unit and rot_unit != "text" and rot_unit in acc) else lvl
+                a_path = a
+                f_path = f
+                if path_lvl != lvl:
+                    a_path = _ancestor(ctx, e, path_lvl) or a
+                    text_u = _ancestor(ctx, e, "text")
+                    if text_u is not None and abs(text_u.w) > 1e-6:
+                        rel = (a_path.cx - text_u.cx) / cap.frame_w
+                        plen = path_len(cap.motion.points)
+                        f_path = _clamp01(f + rel * 100 / max(plen, 1e-3))
+                px, py = path_point(cap.motion.points, f_path)
+                acc[path_lvl]["px"] += px / 100 * cap.frame_w - a_path.cx
+                acc[path_lvl]["py"] += py / 100 * cap.frame_h - a_path.cy
                 if cap.motion.rotate_along and len(cap.motion.points) >= 2:
                     # tangent angle (degrees) just ahead on the path; at the
                     # very end look backwards instead — twin of textMotionCore.ts
-                    f2 = f + 0.02
-                    if f2 > 1.0:
-                        qx, qy = path_point(cap.motion.points, max(0.0, f - 0.02))
-                        dx, dy = px - qx, py - qy
-                    else:
-                        qx, qy = path_point(cap.motion.points, f2)
-                        dx, dy = qx - px, qy - py
-                    if abs(dx) > 1e-9 or abs(dy) > 1e-9:
-                        acc[lvl]["rz"] += math.degrees(math.atan2(dy, dx))
+                    acc[path_lvl]["rz"] += path_tangent(cap.motion.points, f_path)
                 continue
             if ch == "clip":
                 running = (L.phase == "in" and u < 1) or (L.phase == "out" and u > 0) or L.phase == "hold"
@@ -2207,8 +2238,17 @@ def _motion_for(item: dict[str, Any], def_x: float, def_y: float) -> MotionPath 
         _clamp(_num(item.get("textMoveLissajousFreqY"), 2.0) or 2.0, 1, 6),
     )
     easing = str(item.get("textMoveEasing") or "linear").lower()
+    unit_raw = str(item.get("textMoveRotateAlongUnit") or "text").lower()
+    if unit_raw in ("sentence", "line"):
+        rot_unit = "line"
+    elif unit_raw == "word":
+        rot_unit = "word"
+    elif unit_raw in ("letter", "char"):
+        rot_unit = "char"
+    else:
+        rot_unit = "text"
     return MotionPath(points=[(float(x), float(y)) for x, y in pts], easing=easing if easing in PATH_EASE else "linear",
-                      rotate_along=bool(item.get("textMoveRotateAlongPath")))
+                      rotate_along=bool(item.get("textMoveRotateAlongPath")), rotate_along_unit=rot_unit)
 
 
 def caption_for_item(item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, fps: float,

@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
-from .collage import bg_blur_radius, collage_background, collage_graph, collage_inputs, normalize_collage
+from .collage import bg_blur_radius, bg_fit_filter, collage_background, collage_graph, collage_inputs, normalize_collage
 from .config import Settings
 from .database import Database, utcnow
 from .filter_values import quote_filter_value
@@ -1701,6 +1701,15 @@ class Renderer:
                         bg_picture = collage_background(self.settings, item)
                     except (FileNotFoundError, UnsafePath) as exc:
                         raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
+                frame_bg = item.get("frameBackgroundImage")
+                if bg_picture is None and isinstance(frame_bg, str) and frame_bg:
+                    try:
+                        src = source_path(self.settings, {"path": frame_bg, "name": ""})
+                        if not src.is_file():
+                            raise FileNotFoundError(f"Text frame background picture is missing: {frame_bg}")
+                        bg_picture = src
+                    except (FileNotFoundError, UnsafePath) as exc:
+                        raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
                 if bg_picture is not None:
                     command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", str(bg_picture)]
                 else:
@@ -1715,8 +1724,14 @@ class Renderer:
                 # input per photo; the composite graph is built below.
                 if collage_open is not None:
                     try:
+                        video_ext = {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi", ".mpg", ".mpeg"}
                         for photo_src in collage_inputs(self.settings, item):
-                            command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", photo_src]
+                            if Path(photo_src).suffix.lower() in video_ext:
+                                # PhotoGrid-style video-in-cell: loop the clip to
+                                # fill the collage hold (still photos stay -loop 1).
+                                command += ["-stream_loop", "-1", "-t", clip_t, "-i", photo_src]
+                            else:
+                                command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", photo_src]
                     except (FileNotFoundError, UnsafePath) as exc:
                         raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
             else:
@@ -1769,6 +1784,18 @@ class Renderer:
             crop = normalize_crop(item) if not generated else None
             if crop:
                 prefix += crop_filters(crop)
+            if generated and bg_picture is not None:
+                fit = (collage_open or {}).get("backgroundFit") if collage_open else item.get("frameBackgroundFit")
+                look_src = (collage_open or {}).get("backgroundLook") if collage_open else item.get("frameBackgroundLook")
+                if not isinstance(look_src, dict):
+                    look_src = {}
+                bed = [bg_fit_filter(fit, width, height)]
+                bed += crop_filters(normalize_crop({"crop": look_src.get("crop")}))
+                look = picture_look(look_src, width, height)
+                if look:
+                    bed.append(look)
+                bed.append(f"fps={fps}")
+                base_filter = ",".join(x for x in bed if x)
             filters = prefix + [base_filter]
             if ken_burns:
                 # Per-slide motion, strength and focus point. The motion is
@@ -1820,7 +1847,7 @@ class Renderer:
             collage_spec = normalize_collage(item) if generated else None
             # A picture background replaces the colour bed — and with it the
             # colour-change xfade (that transition lives between two colours).
-            bg_picture_spec = bool(collage_spec and collage_spec.get("backgroundImage"))
+            bg_picture_spec = bool((collage_spec and collage_spec.get("backgroundImage")) or item.get("frameBackgroundImage"))
             if bg_picture_spec:
                 colour_change = None
             text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass", lead_in=lead_in,

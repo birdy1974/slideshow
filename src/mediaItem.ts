@@ -75,6 +75,16 @@ export type MediaItem = {
   textMoveLissajousFreqY?: number;
   // Rotate the whole caption so it follows the direction of the path.
   textMoveRotateAlongPath?: boolean;
+  // When rotate-along is on: whole caption, or each sentence/word/letter
+  // independently (text-on-path). Missing = whole caption.
+  textMoveRotateAlongUnit?: 'text' | 'line' | 'word' | 'char';
+  // Text frame: a library picture instead of (or under) the colour bed.
+  frameBackgroundImage?: string;
+  frameBackgroundFit?: 'fill' | 'fit' | 'stretch' | 'tile' | 'center' | 'span';
+  frameBackgroundLook?: {
+    filter?: string; filterAmount?: number; filterAdjust?: Record<string, number>;
+    crop?: MediaItem['crop'];
+  };
   // Symbol paths: reuse circleRadius as size, add star inner ratio / rotation
   textMoveStarPoints?: number;
   textMoveStarInnerRatio?: number;
