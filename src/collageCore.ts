@@ -295,7 +295,7 @@ export const COLLAGE_TEMPLATES: CollageTemplate[] = [
     { cx: 22, cy: 52, w: 26, h: 78, rot: -8 }, { cx: 78, cy: 52, w: 26, h: 78, rot: 8 },
     { cx: 50, cy: 48, w: 30, h: 78, rot: 2 }, { cx: 50, cy: 76, w: 28, h: 78, rot: -3 },
   ] },
-  { id: 'polaroid-strip', family: 'polaroid', label: 'Overlapping strip', hint: 'A band of overlapping frames across the middle', slots: [
+  { id: 'polaroid-strip', family: 'polaroid', label: 'Strip', hint: 'A band of overlapping frames across the middle', slots: [
     { cx: 16, cy: 50, w: 28, h: 78, rot: -6 }, { cx: 34, cy: 46, w: 28, h: 78, rot: 5 },
     { cx: 52, cy: 52, w: 28, h: 78, rot: -4 }, { cx: 70, cy: 47, w: 28, h: 78, rot: 7 },
     { cx: 86, cy: 53, w: 26, h: 78, rot: -5 },

@@ -48,7 +48,7 @@ import type { RandomScope } from './transitionControls'
 import { EASING_DEFAULT, getGLParams, isGLTransition, transitionPreviewUrl, transitionSymbol } from './transitionCatalog'
 import { uploadFile, isUploadableFile, type UploadItem, type UploadsStatus } from './uploads'
 import { PopupBackdrop, useEscapeToClose, useLayer } from './layers'
-import { CollageTemplateThumb } from './CollageTemplateThumb'
+import { CollageArrangementThumb } from './CollageArrangementThumb'
 
 type MediaRoot = 'photos' | 'videos' | 'music' | 'uploads'
 type PreviewMode = 'fast' | 'standard'
@@ -3803,7 +3803,6 @@ const COLLAGE_LAYOUTS: { id: CollageSpec['layout']; label: string; hint: string 
   { id: 'fan', label: 'Fan', hint: 'Cards fanned out from a point below the frame, each tilted along its spoke' },
   { id: 'masonry', label: 'Masonry', hint: 'Pinterest-style columns with seeded size variety — photos stack into the shortest column' },
   { id: 'free', label: 'Free', hint: 'Drag each photo on the preview to place it yourself' },
-  { id: 'template', label: 'Templates', hint: 'A predefined magazine mosaic or polaroid-wall page' },
   { id: 'honeycomb', label: 'Honeycomb', hint: 'Hex-packed rows — odd rows shifted half a cell' },
   { id: 'zigzag', label: 'Zigzag', hint: 'Diagonal / staggered grid with alternating tilts' },
   { id: 'arc', label: 'Arc', hint: 'Photos along a radial arc, each rotated to its spoke' },
@@ -3811,6 +3810,15 @@ const COLLAGE_LAYOUTS: { id: CollageSpec['layout']; label: string; hint: string 
   { id: 'booth', label: 'Booth', hint: 'A vertical photo-booth strip of stacked frames' },
   { id: 'silhouette', label: 'Silhouette', hint: 'Tiny photos packed into a heart shape' },
   { id: 'cube', label: 'Cube', hint: 'Three isometric faces of a 3D cube, extras as a row' },
+]
+// The arrangement picker: every option is a thumbnail, in three families.
+// Generated layouts re-flow for any photo count; the two template families
+// are fixed pages (layout 'template' + a template id) — straight magazine
+// tiles, or tilted overlapping polaroid-wall piles.
+const ARRANGEMENT_FAMILIES: { id: 'generated' | 'magazine' | 'polaroid'; label: string; note: string }[] = [
+  { id: 'generated', label: 'Generated', note: 're-flow for any number of photos' },
+  { id: 'magazine', label: 'Magazine mosaics', note: 'fixed pages of straight tiles, 2–6 slots' },
+  { id: 'polaroid', label: 'Polaroid wall', note: 'fixed pages of tilted, overlapping mats, 5–6 slots' },
 ]
 const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string }[] = [
   { id: 'drop', label: 'Drop in', hint: 'Photos fall in from above, straightening as they land' },
@@ -4064,20 +4072,28 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         </div>
       </div>
       <aside>
-        <div className="collage-choices-group"><FieldLabel>Layout</FieldLabel>
-          <div className="collage-choices">{COLLAGE_LAYOUTS.map(l => <button key={l.id} type="button" className={spec.layout === l.id ? 'active' : ''} title={l.hint} onClick={() => goLayout(l.id)}>{l.label}</button>)}</div>
-          <small>{COLLAGE_LAYOUTS.find(l => l.id === spec.layout)?.hint}</small>
-          {spec.layout === 'template' && <div className="collage-templates">
-            {(['magazine', 'polaroid'] as const).map(family => <div key={family} className="collage-template-family">
-              <em>{family === 'magazine' ? 'Magazine mosaics' : 'Polaroid wall'}</em>
-              <div className="collage-choices collage-template-thumbs">{COLLAGE_TEMPLATES.filter(t => t.family === family).map(t =>
-                <button key={t.id} type="button" className={spec.template === t.id ? 'active' : ''} title={`${t.label} — ${t.hint}`} aria-label={t.label} aria-pressed={spec.template === t.id} onClick={() => setSpec({ template: t.id })}>
-                  <CollageTemplateThumb template={t} spec={spec} photoCount={photos.length} />
-                </button>)}
+        <div className="collage-choices-group"><FieldLabel>Arrangement</FieldLabel>
+          <div className="collage-arrangements">
+            {ARRANGEMENT_FAMILIES.map(family => <div key={family.id} className="collage-arrangement-family">
+              <em>{family.label} <span>— {family.note}</span></em>
+              <div className="collage-choices collage-arrangement-thumbs">
+                {family.id === 'generated'
+                  ? COLLAGE_LAYOUTS.map(l =>
+                    <button key={l.id} type="button" className={spec.layout === l.id ? 'active' : ''} title={`${l.label} — ${l.hint}`} aria-pressed={spec.layout === l.id} onClick={() => goLayout(l.id)}>
+                      <CollageArrangementThumb spec={spec} layout={l.id} photoCount={photos.length} />
+                      <span>{l.label}</span>
+                    </button>)
+                  : COLLAGE_TEMPLATES.filter(t => t.family === family.id).map(t =>
+                    <button key={t.id} type="button" className={spec.layout === 'template' && spec.template === t.id ? 'active' : ''} title={`${t.label} — ${t.hint}`} aria-pressed={spec.layout === 'template' && spec.template === t.id} onClick={() => setSpec({ layout: 'template', template: t.id })}>
+                      <CollageArrangementThumb spec={spec} layout="template" template={t} photoCount={photos.length} />
+                      <span>{t.label}</span>
+                    </button>)}
               </div>
             </div>)}
-            <small><b>{template.label}</b> · {template.hint} · {templateNote}</small>
-          </div>}
+          </div>
+          <small>{spec.layout === 'template'
+            ? <><b>{template.label}</b> · {template.hint} · {templateNote}</>
+            : <><b>{COLLAGE_LAYOUTS.find(l => l.id === spec.layout)?.label}</b> · {COLLAGE_LAYOUTS.find(l => l.id === spec.layout)?.hint}{spec.layout === 'free' ? '' : ` · ${photos.length ? `arranged for your ${photos.length} photo${photos.length === 1 ? '' : 's'}` : 'arranged for 5 photos until you add some'}`}</>}</small>
           {(spec.layout === 'honeycomb' || spec.layout === 'photowall') && <div className="collage-timing-total">
             <span title="Gutter between photos">Gap</span>
             <NumberStepper value={spec.gap ?? (spec.layout === 'photowall' ? 0.7 : spec.layout === 'honeycomb' ? 1.6 : 0)} min={0} max={12} step={0.5} ariaLabel="Grid gap" onChange={v => setSpec({ gap: v })} />
@@ -4189,12 +4205,12 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <div className="collage-choices">{COLLAGE_STICKERS.map(s => <button key={s.id} type="button" className={(spec.stickers ?? 'none') === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ stickers: s.id === 'none' ? undefined : s.id })}>{s.label}</button>)}</div>
           <small>{COLLAGE_STICKERS.find(s => s.id === (spec.stickers ?? 'none'))?.hint}</small>
         </div>
-        <div className="collage-choices-group"><FieldLabel>Arrangement</FieldLabel>
+        <div className="collage-choices-group"><FieldLabel>Variation (seed)</FieldLabel>
           <div className="collage-seed">
             <NumberStepper value={spec.seed} min={1} max={999999} step={1} ariaLabel="Layout seed" onChange={v => setSpec({ seed: Math.max(1, Math.round(v)) || 1 })} />
             <button type="button" className="btn ghost" title="Re-roll the seeded arrangement — same number always gives the same layout" onClick={() => setSpec({ seed: 1 + Math.floor(Math.random() * 9999) })}><Shuffle size={13}/> Shuffle</button>
           </div>
-          <small>{spec.layout === 'free' ? 'Free layout ignores the seed — drag the photos on the preview.' : spec.layout === 'template' ? 'Templates are fixed slots. Shuffle does not move them; pick another template instead.' : spec.layout === 'grid' || spec.layout === 'filmstrip' || spec.layout === 'fan' || spec.layout === 'masonry' || spec.layout === 'stack' || spec.layout === 'scatter' ? 'Shuffle re-rolls the seed: tilts, jitter and (for stack/scatter/masonry) positions change, identically in the preview and the render.' : 'The seed pins the layout: the same number always arranges the photos identically.'}</small></div>
+          <small>{spec.layout === 'free' ? 'Free layout ignores the seed — drag the photos on the preview.' : spec.layout === 'template' ? 'Magazine and polaroid-wall pages are fixed slots. Shuffle does not move them; pick another page instead.' : spec.layout === 'grid' || spec.layout === 'filmstrip' || spec.layout === 'fan' || spec.layout === 'masonry' || spec.layout === 'stack' || spec.layout === 'scatter' ? 'Shuffle re-rolls the seed: tilts, jitter and (for stack/scatter/masonry) positions change, identically in the preview and the render.' : 'The seed pins the layout: the same number always arranges the photos identically.'}</small></div>
         <div className="collage-choices-group"><FieldLabel>Camera</FieldLabel>
           <div className="collage-choices">{COLLAGE_CAMERAS.map(c => <button key={c.id} type="button" className={(spec.camera ?? 'none') === c.id ? 'active' : ''} title={c.hint} onClick={() => setSpec({ camera: c.id === 'none' ? undefined : c.id })}>{c.label}</button>)}</div>
           <small>{COLLAGE_CAMERAS.find(c => c.id === (spec.camera ?? 'none'))?.hint}</small></div>
