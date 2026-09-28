@@ -3806,7 +3806,7 @@ const COLLAGE_LAYOUTS: { id: CollageSpec['layout']; label: string; hint: string 
   { id: 'honeycomb', label: 'Honeycomb', hint: 'Hex-packed rows — odd rows shifted half a cell' },
   { id: 'zigzag', label: 'Zigzag', hint: 'Diagonal / staggered grid with alternating tilts' },
   { id: 'arc', label: 'Arc', hint: 'Photos along a radial arc, each rotated to its spoke' },
-  { id: 'photowall', label: 'Photowall', hint: 'Edge-to-edge mosaic with a tiny gutter' },
+  { id: 'photowall', label: 'Photowall', hint: 'A compact wall of equal tiles with a tiny gutter — as large as the frame allows' },
   { id: 'booth', label: 'Booth', hint: 'A vertical photo-booth strip of stacked frames' },
   { id: 'silhouette', label: 'Silhouette', hint: 'Tiny photos packed into a heart shape' },
   { id: 'cube', label: 'Cube', hint: 'Three isometric faces of a 3D cube, extras as a row' },

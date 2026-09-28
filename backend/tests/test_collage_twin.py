@@ -32,6 +32,7 @@ from app.collage import (
     collage_template,
     hash01,
     mat_height,
+    mat_height_per_width,
     normalize_collage,
     photo_frame,
     photo_delay,
@@ -440,9 +441,45 @@ class CollageTwinTest(unittest.TestCase):
             spec = _spec(layout, "drop", "4:3", 9, 5)
             for pl in placements(spec, 16 / 9):
                 assert 4 <= pl["cx"] <= 96 and 8 <= pl["cy"] <= 92, (layout, pl)
-                assert 15 <= pl["w"] <= 45, (layout, pl)
+                assert 10 <= pl["w"] <= 45, (layout, pl)    # 9 polaroids in 3 rows of a 16:9 frame are ~15 % wide
                 assert abs(pl["rot"]) <= 32, (layout, pl)                            # fan spokes + seed offset
 
+
+    def test_fitted_layouts_keep_their_rows_apart(self):
+        """Cell-based layouts size mats with the real mat height (photo + frame
+        + caption strip, times W/H), so rows never overlap and nothing leaves
+        the frame — for any photo shape, frame style and frame aspect.
+        Filmstrip frames overlap on purpose *within* a row; masonry's seeded
+        size variety may let neighbouring columns touch by a hair."""
+        def rect(pl, per):
+            h = pl["w"] * per
+            return (pl["cx"] - pl["w"] / 2, pl["cx"] + pl["w"] / 2, pl["cy"] - h / 2, pl["cy"] + h / 2)
+
+        for layout in ("grid", "filmstrip", "masonry", "honeycomb", "zigzag", "photowall"):
+            for shape in ("4:3", "square", "3:4", "16:9", "9:16"):
+                for frame in (None, {"shape": "none"}, {"shape": "circle", "width": 3}):
+                    for aspect in (16 / 9, 1.0, 9 / 16):
+                        for n in range(1, MAX_COLLAGE_PHOTOS + 1):
+                            spec = _spec(layout, "drop", shape, n, 5, frame=frame)
+                            per = mat_height_per_width(shape, photo_frame(spec, None), aspect)
+                            pls = placements(spec, aspect)
+                            rects = [rect(pl, per) for pl in pls]
+                            where = (layout, shape, frame, round(aspect, 3), n)
+                            for r in rects:
+                                assert r[0] >= -1e-6 and r[1] <= 100 + 1e-6 and r[2] >= -1e-6 and r[3] <= 100 + 1e-6, (where, r)
+                            for i in range(n):
+                                for j in range(i + 1, n):
+                                    a, b = rects[i], rects[j]
+                                    ox = min(a[1], b[1]) - max(a[0], b[0])
+                                    oy = min(a[3], b[3]) - max(a[2], b[2])
+                                    if ox <= 1e-6 or oy <= 1e-6:
+                                        continue
+                                    same_row = abs(pls[i]["cy"] - pls[j]["cy"]) < 1e-6
+                                    if layout == "filmstrip" and same_row:
+                                        continue
+                                    if layout == "masonry" and min(ox, oy) < 0.25:
+                                        continue
+                                    raise AssertionError(f"{where}: photos {i} and {j} overlap by {ox:.2f} x {oy:.2f}: {a} {b}")
 
     def test_normalize_collage(self):
         assert normalize_collage({"collage": None}) is None

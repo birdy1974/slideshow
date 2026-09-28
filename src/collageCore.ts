@@ -186,12 +186,7 @@ export function frameBorderFrac (frame: { shape: CollageFrameShape; width: numbe
  *  percentage of the frame HEIGHT. aspect = frameW / frameH. Polaroid
  *  (the default) keeps the classic white border + caption strip. */
 export function matHeight (w: number, shape: CollageShape, aspect: number, frame?: CollageFrame): number {
-  const fr = photoFrame({ frame }, null)
-  const border = frameBorderFrac(fr) * w
-  const bottom = fr.shape === 'polaroid' ? 0.205 * w : border
-  const photoW = Math.max(1e-6, w - 2 * border)
-  const photoH = photoW / photoAspect(shape)
-  return (photoH + border + bottom) / aspect
+  return w * matHeightPerWidth(shape, photoFrame({ frame }, null), aspect)
 }
 
 /** CSS clip-path for a non-rectangular photo frame. Undefined = rectangle. */
@@ -356,17 +351,18 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const cols = Math.max(1, Math.ceil(Math.sqrt(count)))
     const rows = Math.ceil(count / cols)
     const marginX = 7
-    const marginY = 12
+    const marginY = 8
     return { cols, rows, cellW: (100 - 2 * marginX) / cols, cellH: (100 - 2 * marginY) / rows, }
   }
-  // Largest mat width (as % of frame width) whose mat HEIGHT still fits in a
-  // grid cell: mat height % of H = w · k / aspect, with k from matHeight().
-  const fitWidth = (cellW: number, cellH: number): number => {
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
-    const byWidth = cellW * 0.8
-    const byHeight = cellH * 0.82 * aspect / k
-    return Math.min(byWidth, byHeight)
-  }
+  // Mat height (% of frame HEIGHT) per 1 % of frame width for the collage's
+  // default frame — the pixel maths of the stage and the MP4. Every layout
+  // that fits mats into cells limits their height with it, so rows never
+  // overlap whatever the photo shape or frame style.
+  const per = matHeightPerWidth(spec.shape, photoFrame(spec, null), aspect)
+  // Largest mat width (as % of frame width) that fits a grid cell: 80 % of
+  // the cell width, and no taller than 90 % of the cell height (the seeded
+  // tilt needs the rest).
+  const fitWidth = (cellW: number, cellH: number): number => Math.min(cellW * 0.8, cellH * 0.9 / per)
   // Per-photo size: each photo's mat is the layout width times its multiplier
   // (bigger photos overlap their neighbours — that is the point).
   const widthOf = (base: number, i: number): number => base * photoSize(spec, i)
@@ -377,7 +373,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       const col = i % cols
       const row = Math.floor(i / cols)
       // Seeded tilt so Shuffle visibly rearranges even a strict grid.
-      out.push({ cx: 7 + cellW * (col + 0.5), cy: 12 + cellH * (row + 0.5), w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 10 })
+      out.push({ cx: 7 + cellW * (col + 0.5), cy: 8 + cellH * (row + 0.5), w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 10 })
     }
   } else if (spec.layout === 'scatter') {
     const { cols, cellW, cellH } = cells(n)
@@ -386,7 +382,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       const col = i % cols
       const row = Math.floor(i / cols)
       const cx = 7 + cellW * (col + 0.28 + 0.44 * hash01(seed, i, 29))
-      const cy = 12 + cellH * (row + 0.28 + 0.44 * hash01(seed, i, 31))
+      const cy = 8 + cellH * (row + 0.28 + 0.44 * hash01(seed, i, 31))
       out.push({ cx, cy, w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 26 })
     }
   } else if (spec.layout === 'filmstrip') {
@@ -395,14 +391,13 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const rows = n <= 5 ? 1 : 2
     const perRow = Math.ceil(n / rows)
     const firstRow = n - perRow * (rows - 1)
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
     for (let i = 0; i < n; i++) {
       const row = i < firstRow ? 0 : 1
       const cols = row === 0 ? firstRow : perRow
       const col = row === 0 ? i : i - firstRow
       const cellWr = (100 - 2 * 5) / cols
       const cellH = (100 - 2 * 12) / rows
-      const w = Math.min(cellWr * 1.1, cellH * 0.82 * aspect / k)
+      const w = Math.min(cellWr * 1.1, cellH * 0.9 / per)
       out.push({ cx: 5 + cellWr * (col + 0.5), cy: 12 + cellH * (row + 0.5), w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 8 })
     }
   } else if (spec.layout === 'fan') {
@@ -425,12 +420,11 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     // Pinterest-style columns: seeded size variety, each photo stacked into
     // the shortest column (a single photo is simply centred).
     if (n === 1) {
-      out.push({ cx: 50, cy: 50, w: widthOf(40, 0), rot: 0 })
+      out.push({ cx: 50, cy: 50, w: widthOf(Math.min(40, 76 / per), 0), rot: 0 })
     } else {
       const cols = n <= 2 ? 2 : n <= 9 ? 3 : 4
       const marginX = 6
       const cellW = (100 - 2 * marginX) / cols
-      const k = 0.91 / photoAspect(spec.shape) + 0.25
       const base = cellW * 0.88
       const ws: number[] = []
       for (let i = 0; i < n; i++) ws.push(base * (0.82 + 0.36 * hash01(seed, i, 41)) * photoSize(spec, i))
@@ -441,7 +435,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
         for (let i = 0; i < n; i++) {
           let c = 0
           for (let j = 1; j < cols; j++) if (fills[j] < fills[c] - 1e-9) c = j
-          const mh = ws[i] * scale * k / aspect
+          const mh = ws[i] * scale * per
           res.push({ cx: marginX + cellW * (c + 0.5), cy: 12 + fills[c] + gap / 2 + mh / 2 })
           fills[c] += gap + mh
         }
@@ -458,8 +452,8 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const gap = Number.isFinite(Number(spec.gap)) ? Math.max(0, Math.min(12, Number(spec.gap))) : 1.6
     const cellW = (100 - 8) / (cols + 0.5)
     const cellH = (100 - 16) / Math.max(1, rows)
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
-    const w = Math.min(cellW - gap, cellH * 0.82 * aspect / k)
+    // Brick-tight: the gutter between rows equals the gutter between columns.
+    const w = Math.min(cellW - gap, (cellH - gap) / per)
     for (let i = 0; i < n; i++) {
       const row = Math.floor(i / cols)
       const col = i % cols
@@ -475,7 +469,9 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     for (let i = 0; i < n; i++) {
       const col = i % cols
       const row = Math.floor(i / cols)
-      const ox = (row % 2) * cellW * 0.28
+      // Alternate rows shift a little left / right of centre — symmetric, so
+      // the outer tiles of both rows stay inside the frame.
+      const ox = ((row % 2) ? 0.14 : -0.14) * cellW
       out.push({ cx: 6 + ox + cellW * (col + 0.5), cy: 10 + cellH * (row + 0.5), w: widthOf(w, i), rot: ((row + col) % 2 ? 1 : -1) * (6 + 4 * hash01(seed, i, 37)) })
     }
   } else if (spec.layout === 'arc') {
@@ -491,17 +487,28 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       })
     }
   } else if (spec.layout === 'photowall') {
-    const cols = Math.max(1, Math.ceil(Math.sqrt(n)))
-    const rows = Math.ceil(n / cols)
+    // A compact block of equal tiles with a small gutter. The column count
+    // is the one that gives the largest tile for this frame and mat shape
+    // (ties: the fewest empty cells); the block is centred and a short last
+    // row is centred too, so the wall never has a hole.
     const gap = Number.isFinite(Number(spec.gap)) ? Math.max(0, Math.min(12, Number(spec.gap))) : 0.7
-    const cellW = (100 - gap) / cols
-    const cellH = (100 - gap) / rows
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
-    const w = Math.min(cellW - gap, cellH * aspect / k)
+    let best = { cols: 1, rows: n, w: 0, empty: 0 }
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols)
+      const w = Math.min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1)) / (rows * per))
+      const empty = cols * rows - n
+      if (w > best.w + 1e-9 || (Math.abs(w - best.w) <= 1e-9 && empty < best.empty)) best = { cols, rows, w, empty }
+    }
+    const { cols, rows } = best
+    const w = Math.max(2, best.w)
+    const matH = w * per
+    const y0 = (100 - (rows * matH + (rows - 1) * gap)) / 2
     for (let i = 0; i < n; i++) {
       const col = i % cols
       const row = Math.floor(i / cols)
-      out.push({ cx: gap / 2 + cellW * (col + 0.5), cy: gap / 2 + cellH * (row + 0.5), w: widthOf(w, i), rot: 0 })
+      const inRow = row === rows - 1 ? n - cols * (rows - 1) : cols
+      const x0 = (100 - (inRow * w + (inRow - 1) * gap)) / 2
+      out.push({ cx: x0 + w / 2 + col * (w + gap), cy: y0 + matH / 2 + row * (matH + gap), w: widthOf(w, i), rot: 0 })
     }
   } else if (spec.layout === 'booth') {
     const w = Math.min(22, 90 / Math.max(1, n))

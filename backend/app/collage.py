@@ -222,12 +222,7 @@ def frame_border_frac(frame: dict[str, Any]) -> float:
 
 def mat_height(w: float, shape: str, aspect: float, frame: dict[str, Any] | None = None) -> float:
     """Mat height in % of frame height for a mat width of w % of frame width."""
-    fr = photo_frame({"frame": frame} if frame else {}, None)
-    border = frame_border_frac(fr) * w
-    bottom = 0.205 * w if fr["shape"] == "polaroid" else border
-    photo_w = max(1e-6, w - 2 * border)
-    photo_h = photo_w / _photo_aspect(shape)
-    return (photo_h + border + bottom) / aspect
+    return w * mat_height_per_width(shape, photo_frame({"frame": frame} if frame else {}, None), aspect)
 
 
 def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
@@ -240,12 +235,17 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
     def cells(count: int):
         cols = max(1, math.ceil(math.sqrt(count)))
         rows = math.ceil(count / cols)
-        margin_x, margin_y = 7.0, 12.0
+        margin_x, margin_y = 7.0, 8.0
         return cols, rows, (100 - 2 * margin_x) / cols, (100 - 2 * margin_y) / rows
 
+    # Mat height (% of frame HEIGHT) per 1 % of frame width for the collage's
+    # default frame — twin of `per` in placements() (collageCore.ts): every
+    # layout that fits mats into cells limits their height with it.
+    per = mat_height_per_width(shape, photo_frame(spec, None), aspect)
+
     def fit_width(cell_w: float, cell_h: float) -> float:
-        k = 0.91 / _photo_aspect(shape) + 0.25
-        return min(cell_w * 0.8, cell_h * 0.82 * aspect / k)
+        # 80 % of the cell width, and no taller than 90 % of the cell height
+        return min(cell_w * 0.8, cell_h * 0.9 / per)
 
     layout = str(spec.get("layout") or "stack")
     # Per-photo size: each photo's mat is the layout width times its
@@ -258,14 +258,14 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         w = fit_width(cell_w, cell_h)
         for i in range(n):
             col, row = i % cols, i // cols
-            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 10})
+            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 8 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 10})
     elif layout == "scatter":
         cols, _, cell_w, cell_h = cells(n)
         w = fit_width(cell_w, cell_h) * 0.94
         for i in range(n):
             col, row = i % cols, i // cols
             cx = 7 + cell_w * (col + 0.28 + 0.44 * hash01(seed, i, 29))
-            cy = 12 + cell_h * (row + 0.28 + 0.44 * hash01(seed, i, 31))
+            cy = 8 + cell_h * (row + 0.28 + 0.44 * hash01(seed, i, 31))
             out.append({"cx": cx, "cy": cy, "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 26})
     elif layout == "filmstrip":
         # A horizontal band of overlapping frames, like film frames edge to
@@ -273,14 +273,13 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         rows = 1 if n <= 5 else 2
         per_row = math.ceil(n / rows)
         first_row = n - per_row * (rows - 1)
-        k = 0.91 / _photo_aspect(shape) + 0.25
         for i in range(n):
             row = 0 if i < first_row else 1
             cols = first_row if row == 0 else per_row
             col = i if row == 0 else i - first_row
             cell_wr = (100 - 2 * 5) / cols
             cell_h = (100 - 2 * 12) / rows
-            w = min(cell_wr * 1.1, cell_h * 0.82 * aspect / k)
+            w = min(cell_wr * 1.1, cell_h * 0.9 / per)
             out.append({"cx": 5 + cell_wr * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 8})
     elif layout == "fan":
         # Cards fanned out from a point below the frame — each card tilts
@@ -301,12 +300,11 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         # Pinterest-style columns: seeded size variety, each photo stacked
         # into the shortest column (a single photo is simply centred).
         if n == 1:
-            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(40.0, 0), "rot": 0.0})
+            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(min(40.0, 76 / per), 0), "rot": 0.0})
         else:
             cols = 2 if n <= 2 else (3 if n <= 9 else 4)
             margin_x = 6.0
             cell_w = (100 - 2 * margin_x) / cols
-            k = 0.91 / _photo_aspect(shape) + 0.25
             base = cell_w * 0.88
             ws = [base * (0.82 + 0.36 * hash01(seed, i, 41)) * photo_size(spec, i) for i in range(n)]
 
@@ -319,7 +317,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
                     for j in range(1, cols):
                         if fills[j] < fills[c] - 1e-9:
                             c = j
-                    mh = ws[i] * scale * k / aspect
+                    mh = ws[i] * scale * per
                     res.append({"cx": margin_x + cell_w * (c + 0.5), "cy": 12 + fills[c] + gap / 2 + mh / 2})
                     fills[c] += gap + mh
                 return res, max(fills)
@@ -341,8 +339,8 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         gap = max(0.0, min(12.0, gap if math.isfinite(gap) else 1.6))
         cell_w = (100 - 8) / (cols + 0.5)
         cell_h = (100 - 16) / max(1, rows)
-        k = 0.91 / _photo_aspect(shape) + 0.25
-        w = min(cell_w - gap, cell_h * 0.82 * aspect / k)
+        # Brick-tight: the gutter between rows equals the gutter between columns.
+        w = min(cell_w - gap, (cell_h - gap) / per)
         for i in range(n):
             row, col = divmod(i, cols)
             ox = (row % 2) * cell_w * 0.5
@@ -356,7 +354,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         w = fit_width(cell_w, cell_h) * 0.92
         for i in range(n):
             col, row = i % cols, i // cols
-            ox = (row % 2) * cell_w * 0.28
+            ox = (0.14 if row % 2 else -0.14) * cell_w
             sign = 1 if (row + col) % 2 else -1
             out.append({"cx": 6 + ox + cell_w * (col + 0.5), "cy": 10 + cell_h * (row + 0.5),
                         "w": width_of(w, i), "rot": sign * (6 + 4 * hash01(seed, i, 37))})
@@ -368,20 +366,31 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
             out.append({"cx": 50 + 40 * math.cos(a), "cy": 62 - 34 * math.sin(a),
                         "w": width_of(w, i), "rot": 90 - a * 180 / math.pi})
     elif layout == "photowall":
-        cols = max(1, math.ceil(math.sqrt(n)))
-        rows = math.ceil(n / cols)
+        # A compact block of equal tiles with a small gutter — twin of the
+        # photowall branch in collageCore.ts: the column count that gives the
+        # largest tile (ties: fewest empty cells), block and short last row
+        # centred.
         try:
             gap = float(spec.get("gap")) if spec.get("gap") is not None and not isinstance(spec.get("gap"), bool) else 0.7
         except (TypeError, ValueError):
             gap = 0.7
         gap = max(0.0, min(12.0, gap if math.isfinite(gap) else 0.7))
-        cell_w = (100 - gap) / cols
-        cell_h = (100 - gap) / rows
-        k = 0.91 / _photo_aspect(shape) + 0.25
-        w = min(cell_w - gap, cell_h * aspect / k)
+        best_cols, best_rows, best_w, best_empty = 1, n, 0.0, 0
+        for cols in range(1, n + 1):
+            rows = math.ceil(n / cols)
+            w = min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1)) / (rows * per))
+            empty = cols * rows - n
+            if w > best_w + 1e-9 or (abs(w - best_w) <= 1e-9 and empty < best_empty):
+                best_cols, best_rows, best_w, best_empty = cols, rows, w, empty
+        cols, rows = best_cols, best_rows
+        w = max(2.0, best_w)
+        mat_h = w * per
+        y0 = (100 - (rows * mat_h + (rows - 1) * gap)) / 2
         for i in range(n):
             col, row = i % cols, i // cols
-            out.append({"cx": gap / 2 + cell_w * (col + 0.5), "cy": gap / 2 + cell_h * (row + 0.5),
+            in_row = n - cols * (rows - 1) if row == rows - 1 else cols
+            x0 = (100 - (in_row * w + (in_row - 1) * gap)) / 2
+            out.append({"cx": x0 + w / 2 + col * (w + gap), "cy": y0 + mat_h / 2 + row * (mat_h + gap),
                         "w": width_of(w, i), "rot": 0.0})
     elif layout == "booth":
         w = min(22.0, 90.0 / max(1, n))
