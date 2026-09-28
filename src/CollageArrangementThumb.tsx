@@ -11,7 +11,7 @@
 // left out on purpose: the thumbnails compare arrangements, not photos.
 import { useMemo } from 'react'
 import { FRAME_H, FRAME_W } from './textMotionScene'
-import { frameBorderFrac, photoAspect, photoFrame, placements, type CollageLayout, type CollagePhoto, type CollageSpec, type CollageTemplate } from './collageCore'
+import { frameBorderFrac, freeFromDisplayed, photoAspect, photoFrame, placements, type CollageLayout, type CollagePhoto, type CollageSpec, type CollageTemplate } from './collageCore'
 
 const W = 100
 const H = W / (FRAME_W / FRAME_H)
@@ -34,7 +34,7 @@ export function CollageArrangementThumb({ spec, layout, template, photoCount }: 
   // Free keeps the photos where the user dragged them; before that it starts
   // from the current arrangement (the same seeding the Layout switch does).
   const freeKey = layout === 'free'
-    ? JSON.stringify([spec.layout, spec.template, spec.photos.map(p => [p.cx, p.cy, p.rot])])
+    ? JSON.stringify([spec.layout, spec.template, spec.photos.map(p => [p.cx, p.cy, p.rot, p.w])])
     : ''
   const frameKey = JSON.stringify(spec.frame ?? null)
   const mats = useMemo(() => {
@@ -42,12 +42,12 @@ export function CollageArrangementThumb({ spec, layout, template, photoCount }: 
     const photos: CollagePhoto[] = Array.from({ length: count }, (_, i) => ({ path: `slot-${i}` }))
     if (layout === 'free') {
       const from: CollageSpec = { ...spec, layout: spec.layout === 'free' ? 'stack' : spec.layout, photos: spec.photos.length ? spec.photos : photos }
-      const seeded = placements(from, FRAME_W / FRAME_H)
+      const seeded = freeFromDisplayed(from, FRAME_W / FRAME_H, true)
       photos.forEach((p, i) => {
-        const real = spec.photos[i]
-        p.cx = real?.cx ?? seeded[i]?.cx ?? 50
-        p.cy = real?.cy ?? seeded[i]?.cy ?? 50
-        p.rot = real?.rot ?? seeded[i]?.rot ?? 0
+        p.cx = seeded[i]?.cx ?? 50
+        p.cy = seeded[i]?.cy ?? 50
+        p.rot = seeded[i]?.rot ?? 0
+        p.w = seeded[i]?.w
       })
     }
     const design: CollageSpec = { ...spec, layout, template: isTemplate ? template?.id : spec.template, randomSize: false, photos }

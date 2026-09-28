@@ -1491,8 +1491,19 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#cfd4ca;font-size:11px}
 .collage-empty .btn{pointer-events:auto}
 .collage-strip{display:flex;gap:6px;overflow-x:auto;padding:2px;scrollbar-width:thin}
+.collage-strip-hint{display:flex;align-items:flex-start;gap:5px;margin:-3px 2px 0;color:#8f958a;font-size:8px;line-height:1.45}
+.collage-strip-hint svg{flex:0 0 auto;margin-top:1px}
 .collage-chip{position:relative;flex:0 0 auto;width:54px;height:54px;border-radius:6px;overflow:hidden;border:1px solid #4a4e45;background:#20231f;cursor:grab}
 .collage-chip.over{border-color:var(--lime)}
+.collage-chip.lifted{opacity:.45}
+/* Dropping a chip on the preview: the canvas lights up as a target, a ghost
+   of the mat (its real size and tilt) follows the pointer at the drop point. */
+.frame-canvas.drop-armed:after{border-color:#d1ef9d88;border-style:dashed}
+.frame-canvas.drop-over{outline:2px solid var(--lime);outline-offset:-2px}
+.collage-drop-ghost{position:absolute;z-index:6;pointer-events:none;box-sizing:border-box;border:2px dashed var(--lime);border-radius:3px;background:#0006;box-shadow:0 8px 24px #0008;overflow:hidden}
+.collage-drop-ghost img{width:100%;height:100%;object-fit:cover;opacity:.7;display:block}
+.collage-drop-ghost b{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:var(--lime);color:#1e211d;font:800 11px Manrope;display:grid;place-items:center}
+.collage-drop-hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:6;pointer-events:none;display:flex;align-items:center;gap:5px;white-space:nowrap;background:#000c;color:#fff;border:1px solid #ffffff22;border-radius:5px;padding:5px 9px;font-size:9px;font-weight:700}
 .collage-chip img{width:100%;height:100%;object-fit:cover;pointer-events:none}
 .collage-chip .chip-num{position:absolute;left:2px;top:2px;z-index:2;background:#0009;color:#fff;font-size:8px;font-weight:700;border-radius:3px;padding:0 3px}
 .collage-chip .chip-actions{position:absolute;inset:auto 0 0 0;display:flex;justify-content:space-between;background:#000a;opacity:0;transition:opacity .12s}

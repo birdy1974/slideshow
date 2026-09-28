@@ -446,7 +446,12 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
                 cy = 50.0
             if not math.isfinite(rot):
                 rot = 0.0
-            out.append({"cx": max(0.0, min(100.0, cx)), "cy": max(0.0, min(100.0, cy)), "w": width_of(w, i), "rot": rot})
+            try:
+                own = float(p.get("w")) if p.get("w") is not None and not isinstance(p.get("w"), bool) else float("nan")
+            except (TypeError, ValueError):
+                own = float("nan")
+            base = max(FREE_MIN_W, min(FREE_MAX_W, own)) if math.isfinite(own) and own > 0 else w
+            out.append({"cx": max(0.0, min(100.0, cx)), "cy": max(0.0, min(100.0, cy)), "w": width_of(base, i), "rot": rot})
     elif layout == "template":
         # Each mat is scaled down to fit its slot's box (width and height), so
         # the mosaic keeps its rows and columns whatever the photo shape or
@@ -492,6 +497,39 @@ def photo_delay(spec: dict[str, Any], i: int) -> float:
     if not math.isfinite(d):
         d = default_delay(len(photos), i)
     return max(0.0, min(30.0, d))
+
+
+# Bounds for a photo's own Free-layout width (``photo["w"]``).
+FREE_MIN_W = 4.0
+FREE_MAX_W = 100.0
+
+
+def free_from_displayed(spec: dict[str, Any], aspect: float, keep_stored: bool) -> list[dict[str, Any]]:
+    """Photos of a Free arrangement seeded from what another arrangement shows
+    (twin of ``freeFromDisplayed``): each photo keeps its displayed centre, tilt
+    and mat size — the size stored as the photo's own width before its size
+    multiplier. ``keep_stored`` prefers previously stored free values."""
+    photos = list(spec.get("photos") or [])
+    if spec.get("layout") == "free":
+        return photos
+    pls = placements(spec, aspect)
+    out = []
+    for i, p in enumerate(photos):
+        if i < len(pls):
+            pl = pls[i]
+            shown = {"cx": pl["cx"], "cy": pl["cy"], "rot": pl["rot"], "w": pl["w"] / photo_size(spec, i)}
+        else:
+            shown = {"cx": 50.0, "cy": 50.0, "rot": 0.0, "w": None}
+        entry = dict(p)
+        for key in ("cx", "cy", "rot", "w"):
+            if keep_stored and p.get(key) is not None:
+                continue
+            if shown[key] is None:
+                entry.pop(key, None)
+            else:
+                entry[key] = shown[key]
+        out.append(entry)
+    return out
 
 
 def photo_size(spec: dict[str, Any], i: int) -> float:
@@ -936,6 +974,12 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
                 v = None
             if v is not None and math.isfinite(v):
                 entry[key] = max(lo, min(hi, v))
+        try:
+            own_w = float(p.get("w")) if p.get("w") is not None and not isinstance(p.get("w"), bool) else None
+        except (TypeError, ValueError):
+            own_w = None
+        if own_w is not None and math.isfinite(own_w) and own_w > 0:
+            entry["w"] = max(FREE_MIN_W, min(FREE_MAX_W, own_w))
         if isinstance(p.get("filter"), str) and p.get("filter"):
             entry["filter"] = p["filter"]
         try:

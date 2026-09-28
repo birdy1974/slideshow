@@ -62,6 +62,10 @@ export interface CollagePhoto extends CollagePhotoLook {
   /** Free-layout resting position (percent of the frame). Missing = 50/50. */
   cx?: number
   cy?: number
+  /** Free-layout mat width (percent of the frame width, before the size
+   *  multiplier). Set when an arrangement is turned into Free so every mat
+   *  keeps the size it had; missing = Free's own rule by photo count. */
+  w?: number
   /** Per-photo frame override (shape / colour / thickness). Missing = the spec default. */
   frame?: CollageFrame
   /** Free-layout resting tilt in degrees. Missing = 0. */
@@ -548,13 +552,15 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const w = n <= 3 ? 42 : n <= 6 ? 34 : 30
     for (let i = 0; i < n; i++) {
       const p = spec.photos[i] || { path: '' }
-      const cx = Number.isFinite(Number(p.cx)) ? Number(p.cx) : 50
-      const cy = Number.isFinite(Number(p.cy)) ? Number(p.cy) : 50
-      const rot = Number.isFinite(Number(p.rot)) ? Number(p.rot) : 0
+      const cx = num(p.cx) ?? 50
+      const cy = num(p.cy) ?? 50
+      const rot = num(p.rot) ?? 0
+      const own = num(p.w)
+      const base = own !== undefined && own > 0 ? Math.max(FREE_MIN_W, Math.min(FREE_MAX_W, own)) : w
       out.push({
         cx: Math.max(0, Math.min(100, cx)),
         cy: Math.max(0, Math.min(100, cy)),
-        w: widthOf(w, i),
+        w: widthOf(base, i),
         rot,
       })
     }
@@ -599,6 +605,29 @@ export function photoDelay (spec: CollageSpec, i: number): number {
   if (raw !== undefined && raw !== null && typeof raw !== 'boolean' && !(typeof raw === 'string' && raw.trim() === '')) d = Number(raw)
   if (!Number.isFinite(d)) d = defaultDelay(photos.length, i)
   return Math.max(0, Math.min(30, d))
+}
+
+/** Bounds for a photo's own Free-layout width (`CollagePhoto.w`). */
+export const FREE_MIN_W = 4
+export const FREE_MAX_W = 100
+
+/** Photos of a Free arrangement seeded from what another arrangement shows:
+ *  each photo keeps its displayed centre, tilt and mat size (the size is
+ *  stored as the photo's own width before its size multiplier, so the
+ *  multiplier keeps working). `keepStored` prefers a photo's previously
+ *  stored free position/size over the displayed one (the "Free" choice in
+ *  the picker restores a manual layout that way); a drop onto the preview
+ *  wants exactly what is on screen and passes false. */
+export function freeFromDisplayed (spec: CollageSpec, aspect: number, keepStored: boolean): CollagePhoto[] {
+  if (spec.layout === 'free') return spec.photos
+  const pls = placements(spec, aspect)
+  return spec.photos.map((p, i) => {
+    const pl = pls[i]
+    const shown = pl ? { cx: pl.cx, cy: pl.cy, rot: pl.rot, w: pl.w / photoSize(spec, i) } : { cx: 50, cy: 50, rot: 0, w: undefined }
+    return keepStored
+      ? { ...p, cx: p.cx ?? shown.cx, cy: p.cy ?? shown.cy, rot: p.rot ?? shown.rot, w: p.w ?? shown.w }
+      : { ...p, ...shown }
+  })
 }
 
 /** Photo i's mat size multiplier — the stored value if present (clamped to
@@ -965,6 +994,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     const cx = num(p.cx)
     const cy = num(p.cy)
     const rot = num(p.rot)
+    const w = num(p.w)
     const look = photoLookOf(p)
     photos.push({
       path: p.path,
@@ -974,6 +1004,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       cx: cx !== undefined ? Math.max(0, Math.min(100, cx)) : undefined,
       cy: cy !== undefined ? Math.max(0, Math.min(100, cy)) : undefined,
       rot: rot !== undefined ? Math.max(-45, Math.min(45, rot)) : undefined,
+      w: w !== undefined && w > 0 ? Math.max(FREE_MIN_W, Math.min(FREE_MAX_W, w)) : undefined,
       frame: frameFields(p.frame),
       ...look,
     })

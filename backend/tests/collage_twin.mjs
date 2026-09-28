@@ -30,6 +30,10 @@ for (const c of input.cases) {
     placements: pls,
     states,
     camera,
+    // Free seeded from what this arrangement shows (a chip dropped on the
+    // preview) — and the placements that seed then produces.
+    freeSeed: core.freeFromDisplayed(spec, c.aspect, false).map(p => ({ cx: p.cx, cy: p.cy, rot: p.rot, w: p.w })),
+    freeSeedPlacements: core.placements({ ...spec, layout: 'free', photos: core.freeFromDisplayed(spec, c.aspect, false) }, c.aspect),
     mapBeats: c.mapBeats
       ? core.slideLocalBeats(c.mapBeats.beats, c.mapBeats.trackStart, c.mapBeats.trimStart, c.mapBeats.trimEnd, c.mapBeats.holdStart)
       : null,

@@ -26,6 +26,7 @@ from app.collage import (
     exit_mode,
     exit_offset,
     exit_total,
+    free_from_displayed,
     bg_blur_radius,
     collage_duration,
     collage_graph,
@@ -306,6 +307,28 @@ def _cases() -> list[dict]:
         "spec": _spec("template", "none", "square", 3, 4, template="no-such-template"),
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.0], "hashArgs": [4, 3, 29], "matW": 30,
     })
+    # Free arrangement: stored centres / tilts / own widths, the size
+    # multiplier and random sizes on top, junk and missing fields.
+    free = _spec("free", "pop", "4:3", 6, 9, sizes=[None, 1.3, None, 0.6, None, None])
+    for p, extra in zip(free["photos"], [
+        {"cx": 20, "cy": 30, "rot": -8, "w": 18},
+        {"cx": 70, "cy": 25, "rot": 5},
+        {"cx": 50, "cy": 60, "w": 55.5},
+        {"cx": "junk", "cy": None, "rot": True, "w": "nope"},
+        {"w": -3},
+        {"cx": 120, "cy": -5, "w": 400},
+    ]):
+        p.update(extra)
+    cases.append({
+        "id": "free-own-widths",
+        "spec": free, "aspect": 16 / 9, "leadIn": 0.25, "times": [0.0, 0.5, 1.2, 3.0],
+        "hashArgs": [9, 6, 29], "matW": 30,
+    })
+    cases.append({
+        "id": "free-random-sizes",
+        "spec": {**_spec("free", "drop", "square", 4, 11, delays=[0.2, 0.2, 0.2, 0.2]), "randomSize": True, "randomSizeMin": 0.6, "randomSizeMax": 1.4},
+        "aspect": 4 / 3, "leadIn": 0.0, "times": [0.0, 0.6, 2.0], "hashArgs": [11, 4, 29], "matW": 30,
+    })
     return cases
 
 
@@ -338,6 +361,20 @@ class CollageTwinTest(unittest.TestCase):
             for a, b in zip(got["placements"], py_pls):
                 for key in ("cx", "cy", "w", "rot"):
                     assert abs(a[key] - b[key]) < TOL, f"{where} {key}: {a[key]} != {b[key]}"
+            # Free seeded from what this arrangement shows, and its placements
+            py_seed = free_from_displayed(spec, aspect, False)
+            assert len(got["freeSeed"]) == len(py_seed) == len(spec["photos"]), where
+            for a, b in zip(got["freeSeed"], py_seed):
+                for key in ("cx", "cy", "w", "rot"):
+                    va, vb = a.get(key), b.get(key)
+                    if isinstance(va, (int, float)) and isinstance(vb, (int, float)) and not isinstance(va, bool) and not isinstance(vb, bool):
+                        assert abs(va - vb) < TOL, f"{where} seed {key}: {va} != {vb}"
+                    else:  # a Free spec is passed through untouched, junk included
+                        assert va == vb, f"{where} seed {key}: {va!r} vs {vb!r}"
+            py_seed_pls = placements({**spec, "layout": "free", "photos": py_seed}, aspect)
+            for a, b in zip(got["freeSeedPlacements"], py_seed_pls):
+                for key in ("cx", "cy", "w", "rot"):
+                    assert abs(a[key] - b[key]) < TOL, f"{where} seeded free {key}: {a[key]} != {b[key]}"
             # animation states at every sampled time
             for ti, t in enumerate(case["times"]):
                 for i in range(len(spec["photos"])):
@@ -444,6 +481,44 @@ class CollageTwinTest(unittest.TestCase):
                 assert 10 <= pl["w"] <= 45, (layout, pl)    # 9 polaroids in 3 rows of a 16:9 frame are ~15 % wide
                 assert abs(pl["rot"]) <= 32, (layout, pl)                            # fan spokes + seed offset
 
+
+    def test_free_seeded_from_an_arrangement_shows_the_same_picture(self):
+        """Dropping a chip on the preview turns the arrangement into Free
+        without moving or resizing the other photos: the seeded Free spec
+        places every mat exactly where the source arrangement showed it, the
+        size multiplier still applies on top, and the stored own width is
+        clamped like any other input."""
+        aspect = 16 / 9
+        for layout, template in (("grid", None), ("masonry", None), ("template", "hero-row"), ("photowall", None), ("filmstrip", None), ("fan", None)):
+            spec = {**_spec(layout, "pop", "3:4", 7, 5, sizes=[None, 1.4, None, 0.55, None, None, None], template=template), "frame": {"shape": "polaroid"}}
+            shown = placements(spec, aspect)
+            seeded = {**spec, "layout": "free", "photos": free_from_displayed(spec, aspect, False)}
+            for i, (a, b) in enumerate(zip(placements(seeded, aspect), shown)):
+                for key in ("cx", "cy", "w", "rot"):
+                    assert abs(a[key] - b[key]) < TOL, f"{layout} photo {i} {key}: {a[key]} != {b[key]}"
+            # the own width is stored before the multiplier, so changing the
+            # multiplier afterwards still scales the mat
+            grown = {**seeded, "photos": [{**p, "size": 1.0} if i == 1 else p for i, p in enumerate(seeded["photos"])]}
+            assert abs(placements(grown, aspect)[1]["w"] - shown[1]["w"] / 1.4) < TOL, layout
+        # random sizes: the seed removes the randomness from the stored width, not the result
+        spec = {**_spec("scatter", "drop", "4:3", 5, 3), "randomSize": True, "randomSizeMin": 0.6, "randomSizeMax": 1.4}
+        shown = placements(spec, aspect)
+        seeded = {**spec, "layout": "free", "photos": free_from_displayed(spec, aspect, False)}
+        for a, b in zip(placements(seeded, aspect), shown):
+            assert abs(a["w"] - b["w"]) < TOL
+        # keep_stored: previously stored free values win, missing ones come from the picture
+        spec = _spec("grid", "drop", "4:3", 3, 1)
+        spec["photos"][0].update({"cx": 11, "cy": 12, "rot": 3, "w": 20})
+        kept = free_from_displayed(spec, aspect, True)
+        assert (kept[0]["cx"], kept[0]["cy"], kept[0]["rot"], kept[0]["w"]) == (11, 12, 3, 20)
+        assert abs(kept[1]["cx"] - placements(spec, aspect)[1]["cx"]) < TOL
+        # a Free spec is returned as is
+        assert free_from_displayed(seeded, aspect, False) == seeded["photos"]
+        # normalisation keeps and clamps the own width, drops junk
+        item = normalize_collage({"type": "collage", "collage": {"layout": "free", "photos": [
+            {"path": "/a.jpg", "w": 30.5}, {"path": "/b.jpg", "w": 900}, {"path": "/c.jpg", "w": "x"}, {"path": "/d.jpg", "w": 0}]}})
+        ws = [p.get("w") for p in item["photos"]]
+        assert ws == [30.5, 100.0, None, None], ws
 
     def test_fitted_layouts_keep_their_rows_apart(self):
         """Cell-based layouts size mats with the real mat height (photo + frame

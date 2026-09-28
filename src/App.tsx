@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, exitTotal, frameBorderFrac, frameClipPath, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, exitTotal, frameBorderFrac, frameClipPath, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
@@ -3921,9 +3921,10 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   useEffect(() => { try { localStorage.setItem('collageEditorLayout', uiLayout) } catch { /* ignore */ } }, [uiLayout])
   const goLayout = (id: CollageSpec['layout']) => {
     if (id === 'free') {
+      // Free starts from what is on screen (centres, tilts and mat sizes);
+      // photos that were placed by hand before keep those positions.
       const from = spec.layout === 'free' ? { ...spec, layout: 'stack' as const } : spec
-      const pls = placements(from, FRAME_W / FRAME_H)
-      setSpec({ layout: 'free', photos: photos.map((p, i) => ({ ...p, cx: p.cx ?? pls[i]?.cx ?? 50, cy: p.cy ?? pls[i]?.cy ?? 50, rot: p.rot ?? pls[i]?.rot ?? 0 })) })
+      setSpec({ layout: 'free', photos: freeFromDisplayed(from, FRAME_W / FRAME_H, true) })
       return
     }
     if (id === 'template') setSpec({ layout: 'template', template: spec.template || 'quad' })
@@ -3931,6 +3932,21 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   }
   const moveFreePhoto = (index: number, cx: number, cy: number) => {
     setSpec({ photos: photos.map((p, i) => i === index ? { ...p, cx, cy } : p) })
+  }
+  // A chip dropped on the preview: that photo lands with its centre on the
+  // drop point, in the render as in the preview. Any other arrangement turns
+  // into Free first, seeded from exactly what it shows, so the other photos
+  // do not move or change size — only the dropped one goes where it was put.
+  const placePhotoAt = (index: number, cx: number, cy: number) => {
+    const seeded = freeFromDisplayed(spec, FRAME_W / FRAME_H, false)
+    setSpec({ layout: 'free', photos: seeded.map((p, k) => k === index ? { ...p, cx, cy } : p) })
+  }
+  const shownPlacements = placements(spec, FRAME_W / FRAME_H)
+  const [dropAt, setDropAt] = useState<{ x: number; y: number } | null>(null)
+  const stagePoint = (e: React.DragEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    const pct = (v: number) => Math.max(0, Math.min(100, Math.round(v * 10) / 10))
+    return { x: pct((e.clientX - r.left) / r.width * 100), y: pct((e.clientY - r.top) / r.height * 100) }
   }
   const setAllDelays = (v: number) => {
     const n = photos.length
@@ -4047,17 +4063,45 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     <div className="preview-top"><div><strong>{isNew ? 'New photo collage' : 'Photo collage'}</strong><span>PICK UP TO {MAX_COLLAGE_PHOTOS} PHOTOS · THE PREVIEW IS THE RENDER ENGINE</span></div><div className="frame-head-actions"><div className="frame-layout-toggle" role="group" aria-label="Editor layout"><button type="button" className={uiLayout === 'sidebar' ? 'active' : ''} title="Settings next to the example" onClick={() => setUiLayout('sidebar')}><PanelRight size={14}/><span>Next to</span></button><button type="button" className={uiLayout === 'below' ? 'active' : ''} title="Settings below the example" onClick={() => setUiLayout('below')}><PanelBottom size={14}/><span>Below</span></button></div><button onClick={onClose} title={isNew ? 'Discard this collage' : 'Discard changes and close'}><X size={20}/></button></div></div>
     <div className="frame-editor-body">
       <div className="frame-left">
-        <div className="frame-canvas" style={{ background: item.frameBackground }}>
+        <div className={`frame-canvas${dragChip !== null ? ' drop-armed' : ''}${dropAt ? ' drop-over' : ''}`} style={{ background: item.frameBackground }}
+          onDragOver={e => {
+            if (dragChip === null) return
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'move'
+            const at = stagePoint(e)
+            setDropAt(prev => prev && prev.x === at.x && prev.y === at.y ? prev : at)
+          }}
+          onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropAt(null) }}
+          onDrop={e => {
+            if (dragChip === null) return
+            e.preventDefault()
+            const at = stagePoint(e)
+            placePhotoAt(dragChip, at.x, at.y)
+            setDragChip(null); setDragOverChip(null); setDropAt(null)
+          }}>
           <CollageSlideStage item={item} replayKey={replayKey} onMovePhoto={spec.layout === 'free' ? moveFreePhoto : undefined} />
           {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
+          {dropAt && dragChip !== null && photos[dragChip] && shownPlacements[dragChip] && (() => {
+            // Ghost of the mat at the drop point — the size and tilt it will
+            // have there (the drop keeps both), so you can line it up exactly.
+            const pl = shownPlacements[dragChip]
+            const h = matHeight(pl.w, spec.shape, FRAME_W / FRAME_H, photos[dragChip].frame ?? spec.frame)
+            return <div className="collage-drop-ghost" aria-hidden="true" style={{ left: `${dropAt.x}%`, top: `${dropAt.y}%`, width: `${pl.w}%`, height: `${h}%`, transform: `translate(-50%,-50%) rotate(${pl.rot}deg)` }}>
+              <img src={collagePhotoUrl(photos[dragChip])} alt="" draggable={false} />
+              <b>{dragChip + 1}</b>
+            </div>
+          })()}
+          {dragChip !== null && <div className="collage-drop-hint" aria-live="polite">{dropAt
+            ? <><Move size={11}/> Drop to place photo {dragChip + 1} here{spec.layout === 'free' ? '' : ' — the arrangement becomes Free'}</>
+            : <><Move size={11}/> Drop the photo on the preview to place it yourself</>}</div>}
           <button type="button" className="collage-replay" title="Restart the preview from the first photo" onClick={() => setReplayKey(k => k + 1)}><RotateCcw size={12}/> Replay</button>
         </div>
         <div className="collage-strip">
-          {photos.map((photo, i) => <div className={`collage-chip${dragOverChip === i ? ' over' : ''}`} key={`${photo.path}-${i}`}
-            draggable onDragStart={() => setDragChip(i)} onDragEnd={() => { setDragChip(null); setDragOverChip(null) }}
+          {photos.map((photo, i) => <div className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}`} key={`${photo.path}-${i}`}
+            draggable onDragStart={e => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move'; setDragChip(i) }} onDragEnd={() => { setDragChip(null); setDragOverChip(null); setDropAt(null) }}
             onDragOver={e => { e.preventDefault(); setDragOverChip(i) }}
             onDrop={e => { e.preventDefault(); dropChip(i) }}
-            title={photo.name || photo.path}>
+            title={`${photo.name || photo.path} — drag to reorder, or drop it on the preview to place it yourself`}>
             <span className="chip-num">{i + 1}</span>
             <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy" />
             <span className="chip-actions">
@@ -4070,6 +4114,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           {!full && <button type="button" className="collage-add" onClick={onPickPhotos} title="Choose photos from the media library"><Plus size={15}/> Add photos…</button>}
           {full && <span className="collage-full"><Info size={12}/> {MAX_COLLAGE_PHOTOS} photos is the maximum</span>}
         </div>
+        {photos.length > 0 && <small className="collage-strip-hint"><Move size={11}/> {spec.layout === 'free'
+          ? 'Drag a photo from this row onto the preview to put it where you want it, or drag the photos on the preview itself.'
+          : 'Drag a photo from this row onto the preview to put it exactly where you want it — the arrangement becomes Free and the other photos stay where they are.'}</small>}
       </div>
       <aside>
         <div className="collage-choices-group"><FieldLabel>Arrangement</FieldLabel>
