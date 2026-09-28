@@ -153,7 +153,7 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
 export const COLLAGE_SHAPES: CollageShape[] = ['4:3', '16:9', '3:2', 'square', '2:3', '3:4', '9:16']
 
-function photoAspect (shape: CollageShape | string): number {
+export function photoAspect (shape: CollageShape | string): number {
   if (shape === 'square') return 1
   if (shape === '3:4') return 3 / 4
   if (shape === '16:9') return 16 / 9

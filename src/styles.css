@@ -1548,6 +1548,27 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-templates{display:flex;flex-direction:column;gap:10px;margin-top:8px}
 .collage-template-family{display:flex;flex-direction:column;gap:5px}
 .collage-template-family>em{font:800 8px Manrope,sans-serif;letter-spacing:.8px;color:#8f948b;text-transform:uppercase}
+/* Template thumbnails: a small mosaic per template instead of its name
+   (CollageTemplateThumb). The frame is 16:9 like the slide; mats and photos
+   follow the collage's current shape and frame style. */
+.collage-template-thumbs{gap:7px}
+.collage-template-thumbs button{width:74px;padding:3px;line-height:0;border-radius:7px;transition:border-color .12s,background .12s}
+.collage-template-thumbs button:hover{border-color:#7f867a;background:#262a24}
+.collage-template-thumbs button.active{background:#2a3324}
+.collage-template-thumb{display:block;width:100%;height:auto;border-radius:4px}
+.collage-template-thumb .tt-frame{fill:#141612}
+.collage-template-thumb .tt-mat{fill:#e9ebe3}
+.collage-template-thumb .tt-photo{fill:#7a8a6a}
+.collage-template-thumb .tone-1 .tt-photo{fill:#8291a0}
+.collage-template-thumb .tone-2 .tt-photo{fill:#a08b73}
+.collage-template-thumb .tt-slot.empty .tt-mat{fill:#ffffff10;stroke:#9aa094;stroke-width:1.2;stroke-dasharray:2.4 1.8;vector-effect:non-scaling-stroke}
+.collage-template-thumb .tt-slot.empty .tt-photo{fill:#3b4037}
+.collage-template-thumbs button.active .tt-frame{fill:#1b2216}
+.collage-template-thumbs button.active .tt-photo{fill:#a9c77a}
+.collage-template-thumbs button.active .tone-1 .tt-photo{fill:#8fb7a0}
+.collage-template-thumbs button.active .tone-2 .tt-photo{fill:#c6c27e}
+.collage-template-thumbs button.active .tt-slot.empty .tt-mat{stroke:var(--lime)}
+.collage-choices-group small b{color:#c9cec2;font-weight:800}
 .collage-mat.free{cursor:grab}
 .collage-mat.free:active{cursor:grabbing}
 html.modal-open,html.modal-open body{overflow:hidden}

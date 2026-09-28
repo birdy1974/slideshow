@@ -48,6 +48,7 @@ import type { RandomScope } from './transitionControls'
 import { EASING_DEFAULT, getGLParams, isGLTransition, transitionPreviewUrl, transitionSymbol } from './transitionCatalog'
 import { uploadFile, isUploadableFile, type UploadItem, type UploadsStatus } from './uploads'
 import { PopupBackdrop, useEscapeToClose, useLayer } from './layers'
+import { CollageTemplateThumb } from './CollageTemplateThumb'
 
 type MediaRoot = 'photos' | 'videos' | 'music' | 'uploads'
 type PreviewMode = 'fast' | 'standard'
@@ -4024,6 +4025,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     : beatStatus === 'error' ? 'Could not analyse the music (unreadable audio?) — photos keep their waits.'
     : beatsReady ? `${spec.beats?.length} beats mapped into this slide — the “lands” time on each row is the real arrival.`
     : 'No beats detected in the music — photos keep their waits.'
+  // Template thumbnails: the selected template, and how the current photo
+  // count maps onto its slots (the thumbs dash the empty ones).
+  const template = collageTemplate(spec.template)
+  const slotDelta = photos.length - template.slots.length
+  const templateNote = slotDelta > 0
+    ? `${slotDelta} extra photo${slotDelta === 1 ? '' : 's'} overlay the slots`
+    : slotDelta < 0 ? `${-slotDelta} slot${slotDelta === -1 ? '' : 's'} still empty` : 'every slot filled'
   // Newest popup on top: the photo pickers, the per-photo look editor and the
   // caption editor opened from here always land above this backdrop.
   const layer = useLayer()
@@ -4062,11 +4070,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           {spec.layout === 'template' && <div className="collage-templates">
             {(['magazine', 'polaroid'] as const).map(family => <div key={family} className="collage-template-family">
               <em>{family === 'magazine' ? 'Magazine mosaics' : 'Polaroid wall'}</em>
-              <div className="collage-choices">{COLLAGE_TEMPLATES.filter(t => t.family === family).map(t =>
-                <button key={t.id} type="button" className={spec.template === t.id ? 'active' : ''} title={t.hint} onClick={() => setSpec({ template: t.id })}>{t.label}</button>)}
+              <div className="collage-choices collage-template-thumbs">{COLLAGE_TEMPLATES.filter(t => t.family === family).map(t =>
+                <button key={t.id} type="button" className={spec.template === t.id ? 'active' : ''} title={`${t.label} — ${t.hint}`} aria-label={t.label} aria-pressed={spec.template === t.id} onClick={() => setSpec({ template: t.id })}>
+                  <CollageTemplateThumb template={t} spec={spec} photoCount={photos.length} />
+                </button>)}
               </div>
             </div>)}
-            <small>{collageTemplate(spec.template).hint}</small>
+            <small><b>{template.label}</b> · {template.hint} · {templateNote}</small>
           </div>}
           {(spec.layout === 'honeycomb' || spec.layout === 'photowall') && <div className="collage-timing-total">
             <span title="Gutter between photos">Gap</span>
