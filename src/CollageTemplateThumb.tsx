@@ -1,12 +1,13 @@
 // A small mosaic that shows a collage template's layout — the picture
-// instead of the words "1 + 2 left". Drawn from the same slot table the
-// stage and the MP4 use (COLLAGE_TEMPLATES), with the collage's current
-// photo shape and frame style, so a 4:3 page really looks different from a
-// square one and polaroid mats keep their caption strip. Only the template's
+// instead of the words "1 + 2 left". The mats come from the same placements()
+// the stage and the MP4 use, run on the template with the collage's current
+// photo shape and frame style — so a 4:3 page really looks different from a
+// square one, polaroid mats keep their caption strip, and a mat that the
+// template scales down to fit its slot is small here too. Only the template's
 // own slots are drawn (extra photos pile onto them on the stage, which would
 // hide the design here); slots the current photos do not fill are dashed.
 import { FRAME_H, FRAME_W } from './textMotionScene'
-import { frameBorderFrac, photoAspect, photoFrame, type CollageSpec, type CollageTemplate } from './collageCore'
+import { frameBorderFrac, photoAspect, photoFrame, placements, type CollageSpec, type CollageTemplate } from './collageCore'
 
 const W = 100
 const H = W / (FRAME_W / FRAME_H)
@@ -17,9 +18,20 @@ export function CollageTemplateThumb({ template, spec, photoCount }: { template:
   const aspect = photoAspect(spec.shape)
   const n = Math.max(0, Math.floor(photoCount))
   const round = fr.shape === 'circle' || fr.shape === 'oval'
+  // The template's own design: one placeholder photo per slot, with the
+  // collage's default frame (per-photo sizes and frames would make the
+  // templates look different for reasons that have nothing to do with them).
+  const design: CollageSpec = {
+    ...spec,
+    layout: 'template',
+    template: template.id,
+    randomSize: false,
+    photos: template.slots.map((_, i) => ({ path: `slot-${i}` })),
+  }
+  const mats = placements(design, FRAME_W / FRAME_H)
   return <svg className="collage-template-thumb" viewBox={`0 0 ${W} ${H}`} aria-hidden="true" focusable="false">
     <rect className="tt-frame" x={0} y={0} width={W} height={H} rx={2} />
-    {template.slots.map((p, i) => {
+    {mats.map((p, i) => {
       const border = frameBorderFrac(fr) * p.w
       const bottom = fr.shape === 'polaroid' ? 0.205 * p.w : border
       const photoW = Math.max(0.5, p.w - 2 * border)

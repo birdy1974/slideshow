@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 from app.collage import (
+    COLLAGE_TEMPLATES,
     MAX_COLLAGE_PHOTOS,
     base_duration,
     camera_filter,
@@ -28,6 +29,7 @@ from app.collage import (
     bg_blur_radius,
     collage_duration,
     collage_graph,
+    collage_template,
     hash01,
     mat_height,
     normalize_collage,
@@ -70,7 +72,8 @@ def _run_node(cases: dict) -> list:
 def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
           delays: list | None = None, hold: float | None = None, sizes: list | None = None,
           depth: bool = False, beat_sync: bool = False, beats: list | None = None,
-          exit: str | None = None, camera: str | None = None) -> dict:
+          exit: str | None = None, camera: str | None = None,
+          template: str | None = None, frame: dict | None = None, frames: list | None = None) -> dict:
     photos = []
     for k in range(count):
         p = {"path": f"/photos/p{k}.jpg", "name": f"p{k}.jpg"}
@@ -78,8 +81,14 @@ def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
             p["delay"] = delays[k]
         if sizes is not None and k < len(sizes) and sizes[k] is not None:
             p["size"] = sizes[k]
+        if frames is not None and k < len(frames) and frames[k] is not None:
+            p["frame"] = frames[k]
         photos.append(p)
     spec = {"photos": photos, "layout": layout, "animation": animation, "shape": shape, "seed": seed}
+    if template is not None:
+        spec["template"] = template
+    if frame is not None:
+        spec["frame"] = frame
     if hold is not None:
         spec["hold"] = hold
     if depth:
@@ -258,6 +267,44 @@ def _cases() -> list[dict]:
             "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0], "hashArgs": [1, 1, 11], "matW": 30,
             "mapBeats": mb,
         })
+    # templates: every slot table, with mats scaled down to fit their slot
+    # boxes for tall (polaroid / portrait) and flat (16:9, no frame) mats,
+    # fewer photos than slots, exactly the slots, and extra photos piled on
+    # with the seeded offsets — on wide and portrait frames
+    template_ids = [t["id"] for t in COLLAGE_TEMPLATES]
+    frames = [None, {"shape": "none"}, {"shape": "polaroid", "width": 6},
+              {"shape": "rounded", "width": 2.5, "radius": 20}, {"shape": "circle", "width": 0}]
+    for ti, tid in enumerate(template_ids):
+        for shape in ("4:3", "square", "3:4", "16:9", "9:16"):
+            slots = len(collage_template(tid)["slots"])
+            for count in (max(1, slots - 1), slots, slots + 3):
+                fr = frames[(ti + count) % len(frames)]
+                aspect = (16 / 9, 9 / 16, 1.0)[(ti + slots) % 3] if count == slots else 16 / 9
+                cases.append({
+                    "id": f"template-{tid}-{shape}-n{count}-a{aspect:.3f}",
+                    "spec": _spec("template", "drop", shape, count, 5 + ti, template=tid, frame=fr, hold=1),
+                    "aspect": aspect, "leadIn": 0.0, "times": [0.0, 0.4, 1.3], "hashArgs": [5 + ti, count, 29], "matW": 30,
+                })
+    # per-photo frames and sizes inside a template: each mat fits its own frame,
+    # the size multiplier still applies on top
+    cases.append({
+        "id": "template-quad-mixed-frames",
+        "spec": _spec("template", "pop", "4:3", 4, 12, template="quad", frame={"shape": "polaroid"},
+                      frames=[{"shape": "none"}, None, {"shape": "circle", "width": 4}, {"shape": "polaroid", "width": 10}],
+                      sizes=[1.3, None, 0.6, "1.1"]),
+        "aspect": 16 / 9, "leadIn": 0.2, "times": [0.0, 0.5, 1.5], "hashArgs": [12, 4, 29], "matW": 30,
+    })
+    cases.append({
+        "id": "template-hero-random-sizes",
+        "spec": {**_spec("template", "drop", "3:4", 7, 3, template="hero-row", frame={"shape": "rounded", "width": 3}),
+                 "randomSize": True, "randomSizeMin": 0.6, "randomSizeMax": 1.4},
+        "aspect": 4 / 3, "leadIn": 0.0, "times": [0.0, 0.7, 2.0], "hashArgs": [3, 7, 29], "matW": 30,
+    })
+    cases.append({
+        "id": "template-unknown-id-falls-back",
+        "spec": _spec("template", "none", "square", 3, 4, template="no-such-template"),
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.0], "hashArgs": [4, 3, 29], "matW": 30,
+    })
     return cases
 
 

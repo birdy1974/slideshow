@@ -53,78 +53,79 @@ def _photo_aspect(shape: str) -> float:
 
 
 # Twin of COLLAGE_TEMPLATES in src/collageCore.ts — keep slot numbers identical.
+# w / h are the slot BOX (% of frame width / height); the mat is scaled down
+# to fit both in placements().
 COLLAGE_TEMPLATES: list[dict[str, Any]] = [
     {"id": "split-v", "family": "magazine", "slots": [
-        {"cx": 26, "cy": 50, "w": 46, "rot": 0}, {"cx": 74, "cy": 50, "w": 46, "rot": 0},
+        {"cx": 26, "cy": 50, "w": 46, "h": 88, "rot": 0}, {"cx": 74, "cy": 50, "w": 46, "h": 88, "rot": 0},
     ]},
     {"id": "split-h", "family": "magazine", "slots": [
-        {"cx": 50, "cy": 27, "w": 70, "rot": 0}, {"cx": 50, "cy": 73, "w": 70, "rot": 0},
+        {"cx": 50, "cy": 27, "w": 70, "h": 42, "rot": 0}, {"cx": 50, "cy": 73, "w": 70, "h": 42, "rot": 0},
     ]},
     {"id": "triptych", "family": "magazine", "slots": [
-        {"cx": 18, "cy": 50, "w": 30, "rot": 0}, {"cx": 50, "cy": 50, "w": 30, "rot": 0}, {"cx": 82, "cy": 50, "w": 30, "rot": 0},
+        {"cx": 18, "cy": 50, "w": 30, "h": 88, "rot": 0}, {"cx": 50, "cy": 50, "w": 30, "h": 88, "rot": 0}, {"cx": 82, "cy": 50, "w": 30, "h": 88, "rot": 0},
     ]},
     {"id": "trio-left", "family": "magazine", "slots": [
-        {"cx": 30, "cy": 50, "w": 54, "rot": 0}, {"cx": 78, "cy": 28, "w": 36, "rot": 0}, {"cx": 78, "cy": 72, "w": 36, "rot": 0},
+        {"cx": 30, "cy": 50, "w": 54, "h": 88, "rot": 0}, {"cx": 78, "cy": 28, "w": 36, "h": 42, "rot": 0}, {"cx": 78, "cy": 72, "w": 36, "h": 42, "rot": 0},
     ]},
     {"id": "trio-right", "family": "magazine", "slots": [
-        {"cx": 22, "cy": 28, "w": 36, "rot": 0}, {"cx": 22, "cy": 72, "w": 36, "rot": 0}, {"cx": 70, "cy": 50, "w": 54, "rot": 0},
+        {"cx": 22, "cy": 28, "w": 36, "h": 42, "rot": 0}, {"cx": 22, "cy": 72, "w": 36, "h": 42, "rot": 0}, {"cx": 70, "cy": 50, "w": 54, "h": 88, "rot": 0},
     ]},
     {"id": "trio-top", "family": "magazine", "slots": [
-        {"cx": 50, "cy": 28, "w": 88, "rot": 0}, {"cx": 26, "cy": 74, "w": 42, "rot": 0}, {"cx": 74, "cy": 74, "w": 42, "rot": 0},
+        {"cx": 50, "cy": 27, "w": 88, "h": 46, "rot": 0}, {"cx": 26, "cy": 74, "w": 42, "h": 40, "rot": 0}, {"cx": 74, "cy": 74, "w": 42, "h": 40, "rot": 0},
     ]},
     {"id": "quad", "family": "magazine", "slots": [
-        {"cx": 26, "cy": 28, "w": 44, "rot": 0}, {"cx": 74, "cy": 28, "w": 44, "rot": 0},
-        {"cx": 26, "cy": 72, "w": 44, "rot": 0}, {"cx": 74, "cy": 72, "w": 44, "rot": 0},
+        {"cx": 26, "cy": 28, "w": 44, "h": 42, "rot": 0}, {"cx": 74, "cy": 28, "w": 44, "h": 42, "rot": 0},
+        {"cx": 26, "cy": 72, "w": 44, "h": 42, "rot": 0}, {"cx": 74, "cy": 72, "w": 44, "h": 42, "rot": 0},
     ]},
     {"id": "one-plus-three", "family": "magazine", "slots": [
-        {"cx": 32, "cy": 50, "w": 56, "rot": 0}, {"cx": 80, "cy": 20, "w": 32, "rot": 0},
-        {"cx": 80, "cy": 50, "w": 32, "rot": 0}, {"cx": 80, "cy": 80, "w": 32, "rot": 0},
+        {"cx": 32, "cy": 50, "w": 56, "h": 88, "rot": 0}, {"cx": 80, "cy": 20, "w": 32, "h": 26, "rot": 0},
+        {"cx": 80, "cy": 50, "w": 32, "h": 26, "rot": 0}, {"cx": 80, "cy": 80, "w": 32, "h": 26, "rot": 0},
     ]},
     {"id": "hero-row", "family": "magazine", "slots": [
-        {"cx": 50, "cy": 30, "w": 90, "rot": 0}, {"cx": 18, "cy": 76, "w": 28, "rot": 0},
-        {"cx": 50, "cy": 76, "w": 28, "rot": 0}, {"cx": 82, "cy": 76, "w": 28, "rot": 0},
+        {"cx": 50, "cy": 30, "w": 90, "h": 52, "rot": 0}, {"cx": 18, "cy": 77, "w": 28, "h": 34, "rot": 0},
+        {"cx": 50, "cy": 77, "w": 28, "h": 34, "rot": 0}, {"cx": 82, "cy": 77, "w": 28, "h": 34, "rot": 0},
     ]},
     {"id": "five-mosaic", "family": "magazine", "slots": [
-        {"cx": 32, "cy": 50, "w": 56, "rot": 0}, {"cx": 78, "cy": 18, "w": 30, "rot": 0},
-        {"cx": 78, "cy": 50, "w": 30, "rot": 0}, {"cx": 78, "cy": 82, "w": 30, "rot": 0}, {"cx": 32, "cy": 86, "w": 28, "rot": 0},
+        {"cx": 30, "cy": 50, "w": 54, "h": 88, "rot": 0}, {"cx": 68, "cy": 28, "w": 18, "h": 42, "rot": 0},
+        {"cx": 88, "cy": 28, "w": 18, "h": 42, "rot": 0}, {"cx": 68, "cy": 72, "w": 18, "h": 42, "rot": 0},
+        {"cx": 88, "cy": 72, "w": 18, "h": 42, "rot": 0},
     ]},
     {"id": "six-grid", "family": "magazine", "slots": [
-        {"cx": 18, "cy": 28, "w": 30, "rot": 0}, {"cx": 50, "cy": 28, "w": 30, "rot": 0}, {"cx": 82, "cy": 28, "w": 30, "rot": 0},
-        {"cx": 18, "cy": 72, "w": 30, "rot": 0}, {"cx": 50, "cy": 72, "w": 30, "rot": 0}, {"cx": 82, "cy": 72, "w": 30, "rot": 0},
+        {"cx": 18, "cy": 28, "w": 30, "h": 42, "rot": 0}, {"cx": 50, "cy": 28, "w": 30, "h": 42, "rot": 0}, {"cx": 82, "cy": 28, "w": 30, "h": 42, "rot": 0},
+        {"cx": 18, "cy": 72, "w": 30, "h": 42, "rot": 0}, {"cx": 50, "cy": 72, "w": 30, "h": 42, "rot": 0}, {"cx": 82, "cy": 72, "w": 30, "h": 42, "rot": 0},
     ]},
     {"id": "polaroid-pile", "family": "polaroid", "slots": [
-        {"cx": 42, "cy": 48, "w": 34, "rot": -11}, {"cx": 58, "cy": 44, "w": 34, "rot": 8},
-        {"cx": 48, "cy": 56, "w": 36, "rot": 3}, {"cx": 36, "cy": 40, "w": 30, "rot": -18},
-        {"cx": 64, "cy": 58, "w": 30, "rot": 14}, {"cx": 50, "cy": 38, "w": 28, "rot": -4},
+        {"cx": 42, "cy": 48, "w": 34, "h": 78, "rot": -11}, {"cx": 58, "cy": 44, "w": 34, "h": 78, "rot": 8}, {"cx": 48, "cy": 56, "w": 36, "h": 78, "rot": 3},
+        {"cx": 36, "cy": 40, "w": 30, "h": 78, "rot": -18}, {"cx": 64, "cy": 58, "w": 30, "h": 78, "rot": 14}, {"cx": 50, "cy": 38, "w": 28, "h": 78, "rot": -4},
     ]},
     {"id": "polaroid-diagonal", "family": "polaroid", "slots": [
-        {"cx": 22, "cy": 28, "w": 32, "rot": -8}, {"cx": 40, "cy": 40, "w": 32, "rot": 4},
-        {"cx": 58, "cy": 52, "w": 32, "rot": -5}, {"cx": 74, "cy": 66, "w": 32, "rot": 7},
-        {"cx": 50, "cy": 24, "w": 26, "rot": 12},
+        {"cx": 22, "cy": 28, "w": 32, "h": 78, "rot": -8}, {"cx": 40, "cy": 40, "w": 32, "h": 78, "rot": 4},
+        {"cx": 58, "cy": 52, "w": 32, "h": 78, "rot": -5}, {"cx": 74, "cy": 66, "w": 32, "h": 78, "rot": 7},
+        {"cx": 50, "cy": 24, "w": 26, "h": 78, "rot": 12},
     ]},
     {"id": "polaroid-rows", "family": "polaroid", "slots": [
-        {"cx": 22, "cy": 32, "w": 30, "rot": -7}, {"cx": 50, "cy": 28, "w": 30, "rot": 5}, {"cx": 78, "cy": 34, "w": 30, "rot": -4},
-        {"cx": 28, "cy": 70, "w": 30, "rot": 6}, {"cx": 56, "cy": 74, "w": 30, "rot": -8}, {"cx": 82, "cy": 68, "w": 30, "rot": 3},
+        {"cx": 22, "cy": 32, "w": 30, "h": 78, "rot": -7}, {"cx": 50, "cy": 28, "w": 30, "h": 78, "rot": 5}, {"cx": 78, "cy": 34, "w": 30, "h": 78, "rot": -4},
+        {"cx": 28, "cy": 70, "w": 30, "h": 78, "rot": 6}, {"cx": 56, "cy": 74, "w": 30, "h": 78, "rot": -8}, {"cx": 82, "cy": 68, "w": 30, "h": 78, "rot": 3},
     ]},
     {"id": "polaroid-stairs", "family": "polaroid", "slots": [
-        {"cx": 20, "cy": 70, "w": 30, "rot": -6}, {"cx": 36, "cy": 56, "w": 30, "rot": 4},
-        {"cx": 52, "cy": 42, "w": 30, "rot": -3}, {"cx": 68, "cy": 28, "w": 30, "rot": 7},
-        {"cx": 82, "cy": 18, "w": 26, "rot": -10},
+        {"cx": 20, "cy": 70, "w": 30, "h": 78, "rot": -6}, {"cx": 36, "cy": 56, "w": 30, "h": 78, "rot": 4},
+        {"cx": 52, "cy": 42, "w": 30, "h": 78, "rot": -3}, {"cx": 68, "cy": 28, "w": 30, "h": 78, "rot": 7},
+        {"cx": 82, "cy": 18, "w": 26, "h": 78, "rot": -10},
     ]},
     {"id": "polaroid-heart", "family": "polaroid", "slots": [
-        {"cx": 32, "cy": 32, "w": 28, "rot": -14}, {"cx": 68, "cy": 32, "w": 28, "rot": 14},
-        {"cx": 22, "cy": 52, "w": 26, "rot": -8}, {"cx": 78, "cy": 52, "w": 26, "rot": 8},
-        {"cx": 50, "cy": 48, "w": 30, "rot": 2}, {"cx": 50, "cy": 76, "w": 28, "rot": -3},
+        {"cx": 32, "cy": 32, "w": 28, "h": 78, "rot": -14}, {"cx": 68, "cy": 32, "w": 28, "h": 78, "rot": 14}, {"cx": 22, "cy": 52, "w": 26, "h": 78, "rot": -8},
+        {"cx": 78, "cy": 52, "w": 26, "h": 78, "rot": 8}, {"cx": 50, "cy": 48, "w": 30, "h": 78, "rot": 2}, {"cx": 50, "cy": 76, "w": 28, "h": 78, "rot": -3},
     ]},
     {"id": "polaroid-strip", "family": "polaroid", "slots": [
-        {"cx": 16, "cy": 50, "w": 28, "rot": -6}, {"cx": 34, "cy": 46, "w": 28, "rot": 5},
-        {"cx": 52, "cy": 52, "w": 28, "rot": -4}, {"cx": 70, "cy": 47, "w": 28, "rot": 7},
-        {"cx": 86, "cy": 53, "w": 26, "rot": -5},
+        {"cx": 16, "cy": 50, "w": 28, "h": 78, "rot": -6}, {"cx": 34, "cy": 46, "w": 28, "h": 78, "rot": 5},
+        {"cx": 52, "cy": 52, "w": 28, "h": 78, "rot": -4}, {"cx": 70, "cy": 47, "w": 28, "h": 78, "rot": 7},
+        {"cx": 86, "cy": 53, "w": 26, "h": 78, "rot": -5},
     ]},
     {"id": "polaroid-corners", "family": "polaroid", "slots": [
-        {"cx": 20, "cy": 22, "w": 30, "rot": -10}, {"cx": 80, "cy": 22, "w": 30, "rot": 9},
-        {"cx": 20, "cy": 78, "w": 30, "rot": 7}, {"cx": 80, "cy": 78, "w": 30, "rot": -8},
-        {"cx": 50, "cy": 50, "w": 36, "rot": 3},
+        {"cx": 20, "cy": 22, "w": 30, "h": 78, "rot": -10}, {"cx": 80, "cy": 22, "w": 30, "h": 78, "rot": 9},
+        {"cx": 20, "cy": 78, "w": 30, "h": 78, "rot": 7}, {"cx": 80, "cy": 78, "w": 30, "h": 78, "rot": -8},
+        {"cx": 50, "cy": 50, "w": 36, "h": 78, "rot": 3},
     ]},
 ]
 
@@ -145,13 +146,35 @@ def _template_slots(tid: str | None, n: int) -> list[dict[str, float]]:
             continue
         base = slots[i % len(slots)]
         k = i // len(slots)
-        out.append({
+        extra = {
             "cx": max(8.0, min(92.0, base["cx"] + (hash01(i, 11) - 0.5) * 10 * k)),
             "cy": max(10.0, min(90.0, base["cy"] + (hash01(i, 13) - 0.5) * 10 * k)),
             "w": base["w"] * 0.85,
             "rot": base["rot"] + (hash01(i, 17) - 0.5) * 14,
-        })
+        }
+        if base.get("h") is not None:
+            extra["h"] = base["h"] * 0.85
+        out.append(extra)
     return out
+
+
+def mat_height_per_width(shape: str, fr: dict[str, Any], aspect: float) -> float:
+    """Height of a mat per 1 % of frame width, in % of frame HEIGHT — the pixel
+    maths of the sprite (photo + border + polaroid caption strip) for the
+    resolved frame `fr`, times the frame's W/H. Twin of matHeightPerWidth()."""
+    b = frame_border_frac(fr)
+    bottom = 0.205 if fr["shape"] == "polaroid" else b
+    return ((1 - 2 * b) / _photo_aspect(shape) + b + bottom) * aspect
+
+
+def _template_slot_width(slot: dict[str, float], spec: dict[str, Any], i: int, aspect: float) -> float:
+    """Widest mat that fits the slot's box for photo i's frame — twin of templateSlotWidth()."""
+    h = slot.get("h")
+    if h is None or not h > 0:
+        return slot["w"]
+    photos = spec.get("photos") or []
+    per = mat_height_per_width(str(spec.get("shape") or "4:3"), photo_frame(spec, photos[i] if i < len(photos) else None), aspect)
+    return min(slot["w"], h / per)
 
 
 def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -416,9 +439,12 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
                 rot = 0.0
             out.append({"cx": max(0.0, min(100.0, cx)), "cy": max(0.0, min(100.0, cy)), "w": width_of(w, i), "rot": rot})
     elif layout == "template":
+        # Each mat is scaled down to fit its slot's box (width and height), so
+        # the mosaic keeps its rows and columns whatever the photo shape or
+        # frame style; the per-photo size multiplier still applies on top.
         slots = _template_slots(spec.get("template"), n)
         for i in range(n):
-            out.append({"cx": slots[i]["cx"], "cy": slots[i]["cy"], "w": width_of(slots[i]["w"], i), "rot": slots[i]["rot"]})
+            out.append({"cx": slots[i]["cx"], "cy": slots[i]["cy"], "w": width_of(_template_slot_width(slots[i], spec, i, aspect), i), "rot": slots[i]["rot"]})
     else:  # stack
         w = 42.0 if n <= 3 else (34.0 if n <= 6 else 30.0)
         for i in range(n):

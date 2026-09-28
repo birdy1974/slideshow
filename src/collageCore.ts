@@ -213,87 +213,97 @@ export function frameClipPath (shape: CollageFrameShape | string | undefined): s
 
 /** Predefined fixed layouts: magazine mosaics (no tilt) and polaroid-wall
  *  scrapbook pages (tilted overlapping mats). Slot coordinates are % of the
- *  frame; extra photos beyond the slot count overlay with a seeded offset. */
+ *  frame; extra photos beyond the slot count overlay with a seeded offset.
+ *
+ *  A slot is a box, not a mat size: `w` is the widest the mat may be (% of
+ *  the frame width) and `h` the tallest (% of the frame HEIGHT). The mat is
+ *  scaled down to fit both — see placements() — so a stacked 2-up stays two
+ *  rows with tall polaroid mats or portrait photos instead of overflowing.
+ *  Magazine boxes tile the page with ~4 % gaps; the polaroid-wall piles only
+ *  cap the height (their overlap is the point) so a 9:16 polaroid cannot
+ *  run off the frame. */
+export interface TemplateSlot extends Placement { h?: number }
+
 export interface CollageTemplate {
   id: string
   family: 'magazine' | 'polaroid'
   label: string
   hint: string
-  slots: Placement[]
+  slots: TemplateSlot[]
 }
 
 export const COLLAGE_TEMPLATES: CollageTemplate[] = [
   { id: 'split-v', family: 'magazine', label: '2-up split', hint: 'Two photos side by side', slots: [
-    { cx: 26, cy: 50, w: 46, rot: 0 }, { cx: 74, cy: 50, w: 46, rot: 0 },
+    { cx: 26, cy: 50, w: 46, h: 88, rot: 0 }, { cx: 74, cy: 50, w: 46, h: 88, rot: 0 },
   ] },
   { id: 'split-h', family: 'magazine', label: '2-up stacked', hint: 'Two photos one above the other', slots: [
-    { cx: 50, cy: 27, w: 70, rot: 0 }, { cx: 50, cy: 73, w: 70, rot: 0 },
+    { cx: 50, cy: 27, w: 70, h: 42, rot: 0 }, { cx: 50, cy: 73, w: 70, h: 42, rot: 0 },
   ] },
   { id: 'triptych', family: 'magazine', label: 'Triptych', hint: 'Three equal columns', slots: [
-    { cx: 18, cy: 50, w: 30, rot: 0 }, { cx: 50, cy: 50, w: 30, rot: 0 }, { cx: 82, cy: 50, w: 30, rot: 0 },
+    { cx: 18, cy: 50, w: 30, h: 88, rot: 0 }, { cx: 50, cy: 50, w: 30, h: 88, rot: 0 }, { cx: 82, cy: 50, w: 30, h: 88, rot: 0 },
   ] },
   { id: 'trio-left', family: 'magazine', label: '1 + 2 left', hint: 'One large photo on the left, two stacked on the right', slots: [
-    { cx: 30, cy: 50, w: 54, rot: 0 }, { cx: 78, cy: 28, w: 36, rot: 0 }, { cx: 78, cy: 72, w: 36, rot: 0 },
+    { cx: 30, cy: 50, w: 54, h: 88, rot: 0 }, { cx: 78, cy: 28, w: 36, h: 42, rot: 0 }, { cx: 78, cy: 72, w: 36, h: 42, rot: 0 },
   ] },
   { id: 'trio-right', family: 'magazine', label: '1 + 2 right', hint: 'Two stacked on the left, one large on the right', slots: [
-    { cx: 22, cy: 28, w: 36, rot: 0 }, { cx: 22, cy: 72, w: 36, rot: 0 }, { cx: 70, cy: 50, w: 54, rot: 0 },
+    { cx: 22, cy: 28, w: 36, h: 42, rot: 0 }, { cx: 22, cy: 72, w: 36, h: 42, rot: 0 }, { cx: 70, cy: 50, w: 54, h: 88, rot: 0 },
   ] },
   { id: 'trio-top', family: 'magazine', label: '1 + 2 top', hint: 'One wide photo on top, two below', slots: [
-    { cx: 50, cy: 28, w: 88, rot: 0 }, { cx: 26, cy: 74, w: 42, rot: 0 }, { cx: 74, cy: 74, w: 42, rot: 0 },
+    { cx: 50, cy: 27, w: 88, h: 46, rot: 0 }, { cx: 26, cy: 74, w: 42, h: 40, rot: 0 }, { cx: 74, cy: 74, w: 42, h: 40, rot: 0 },
   ] },
   { id: 'quad', family: 'magazine', label: '2 × 2', hint: 'Four equal tiles', slots: [
-    { cx: 26, cy: 28, w: 44, rot: 0 }, { cx: 74, cy: 28, w: 44, rot: 0 },
-    { cx: 26, cy: 72, w: 44, rot: 0 }, { cx: 74, cy: 72, w: 44, rot: 0 },
+    { cx: 26, cy: 28, w: 44, h: 42, rot: 0 }, { cx: 74, cy: 28, w: 44, h: 42, rot: 0 },
+    { cx: 26, cy: 72, w: 44, h: 42, rot: 0 }, { cx: 74, cy: 72, w: 44, h: 42, rot: 0 },
   ] },
   { id: 'one-plus-three', family: 'magazine', label: '1 + 3', hint: 'One large left, three stacked right', slots: [
-    { cx: 32, cy: 50, w: 56, rot: 0 }, { cx: 80, cy: 20, w: 32, rot: 0 },
-    { cx: 80, cy: 50, w: 32, rot: 0 }, { cx: 80, cy: 80, w: 32, rot: 0 },
+    { cx: 32, cy: 50, w: 56, h: 88, rot: 0 }, { cx: 80, cy: 20, w: 32, h: 26, rot: 0 },
+    { cx: 80, cy: 50, w: 32, h: 26, rot: 0 }, { cx: 80, cy: 80, w: 32, h: 26, rot: 0 },
   ] },
   { id: 'hero-row', family: 'magazine', label: 'Hero + 3', hint: 'Wide hero on top, three across the bottom', slots: [
-    { cx: 50, cy: 30, w: 90, rot: 0 }, { cx: 18, cy: 76, w: 28, rot: 0 },
-    { cx: 50, cy: 76, w: 28, rot: 0 }, { cx: 82, cy: 76, w: 28, rot: 0 },
+    { cx: 50, cy: 30, w: 90, h: 52, rot: 0 }, { cx: 18, cy: 77, w: 28, h: 34, rot: 0 },
+    { cx: 50, cy: 77, w: 28, h: 34, rot: 0 }, { cx: 82, cy: 77, w: 28, h: 34, rot: 0 },
   ] },
-  { id: 'five-mosaic', family: 'magazine', label: 'Five mosaic', hint: 'Large centre-left with four small around it', slots: [
-    { cx: 32, cy: 50, w: 56, rot: 0 }, { cx: 78, cy: 18, w: 30, rot: 0 },
-    { cx: 78, cy: 50, w: 30, rot: 0 }, { cx: 78, cy: 82, w: 30, rot: 0 }, { cx: 32, cy: 86, w: 28, rot: 0 },
+  { id: 'five-mosaic', family: 'magazine', label: '1 + 4', hint: 'One large photo on the left, four small in a block on the right', slots: [
+    { cx: 30, cy: 50, w: 54, h: 88, rot: 0 }, { cx: 68, cy: 28, w: 18, h: 42, rot: 0 },
+    { cx: 88, cy: 28, w: 18, h: 42, rot: 0 }, { cx: 68, cy: 72, w: 18, h: 42, rot: 0 }, { cx: 88, cy: 72, w: 18, h: 42, rot: 0 },
   ] },
   { id: 'six-grid', family: 'magazine', label: '3 × 2', hint: 'Six equal tiles', slots: [
-    { cx: 18, cy: 28, w: 30, rot: 0 }, { cx: 50, cy: 28, w: 30, rot: 0 }, { cx: 82, cy: 28, w: 30, rot: 0 },
-    { cx: 18, cy: 72, w: 30, rot: 0 }, { cx: 50, cy: 72, w: 30, rot: 0 }, { cx: 82, cy: 72, w: 30, rot: 0 },
+    { cx: 18, cy: 28, w: 30, h: 42, rot: 0 }, { cx: 50, cy: 28, w: 30, h: 42, rot: 0 }, { cx: 82, cy: 28, w: 30, h: 42, rot: 0 },
+    { cx: 18, cy: 72, w: 30, h: 42, rot: 0 }, { cx: 50, cy: 72, w: 30, h: 42, rot: 0 }, { cx: 82, cy: 72, w: 30, h: 42, rot: 0 },
   ] },
   { id: 'polaroid-pile', family: 'polaroid', label: 'Pile', hint: 'A fixed overlapping pile in the middle', slots: [
-    { cx: 42, cy: 48, w: 34, rot: -11 }, { cx: 58, cy: 44, w: 34, rot: 8 },
-    { cx: 48, cy: 56, w: 36, rot: 3 }, { cx: 36, cy: 40, w: 30, rot: -18 },
-    { cx: 64, cy: 58, w: 30, rot: 14 }, { cx: 50, cy: 38, w: 28, rot: -4 },
+    { cx: 42, cy: 48, w: 34, h: 78, rot: -11 }, { cx: 58, cy: 44, w: 34, h: 78, rot: 8 },
+    { cx: 48, cy: 56, w: 36, h: 78, rot: 3 }, { cx: 36, cy: 40, w: 30, h: 78, rot: -18 },
+    { cx: 64, cy: 58, w: 30, h: 78, rot: 14 }, { cx: 50, cy: 38, w: 28, h: 78, rot: -4 },
   ] },
   { id: 'polaroid-diagonal', family: 'polaroid', label: 'Diagonal', hint: 'Photos stepping down from left to right', slots: [
-    { cx: 22, cy: 28, w: 32, rot: -8 }, { cx: 40, cy: 40, w: 32, rot: 4 },
-    { cx: 58, cy: 52, w: 32, rot: -5 }, { cx: 74, cy: 66, w: 32, rot: 7 },
-    { cx: 50, cy: 24, w: 26, rot: 12 },
+    { cx: 22, cy: 28, w: 32, h: 78, rot: -8 }, { cx: 40, cy: 40, w: 32, h: 78, rot: 4 },
+    { cx: 58, cy: 52, w: 32, h: 78, rot: -5 }, { cx: 74, cy: 66, w: 32, h: 78, rot: 7 },
+    { cx: 50, cy: 24, w: 26, h: 78, rot: 12 },
   ] },
   { id: 'polaroid-rows', family: 'polaroid', label: 'Two rows', hint: 'Two overlapping rows of tilted polaroids', slots: [
-    { cx: 22, cy: 32, w: 30, rot: -7 }, { cx: 50, cy: 28, w: 30, rot: 5 }, { cx: 78, cy: 34, w: 30, rot: -4 },
-    { cx: 28, cy: 70, w: 30, rot: 6 }, { cx: 56, cy: 74, w: 30, rot: -8 }, { cx: 82, cy: 68, w: 30, rot: 3 },
+    { cx: 22, cy: 32, w: 30, h: 78, rot: -7 }, { cx: 50, cy: 28, w: 30, h: 78, rot: 5 }, { cx: 78, cy: 34, w: 30, h: 78, rot: -4 },
+    { cx: 28, cy: 70, w: 30, h: 78, rot: 6 }, { cx: 56, cy: 74, w: 30, h: 78, rot: -8 }, { cx: 82, cy: 68, w: 30, h: 78, rot: 3 },
   ] },
   { id: 'polaroid-stairs', family: 'polaroid', label: 'Staircase', hint: 'A stepped flight of overlapping frames', slots: [
-    { cx: 20, cy: 70, w: 30, rot: -6 }, { cx: 36, cy: 56, w: 30, rot: 4 },
-    { cx: 52, cy: 42, w: 30, rot: -3 }, { cx: 68, cy: 28, w: 30, rot: 7 },
-    { cx: 82, cy: 18, w: 26, rot: -10 },
+    { cx: 20, cy: 70, w: 30, h: 78, rot: -6 }, { cx: 36, cy: 56, w: 30, h: 78, rot: 4 },
+    { cx: 52, cy: 42, w: 30, h: 78, rot: -3 }, { cx: 68, cy: 28, w: 30, h: 78, rot: 7 },
+    { cx: 82, cy: 18, w: 26, h: 78, rot: -10 },
   ] },
   { id: 'polaroid-heart', family: 'polaroid', label: 'Heart', hint: 'A loose heart-shaped cluster', slots: [
-    { cx: 32, cy: 32, w: 28, rot: -14 }, { cx: 68, cy: 32, w: 28, rot: 14 },
-    { cx: 22, cy: 52, w: 26, rot: -8 }, { cx: 78, cy: 52, w: 26, rot: 8 },
-    { cx: 50, cy: 48, w: 30, rot: 2 }, { cx: 50, cy: 76, w: 28, rot: -3 },
+    { cx: 32, cy: 32, w: 28, h: 78, rot: -14 }, { cx: 68, cy: 32, w: 28, h: 78, rot: 14 },
+    { cx: 22, cy: 52, w: 26, h: 78, rot: -8 }, { cx: 78, cy: 52, w: 26, h: 78, rot: 8 },
+    { cx: 50, cy: 48, w: 30, h: 78, rot: 2 }, { cx: 50, cy: 76, w: 28, h: 78, rot: -3 },
   ] },
   { id: 'polaroid-strip', family: 'polaroid', label: 'Overlapping strip', hint: 'A band of overlapping frames across the middle', slots: [
-    { cx: 16, cy: 50, w: 28, rot: -6 }, { cx: 34, cy: 46, w: 28, rot: 5 },
-    { cx: 52, cy: 52, w: 28, rot: -4 }, { cx: 70, cy: 47, w: 28, rot: 7 },
-    { cx: 86, cy: 53, w: 26, rot: -5 },
+    { cx: 16, cy: 50, w: 28, h: 78, rot: -6 }, { cx: 34, cy: 46, w: 28, h: 78, rot: 5 },
+    { cx: 52, cy: 52, w: 28, h: 78, rot: -4 }, { cx: 70, cy: 47, w: 28, h: 78, rot: 7 },
+    { cx: 86, cy: 53, w: 26, h: 78, rot: -5 },
   ] },
   { id: 'polaroid-corners', family: 'polaroid', label: 'Corners', hint: 'Four polaroids pinning the corners, one in the middle', slots: [
-    { cx: 20, cy: 22, w: 30, rot: -10 }, { cx: 80, cy: 22, w: 30, rot: 9 },
-    { cx: 20, cy: 78, w: 30, rot: 7 }, { cx: 80, cy: 78, w: 30, rot: -8 },
-    { cx: 50, cy: 50, w: 36, rot: 3 },
+    { cx: 20, cy: 22, w: 30, h: 78, rot: -10 }, { cx: 80, cy: 22, w: 30, h: 78, rot: 9 },
+    { cx: 20, cy: 78, w: 30, h: 78, rot: 7 }, { cx: 80, cy: 78, w: 30, h: 78, rot: -8 },
+    { cx: 50, cy: 50, w: 36, h: 78, rot: 3 },
   ] },
 ]
 
@@ -301,9 +311,9 @@ export function collageTemplate (id: string | undefined): CollageTemplate {
   return COLLAGE_TEMPLATES.find(t => t.id === id) || COLLAGE_TEMPLATES[0]
 }
 
-function templateSlots (id: string | undefined, n: number): Placement[] {
+function templateSlots (id: string | undefined, n: number): TemplateSlot[] {
   const slots = collageTemplate(id).slots
-  const out: Placement[] = []
+  const out: TemplateSlot[] = []
   for (let i = 0; i < n; i++) {
     if (i < slots.length) { out.push({ ...slots[i] }); continue }
     const base = slots[i % slots.length]
@@ -312,10 +322,29 @@ function templateSlots (id: string | undefined, n: number): Placement[] {
       cx: Math.max(8, Math.min(92, base.cx + (hash01(i, 11) - 0.5) * 10 * k)),
       cy: Math.max(10, Math.min(90, base.cy + (hash01(i, 13) - 0.5) * 10 * k)),
       w: base.w * 0.85,
+      ...(base.h !== undefined ? { h: base.h * 0.85 } : {}),
       rot: base.rot + (hash01(i, 17) - 0.5) * 14,
     })
   }
   return out
+}
+
+/** Height of a mat per 1 % of frame width, in % of frame HEIGHT: the pixel
+ *  maths of the stage and the MP4 sprite (photo + border + polaroid caption
+ *  strip) for the resolved frame `fr`, times the frame's W/H. Twin of
+ *  mat_height_per_width() in backend/app/collage.py. */
+function matHeightPerWidth (shape: CollageShape, fr: ReturnType<typeof photoFrame>, aspect: number): number {
+  const b = frameBorderFrac(fr)
+  const bottom = fr.shape === 'polaroid' ? 0.205 : b
+  return ((1 - 2 * b) / photoAspect(shape) + b + bottom) * aspect
+}
+
+/** Widest mat that fits a template slot's box for this photo's frame — the
+ *  slot width, or less when the mat would be taller than the slot height. */
+function templateSlotWidth (slot: TemplateSlot, spec: CollageSpec, i: number, aspect: number): number {
+  if (slot.h === undefined || !(slot.h > 0)) return slot.w
+  const per = matHeightPerWidth(spec.shape, photoFrame(spec, spec.photos[i]), aspect)
+  return Math.min(slot.w, slot.h / per)
 }
 
 /** Resting placement of every photo. Deterministic given the spec. */
@@ -523,8 +552,11 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       })
     }
   } else if (spec.layout === 'template') {
+    // Each mat is scaled down to fit its slot's box (width and height), so
+    // the mosaic keeps its rows and columns whatever the photo shape or
+    // frame style; the per-photo size multiplier still applies on top.
     const slots = templateSlots(spec.template, n)
-    for (let i = 0; i < n; i++) out.push({ cx: slots[i].cx, cy: slots[i].cy, w: widthOf(slots[i].w, i), rot: slots[i].rot })
+    for (let i = 0; i < n; i++) out.push({ cx: slots[i].cx, cy: slots[i].cy, w: widthOf(templateSlotWidth(slots[i], spec, i, aspect), i), rot: slots[i].rot })
   } else {
     // stack: overlapping polaroids around the middle, seeded tilts
     const w = n <= 3 ? 42 : n <= 6 ? 34 : 30
