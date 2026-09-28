@@ -7,6 +7,7 @@
 // rendered in a portal so panel overflow can never clip it.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useLayer } from './layers'
 import { AlertTriangle, ChevronDown, LayoutGrid, Loader2, RefreshCw, Search, Star, X } from 'lucide-react'
 import {
   isGLTransition, loadFavouriteTransitions, loadRecentTransitions,
@@ -190,6 +191,9 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className, o
   const [favourites, setFavourites] = useState<string[]>([])
   const [recents, setRecents] = useState<string[]>([])
   const [rect, setRect] = useState<DOMRect | null>(null)
+  // Newest popup on top: the popover is portaled to <body>, so it needs a
+  // layer above whichever editor or preview modal holds the chip.
+  const layer = useLayer(open)
 
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const popRef = useRef<HTMLDivElement | null>(null)
@@ -370,7 +374,7 @@ export function TransitionChip({ value, onChange, ariaLabel, title, className, o
     {open && rect && geometry && createPortal(<div
       ref={popRef}
       className="transition-browser"
-      style={{ left: geometry.left, top: geometry.top, width: geometry.width, height: geometry.height }}
+      style={{ left: geometry.left, top: geometry.top, width: geometry.width, height: geometry.height, zIndex: layer }}
       role="dialog"
       aria-label="Choose a transition"
     >

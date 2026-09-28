@@ -53,78 +53,79 @@ def _photo_aspect(shape: str) -> float:
 
 
 # Twin of COLLAGE_TEMPLATES in src/collageCore.ts — keep slot numbers identical.
+# w / h are the slot BOX (% of frame width / height); the mat is scaled down
+# to fit both in placements().
 COLLAGE_TEMPLATES: list[dict[str, Any]] = [
     {"id": "split-v", "family": "magazine", "slots": [
-        {"cx": 26, "cy": 50, "w": 46, "rot": 0}, {"cx": 74, "cy": 50, "w": 46, "rot": 0},
+        {"cx": 26, "cy": 50, "w": 46, "h": 88, "rot": 0}, {"cx": 74, "cy": 50, "w": 46, "h": 88, "rot": 0},
     ]},
     {"id": "split-h", "family": "magazine", "slots": [
-        {"cx": 50, "cy": 27, "w": 70, "rot": 0}, {"cx": 50, "cy": 73, "w": 70, "rot": 0},
+        {"cx": 50, "cy": 27, "w": 70, "h": 42, "rot": 0}, {"cx": 50, "cy": 73, "w": 70, "h": 42, "rot": 0},
     ]},
     {"id": "triptych", "family": "magazine", "slots": [
-        {"cx": 18, "cy": 50, "w": 30, "rot": 0}, {"cx": 50, "cy": 50, "w": 30, "rot": 0}, {"cx": 82, "cy": 50, "w": 30, "rot": 0},
+        {"cx": 18, "cy": 50, "w": 30, "h": 88, "rot": 0}, {"cx": 50, "cy": 50, "w": 30, "h": 88, "rot": 0}, {"cx": 82, "cy": 50, "w": 30, "h": 88, "rot": 0},
     ]},
     {"id": "trio-left", "family": "magazine", "slots": [
-        {"cx": 30, "cy": 50, "w": 54, "rot": 0}, {"cx": 78, "cy": 28, "w": 36, "rot": 0}, {"cx": 78, "cy": 72, "w": 36, "rot": 0},
+        {"cx": 30, "cy": 50, "w": 54, "h": 88, "rot": 0}, {"cx": 78, "cy": 28, "w": 36, "h": 42, "rot": 0}, {"cx": 78, "cy": 72, "w": 36, "h": 42, "rot": 0},
     ]},
     {"id": "trio-right", "family": "magazine", "slots": [
-        {"cx": 22, "cy": 28, "w": 36, "rot": 0}, {"cx": 22, "cy": 72, "w": 36, "rot": 0}, {"cx": 70, "cy": 50, "w": 54, "rot": 0},
+        {"cx": 22, "cy": 28, "w": 36, "h": 42, "rot": 0}, {"cx": 22, "cy": 72, "w": 36, "h": 42, "rot": 0}, {"cx": 70, "cy": 50, "w": 54, "h": 88, "rot": 0},
     ]},
     {"id": "trio-top", "family": "magazine", "slots": [
-        {"cx": 50, "cy": 28, "w": 88, "rot": 0}, {"cx": 26, "cy": 74, "w": 42, "rot": 0}, {"cx": 74, "cy": 74, "w": 42, "rot": 0},
+        {"cx": 50, "cy": 27, "w": 88, "h": 46, "rot": 0}, {"cx": 26, "cy": 74, "w": 42, "h": 40, "rot": 0}, {"cx": 74, "cy": 74, "w": 42, "h": 40, "rot": 0},
     ]},
     {"id": "quad", "family": "magazine", "slots": [
-        {"cx": 26, "cy": 28, "w": 44, "rot": 0}, {"cx": 74, "cy": 28, "w": 44, "rot": 0},
-        {"cx": 26, "cy": 72, "w": 44, "rot": 0}, {"cx": 74, "cy": 72, "w": 44, "rot": 0},
+        {"cx": 26, "cy": 28, "w": 44, "h": 42, "rot": 0}, {"cx": 74, "cy": 28, "w": 44, "h": 42, "rot": 0},
+        {"cx": 26, "cy": 72, "w": 44, "h": 42, "rot": 0}, {"cx": 74, "cy": 72, "w": 44, "h": 42, "rot": 0},
     ]},
     {"id": "one-plus-three", "family": "magazine", "slots": [
-        {"cx": 32, "cy": 50, "w": 56, "rot": 0}, {"cx": 80, "cy": 20, "w": 32, "rot": 0},
-        {"cx": 80, "cy": 50, "w": 32, "rot": 0}, {"cx": 80, "cy": 80, "w": 32, "rot": 0},
+        {"cx": 32, "cy": 50, "w": 56, "h": 88, "rot": 0}, {"cx": 80, "cy": 20, "w": 32, "h": 26, "rot": 0},
+        {"cx": 80, "cy": 50, "w": 32, "h": 26, "rot": 0}, {"cx": 80, "cy": 80, "w": 32, "h": 26, "rot": 0},
     ]},
     {"id": "hero-row", "family": "magazine", "slots": [
-        {"cx": 50, "cy": 30, "w": 90, "rot": 0}, {"cx": 18, "cy": 76, "w": 28, "rot": 0},
-        {"cx": 50, "cy": 76, "w": 28, "rot": 0}, {"cx": 82, "cy": 76, "w": 28, "rot": 0},
+        {"cx": 50, "cy": 30, "w": 90, "h": 52, "rot": 0}, {"cx": 18, "cy": 77, "w": 28, "h": 34, "rot": 0},
+        {"cx": 50, "cy": 77, "w": 28, "h": 34, "rot": 0}, {"cx": 82, "cy": 77, "w": 28, "h": 34, "rot": 0},
     ]},
     {"id": "five-mosaic", "family": "magazine", "slots": [
-        {"cx": 32, "cy": 50, "w": 56, "rot": 0}, {"cx": 78, "cy": 18, "w": 30, "rot": 0},
-        {"cx": 78, "cy": 50, "w": 30, "rot": 0}, {"cx": 78, "cy": 82, "w": 30, "rot": 0}, {"cx": 32, "cy": 86, "w": 28, "rot": 0},
+        {"cx": 30, "cy": 50, "w": 54, "h": 88, "rot": 0}, {"cx": 68, "cy": 28, "w": 18, "h": 42, "rot": 0},
+        {"cx": 88, "cy": 28, "w": 18, "h": 42, "rot": 0}, {"cx": 68, "cy": 72, "w": 18, "h": 42, "rot": 0},
+        {"cx": 88, "cy": 72, "w": 18, "h": 42, "rot": 0},
     ]},
     {"id": "six-grid", "family": "magazine", "slots": [
-        {"cx": 18, "cy": 28, "w": 30, "rot": 0}, {"cx": 50, "cy": 28, "w": 30, "rot": 0}, {"cx": 82, "cy": 28, "w": 30, "rot": 0},
-        {"cx": 18, "cy": 72, "w": 30, "rot": 0}, {"cx": 50, "cy": 72, "w": 30, "rot": 0}, {"cx": 82, "cy": 72, "w": 30, "rot": 0},
+        {"cx": 18, "cy": 28, "w": 30, "h": 42, "rot": 0}, {"cx": 50, "cy": 28, "w": 30, "h": 42, "rot": 0}, {"cx": 82, "cy": 28, "w": 30, "h": 42, "rot": 0},
+        {"cx": 18, "cy": 72, "w": 30, "h": 42, "rot": 0}, {"cx": 50, "cy": 72, "w": 30, "h": 42, "rot": 0}, {"cx": 82, "cy": 72, "w": 30, "h": 42, "rot": 0},
     ]},
     {"id": "polaroid-pile", "family": "polaroid", "slots": [
-        {"cx": 42, "cy": 48, "w": 34, "rot": -11}, {"cx": 58, "cy": 44, "w": 34, "rot": 8},
-        {"cx": 48, "cy": 56, "w": 36, "rot": 3}, {"cx": 36, "cy": 40, "w": 30, "rot": -18},
-        {"cx": 64, "cy": 58, "w": 30, "rot": 14}, {"cx": 50, "cy": 38, "w": 28, "rot": -4},
+        {"cx": 42, "cy": 48, "w": 34, "h": 78, "rot": -11}, {"cx": 58, "cy": 44, "w": 34, "h": 78, "rot": 8}, {"cx": 48, "cy": 56, "w": 36, "h": 78, "rot": 3},
+        {"cx": 36, "cy": 40, "w": 30, "h": 78, "rot": -18}, {"cx": 64, "cy": 58, "w": 30, "h": 78, "rot": 14}, {"cx": 50, "cy": 38, "w": 28, "h": 78, "rot": -4},
     ]},
     {"id": "polaroid-diagonal", "family": "polaroid", "slots": [
-        {"cx": 22, "cy": 28, "w": 32, "rot": -8}, {"cx": 40, "cy": 40, "w": 32, "rot": 4},
-        {"cx": 58, "cy": 52, "w": 32, "rot": -5}, {"cx": 74, "cy": 66, "w": 32, "rot": 7},
-        {"cx": 50, "cy": 24, "w": 26, "rot": 12},
+        {"cx": 22, "cy": 28, "w": 32, "h": 78, "rot": -8}, {"cx": 40, "cy": 40, "w": 32, "h": 78, "rot": 4},
+        {"cx": 58, "cy": 52, "w": 32, "h": 78, "rot": -5}, {"cx": 74, "cy": 66, "w": 32, "h": 78, "rot": 7},
+        {"cx": 50, "cy": 24, "w": 26, "h": 78, "rot": 12},
     ]},
     {"id": "polaroid-rows", "family": "polaroid", "slots": [
-        {"cx": 22, "cy": 32, "w": 30, "rot": -7}, {"cx": 50, "cy": 28, "w": 30, "rot": 5}, {"cx": 78, "cy": 34, "w": 30, "rot": -4},
-        {"cx": 28, "cy": 70, "w": 30, "rot": 6}, {"cx": 56, "cy": 74, "w": 30, "rot": -8}, {"cx": 82, "cy": 68, "w": 30, "rot": 3},
+        {"cx": 22, "cy": 32, "w": 30, "h": 78, "rot": -7}, {"cx": 50, "cy": 28, "w": 30, "h": 78, "rot": 5}, {"cx": 78, "cy": 34, "w": 30, "h": 78, "rot": -4},
+        {"cx": 28, "cy": 70, "w": 30, "h": 78, "rot": 6}, {"cx": 56, "cy": 74, "w": 30, "h": 78, "rot": -8}, {"cx": 82, "cy": 68, "w": 30, "h": 78, "rot": 3},
     ]},
     {"id": "polaroid-stairs", "family": "polaroid", "slots": [
-        {"cx": 20, "cy": 70, "w": 30, "rot": -6}, {"cx": 36, "cy": 56, "w": 30, "rot": 4},
-        {"cx": 52, "cy": 42, "w": 30, "rot": -3}, {"cx": 68, "cy": 28, "w": 30, "rot": 7},
-        {"cx": 82, "cy": 18, "w": 26, "rot": -10},
+        {"cx": 20, "cy": 70, "w": 30, "h": 78, "rot": -6}, {"cx": 36, "cy": 56, "w": 30, "h": 78, "rot": 4},
+        {"cx": 52, "cy": 42, "w": 30, "h": 78, "rot": -3}, {"cx": 68, "cy": 28, "w": 30, "h": 78, "rot": 7},
+        {"cx": 82, "cy": 18, "w": 26, "h": 78, "rot": -10},
     ]},
     {"id": "polaroid-heart", "family": "polaroid", "slots": [
-        {"cx": 32, "cy": 32, "w": 28, "rot": -14}, {"cx": 68, "cy": 32, "w": 28, "rot": 14},
-        {"cx": 22, "cy": 52, "w": 26, "rot": -8}, {"cx": 78, "cy": 52, "w": 26, "rot": 8},
-        {"cx": 50, "cy": 48, "w": 30, "rot": 2}, {"cx": 50, "cy": 76, "w": 28, "rot": -3},
+        {"cx": 32, "cy": 32, "w": 28, "h": 78, "rot": -14}, {"cx": 68, "cy": 32, "w": 28, "h": 78, "rot": 14}, {"cx": 22, "cy": 52, "w": 26, "h": 78, "rot": -8},
+        {"cx": 78, "cy": 52, "w": 26, "h": 78, "rot": 8}, {"cx": 50, "cy": 48, "w": 30, "h": 78, "rot": 2}, {"cx": 50, "cy": 76, "w": 28, "h": 78, "rot": -3},
     ]},
     {"id": "polaroid-strip", "family": "polaroid", "slots": [
-        {"cx": 16, "cy": 50, "w": 28, "rot": -6}, {"cx": 34, "cy": 46, "w": 28, "rot": 5},
-        {"cx": 52, "cy": 52, "w": 28, "rot": -4}, {"cx": 70, "cy": 47, "w": 28, "rot": 7},
-        {"cx": 86, "cy": 53, "w": 26, "rot": -5},
+        {"cx": 16, "cy": 50, "w": 28, "h": 78, "rot": -6}, {"cx": 34, "cy": 46, "w": 28, "h": 78, "rot": 5},
+        {"cx": 52, "cy": 52, "w": 28, "h": 78, "rot": -4}, {"cx": 70, "cy": 47, "w": 28, "h": 78, "rot": 7},
+        {"cx": 86, "cy": 53, "w": 26, "h": 78, "rot": -5},
     ]},
     {"id": "polaroid-corners", "family": "polaroid", "slots": [
-        {"cx": 20, "cy": 22, "w": 30, "rot": -10}, {"cx": 80, "cy": 22, "w": 30, "rot": 9},
-        {"cx": 20, "cy": 78, "w": 30, "rot": 7}, {"cx": 80, "cy": 78, "w": 30, "rot": -8},
-        {"cx": 50, "cy": 50, "w": 36, "rot": 3},
+        {"cx": 20, "cy": 22, "w": 30, "h": 78, "rot": -10}, {"cx": 80, "cy": 22, "w": 30, "h": 78, "rot": 9},
+        {"cx": 20, "cy": 78, "w": 30, "h": 78, "rot": 7}, {"cx": 80, "cy": 78, "w": 30, "h": 78, "rot": -8},
+        {"cx": 50, "cy": 50, "w": 36, "h": 78, "rot": 3},
     ]},
 ]
 
@@ -145,13 +146,35 @@ def _template_slots(tid: str | None, n: int) -> list[dict[str, float]]:
             continue
         base = slots[i % len(slots)]
         k = i // len(slots)
-        out.append({
+        extra = {
             "cx": max(8.0, min(92.0, base["cx"] + (hash01(i, 11) - 0.5) * 10 * k)),
             "cy": max(10.0, min(90.0, base["cy"] + (hash01(i, 13) - 0.5) * 10 * k)),
             "w": base["w"] * 0.85,
             "rot": base["rot"] + (hash01(i, 17) - 0.5) * 14,
-        })
+        }
+        if base.get("h") is not None:
+            extra["h"] = base["h"] * 0.85
+        out.append(extra)
     return out
+
+
+def mat_height_per_width(shape: str, fr: dict[str, Any], aspect: float) -> float:
+    """Height of a mat per 1 % of frame width, in % of frame HEIGHT — the pixel
+    maths of the sprite (photo + border + polaroid caption strip) for the
+    resolved frame `fr`, times the frame's W/H. Twin of matHeightPerWidth()."""
+    b = frame_border_frac(fr)
+    bottom = 0.205 if fr["shape"] == "polaroid" else b
+    return ((1 - 2 * b) / _photo_aspect(shape) + b + bottom) * aspect
+
+
+def _template_slot_width(slot: dict[str, float], spec: dict[str, Any], i: int, aspect: float) -> float:
+    """Widest mat that fits the slot's box for photo i's frame — twin of templateSlotWidth()."""
+    h = slot.get("h")
+    if h is None or not h > 0:
+        return slot["w"]
+    photos = spec.get("photos") or []
+    per = mat_height_per_width(str(spec.get("shape") or "4:3"), photo_frame(spec, photos[i] if i < len(photos) else None), aspect)
+    return min(slot["w"], h / per)
 
 
 def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -199,12 +222,7 @@ def frame_border_frac(frame: dict[str, Any]) -> float:
 
 def mat_height(w: float, shape: str, aspect: float, frame: dict[str, Any] | None = None) -> float:
     """Mat height in % of frame height for a mat width of w % of frame width."""
-    fr = photo_frame({"frame": frame} if frame else {}, None)
-    border = frame_border_frac(fr) * w
-    bottom = 0.205 * w if fr["shape"] == "polaroid" else border
-    photo_w = max(1e-6, w - 2 * border)
-    photo_h = photo_w / _photo_aspect(shape)
-    return (photo_h + border + bottom) / aspect
+    return w * mat_height_per_width(shape, photo_frame({"frame": frame} if frame else {}, None), aspect)
 
 
 def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
@@ -217,12 +235,17 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
     def cells(count: int):
         cols = max(1, math.ceil(math.sqrt(count)))
         rows = math.ceil(count / cols)
-        margin_x, margin_y = 7.0, 12.0
+        margin_x, margin_y = 7.0, 8.0
         return cols, rows, (100 - 2 * margin_x) / cols, (100 - 2 * margin_y) / rows
 
+    # Mat height (% of frame HEIGHT) per 1 % of frame width for the collage's
+    # default frame — twin of `per` in placements() (collageCore.ts): every
+    # layout that fits mats into cells limits their height with it.
+    per = mat_height_per_width(shape, photo_frame(spec, None), aspect)
+
     def fit_width(cell_w: float, cell_h: float) -> float:
-        k = 0.91 / _photo_aspect(shape) + 0.25
-        return min(cell_w * 0.8, cell_h * 0.82 * aspect / k)
+        # 80 % of the cell width, and no taller than 90 % of the cell height
+        return min(cell_w * 0.8, cell_h * 0.9 / per)
 
     layout = str(spec.get("layout") or "stack")
     # Per-photo size: each photo's mat is the layout width times its
@@ -235,14 +258,14 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         w = fit_width(cell_w, cell_h)
         for i in range(n):
             col, row = i % cols, i // cols
-            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 10})
+            out.append({"cx": 7 + cell_w * (col + 0.5), "cy": 8 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 10})
     elif layout == "scatter":
         cols, _, cell_w, cell_h = cells(n)
         w = fit_width(cell_w, cell_h) * 0.94
         for i in range(n):
             col, row = i % cols, i // cols
             cx = 7 + cell_w * (col + 0.28 + 0.44 * hash01(seed, i, 29))
-            cy = 12 + cell_h * (row + 0.28 + 0.44 * hash01(seed, i, 31))
+            cy = 8 + cell_h * (row + 0.28 + 0.44 * hash01(seed, i, 31))
             out.append({"cx": cx, "cy": cy, "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 26})
     elif layout == "filmstrip":
         # A horizontal band of overlapping frames, like film frames edge to
@@ -250,14 +273,13 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         rows = 1 if n <= 5 else 2
         per_row = math.ceil(n / rows)
         first_row = n - per_row * (rows - 1)
-        k = 0.91 / _photo_aspect(shape) + 0.25
         for i in range(n):
             row = 0 if i < first_row else 1
             cols = first_row if row == 0 else per_row
             col = i if row == 0 else i - first_row
             cell_wr = (100 - 2 * 5) / cols
             cell_h = (100 - 2 * 12) / rows
-            w = min(cell_wr * 1.1, cell_h * 0.82 * aspect / k)
+            w = min(cell_wr * 1.1, cell_h * 0.9 / per)
             out.append({"cx": 5 + cell_wr * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 8})
     elif layout == "fan":
         # Cards fanned out from a point below the frame — each card tilts
@@ -278,12 +300,11 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         # Pinterest-style columns: seeded size variety, each photo stacked
         # into the shortest column (a single photo is simply centred).
         if n == 1:
-            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(40.0, 0), "rot": 0.0})
+            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(min(40.0, 76 / per), 0), "rot": 0.0})
         else:
             cols = 2 if n <= 2 else (3 if n <= 9 else 4)
             margin_x = 6.0
             cell_w = (100 - 2 * margin_x) / cols
-            k = 0.91 / _photo_aspect(shape) + 0.25
             base = cell_w * 0.88
             ws = [base * (0.82 + 0.36 * hash01(seed, i, 41)) * photo_size(spec, i) for i in range(n)]
 
@@ -296,7 +317,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
                     for j in range(1, cols):
                         if fills[j] < fills[c] - 1e-9:
                             c = j
-                    mh = ws[i] * scale * k / aspect
+                    mh = ws[i] * scale * per
                     res.append({"cx": margin_x + cell_w * (c + 0.5), "cy": 12 + fills[c] + gap / 2 + mh / 2})
                     fills[c] += gap + mh
                 return res, max(fills)
@@ -318,8 +339,8 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         gap = max(0.0, min(12.0, gap if math.isfinite(gap) else 1.6))
         cell_w = (100 - 8) / (cols + 0.5)
         cell_h = (100 - 16) / max(1, rows)
-        k = 0.91 / _photo_aspect(shape) + 0.25
-        w = min(cell_w - gap, cell_h * 0.82 * aspect / k)
+        # Brick-tight: the gutter between rows equals the gutter between columns.
+        w = min(cell_w - gap, (cell_h - gap) / per)
         for i in range(n):
             row, col = divmod(i, cols)
             ox = (row % 2) * cell_w * 0.5
@@ -333,7 +354,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         w = fit_width(cell_w, cell_h) * 0.92
         for i in range(n):
             col, row = i % cols, i // cols
-            ox = (row % 2) * cell_w * 0.28
+            ox = (0.14 if row % 2 else -0.14) * cell_w
             sign = 1 if (row + col) % 2 else -1
             out.append({"cx": 6 + ox + cell_w * (col + 0.5), "cy": 10 + cell_h * (row + 0.5),
                         "w": width_of(w, i), "rot": sign * (6 + 4 * hash01(seed, i, 37))})
@@ -345,20 +366,31 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
             out.append({"cx": 50 + 40 * math.cos(a), "cy": 62 - 34 * math.sin(a),
                         "w": width_of(w, i), "rot": 90 - a * 180 / math.pi})
     elif layout == "photowall":
-        cols = max(1, math.ceil(math.sqrt(n)))
-        rows = math.ceil(n / cols)
+        # A compact block of equal tiles with a small gutter — twin of the
+        # photowall branch in collageCore.ts: the column count that gives the
+        # largest tile (ties: fewest empty cells), block and short last row
+        # centred.
         try:
             gap = float(spec.get("gap")) if spec.get("gap") is not None and not isinstance(spec.get("gap"), bool) else 0.7
         except (TypeError, ValueError):
             gap = 0.7
         gap = max(0.0, min(12.0, gap if math.isfinite(gap) else 0.7))
-        cell_w = (100 - gap) / cols
-        cell_h = (100 - gap) / rows
-        k = 0.91 / _photo_aspect(shape) + 0.25
-        w = min(cell_w - gap, cell_h * aspect / k)
+        best_cols, best_rows, best_w, best_empty = 1, n, 0.0, 0
+        for cols in range(1, n + 1):
+            rows = math.ceil(n / cols)
+            w = min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1)) / (rows * per))
+            empty = cols * rows - n
+            if w > best_w + 1e-9 or (abs(w - best_w) <= 1e-9 and empty < best_empty):
+                best_cols, best_rows, best_w, best_empty = cols, rows, w, empty
+        cols, rows = best_cols, best_rows
+        w = max(2.0, best_w)
+        mat_h = w * per
+        y0 = (100 - (rows * mat_h + (rows - 1) * gap)) / 2
         for i in range(n):
             col, row = i % cols, i // cols
-            out.append({"cx": gap / 2 + cell_w * (col + 0.5), "cy": gap / 2 + cell_h * (row + 0.5),
+            in_row = n - cols * (rows - 1) if row == rows - 1 else cols
+            x0 = (100 - (in_row * w + (in_row - 1) * gap)) / 2
+            out.append({"cx": x0 + w / 2 + col * (w + gap), "cy": y0 + mat_h / 2 + row * (mat_h + gap),
                         "w": width_of(w, i), "rot": 0.0})
     elif layout == "booth":
         w = min(22.0, 90.0 / max(1, n))
@@ -414,11 +446,19 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
                 cy = 50.0
             if not math.isfinite(rot):
                 rot = 0.0
-            out.append({"cx": max(0.0, min(100.0, cx)), "cy": max(0.0, min(100.0, cy)), "w": width_of(w, i), "rot": rot})
+            try:
+                own = float(p.get("w")) if p.get("w") is not None and not isinstance(p.get("w"), bool) else float("nan")
+            except (TypeError, ValueError):
+                own = float("nan")
+            base = max(FREE_MIN_W, min(FREE_MAX_W, own)) if math.isfinite(own) and own > 0 else w
+            out.append({"cx": max(0.0, min(100.0, cx)), "cy": max(0.0, min(100.0, cy)), "w": width_of(base, i), "rot": rot})
     elif layout == "template":
+        # Each mat is scaled down to fit its slot's box (width and height), so
+        # the mosaic keeps its rows and columns whatever the photo shape or
+        # frame style; the per-photo size multiplier still applies on top.
         slots = _template_slots(spec.get("template"), n)
         for i in range(n):
-            out.append({"cx": slots[i]["cx"], "cy": slots[i]["cy"], "w": width_of(slots[i]["w"], i), "rot": slots[i]["rot"]})
+            out.append({"cx": slots[i]["cx"], "cy": slots[i]["cy"], "w": width_of(_template_slot_width(slots[i], spec, i, aspect), i), "rot": slots[i]["rot"]})
     else:  # stack
         w = 42.0 if n <= 3 else (34.0 if n <= 6 else 30.0)
         for i in range(n):
@@ -457,6 +497,39 @@ def photo_delay(spec: dict[str, Any], i: int) -> float:
     if not math.isfinite(d):
         d = default_delay(len(photos), i)
     return max(0.0, min(30.0, d))
+
+
+# Bounds for a photo's own Free-layout width (``photo["w"]``).
+FREE_MIN_W = 4.0
+FREE_MAX_W = 100.0
+
+
+def free_from_displayed(spec: dict[str, Any], aspect: float, keep_stored: bool) -> list[dict[str, Any]]:
+    """Photos of a Free arrangement seeded from what another arrangement shows
+    (twin of ``freeFromDisplayed``): each photo keeps its displayed centre, tilt
+    and mat size — the size stored as the photo's own width before its size
+    multiplier. ``keep_stored`` prefers previously stored free values."""
+    photos = list(spec.get("photos") or [])
+    if spec.get("layout") == "free":
+        return photos
+    pls = placements(spec, aspect)
+    out = []
+    for i, p in enumerate(photos):
+        if i < len(pls):
+            pl = pls[i]
+            shown = {"cx": pl["cx"], "cy": pl["cy"], "rot": pl["rot"], "w": pl["w"] / photo_size(spec, i)}
+        else:
+            shown = {"cx": 50.0, "cy": 50.0, "rot": 0.0, "w": None}
+        entry = dict(p)
+        for key in ("cx", "cy", "rot", "w"):
+            if keep_stored and p.get(key) is not None:
+                continue
+            if shown[key] is None:
+                entry.pop(key, None)
+            else:
+                entry[key] = shown[key]
+        out.append(entry)
+    return out
 
 
 def photo_size(spec: dict[str, Any], i: int) -> float:
@@ -655,8 +728,8 @@ def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: f
     """Virtual camera at segment time t — twin of cameraState() in collageCore.ts.
     Returns the window zoom and centre (% of frame); 'pan' drifts across,
     the zoom family centres on the last photo's anchor, clamped inside the
-    frame. The FFmpeg crop/zoompan chain and the preview's CSS transform are
-    two views of these numbers."""
+    frame. The FFmpeg zoompan chain (camera_filter) and the preview's CSS
+    transform are two views of these numbers."""
     mode = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
     if mode == "none":
         return {"z": 1.0, "cx": 50.0, "cy": 50.0}
@@ -679,6 +752,70 @@ def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: f
         "cx": min(100 - half, max(half, a["cx"])),
         "cy": min(100 - half, max(half, a["cy"])),
     }
+
+
+# Virtual-camera supersampling: zoompan snaps its window to whole pixels of
+# ITS INPUT, so the composed scene is scaled up S× first and zoompan samples
+# that finer grid — the camera then moves in steps of 1/S output pixel
+# instead of whole (or, on 4:2:0, even-numbered) pixels. S is the largest
+# factor whose S×-scaled frame stays under the pixel budget: 720p → 4,
+# 1080p → 3, 1440p → 2, 4K → 1 (a 4K pixel is already a quarter the size).
+CAMERA_SUPERSAMPLE_MAX = 4
+CAMERA_SUPERSAMPLE_BUDGET = 20_000_000
+
+
+def camera_supersample(width: int, height: int) -> int:
+    """Supersampling factor the virtual camera uses at this output size."""
+    for s in range(CAMERA_SUPERSAMPLE_MAX, 1, -1):
+        if width * s * height * s <= CAMERA_SUPERSAMPLE_BUDGET:
+            return s
+    return 1
+
+
+def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lead_in: float,
+                  aspect: float | None = None) -> str | None:
+    """The FFmpeg filter chain for the virtual camera over the composed scene,
+    or None when the collage has no camera.
+
+    zoompan is the one stock filter that re-crops AND rescales every frame.
+    (crop cannot do it: its w/h expressions are evaluated once, at init, with
+    t = NaN — a crop=w='…t…' camera silently renders a static full frame.)
+    The zoom and window centre follow camera_state()'s curves, driven by the
+    input timestamp ``it`` so the lead-in shift and smoothstep match the
+    preview. Before zoompan the scene is supersampled (camera_supersample)
+    and converted to 4:4:4 — zoompan aligns 4:2:0 windows to even pixels —
+    so the camera moves on a sub-pixel grid instead of stuttering.
+    """
+    cam = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
+    if cam == "none":
+        return None
+    pls = placements(spec, width / height if aspect is None else aspect)
+    if not pls:
+        return None
+    d = max(0.2, collage_duration(spec))
+    raw_p = f"min(max((it-{_n(lead_in)})/{_n(d)},0),1)"
+    p = f"({raw_p}*{raw_p}*(3-2*{raw_p}))"
+    if cam == "pan":
+        zexpr = "1.09"
+        cx, cy = f"(54-8*{p})", "50"
+    else:
+        if cam == "zoom":
+            zexpr = f"1+0.35*{p}"
+        elif cam == "telescope":
+            zexpr = f"1+0.9*{p}"
+        else:
+            zexpr = f"1+1.1*pow({p},1.4)"
+        anchor = pls[-1]
+        cx, cy = _n(anchor["cx"]), _n(anchor["cy"])
+    # zoompan clamps x/y into [0, iw-iw/zoom] itself, which is exactly the
+    # twin's "window stays inside the frame" clamp on the centre.
+    ss = camera_supersample(width, height)
+    up = f"scale=iw*{ss}:ih*{ss}:flags=bicubic," if ss > 1 else ""
+    return (
+        f"{up}format=yuv444p,"
+        f"zoompan=z='{zexpr}':x='{cx}*iw/100-iw/(2*zoom)':y='{cy}*ih/100-ih/(2*zoom)'"
+        f":d=1:s={width}x{height}:fps={_n(fps)},setsar=1"
+    )
 
 
 def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9) -> dict[str, float]:
@@ -837,6 +974,12 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
                 v = None
             if v is not None and math.isfinite(v):
                 entry[key] = max(lo, min(hi, v))
+        try:
+            own_w = float(p.get("w")) if p.get("w") is not None and not isinstance(p.get("w"), bool) else None
+        except (TypeError, ValueError):
+            own_w = None
+        if own_w is not None and math.isfinite(own_w) and own_w > 0:
+            entry["w"] = max(FREE_MIN_W, min(FREE_MAX_W, own_w))
         if isinstance(p.get("filter"), str) and p.get("filter"):
             entry["filter"] = p["filter"]
         try:
@@ -1345,34 +1488,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             prev = out
 
     # Virtual camera over the composed scene — the last thing before the
-    # caption. Crop + bicubic scale (driven by t) replaces zoompan: zoompan
-    # snaps to integer pixels and stutters; crop expressions follow the same
-    # smoothstep curve camera_state() uses, so the MP4 matches the preview.
-    cam = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
-    if cam != "none" and pls:
-        d = max(0.2, collage_duration(spec))
-        raw_p = f"min(max((t-{_n(lead_in)})/{_n(d)},0),1)"
-        p = f"({raw_p}*{raw_p}*(3-2*{raw_p}))"
-        if cam == "pan":
-            ow, oh = max(2, int(width / 1.09)), max(2, int(height / 1.09))
-            lines.append(
-                f"[{prev}]crop={ow}:{oh}:x='(54-8*{p})*iw/100-ow/2':y='(ih-oh)/2',"
-                f"scale={width}:{height}:flags=bicubic,setsar=1[cam];"
-            )
-        else:
-            if cam == "zoom":
-                zexpr = f"1+0.35*{p}"
-            elif cam == "telescope":
-                zexpr = f"1+0.9*{p}"
-            else:
-                zexpr = f"1+1.1*pow({p},1.4)"
-            anchor = pls[-1]
-            cx = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cx'])}))"
-            cy = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cy'])}))"
-            lines.append(
-                f"[{prev}]crop=w='max(2,floor(iw/({zexpr})/2)*2)':h='max(2,floor(ih/({zexpr})/2)*2)'"
-                f":x='({cx}/100)*iw-iw/(2*{zexpr})':y='({cy}/100)*ih-ih/(2*{zexpr})',"
-                f"scale={width}:{height}:flags=bicubic,setsar=1[cam];"
-            )
+    # caption: a supersampled zoompan following camera_state()'s curves
+    # (see camera_filter for why not crop, and why supersampled).
+    camera = camera_filter(spec, width, height, fps, lead_in, aspect)
+    if camera is not None:
+        lines.append(f"[{prev}]{camera}[cam];")
         prev = "cam"
     return lines, prev

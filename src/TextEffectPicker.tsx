@@ -4,6 +4,7 @@
 // (/api/text-effects/<slug>.mp4, rendered once per effect, then static).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useLayer } from './layers'
 import { AlertTriangle, ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
 import {
   allTextEffects, isStaticTextEffect, textEffectDisplayName, textEffectGroupsFor,
@@ -180,6 +181,9 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
   const searchRef = useRef<HTMLInputElement | null>(null)
   const tileRefs = useRef<(HTMLDivElement | null)[]>([])
   const status = useEffectStatus(open)
+  // Newest popup on top: the popover is portaled to <body>, so it needs a
+  // layer above whichever editor or style dialog holds the chip.
+  const layer = useLayer(open)
 
   const measure = useCallback(() => {
     const element = triggerRef.current
@@ -318,7 +322,7 @@ export function TextEffectChip({ value, slot, onChange, ariaLabel, title, classN
       <div
         ref={popRef}
         className="transition-browser text-effect-browser"
-        style={{ left: geometry.left, top: geometry.top, width: geometry.width, height: geometry.height }}
+        style={{ left: geometry.left, top: geometry.top, width: geometry.width, height: geometry.height, zIndex: layer }}
         role="dialog"
         aria-label={`Choose a ${slotTitle[slot].toLowerCase()} effect`}
         onClick={e => e.stopPropagation()}

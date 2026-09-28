@@ -16,6 +16,7 @@ import {
   TransitionTile, buildAllPreviews, usePreviewStatus,
   type PreviewState,
 } from './TransitionPicker'
+import { useEscapeToClose, useLayer } from './layers'
 
 type Scope = 'all' | 'xfade' | 'gl' | 'favourites' | 'recent'
 
@@ -32,11 +33,11 @@ export function TransitionGallery({ initial, onClose }: { initial?: string; onCl
   const gridRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => { setFavourites(loadFavouriteTransitions()) }, [])
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  // Newest popup on top: the gallery is opened from the storyline, but also
+  // from the transition preview and the text frame editor, and must cover
+  // them. Escape closes only the gallery, never the editor underneath.
+  const layer = useLayer()
+  useEscapeToClose(layer, onClose)
 
   const sections = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -66,7 +67,7 @@ export function TransitionGallery({ initial, onClose }: { initial?: string; onCl
   const cached = status?.ready ?? 0
   const params = getGLParams(focused)
 
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={onClose}>
+  return <div className="modal-backdrop dark-backdrop" style={{ zIndex: layer }} onMouseDown={e => { e.stopPropagation(); onClose() }}>
     <div className="transition-gallery" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top">
         <div><strong>Transition gallery</strong><span>{totalTransitionCount} EXAMPLES · RENDERED ONCE, THEN CACHED</span></div>

@@ -132,9 +132,18 @@ StackOverflow 49733467 / 42770315 / 24330):
   preview — the twin-engine rule applied to photos (a new small
   `collageCore` module: layout + animation curves, TS + Python, like
   `textMotionCore`).
-- Virtual camera (wall gallery): one `crop` + `scale`/`zoompan` expression
-  over the finished composite — cheap, since it operates on the composed
-  stream.
+- Virtual camera (wall gallery): one `zoompan` over the finished composite —
+  cheap, since it operates on the composed stream. **As built** (see
+  `camera_filter()` in `backend/app/collage.py`): the scene is supersampled
+  first (`scale=iw*S:ih*S`, S = 4 at 720p, 3 at 1080p, 2 at 1440p, 1 at 4K)
+  and converted to 4:4:4, then `zoompan` (driven by its input time `it`)
+  follows `camera_state()`'s smoothstep — zoompan snaps its window to whole
+  input pixels (even-numbered ones on 4:2:0), which is what made the first
+  version bumpy; on the S× grid it moves in 1/S-pixel steps. Do **not** use
+  `crop` with a time-dependent `w`/`h` for this: crop evaluates its size once,
+  at init, with `t = NaN`, so such a camera silently renders a static frame
+  (`tests/test_collage_camera_ffmpeg.py` renders the real chain and checks
+  both the motion and its smoothness).
 - Perf: 6–10 photos × (scale+rotate+overlay) per collage slide is well within
   our current per-slide segment encoding budget.
 - 3D cube/columns and true infinite zoom are **L** (need GL or manual

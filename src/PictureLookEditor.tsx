@@ -22,6 +22,7 @@ import { cropLabel, hasCrop, normalizeRotation, type CropRect } from './pictureC
 import { useCroppedSource } from './usePictureCrop'
 import { useLookProxies } from './usePictureLook'
 import { CropSpriteVideo, PictureCropPanel } from './PictureCropEditor'
+import { useEscapeToClose, useLayer } from './layers'
 
 const round = (value: number, digits = 2) => Number(value.toFixed(digits))
 
@@ -126,12 +127,14 @@ export function PictureLookEditor({ item, src, onChange, onClose, initialTab = '
       setCompare(true)
     }
     const up = (event: KeyboardEvent) => { if (event.code === 'Space') setCompare(false) }
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') cancel() }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
-    window.addEventListener('keydown', escape)
-    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('keydown', escape) }
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
   })  // eslint-disable-line react-hooks/exhaustive-deps
+  // Newest popup on top: this editor opens over the lightbox and over the
+  // collage editor (per-photo look) and must cover both. Escape discards,
+  // but only while nothing is open above it.
+  const layer = useLayer()
 
   // A fresh preset always starts at full intensity; the sliders stay as they were.
   const pick = (id: string) => onChange({ filter: id, filterAmount: 1 })
@@ -158,6 +161,7 @@ export function PictureLookEditor({ item, src, onChange, onClose, initialTab = '
   }
 
   const cancel = () => { onChange(original.current); onClose() }
+  useEscapeToClose(layer, cancel)
   const resetTab = () => {
     if (tab === 'crop') onChange({ crop: undefined })
     else onChange({ filter: 'none', filterAmount: 1, filterAdjust: {} })
@@ -172,7 +176,7 @@ export function PictureLookEditor({ item, src, onChange, onClose, initialTab = '
   const stageSrc = pixelated && !compare && !isMovie ? (pixelProxy || proxy || baseSrc) : baseSrc
   const stageStyle = { ...(stageSrc === src && !baked ? turnStyle : {}), ...lookStyle }
 
-  return <div className="modal-backdrop dark-backdrop look-backdrop" onMouseDown={cancel}>
+  return <div className="modal-backdrop dark-backdrop look-backdrop" style={{ zIndex: layer }} onMouseDown={cancel}>
     <div className="soundtrack-editor look-editor" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top">
         <div><strong>{item.name}</strong><span>{isMovie ? 'MOVIE' : 'PICTURE'} EDITOR</span></div>

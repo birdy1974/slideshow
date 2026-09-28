@@ -11,6 +11,7 @@ import { TimeField } from './ui'
 import { formatClockPrecise } from './time'
 import type { MediaItem } from './mediaItem'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
+import { useEscapeToClose, useLayer } from './layers'
 
 // Shortest section a movie can be cut down to.
 const MIN_KEEP = 0.5
@@ -113,11 +114,13 @@ export function MovieEditor({ item, src, onChange, onClose }: {
     if (playing && position >= end - 0.02) { video.pause(); setPlaying(false); video.currentTime = start; setPosition(start) }
   }, [position, start, end, playing, total])
 
-  // Space = play/pause, Escape = close (and discard, like the soundtracks).
+  // Newest popup on top (this editor opens over the lightbox). Space =
+  // play/pause, Escape = close (and discard, like the soundtracks) — Escape
+  // only while nothing is open above the editor.
+  const layer = useLayer()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); cancel() }
-      else if (e.key === ' ' && (e.target as HTMLElement)?.tagName !== 'INPUT') { e.preventDefault(); togglePlay() }
+      if (e.key === ' ' && (e.target as HTMLElement)?.tagName !== 'INPUT') { e.preventDefault(); togglePlay() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -173,9 +176,10 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   const pct = (v: number) => (total > 0 ? `${Math.min(100, Math.max(0, v / total * 100))}%` : '0%')
   const frames = 48
   const cancel = () => { onChange(original.current); onClose() }
+  useEscapeToClose(layer, cancel)
   const reset = () => onChange({ trimStart: 0, trimEnd: 0, duration: round(total) })
 
-  return <div className="modal-backdrop dark-backdrop movie-backdrop" onMouseDown={cancel}>
+  return <div className="modal-backdrop dark-backdrop movie-backdrop" style={{ zIndex: layer }} onMouseDown={cancel}>
     <div className="soundtrack-editor movie-editor" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top"><div><strong>{item.name}</strong><span>MOVIE EDITOR · SELECT THE SECTION TO USE</span></div><button type="button" onClick={cancel} aria-label="Close editor"><X size={20} /></button></div>
 

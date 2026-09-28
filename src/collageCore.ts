@@ -62,6 +62,10 @@ export interface CollagePhoto extends CollagePhotoLook {
   /** Free-layout resting position (percent of the frame). Missing = 50/50. */
   cx?: number
   cy?: number
+  /** Free-layout mat width (percent of the frame width, before the size
+   *  multiplier). Set when an arrangement is turned into Free so every mat
+   *  keeps the size it had; missing = Free's own rule by photo count. */
+  w?: number
   /** Per-photo frame override (shape / colour / thickness). Missing = the spec default. */
   frame?: CollageFrame
   /** Free-layout resting tilt in degrees. Missing = 0. */
@@ -153,7 +157,7 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
 export const COLLAGE_SHAPES: CollageShape[] = ['4:3', '16:9', '3:2', 'square', '2:3', '3:4', '9:16']
 
-function photoAspect (shape: CollageShape | string): number {
+export function photoAspect (shape: CollageShape | string): number {
   if (shape === 'square') return 1
   if (shape === '3:4') return 3 / 4
   if (shape === '16:9') return 16 / 9
@@ -186,12 +190,7 @@ export function frameBorderFrac (frame: { shape: CollageFrameShape; width: numbe
  *  percentage of the frame HEIGHT. aspect = frameW / frameH. Polaroid
  *  (the default) keeps the classic white border + caption strip. */
 export function matHeight (w: number, shape: CollageShape, aspect: number, frame?: CollageFrame): number {
-  const fr = photoFrame({ frame }, null)
-  const border = frameBorderFrac(fr) * w
-  const bottom = fr.shape === 'polaroid' ? 0.205 * w : border
-  const photoW = Math.max(1e-6, w - 2 * border)
-  const photoH = photoW / photoAspect(shape)
-  return (photoH + border + bottom) / aspect
+  return w * matHeightPerWidth(shape, photoFrame({ frame }, null), aspect)
 }
 
 /** CSS clip-path for a non-rectangular photo frame. Undefined = rectangle. */
@@ -213,87 +212,97 @@ export function frameClipPath (shape: CollageFrameShape | string | undefined): s
 
 /** Predefined fixed layouts: magazine mosaics (no tilt) and polaroid-wall
  *  scrapbook pages (tilted overlapping mats). Slot coordinates are % of the
- *  frame; extra photos beyond the slot count overlay with a seeded offset. */
+ *  frame; extra photos beyond the slot count overlay with a seeded offset.
+ *
+ *  A slot is a box, not a mat size: `w` is the widest the mat may be (% of
+ *  the frame width) and `h` the tallest (% of the frame HEIGHT). The mat is
+ *  scaled down to fit both — see placements() — so a stacked 2-up stays two
+ *  rows with tall polaroid mats or portrait photos instead of overflowing.
+ *  Magazine boxes tile the page with ~4 % gaps; the polaroid-wall piles only
+ *  cap the height (their overlap is the point) so a 9:16 polaroid cannot
+ *  run off the frame. */
+export interface TemplateSlot extends Placement { h?: number }
+
 export interface CollageTemplate {
   id: string
   family: 'magazine' | 'polaroid'
   label: string
   hint: string
-  slots: Placement[]
+  slots: TemplateSlot[]
 }
 
 export const COLLAGE_TEMPLATES: CollageTemplate[] = [
   { id: 'split-v', family: 'magazine', label: '2-up split', hint: 'Two photos side by side', slots: [
-    { cx: 26, cy: 50, w: 46, rot: 0 }, { cx: 74, cy: 50, w: 46, rot: 0 },
+    { cx: 26, cy: 50, w: 46, h: 88, rot: 0 }, { cx: 74, cy: 50, w: 46, h: 88, rot: 0 },
   ] },
   { id: 'split-h', family: 'magazine', label: '2-up stacked', hint: 'Two photos one above the other', slots: [
-    { cx: 50, cy: 27, w: 70, rot: 0 }, { cx: 50, cy: 73, w: 70, rot: 0 },
+    { cx: 50, cy: 27, w: 70, h: 42, rot: 0 }, { cx: 50, cy: 73, w: 70, h: 42, rot: 0 },
   ] },
   { id: 'triptych', family: 'magazine', label: 'Triptych', hint: 'Three equal columns', slots: [
-    { cx: 18, cy: 50, w: 30, rot: 0 }, { cx: 50, cy: 50, w: 30, rot: 0 }, { cx: 82, cy: 50, w: 30, rot: 0 },
+    { cx: 18, cy: 50, w: 30, h: 88, rot: 0 }, { cx: 50, cy: 50, w: 30, h: 88, rot: 0 }, { cx: 82, cy: 50, w: 30, h: 88, rot: 0 },
   ] },
   { id: 'trio-left', family: 'magazine', label: '1 + 2 left', hint: 'One large photo on the left, two stacked on the right', slots: [
-    { cx: 30, cy: 50, w: 54, rot: 0 }, { cx: 78, cy: 28, w: 36, rot: 0 }, { cx: 78, cy: 72, w: 36, rot: 0 },
+    { cx: 30, cy: 50, w: 54, h: 88, rot: 0 }, { cx: 78, cy: 28, w: 36, h: 42, rot: 0 }, { cx: 78, cy: 72, w: 36, h: 42, rot: 0 },
   ] },
   { id: 'trio-right', family: 'magazine', label: '1 + 2 right', hint: 'Two stacked on the left, one large on the right', slots: [
-    { cx: 22, cy: 28, w: 36, rot: 0 }, { cx: 22, cy: 72, w: 36, rot: 0 }, { cx: 70, cy: 50, w: 54, rot: 0 },
+    { cx: 22, cy: 28, w: 36, h: 42, rot: 0 }, { cx: 22, cy: 72, w: 36, h: 42, rot: 0 }, { cx: 70, cy: 50, w: 54, h: 88, rot: 0 },
   ] },
   { id: 'trio-top', family: 'magazine', label: '1 + 2 top', hint: 'One wide photo on top, two below', slots: [
-    { cx: 50, cy: 28, w: 88, rot: 0 }, { cx: 26, cy: 74, w: 42, rot: 0 }, { cx: 74, cy: 74, w: 42, rot: 0 },
+    { cx: 50, cy: 27, w: 88, h: 46, rot: 0 }, { cx: 26, cy: 74, w: 42, h: 40, rot: 0 }, { cx: 74, cy: 74, w: 42, h: 40, rot: 0 },
   ] },
   { id: 'quad', family: 'magazine', label: '2 × 2', hint: 'Four equal tiles', slots: [
-    { cx: 26, cy: 28, w: 44, rot: 0 }, { cx: 74, cy: 28, w: 44, rot: 0 },
-    { cx: 26, cy: 72, w: 44, rot: 0 }, { cx: 74, cy: 72, w: 44, rot: 0 },
+    { cx: 26, cy: 28, w: 44, h: 42, rot: 0 }, { cx: 74, cy: 28, w: 44, h: 42, rot: 0 },
+    { cx: 26, cy: 72, w: 44, h: 42, rot: 0 }, { cx: 74, cy: 72, w: 44, h: 42, rot: 0 },
   ] },
   { id: 'one-plus-three', family: 'magazine', label: '1 + 3', hint: 'One large left, three stacked right', slots: [
-    { cx: 32, cy: 50, w: 56, rot: 0 }, { cx: 80, cy: 20, w: 32, rot: 0 },
-    { cx: 80, cy: 50, w: 32, rot: 0 }, { cx: 80, cy: 80, w: 32, rot: 0 },
+    { cx: 32, cy: 50, w: 56, h: 88, rot: 0 }, { cx: 80, cy: 20, w: 32, h: 26, rot: 0 },
+    { cx: 80, cy: 50, w: 32, h: 26, rot: 0 }, { cx: 80, cy: 80, w: 32, h: 26, rot: 0 },
   ] },
   { id: 'hero-row', family: 'magazine', label: 'Hero + 3', hint: 'Wide hero on top, three across the bottom', slots: [
-    { cx: 50, cy: 30, w: 90, rot: 0 }, { cx: 18, cy: 76, w: 28, rot: 0 },
-    { cx: 50, cy: 76, w: 28, rot: 0 }, { cx: 82, cy: 76, w: 28, rot: 0 },
+    { cx: 50, cy: 30, w: 90, h: 52, rot: 0 }, { cx: 18, cy: 77, w: 28, h: 34, rot: 0 },
+    { cx: 50, cy: 77, w: 28, h: 34, rot: 0 }, { cx: 82, cy: 77, w: 28, h: 34, rot: 0 },
   ] },
-  { id: 'five-mosaic', family: 'magazine', label: 'Five mosaic', hint: 'Large centre-left with four small around it', slots: [
-    { cx: 32, cy: 50, w: 56, rot: 0 }, { cx: 78, cy: 18, w: 30, rot: 0 },
-    { cx: 78, cy: 50, w: 30, rot: 0 }, { cx: 78, cy: 82, w: 30, rot: 0 }, { cx: 32, cy: 86, w: 28, rot: 0 },
+  { id: 'five-mosaic', family: 'magazine', label: '1 + 4', hint: 'One large photo on the left, four small in a block on the right', slots: [
+    { cx: 30, cy: 50, w: 54, h: 88, rot: 0 }, { cx: 68, cy: 28, w: 18, h: 42, rot: 0 },
+    { cx: 88, cy: 28, w: 18, h: 42, rot: 0 }, { cx: 68, cy: 72, w: 18, h: 42, rot: 0 }, { cx: 88, cy: 72, w: 18, h: 42, rot: 0 },
   ] },
   { id: 'six-grid', family: 'magazine', label: '3 × 2', hint: 'Six equal tiles', slots: [
-    { cx: 18, cy: 28, w: 30, rot: 0 }, { cx: 50, cy: 28, w: 30, rot: 0 }, { cx: 82, cy: 28, w: 30, rot: 0 },
-    { cx: 18, cy: 72, w: 30, rot: 0 }, { cx: 50, cy: 72, w: 30, rot: 0 }, { cx: 82, cy: 72, w: 30, rot: 0 },
+    { cx: 18, cy: 28, w: 30, h: 42, rot: 0 }, { cx: 50, cy: 28, w: 30, h: 42, rot: 0 }, { cx: 82, cy: 28, w: 30, h: 42, rot: 0 },
+    { cx: 18, cy: 72, w: 30, h: 42, rot: 0 }, { cx: 50, cy: 72, w: 30, h: 42, rot: 0 }, { cx: 82, cy: 72, w: 30, h: 42, rot: 0 },
   ] },
   { id: 'polaroid-pile', family: 'polaroid', label: 'Pile', hint: 'A fixed overlapping pile in the middle', slots: [
-    { cx: 42, cy: 48, w: 34, rot: -11 }, { cx: 58, cy: 44, w: 34, rot: 8 },
-    { cx: 48, cy: 56, w: 36, rot: 3 }, { cx: 36, cy: 40, w: 30, rot: -18 },
-    { cx: 64, cy: 58, w: 30, rot: 14 }, { cx: 50, cy: 38, w: 28, rot: -4 },
+    { cx: 42, cy: 48, w: 34, h: 78, rot: -11 }, { cx: 58, cy: 44, w: 34, h: 78, rot: 8 },
+    { cx: 48, cy: 56, w: 36, h: 78, rot: 3 }, { cx: 36, cy: 40, w: 30, h: 78, rot: -18 },
+    { cx: 64, cy: 58, w: 30, h: 78, rot: 14 }, { cx: 50, cy: 38, w: 28, h: 78, rot: -4 },
   ] },
   { id: 'polaroid-diagonal', family: 'polaroid', label: 'Diagonal', hint: 'Photos stepping down from left to right', slots: [
-    { cx: 22, cy: 28, w: 32, rot: -8 }, { cx: 40, cy: 40, w: 32, rot: 4 },
-    { cx: 58, cy: 52, w: 32, rot: -5 }, { cx: 74, cy: 66, w: 32, rot: 7 },
-    { cx: 50, cy: 24, w: 26, rot: 12 },
+    { cx: 22, cy: 28, w: 32, h: 78, rot: -8 }, { cx: 40, cy: 40, w: 32, h: 78, rot: 4 },
+    { cx: 58, cy: 52, w: 32, h: 78, rot: -5 }, { cx: 74, cy: 66, w: 32, h: 78, rot: 7 },
+    { cx: 50, cy: 24, w: 26, h: 78, rot: 12 },
   ] },
   { id: 'polaroid-rows', family: 'polaroid', label: 'Two rows', hint: 'Two overlapping rows of tilted polaroids', slots: [
-    { cx: 22, cy: 32, w: 30, rot: -7 }, { cx: 50, cy: 28, w: 30, rot: 5 }, { cx: 78, cy: 34, w: 30, rot: -4 },
-    { cx: 28, cy: 70, w: 30, rot: 6 }, { cx: 56, cy: 74, w: 30, rot: -8 }, { cx: 82, cy: 68, w: 30, rot: 3 },
+    { cx: 22, cy: 32, w: 30, h: 78, rot: -7 }, { cx: 50, cy: 28, w: 30, h: 78, rot: 5 }, { cx: 78, cy: 34, w: 30, h: 78, rot: -4 },
+    { cx: 28, cy: 70, w: 30, h: 78, rot: 6 }, { cx: 56, cy: 74, w: 30, h: 78, rot: -8 }, { cx: 82, cy: 68, w: 30, h: 78, rot: 3 },
   ] },
   { id: 'polaroid-stairs', family: 'polaroid', label: 'Staircase', hint: 'A stepped flight of overlapping frames', slots: [
-    { cx: 20, cy: 70, w: 30, rot: -6 }, { cx: 36, cy: 56, w: 30, rot: 4 },
-    { cx: 52, cy: 42, w: 30, rot: -3 }, { cx: 68, cy: 28, w: 30, rot: 7 },
-    { cx: 82, cy: 18, w: 26, rot: -10 },
+    { cx: 20, cy: 70, w: 30, h: 78, rot: -6 }, { cx: 36, cy: 56, w: 30, h: 78, rot: 4 },
+    { cx: 52, cy: 42, w: 30, h: 78, rot: -3 }, { cx: 68, cy: 28, w: 30, h: 78, rot: 7 },
+    { cx: 82, cy: 18, w: 26, h: 78, rot: -10 },
   ] },
   { id: 'polaroid-heart', family: 'polaroid', label: 'Heart', hint: 'A loose heart-shaped cluster', slots: [
-    { cx: 32, cy: 32, w: 28, rot: -14 }, { cx: 68, cy: 32, w: 28, rot: 14 },
-    { cx: 22, cy: 52, w: 26, rot: -8 }, { cx: 78, cy: 52, w: 26, rot: 8 },
-    { cx: 50, cy: 48, w: 30, rot: 2 }, { cx: 50, cy: 76, w: 28, rot: -3 },
+    { cx: 32, cy: 32, w: 28, h: 78, rot: -14 }, { cx: 68, cy: 32, w: 28, h: 78, rot: 14 },
+    { cx: 22, cy: 52, w: 26, h: 78, rot: -8 }, { cx: 78, cy: 52, w: 26, h: 78, rot: 8 },
+    { cx: 50, cy: 48, w: 30, h: 78, rot: 2 }, { cx: 50, cy: 76, w: 28, h: 78, rot: -3 },
   ] },
-  { id: 'polaroid-strip', family: 'polaroid', label: 'Overlapping strip', hint: 'A band of overlapping frames across the middle', slots: [
-    { cx: 16, cy: 50, w: 28, rot: -6 }, { cx: 34, cy: 46, w: 28, rot: 5 },
-    { cx: 52, cy: 52, w: 28, rot: -4 }, { cx: 70, cy: 47, w: 28, rot: 7 },
-    { cx: 86, cy: 53, w: 26, rot: -5 },
+  { id: 'polaroid-strip', family: 'polaroid', label: 'Strip', hint: 'A band of overlapping frames across the middle', slots: [
+    { cx: 16, cy: 50, w: 28, h: 78, rot: -6 }, { cx: 34, cy: 46, w: 28, h: 78, rot: 5 },
+    { cx: 52, cy: 52, w: 28, h: 78, rot: -4 }, { cx: 70, cy: 47, w: 28, h: 78, rot: 7 },
+    { cx: 86, cy: 53, w: 26, h: 78, rot: -5 },
   ] },
   { id: 'polaroid-corners', family: 'polaroid', label: 'Corners', hint: 'Four polaroids pinning the corners, one in the middle', slots: [
-    { cx: 20, cy: 22, w: 30, rot: -10 }, { cx: 80, cy: 22, w: 30, rot: 9 },
-    { cx: 20, cy: 78, w: 30, rot: 7 }, { cx: 80, cy: 78, w: 30, rot: -8 },
-    { cx: 50, cy: 50, w: 36, rot: 3 },
+    { cx: 20, cy: 22, w: 30, h: 78, rot: -10 }, { cx: 80, cy: 22, w: 30, h: 78, rot: 9 },
+    { cx: 20, cy: 78, w: 30, h: 78, rot: 7 }, { cx: 80, cy: 78, w: 30, h: 78, rot: -8 },
+    { cx: 50, cy: 50, w: 36, h: 78, rot: 3 },
   ] },
 ]
 
@@ -301,9 +310,9 @@ export function collageTemplate (id: string | undefined): CollageTemplate {
   return COLLAGE_TEMPLATES.find(t => t.id === id) || COLLAGE_TEMPLATES[0]
 }
 
-function templateSlots (id: string | undefined, n: number): Placement[] {
+function templateSlots (id: string | undefined, n: number): TemplateSlot[] {
   const slots = collageTemplate(id).slots
-  const out: Placement[] = []
+  const out: TemplateSlot[] = []
   for (let i = 0; i < n; i++) {
     if (i < slots.length) { out.push({ ...slots[i] }); continue }
     const base = slots[i % slots.length]
@@ -312,10 +321,29 @@ function templateSlots (id: string | undefined, n: number): Placement[] {
       cx: Math.max(8, Math.min(92, base.cx + (hash01(i, 11) - 0.5) * 10 * k)),
       cy: Math.max(10, Math.min(90, base.cy + (hash01(i, 13) - 0.5) * 10 * k)),
       w: base.w * 0.85,
+      ...(base.h !== undefined ? { h: base.h * 0.85 } : {}),
       rot: base.rot + (hash01(i, 17) - 0.5) * 14,
     })
   }
   return out
+}
+
+/** Height of a mat per 1 % of frame width, in % of frame HEIGHT: the pixel
+ *  maths of the stage and the MP4 sprite (photo + border + polaroid caption
+ *  strip) for the resolved frame `fr`, times the frame's W/H. Twin of
+ *  mat_height_per_width() in backend/app/collage.py. */
+function matHeightPerWidth (shape: CollageShape, fr: ReturnType<typeof photoFrame>, aspect: number): number {
+  const b = frameBorderFrac(fr)
+  const bottom = fr.shape === 'polaroid' ? 0.205 : b
+  return ((1 - 2 * b) / photoAspect(shape) + b + bottom) * aspect
+}
+
+/** Widest mat that fits a template slot's box for this photo's frame — the
+ *  slot width, or less when the mat would be taller than the slot height. */
+function templateSlotWidth (slot: TemplateSlot, spec: CollageSpec, i: number, aspect: number): number {
+  if (slot.h === undefined || !(slot.h > 0)) return slot.w
+  const per = matHeightPerWidth(spec.shape, photoFrame(spec, spec.photos[i]), aspect)
+  return Math.min(slot.w, slot.h / per)
 }
 
 /** Resting placement of every photo. Deterministic given the spec. */
@@ -327,17 +355,18 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const cols = Math.max(1, Math.ceil(Math.sqrt(count)))
     const rows = Math.ceil(count / cols)
     const marginX = 7
-    const marginY = 12
+    const marginY = 8
     return { cols, rows, cellW: (100 - 2 * marginX) / cols, cellH: (100 - 2 * marginY) / rows, }
   }
-  // Largest mat width (as % of frame width) whose mat HEIGHT still fits in a
-  // grid cell: mat height % of H = w · k / aspect, with k from matHeight().
-  const fitWidth = (cellW: number, cellH: number): number => {
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
-    const byWidth = cellW * 0.8
-    const byHeight = cellH * 0.82 * aspect / k
-    return Math.min(byWidth, byHeight)
-  }
+  // Mat height (% of frame HEIGHT) per 1 % of frame width for the collage's
+  // default frame — the pixel maths of the stage and the MP4. Every layout
+  // that fits mats into cells limits their height with it, so rows never
+  // overlap whatever the photo shape or frame style.
+  const per = matHeightPerWidth(spec.shape, photoFrame(spec, null), aspect)
+  // Largest mat width (as % of frame width) that fits a grid cell: 80 % of
+  // the cell width, and no taller than 90 % of the cell height (the seeded
+  // tilt needs the rest).
+  const fitWidth = (cellW: number, cellH: number): number => Math.min(cellW * 0.8, cellH * 0.9 / per)
   // Per-photo size: each photo's mat is the layout width times its multiplier
   // (bigger photos overlap their neighbours — that is the point).
   const widthOf = (base: number, i: number): number => base * photoSize(spec, i)
@@ -348,7 +377,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       const col = i % cols
       const row = Math.floor(i / cols)
       // Seeded tilt so Shuffle visibly rearranges even a strict grid.
-      out.push({ cx: 7 + cellW * (col + 0.5), cy: 12 + cellH * (row + 0.5), w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 10 })
+      out.push({ cx: 7 + cellW * (col + 0.5), cy: 8 + cellH * (row + 0.5), w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 10 })
     }
   } else if (spec.layout === 'scatter') {
     const { cols, cellW, cellH } = cells(n)
@@ -357,7 +386,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       const col = i % cols
       const row = Math.floor(i / cols)
       const cx = 7 + cellW * (col + 0.28 + 0.44 * hash01(seed, i, 29))
-      const cy = 12 + cellH * (row + 0.28 + 0.44 * hash01(seed, i, 31))
+      const cy = 8 + cellH * (row + 0.28 + 0.44 * hash01(seed, i, 31))
       out.push({ cx, cy, w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 26 })
     }
   } else if (spec.layout === 'filmstrip') {
@@ -366,14 +395,13 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const rows = n <= 5 ? 1 : 2
     const perRow = Math.ceil(n / rows)
     const firstRow = n - perRow * (rows - 1)
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
     for (let i = 0; i < n; i++) {
       const row = i < firstRow ? 0 : 1
       const cols = row === 0 ? firstRow : perRow
       const col = row === 0 ? i : i - firstRow
       const cellWr = (100 - 2 * 5) / cols
       const cellH = (100 - 2 * 12) / rows
-      const w = Math.min(cellWr * 1.1, cellH * 0.82 * aspect / k)
+      const w = Math.min(cellWr * 1.1, cellH * 0.9 / per)
       out.push({ cx: 5 + cellWr * (col + 0.5), cy: 12 + cellH * (row + 0.5), w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 8 })
     }
   } else if (spec.layout === 'fan') {
@@ -396,12 +424,11 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     // Pinterest-style columns: seeded size variety, each photo stacked into
     // the shortest column (a single photo is simply centred).
     if (n === 1) {
-      out.push({ cx: 50, cy: 50, w: widthOf(40, 0), rot: 0 })
+      out.push({ cx: 50, cy: 50, w: widthOf(Math.min(40, 76 / per), 0), rot: 0 })
     } else {
       const cols = n <= 2 ? 2 : n <= 9 ? 3 : 4
       const marginX = 6
       const cellW = (100 - 2 * marginX) / cols
-      const k = 0.91 / photoAspect(spec.shape) + 0.25
       const base = cellW * 0.88
       const ws: number[] = []
       for (let i = 0; i < n; i++) ws.push(base * (0.82 + 0.36 * hash01(seed, i, 41)) * photoSize(spec, i))
@@ -412,7 +439,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
         for (let i = 0; i < n; i++) {
           let c = 0
           for (let j = 1; j < cols; j++) if (fills[j] < fills[c] - 1e-9) c = j
-          const mh = ws[i] * scale * k / aspect
+          const mh = ws[i] * scale * per
           res.push({ cx: marginX + cellW * (c + 0.5), cy: 12 + fills[c] + gap / 2 + mh / 2 })
           fills[c] += gap + mh
         }
@@ -429,8 +456,8 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const gap = Number.isFinite(Number(spec.gap)) ? Math.max(0, Math.min(12, Number(spec.gap))) : 1.6
     const cellW = (100 - 8) / (cols + 0.5)
     const cellH = (100 - 16) / Math.max(1, rows)
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
-    const w = Math.min(cellW - gap, cellH * 0.82 * aspect / k)
+    // Brick-tight: the gutter between rows equals the gutter between columns.
+    const w = Math.min(cellW - gap, (cellH - gap) / per)
     for (let i = 0; i < n; i++) {
       const row = Math.floor(i / cols)
       const col = i % cols
@@ -446,7 +473,9 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     for (let i = 0; i < n; i++) {
       const col = i % cols
       const row = Math.floor(i / cols)
-      const ox = (row % 2) * cellW * 0.28
+      // Alternate rows shift a little left / right of centre — symmetric, so
+      // the outer tiles of both rows stay inside the frame.
+      const ox = ((row % 2) ? 0.14 : -0.14) * cellW
       out.push({ cx: 6 + ox + cellW * (col + 0.5), cy: 10 + cellH * (row + 0.5), w: widthOf(w, i), rot: ((row + col) % 2 ? 1 : -1) * (6 + 4 * hash01(seed, i, 37)) })
     }
   } else if (spec.layout === 'arc') {
@@ -462,17 +491,28 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       })
     }
   } else if (spec.layout === 'photowall') {
-    const cols = Math.max(1, Math.ceil(Math.sqrt(n)))
-    const rows = Math.ceil(n / cols)
+    // A compact block of equal tiles with a small gutter. The column count
+    // is the one that gives the largest tile for this frame and mat shape
+    // (ties: the fewest empty cells); the block is centred and a short last
+    // row is centred too, so the wall never has a hole.
     const gap = Number.isFinite(Number(spec.gap)) ? Math.max(0, Math.min(12, Number(spec.gap))) : 0.7
-    const cellW = (100 - gap) / cols
-    const cellH = (100 - gap) / rows
-    const k = 0.91 / photoAspect(spec.shape) + 0.25
-    const w = Math.min(cellW - gap, cellH * aspect / k)
+    let best = { cols: 1, rows: n, w: 0, empty: 0 }
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols)
+      const w = Math.min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1)) / (rows * per))
+      const empty = cols * rows - n
+      if (w > best.w + 1e-9 || (Math.abs(w - best.w) <= 1e-9 && empty < best.empty)) best = { cols, rows, w, empty }
+    }
+    const { cols, rows } = best
+    const w = Math.max(2, best.w)
+    const matH = w * per
+    const y0 = (100 - (rows * matH + (rows - 1) * gap)) / 2
     for (let i = 0; i < n; i++) {
       const col = i % cols
       const row = Math.floor(i / cols)
-      out.push({ cx: gap / 2 + cellW * (col + 0.5), cy: gap / 2 + cellH * (row + 0.5), w: widthOf(w, i), rot: 0 })
+      const inRow = row === rows - 1 ? n - cols * (rows - 1) : cols
+      const x0 = (100 - (inRow * w + (inRow - 1) * gap)) / 2
+      out.push({ cx: x0 + w / 2 + col * (w + gap), cy: y0 + matH / 2 + row * (matH + gap), w: widthOf(w, i), rot: 0 })
     }
   } else if (spec.layout === 'booth') {
     const w = Math.min(22, 90 / Math.max(1, n))
@@ -512,19 +552,24 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const w = n <= 3 ? 42 : n <= 6 ? 34 : 30
     for (let i = 0; i < n; i++) {
       const p = spec.photos[i] || { path: '' }
-      const cx = Number.isFinite(Number(p.cx)) ? Number(p.cx) : 50
-      const cy = Number.isFinite(Number(p.cy)) ? Number(p.cy) : 50
-      const rot = Number.isFinite(Number(p.rot)) ? Number(p.rot) : 0
+      const cx = num(p.cx) ?? 50
+      const cy = num(p.cy) ?? 50
+      const rot = num(p.rot) ?? 0
+      const own = num(p.w)
+      const base = own !== undefined && own > 0 ? Math.max(FREE_MIN_W, Math.min(FREE_MAX_W, own)) : w
       out.push({
         cx: Math.max(0, Math.min(100, cx)),
         cy: Math.max(0, Math.min(100, cy)),
-        w: widthOf(w, i),
+        w: widthOf(base, i),
         rot,
       })
     }
   } else if (spec.layout === 'template') {
+    // Each mat is scaled down to fit its slot's box (width and height), so
+    // the mosaic keeps its rows and columns whatever the photo shape or
+    // frame style; the per-photo size multiplier still applies on top.
     const slots = templateSlots(spec.template, n)
-    for (let i = 0; i < n; i++) out.push({ cx: slots[i].cx, cy: slots[i].cy, w: widthOf(slots[i].w, i), rot: slots[i].rot })
+    for (let i = 0; i < n; i++) out.push({ cx: slots[i].cx, cy: slots[i].cy, w: widthOf(templateSlotWidth(slots[i], spec, i, aspect), i), rot: slots[i].rot })
   } else {
     // stack: overlapping polaroids around the middle, seeded tilts
     const w = n <= 3 ? 42 : n <= 6 ? 34 : 30
@@ -560,6 +605,29 @@ export function photoDelay (spec: CollageSpec, i: number): number {
   if (raw !== undefined && raw !== null && typeof raw !== 'boolean' && !(typeof raw === 'string' && raw.trim() === '')) d = Number(raw)
   if (!Number.isFinite(d)) d = defaultDelay(photos.length, i)
   return Math.max(0, Math.min(30, d))
+}
+
+/** Bounds for a photo's own Free-layout width (`CollagePhoto.w`). */
+export const FREE_MIN_W = 4
+export const FREE_MAX_W = 100
+
+/** Photos of a Free arrangement seeded from what another arrangement shows:
+ *  each photo keeps its displayed centre, tilt and mat size (the size is
+ *  stored as the photo's own width before its size multiplier, so the
+ *  multiplier keeps working). `keepStored` prefers a photo's previously
+ *  stored free position/size over the displayed one (the "Free" choice in
+ *  the picker restores a manual layout that way); a drop onto the preview
+ *  wants exactly what is on screen and passes false. */
+export function freeFromDisplayed (spec: CollageSpec, aspect: number, keepStored: boolean): CollagePhoto[] {
+  if (spec.layout === 'free') return spec.photos
+  const pls = placements(spec, aspect)
+  return spec.photos.map((p, i) => {
+    const pl = pls[i]
+    const shown = pl ? { cx: pl.cx, cy: pl.cy, rot: pl.rot, w: pl.w / photoSize(spec, i) } : { cx: 50, cy: 50, rot: 0, w: undefined }
+    return keepStored
+      ? { ...p, cx: p.cx ?? shown.cx, cy: p.cy ?? shown.cy, rot: p.rot ?? shown.rot, w: p.w ?? shown.w }
+      : { ...p, ...shown }
+  })
 }
 
 /** Photo i's mat size multiplier — the stored value if present (clamped to
@@ -817,8 +885,9 @@ export function pushDepth (spec: CollageSpec, i: number, t: number, leadIn = 0):
  *  z (1 = whole frame) and the window centre (cx / cy in % of the frame).
  *  'pan' drifts across a slightly zoomed frame; the zoom family centres on
  *  the LAST photo's anchor (the top of the pile) and the window is clamped
- *  so it always stays inside the frame — the FFmpeg crop/zoompan and the
- *  CSS transform are two views of the same numbers. */
+ *  so it always stays inside the frame — the FFmpeg zoompan chain
+ *  (camera_filter in backend/app/collage.py) and the CSS transform are two
+ *  views of the same numbers. */
 export interface CameraState { z: number; cx: number; cy: number }
 
 export function cameraState (spec: CollageSpec, t: number, leadIn = 0, aspect = 16 / 9): CameraState {
@@ -827,8 +896,8 @@ export function cameraState (spec: CollageSpec, t: number, leadIn = 0, aspect = 
   const D = Math.max(0.2, collageDuration(spec))
   const raw = clamp01((t - leadIn) / D)
   // Smoothstep the progress so the virtual camera eases in and out — the
-  // FFmpeg crop/scale chain samples this same curve, so preview and MP4
-  // stay in step without zoompan's integer-pixel stutter.
+  // FFmpeg chain drives zoompan (over a supersampled scene, so it moves on
+  // a sub-pixel grid) with this same curve, so preview and MP4 stay in step.
   const p = raw * raw * (3 - 2 * raw)
   if (mode === 'pan') return { z: 1.09, cx: 54 - 8 * p, cy: 50 }
   const pls = placements(spec, aspect)
@@ -925,6 +994,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     const cx = num(p.cx)
     const cy = num(p.cy)
     const rot = num(p.rot)
+    const w = num(p.w)
     const look = photoLookOf(p)
     photos.push({
       path: p.path,
@@ -934,6 +1004,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       cx: cx !== undefined ? Math.max(0, Math.min(100, cx)) : undefined,
       cy: cy !== undefined ? Math.max(0, Math.min(100, cy)) : undefined,
       rot: rot !== undefined ? Math.max(-45, Math.min(45, rot)) : undefined,
+      w: w !== undefined && w > 0 ? Math.max(FREE_MIN_W, Math.min(FREE_MAX_W, w)) : undefined,
       frame: frameFields(p.frame),
       ...look,
     })

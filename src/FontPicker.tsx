@@ -5,6 +5,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Search, X } from 'lucide-react'
 import { FONT_GROUPS, GROUP_HINTS, FONTS_WITHOUT_BOLD, FONTS_WITHOUT_ITALIC, fontEntry, fontStack } from './fonts'
+import { useLayer } from './layers'
 
 export function FontPicker({ value, onChange, sample, dark = false }: { value: string; onChange: (family: string) => void; sample?: string; dark?: boolean }) {
   const [open, setOpen] = useState(false)
@@ -14,6 +15,8 @@ export function FontPicker({ value, onChange, sample, dark = false }: { value: s
   const popRef = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState({ left: 0, top: 0, width: 520, height: 440 })
   const text = (sample || '').split('\n')[0].trim().slice(0, 40) || 'Summer, slowly'
+  // Newest popup on top: the open list sits above whichever editor holds the chip.
+  const layer = useLayer(open)
 
   useLayoutEffect(() => {
     if (!open || !chipRef.current) return
@@ -46,7 +49,7 @@ export function FontPicker({ value, onChange, sample, dark = false }: { value: s
       {entry && <i>{entry.group}</i>}
       <ChevronDown size={13} />
     </button>
-    {open && <div ref={popRef} className="font-picker" style={{ left: pos.left, top: pos.top, width: pos.width, height: pos.height }}>
+    {open && <div ref={popRef} className="font-picker" style={{ left: pos.left, top: pos.top, width: pos.width, height: pos.height, zIndex: layer }}>
       <header>
         <label className="browser-search"><Search size={13} /><input autoFocus value={query} placeholder="Search fonts (e.g. hand, script, typewriter)…" onChange={e => setQuery(e.target.value)} />{query && <button type="button" onClick={() => setQuery('')}><X size={12} /></button>}</label>
         <button type="button" className="browser-close" onClick={() => setOpen(false)} aria-label="Close"><X size={14} /></button>

@@ -19,6 +19,7 @@ import {
 } from './textFx'
 import { MotionStage, MotionTile, useMotionClock } from './TextMotionStage'
 import type { SceneInput } from './textMotionScene'
+import { useLayer } from './layers'
 
 export type BrowserTab = 'all' | Phase | 'fav' | 'recent' | 'presets'
 
@@ -235,6 +236,7 @@ export function TextEffectBrowser({ request, anchor, stack, caption, onPick, onP
   onOpenGallery?: () => void
 }) {
   const ref = useRef<HTMLDivElement | null>(null)
+  const layer = useLayer()  // newest popup on top
   const [pos, setPos] = useState<{ left: number; top: number; width: number; height: number }>({ left: 20, top: 20, width: 700, height: 470 })
   useLayoutEffect(() => {
     const vw = window.innerWidth, vh = window.innerHeight
@@ -253,7 +255,7 @@ export function TextEffectBrowser({ request, anchor, stack, caption, onPick, onP
     const timer = window.setTimeout(() => document.addEventListener('mousedown', onDown), 0)
     return () => { window.removeEventListener('keydown', onKey, true); window.clearTimeout(timer); document.removeEventListener('mousedown', onDown) }
   }, [onClose])
-  return <div ref={ref} className="transition-browser text-effect-browser" style={{ left: pos.left, top: pos.top, width: pos.width, height: pos.height }}
+  return <div ref={ref} className="transition-browser text-effect-browser" style={{ left: pos.left, top: pos.top, width: pos.width, height: pos.height, zIndex: layer }}
     onMouseDown={e => e.stopPropagation()}>
     <EffectBrowserBody request={request} stack={stack} caption={caption} onPick={onPick} onPreset={onPreset} onHover={onHover} compact
       footerExtra={<>
@@ -319,7 +321,8 @@ export function TextEffectGallery({ request, stack, caption, sceneFor, onPick, o
   const info = fx ? describe(fx) : null
   const parkEffect = (id: string) => { setParked({ effect: id, preset: null }); setFocus({ fx: EFFECTS[id] || null, preset: null }) }
   const parkPreset = (p: MotionPreset) => { setParked({ effect: null, preset: p }); setFocus({ fx: null, preset: p }) }
-  return <div className="modal-backdrop dark-backdrop" onMouseDown={cancel}>
+  const layer = useLayer()  // newest popup on top
+  return <div className="modal-backdrop dark-backdrop" style={{ zIndex: layer }} onMouseDown={e => { e.stopPropagation(); cancel() }}>
     <div className="transition-gallery text-effect-gallery" onMouseDown={e => e.stopPropagation()}>
       <div className="preview-top"><div><strong>Text effects gallery</strong><span>CLICK A TILE TO PARK IT ON THE EXAMPLE · CLOSE APPLIES · CANCEL RESTORES</span></div><button type="button" onClick={cancel} aria-label="Cancel gallery"><X size={20} /></button></div>
       <div className="gallery-body text-effect-gallery-body">

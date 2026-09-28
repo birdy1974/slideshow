@@ -17,17 +17,23 @@ from pathlib import Path
 
 
 from app.collage import (
+    COLLAGE_TEMPLATES,
     MAX_COLLAGE_PHOTOS,
     base_duration,
+    camera_filter,
     camera_state,
+    camera_supersample,
     exit_mode,
     exit_offset,
     exit_total,
+    free_from_displayed,
     bg_blur_radius,
     collage_duration,
     collage_graph,
+    collage_template,
     hash01,
     mat_height,
+    mat_height_per_width,
     normalize_collage,
     photo_frame,
     photo_delay,
@@ -68,7 +74,8 @@ def _run_node(cases: dict) -> list:
 def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
           delays: list | None = None, hold: float | None = None, sizes: list | None = None,
           depth: bool = False, beat_sync: bool = False, beats: list | None = None,
-          exit: str | None = None, camera: str | None = None) -> dict:
+          exit: str | None = None, camera: str | None = None,
+          template: str | None = None, frame: dict | None = None, frames: list | None = None) -> dict:
     photos = []
     for k in range(count):
         p = {"path": f"/photos/p{k}.jpg", "name": f"p{k}.jpg"}
@@ -76,8 +83,14 @@ def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
             p["delay"] = delays[k]
         if sizes is not None and k < len(sizes) and sizes[k] is not None:
             p["size"] = sizes[k]
+        if frames is not None and k < len(frames) and frames[k] is not None:
+            p["frame"] = frames[k]
         photos.append(p)
     spec = {"photos": photos, "layout": layout, "animation": animation, "shape": shape, "seed": seed}
+    if template is not None:
+        spec["template"] = template
+    if frame is not None:
+        spec["frame"] = frame
     if hold is not None:
         spec["hold"] = hold
     if depth:
@@ -256,6 +269,66 @@ def _cases() -> list[dict]:
             "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0], "hashArgs": [1, 1, 11], "matW": 30,
             "mapBeats": mb,
         })
+    # templates: every slot table, with mats scaled down to fit their slot
+    # boxes for tall (polaroid / portrait) and flat (16:9, no frame) mats,
+    # fewer photos than slots, exactly the slots, and extra photos piled on
+    # with the seeded offsets — on wide and portrait frames
+    template_ids = [t["id"] for t in COLLAGE_TEMPLATES]
+    frames = [None, {"shape": "none"}, {"shape": "polaroid", "width": 6},
+              {"shape": "rounded", "width": 2.5, "radius": 20}, {"shape": "circle", "width": 0}]
+    for ti, tid in enumerate(template_ids):
+        for shape in ("4:3", "square", "3:4", "16:9", "9:16"):
+            slots = len(collage_template(tid)["slots"])
+            for count in (max(1, slots - 1), slots, slots + 3):
+                fr = frames[(ti + count) % len(frames)]
+                aspect = (16 / 9, 9 / 16, 1.0)[(ti + slots) % 3] if count == slots else 16 / 9
+                cases.append({
+                    "id": f"template-{tid}-{shape}-n{count}-a{aspect:.3f}",
+                    "spec": _spec("template", "drop", shape, count, 5 + ti, template=tid, frame=fr, hold=1),
+                    "aspect": aspect, "leadIn": 0.0, "times": [0.0, 0.4, 1.3], "hashArgs": [5 + ti, count, 29], "matW": 30,
+                })
+    # per-photo frames and sizes inside a template: each mat fits its own frame,
+    # the size multiplier still applies on top
+    cases.append({
+        "id": "template-quad-mixed-frames",
+        "spec": _spec("template", "pop", "4:3", 4, 12, template="quad", frame={"shape": "polaroid"},
+                      frames=[{"shape": "none"}, None, {"shape": "circle", "width": 4}, {"shape": "polaroid", "width": 10}],
+                      sizes=[1.3, None, 0.6, "1.1"]),
+        "aspect": 16 / 9, "leadIn": 0.2, "times": [0.0, 0.5, 1.5], "hashArgs": [12, 4, 29], "matW": 30,
+    })
+    cases.append({
+        "id": "template-hero-random-sizes",
+        "spec": {**_spec("template", "drop", "3:4", 7, 3, template="hero-row", frame={"shape": "rounded", "width": 3}),
+                 "randomSize": True, "randomSizeMin": 0.6, "randomSizeMax": 1.4},
+        "aspect": 4 / 3, "leadIn": 0.0, "times": [0.0, 0.7, 2.0], "hashArgs": [3, 7, 29], "matW": 30,
+    })
+    cases.append({
+        "id": "template-unknown-id-falls-back",
+        "spec": _spec("template", "none", "square", 3, 4, template="no-such-template"),
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.0], "hashArgs": [4, 3, 29], "matW": 30,
+    })
+    # Free arrangement: stored centres / tilts / own widths, the size
+    # multiplier and random sizes on top, junk and missing fields.
+    free = _spec("free", "pop", "4:3", 6, 9, sizes=[None, 1.3, None, 0.6, None, None])
+    for p, extra in zip(free["photos"], [
+        {"cx": 20, "cy": 30, "rot": -8, "w": 18},
+        {"cx": 70, "cy": 25, "rot": 5},
+        {"cx": 50, "cy": 60, "w": 55.5},
+        {"cx": "junk", "cy": None, "rot": True, "w": "nope"},
+        {"w": -3},
+        {"cx": 120, "cy": -5, "w": 400},
+    ]):
+        p.update(extra)
+    cases.append({
+        "id": "free-own-widths",
+        "spec": free, "aspect": 16 / 9, "leadIn": 0.25, "times": [0.0, 0.5, 1.2, 3.0],
+        "hashArgs": [9, 6, 29], "matW": 30,
+    })
+    cases.append({
+        "id": "free-random-sizes",
+        "spec": {**_spec("free", "drop", "square", 4, 11, delays=[0.2, 0.2, 0.2, 0.2]), "randomSize": True, "randomSizeMin": 0.6, "randomSizeMax": 1.4},
+        "aspect": 4 / 3, "leadIn": 0.0, "times": [0.0, 0.6, 2.0], "hashArgs": [11, 4, 29], "matW": 30,
+    })
     return cases
 
 
@@ -288,6 +361,20 @@ class CollageTwinTest(unittest.TestCase):
             for a, b in zip(got["placements"], py_pls):
                 for key in ("cx", "cy", "w", "rot"):
                     assert abs(a[key] - b[key]) < TOL, f"{where} {key}: {a[key]} != {b[key]}"
+            # Free seeded from what this arrangement shows, and its placements
+            py_seed = free_from_displayed(spec, aspect, False)
+            assert len(got["freeSeed"]) == len(py_seed) == len(spec["photos"]), where
+            for a, b in zip(got["freeSeed"], py_seed):
+                for key in ("cx", "cy", "w", "rot"):
+                    va, vb = a.get(key), b.get(key)
+                    if isinstance(va, (int, float)) and isinstance(vb, (int, float)) and not isinstance(va, bool) and not isinstance(vb, bool):
+                        assert abs(va - vb) < TOL, f"{where} seed {key}: {va} != {vb}"
+                    else:  # a Free spec is passed through untouched, junk included
+                        assert va == vb, f"{where} seed {key}: {va!r} vs {vb!r}"
+            py_seed_pls = placements({**spec, "layout": "free", "photos": py_seed}, aspect)
+            for a, b in zip(got["freeSeedPlacements"], py_seed_pls):
+                for key in ("cx", "cy", "w", "rot"):
+                    assert abs(a[key] - b[key]) < TOL, f"{where} seeded free {key}: {a[key]} != {b[key]}"
             # animation states at every sampled time
             for ti, t in enumerate(case["times"]):
                 for i in range(len(spec["photos"])):
@@ -391,9 +478,83 @@ class CollageTwinTest(unittest.TestCase):
             spec = _spec(layout, "drop", "4:3", 9, 5)
             for pl in placements(spec, 16 / 9):
                 assert 4 <= pl["cx"] <= 96 and 8 <= pl["cy"] <= 92, (layout, pl)
-                assert 15 <= pl["w"] <= 45, (layout, pl)
+                assert 10 <= pl["w"] <= 45, (layout, pl)    # 9 polaroids in 3 rows of a 16:9 frame are ~15 % wide
                 assert abs(pl["rot"]) <= 32, (layout, pl)                            # fan spokes + seed offset
 
+
+    def test_free_seeded_from_an_arrangement_shows_the_same_picture(self):
+        """Dropping a chip on the preview turns the arrangement into Free
+        without moving or resizing the other photos: the seeded Free spec
+        places every mat exactly where the source arrangement showed it, the
+        size multiplier still applies on top, and the stored own width is
+        clamped like any other input."""
+        aspect = 16 / 9
+        for layout, template in (("grid", None), ("masonry", None), ("template", "hero-row"), ("photowall", None), ("filmstrip", None), ("fan", None)):
+            spec = {**_spec(layout, "pop", "3:4", 7, 5, sizes=[None, 1.4, None, 0.55, None, None, None], template=template), "frame": {"shape": "polaroid"}}
+            shown = placements(spec, aspect)
+            seeded = {**spec, "layout": "free", "photos": free_from_displayed(spec, aspect, False)}
+            for i, (a, b) in enumerate(zip(placements(seeded, aspect), shown)):
+                for key in ("cx", "cy", "w", "rot"):
+                    assert abs(a[key] - b[key]) < TOL, f"{layout} photo {i} {key}: {a[key]} != {b[key]}"
+            # the own width is stored before the multiplier, so changing the
+            # multiplier afterwards still scales the mat
+            grown = {**seeded, "photos": [{**p, "size": 1.0} if i == 1 else p for i, p in enumerate(seeded["photos"])]}
+            assert abs(placements(grown, aspect)[1]["w"] - shown[1]["w"] / 1.4) < TOL, layout
+        # random sizes: the seed removes the randomness from the stored width, not the result
+        spec = {**_spec("scatter", "drop", "4:3", 5, 3), "randomSize": True, "randomSizeMin": 0.6, "randomSizeMax": 1.4}
+        shown = placements(spec, aspect)
+        seeded = {**spec, "layout": "free", "photos": free_from_displayed(spec, aspect, False)}
+        for a, b in zip(placements(seeded, aspect), shown):
+            assert abs(a["w"] - b["w"]) < TOL
+        # keep_stored: previously stored free values win, missing ones come from the picture
+        spec = _spec("grid", "drop", "4:3", 3, 1)
+        spec["photos"][0].update({"cx": 11, "cy": 12, "rot": 3, "w": 20})
+        kept = free_from_displayed(spec, aspect, True)
+        assert (kept[0]["cx"], kept[0]["cy"], kept[0]["rot"], kept[0]["w"]) == (11, 12, 3, 20)
+        assert abs(kept[1]["cx"] - placements(spec, aspect)[1]["cx"]) < TOL
+        # a Free spec is returned as is
+        assert free_from_displayed(seeded, aspect, False) == seeded["photos"]
+        # normalisation keeps and clamps the own width, drops junk
+        item = normalize_collage({"type": "collage", "collage": {"layout": "free", "photos": [
+            {"path": "/a.jpg", "w": 30.5}, {"path": "/b.jpg", "w": 900}, {"path": "/c.jpg", "w": "x"}, {"path": "/d.jpg", "w": 0}]}})
+        ws = [p.get("w") for p in item["photos"]]
+        assert ws == [30.5, 100.0, None, None], ws
+
+    def test_fitted_layouts_keep_their_rows_apart(self):
+        """Cell-based layouts size mats with the real mat height (photo + frame
+        + caption strip, times W/H), so rows never overlap and nothing leaves
+        the frame — for any photo shape, frame style and frame aspect.
+        Filmstrip frames overlap on purpose *within* a row; masonry's seeded
+        size variety may let neighbouring columns touch by a hair."""
+        def rect(pl, per):
+            h = pl["w"] * per
+            return (pl["cx"] - pl["w"] / 2, pl["cx"] + pl["w"] / 2, pl["cy"] - h / 2, pl["cy"] + h / 2)
+
+        for layout in ("grid", "filmstrip", "masonry", "honeycomb", "zigzag", "photowall"):
+            for shape in ("4:3", "square", "3:4", "16:9", "9:16"):
+                for frame in (None, {"shape": "none"}, {"shape": "circle", "width": 3}):
+                    for aspect in (16 / 9, 1.0, 9 / 16):
+                        for n in range(1, MAX_COLLAGE_PHOTOS + 1):
+                            spec = _spec(layout, "drop", shape, n, 5, frame=frame)
+                            per = mat_height_per_width(shape, photo_frame(spec, None), aspect)
+                            pls = placements(spec, aspect)
+                            rects = [rect(pl, per) for pl in pls]
+                            where = (layout, shape, frame, round(aspect, 3), n)
+                            for r in rects:
+                                assert r[0] >= -1e-6 and r[1] <= 100 + 1e-6 and r[2] >= -1e-6 and r[3] <= 100 + 1e-6, (where, r)
+                            for i in range(n):
+                                for j in range(i + 1, n):
+                                    a, b = rects[i], rects[j]
+                                    ox = min(a[1], b[1]) - max(a[0], b[0])
+                                    oy = min(a[3], b[3]) - max(a[2], b[2])
+                                    if ox <= 1e-6 or oy <= 1e-6:
+                                        continue
+                                    same_row = abs(pls[i]["cy"] - pls[j]["cy"]) < 1e-6
+                                    if layout == "filmstrip" and same_row:
+                                        continue
+                                    if layout == "masonry" and min(ox, oy) < 0.25:
+                                        continue
+                                    raise AssertionError(f"{where}: photos {i} and {j} overlap by {ox:.2f} x {oy:.2f}: {a} {b}")
 
     def test_normalize_collage(self):
         assert normalize_collage({"collage": None}) is None
@@ -818,19 +979,32 @@ class CollageTwinTest(unittest.TestCase):
         assert abs(int(flevels[-1][0]) - 0.94 * full_w) <= 2    # depth: 1 pusher shrinks it
         assert max(int(w) for w, _ in flevels) > full_w           # outBack overshoot
         assert fgraph.count("enable='between(t,") >= len(flevels)  # every window
-        # camera: pan → a moving crop, zoom family → crop+scale into the last
-        # anchor (no zoompan — it stutters; crop expressions follow t).
+        # camera: a supersampled zoompan over the composed scene, driven by
+        # the input time so it follows camera_state()'s lead-in-shifted
+        # smoothstep. NOT a crop with a time-dependent size: crop evaluates
+        # w/h once, at init, with t = NaN — that camera rendered a static
+        # frame (test_collage_camera_ffmpeg renders the real thing).
         pan = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2, camera="pan")}
         plines, plast = collage_graph(pan, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         pgraph = "".join(plines)
-        assert "crop=" in pgraph and "(54-8*" in pgraph and plast == "cam"
+        assert plast == "cam"
+        assert plines[-1].startswith("[o3]scale=iw*4:ih*4:flags=bicubic,format=yuv444p,zoompan=z='1.09':x='(54-8*(")
+        assert "(it-0.5)/" in plines[-1] and ":d=1:s=1280x720:fps=25,setsar=1[cam];" in plines[-1]
         zoom = {"collage": _spec("masonry", "drop", "4:3", 5, 5, hold=2, camera="zoom")}
         zlines, zlast = collage_graph(zoom, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         zgraph = "".join(zlines)
-        assert "crop=w='max(2,floor(iw/(1+0.35*" in zgraph and "scale=1280:720:flags=bicubic" in zgraph and zlast == "cam"
-        assert "zoompan" not in zgraph
-        # no camera → the composed photos label is the result, no crop/zoompan
-        plain = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2)}
+        assert zlast == "cam" and "zoompan=z='1+0.35*(min(max((it-0.5)/" in zlines[-1]
+        assert "*iw/100-iw/(2*zoom)':y='" in zlines[-1] and "*ih/100-ih/(2*zoom)':d=1" in zlines[-1]
+        for graph in (pgraph, zgraph):
+            assert re.search(r"crop=(w=)?'", graph) is None, "crop sizes must be literal: crop evaluates w/h once"
+            assert re.search(r"crop=[^,;\[]*\bt\b", graph) is None
+        # 1080p supersamples 3×, 4K not at all (pixel budget)
+        assert camera_supersample(1920, 1080) == 3 and camera_supersample(3840, 2160) == 1
+        assert camera_supersample(1280, 720) == 4 and camera_supersample(2560, 1440) == 2
+        big = collage_graph(zoom, 3840, 2160, 30, 6.0, 0.5, 1, "cb")[0][-1]
+        assert big.startswith("[o4]format=yuv444p,zoompan=") and ":s=3840x2160:fps=30," in big
+        assert camera_filter(normalize_collage(plain := {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2)}), 1280, 720, 25, 0.5) is None
+        # no camera → the composed photos label is the result, no zoompan
         gglines, gglast = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         assert gglast == "o3" and "zoompan" not in "".join(gglines)
 

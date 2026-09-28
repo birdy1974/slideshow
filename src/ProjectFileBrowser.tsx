@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, FileJson, FolderOpen, Info, RefreshCw, Save, X } from 'lucide-react'
 import { FieldLabel } from './ui'
+import { PopupBackdrop } from './layers'
 import {
   PROJECT_ROOTS, PROJECT_SUFFIX, ProjectFileExists, formatProjectSize, isWritableRoot,
   listProjectFolder, projectFileName, readProjectFile, saveProjectFile,
@@ -201,7 +202,7 @@ export function ProjectFileBrowser(props: {
   onSqliteOnly?: () => void
   onClose: () => void
 }) {
-  return <div className="modal-backdrop" onMouseDown={props.onClose}>
+  return <PopupBackdrop onDismiss={props.onClose}>
     <div className="browser-modal folder-picker project-file-browser" onMouseDown={event => event.stopPropagation()}>
       <div className="modal-head">
         <div><span className="eyebrow">SAVE PROJECT FILE</span><h2>Choose folder and filename</h2></div>
@@ -209,5 +210,5 @@ export function ProjectFileBrowser(props: {
       </div>
       <ProjectFilePanel mode="save" {...props} />
     </div>
-  </div>
+  </PopupBackdrop>
 }
