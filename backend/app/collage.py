@@ -655,8 +655,8 @@ def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: f
     """Virtual camera at segment time t — twin of cameraState() in collageCore.ts.
     Returns the window zoom and centre (% of frame); 'pan' drifts across,
     the zoom family centres on the last photo's anchor, clamped inside the
-    frame. The FFmpeg crop/zoompan chain and the preview's CSS transform are
-    two views of these numbers."""
+    frame. The FFmpeg zoompan chain (camera_filter) and the preview's CSS
+    transform are two views of these numbers."""
     mode = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
     if mode == "none":
         return {"z": 1.0, "cx": 50.0, "cy": 50.0}
@@ -679,6 +679,70 @@ def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: f
         "cx": min(100 - half, max(half, a["cx"])),
         "cy": min(100 - half, max(half, a["cy"])),
     }
+
+
+# Virtual-camera supersampling: zoompan snaps its window to whole pixels of
+# ITS INPUT, so the composed scene is scaled up S× first and zoompan samples
+# that finer grid — the camera then moves in steps of 1/S output pixel
+# instead of whole (or, on 4:2:0, even-numbered) pixels. S is the largest
+# factor whose S×-scaled frame stays under the pixel budget: 720p → 4,
+# 1080p → 3, 1440p → 2, 4K → 1 (a 4K pixel is already a quarter the size).
+CAMERA_SUPERSAMPLE_MAX = 4
+CAMERA_SUPERSAMPLE_BUDGET = 20_000_000
+
+
+def camera_supersample(width: int, height: int) -> int:
+    """Supersampling factor the virtual camera uses at this output size."""
+    for s in range(CAMERA_SUPERSAMPLE_MAX, 1, -1):
+        if width * s * height * s <= CAMERA_SUPERSAMPLE_BUDGET:
+            return s
+    return 1
+
+
+def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lead_in: float,
+                  aspect: float | None = None) -> str | None:
+    """The FFmpeg filter chain for the virtual camera over the composed scene,
+    or None when the collage has no camera.
+
+    zoompan is the one stock filter that re-crops AND rescales every frame.
+    (crop cannot do it: its w/h expressions are evaluated once, at init, with
+    t = NaN — a crop=w='…t…' camera silently renders a static full frame.)
+    The zoom and window centre follow camera_state()'s curves, driven by the
+    input timestamp ``it`` so the lead-in shift and smoothstep match the
+    preview. Before zoompan the scene is supersampled (camera_supersample)
+    and converted to 4:4:4 — zoompan aligns 4:2:0 windows to even pixels —
+    so the camera moves on a sub-pixel grid instead of stuttering.
+    """
+    cam = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
+    if cam == "none":
+        return None
+    pls = placements(spec, width / height if aspect is None else aspect)
+    if not pls:
+        return None
+    d = max(0.2, collage_duration(spec))
+    raw_p = f"min(max((it-{_n(lead_in)})/{_n(d)},0),1)"
+    p = f"({raw_p}*{raw_p}*(3-2*{raw_p}))"
+    if cam == "pan":
+        zexpr = "1.09"
+        cx, cy = f"(54-8*{p})", "50"
+    else:
+        if cam == "zoom":
+            zexpr = f"1+0.35*{p}"
+        elif cam == "telescope":
+            zexpr = f"1+0.9*{p}"
+        else:
+            zexpr = f"1+1.1*pow({p},1.4)"
+        anchor = pls[-1]
+        cx, cy = _n(anchor["cx"]), _n(anchor["cy"])
+    # zoompan clamps x/y into [0, iw-iw/zoom] itself, which is exactly the
+    # twin's "window stays inside the frame" clamp on the centre.
+    ss = camera_supersample(width, height)
+    up = f"scale=iw*{ss}:ih*{ss}:flags=bicubic," if ss > 1 else ""
+    return (
+        f"{up}format=yuv444p,"
+        f"zoompan=z='{zexpr}':x='{cx}*iw/100-iw/(2*zoom)':y='{cy}*ih/100-ih/(2*zoom)'"
+        f":d=1:s={width}x{height}:fps={_n(fps)},setsar=1"
+    )
 
 
 def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9) -> dict[str, float]:
@@ -1345,34 +1409,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             prev = out
 
     # Virtual camera over the composed scene — the last thing before the
-    # caption. Crop + bicubic scale (driven by t) replaces zoompan: zoompan
-    # snaps to integer pixels and stutters; crop expressions follow the same
-    # smoothstep curve camera_state() uses, so the MP4 matches the preview.
-    cam = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
-    if cam != "none" and pls:
-        d = max(0.2, collage_duration(spec))
-        raw_p = f"min(max((t-{_n(lead_in)})/{_n(d)},0),1)"
-        p = f"({raw_p}*{raw_p}*(3-2*{raw_p}))"
-        if cam == "pan":
-            ow, oh = max(2, int(width / 1.09)), max(2, int(height / 1.09))
-            lines.append(
-                f"[{prev}]crop={ow}:{oh}:x='(54-8*{p})*iw/100-ow/2':y='(ih-oh)/2',"
-                f"scale={width}:{height}:flags=bicubic,setsar=1[cam];"
-            )
-        else:
-            if cam == "zoom":
-                zexpr = f"1+0.35*{p}"
-            elif cam == "telescope":
-                zexpr = f"1+0.9*{p}"
-            else:
-                zexpr = f"1+1.1*pow({p},1.4)"
-            anchor = pls[-1]
-            cx = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cx'])}))"
-            cy = f"min(100-50/{zexpr},max(50/{zexpr},{_n(anchor['cy'])}))"
-            lines.append(
-                f"[{prev}]crop=w='max(2,floor(iw/({zexpr})/2)*2)':h='max(2,floor(ih/({zexpr})/2)*2)'"
-                f":x='({cx}/100)*iw-iw/(2*{zexpr})':y='({cy}/100)*ih-ih/(2*{zexpr})',"
-                f"scale={width}:{height}:flags=bicubic,setsar=1[cam];"
-            )
+    # caption: a supersampled zoompan following camera_state()'s curves
+    # (see camera_filter for why not crop, and why supersampled).
+    camera = camera_filter(spec, width, height, fps, lead_in, aspect)
+    if camera is not None:
+        lines.append(f"[{prev}]{camera}[cam];")
         prev = "cam"
     return lines, prev

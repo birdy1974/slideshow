@@ -19,7 +19,9 @@ from pathlib import Path
 from app.collage import (
     MAX_COLLAGE_PHOTOS,
     base_duration,
+    camera_filter,
     camera_state,
+    camera_supersample,
     exit_mode,
     exit_offset,
     exit_total,
@@ -818,19 +820,32 @@ class CollageTwinTest(unittest.TestCase):
         assert abs(int(flevels[-1][0]) - 0.94 * full_w) <= 2    # depth: 1 pusher shrinks it
         assert max(int(w) for w, _ in flevels) > full_w           # outBack overshoot
         assert fgraph.count("enable='between(t,") >= len(flevels)  # every window
-        # camera: pan → a moving crop, zoom family → crop+scale into the last
-        # anchor (no zoompan — it stutters; crop expressions follow t).
+        # camera: a supersampled zoompan over the composed scene, driven by
+        # the input time so it follows camera_state()'s lead-in-shifted
+        # smoothstep. NOT a crop with a time-dependent size: crop evaluates
+        # w/h once, at init, with t = NaN — that camera rendered a static
+        # frame (test_collage_camera_ffmpeg renders the real thing).
         pan = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2, camera="pan")}
         plines, plast = collage_graph(pan, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         pgraph = "".join(plines)
-        assert "crop=" in pgraph and "(54-8*" in pgraph and plast == "cam"
+        assert plast == "cam"
+        assert plines[-1].startswith("[o3]scale=iw*4:ih*4:flags=bicubic,format=yuv444p,zoompan=z='1.09':x='(54-8*(")
+        assert "(it-0.5)/" in plines[-1] and ":d=1:s=1280x720:fps=25,setsar=1[cam];" in plines[-1]
         zoom = {"collage": _spec("masonry", "drop", "4:3", 5, 5, hold=2, camera="zoom")}
         zlines, zlast = collage_graph(zoom, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         zgraph = "".join(zlines)
-        assert "crop=w='max(2,floor(iw/(1+0.35*" in zgraph and "scale=1280:720:flags=bicubic" in zgraph and zlast == "cam"
-        assert "zoompan" not in zgraph
-        # no camera → the composed photos label is the result, no crop/zoompan
-        plain = {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2)}
+        assert zlast == "cam" and "zoompan=z='1+0.35*(min(max((it-0.5)/" in zlines[-1]
+        assert "*iw/100-iw/(2*zoom)':y='" in zlines[-1] and "*ih/100-ih/(2*zoom)':d=1" in zlines[-1]
+        for graph in (pgraph, zgraph):
+            assert re.search(r"crop=(w=)?'", graph) is None, "crop sizes must be literal: crop evaluates w/h once"
+            assert re.search(r"crop=[^,;\[]*\bt\b", graph) is None
+        # 1080p supersamples 3×, 4K not at all (pixel budget)
+        assert camera_supersample(1920, 1080) == 3 and camera_supersample(3840, 2160) == 1
+        assert camera_supersample(1280, 720) == 4 and camera_supersample(2560, 1440) == 2
+        big = collage_graph(zoom, 3840, 2160, 30, 6.0, 0.5, 1, "cb")[0][-1]
+        assert big.startswith("[o4]format=yuv444p,zoompan=") and ":s=3840x2160:fps=30," in big
+        assert camera_filter(normalize_collage(plain := {"collage": _spec("grid", "pop", "4:3", 4, 5, hold=2)}), 1280, 720, 25, 0.5) is None
+        # no camera → the composed photos label is the result, no zoompan
         gglines, gglast = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         assert gglast == "o3" and "zoompan" not in "".join(gglines)
 

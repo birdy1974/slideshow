@@ -817,8 +817,9 @@ export function pushDepth (spec: CollageSpec, i: number, t: number, leadIn = 0):
  *  z (1 = whole frame) and the window centre (cx / cy in % of the frame).
  *  'pan' drifts across a slightly zoomed frame; the zoom family centres on
  *  the LAST photo's anchor (the top of the pile) and the window is clamped
- *  so it always stays inside the frame — the FFmpeg crop/zoompan and the
- *  CSS transform are two views of the same numbers. */
+ *  so it always stays inside the frame — the FFmpeg zoompan chain
+ *  (camera_filter in backend/app/collage.py) and the CSS transform are two
+ *  views of the same numbers. */
 export interface CameraState { z: number; cx: number; cy: number }
 
 export function cameraState (spec: CollageSpec, t: number, leadIn = 0, aspect = 16 / 9): CameraState {
@@ -827,8 +828,8 @@ export function cameraState (spec: CollageSpec, t: number, leadIn = 0, aspect = 
   const D = Math.max(0.2, collageDuration(spec))
   const raw = clamp01((t - leadIn) / D)
   // Smoothstep the progress so the virtual camera eases in and out — the
-  // FFmpeg crop/scale chain samples this same curve, so preview and MP4
-  // stay in step without zoompan's integer-pixel stutter.
+  // FFmpeg chain drives zoompan (over a supersampled scene, so it moves on
+  // a sub-pixel grid) with this same curve, so preview and MP4 stay in step.
   const p = raw * raw * (3 - 2 * raw)
   if (mode === 'pan') return { z: 1.09, cx: 54 - 8 * p, cy: 50 }
   const pls = placements(spec, aspect)
