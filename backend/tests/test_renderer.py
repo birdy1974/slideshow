@@ -1742,7 +1742,7 @@ class VaapiEncodingTest(unittest.TestCase):
             joined = " ".join(command)
             self.assertIn("-vaapi_device /dev/dri/renderD128", joined)
             self.assertIn("hwupload", joined)
-            self.assertIn("fps=30,hwupload[vout]", joined)
+            self.assertIn("fps=30,format=yuv420p,hwupload[vout]", joined)
             self.assertIn("-low_power 1", joined)
         # Segment preparation stays on the CPU (quality intermediates at crf 18).
         self.assertTrue(any("libx264" in command and "-crf 18" in " ".join(command) for command in commands))
@@ -2079,6 +2079,21 @@ class UniformStitchTest(unittest.TestCase):
             text = " ".join(command)
             self.assertIn("-profile:v high -level 4.1 -bf 0 -g 60 -keyint_min 60 -video_track_timescale 90000", text)
             self.assertIn("h264_qsv", text)
+
+    def test_holds_and_xfades_normalize_to_the_configured_canvas(self) -> None:
+        commands = self._render(fail_first_hold_on_qsv=False)
+        parts = {Path(c[-1]).name: c for c in self._parts(commands)}
+        normalize = (
+            "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p"
+        )
+
+        hold_graph = parts["hold-0000.mp4"][parts["hold-0000.mp4"].index("-filter_complex") + 1]
+        self.assertEqual(1, hold_graph.count(normalize))
+
+        transition_graph = parts["transition-0000.mp4"][parts["transition-0000.mp4"].index("-filter_complex") + 1]
+        self.assertEqual(2, transition_graph.count(normalize), "both xfade inputs must have identical geometry and pixel format")
+        self.assertLess(transition_graph.index("xfade="), transition_graph.index("format=yuv420p", transition_graph.index("xfade=")))
 
     def test_cpu_fallback_applies_to_every_part(self) -> None:
         commands = self._render(fail_first_hold_on_qsv=True)

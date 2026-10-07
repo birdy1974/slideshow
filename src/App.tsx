@@ -1432,10 +1432,17 @@ function App() {
   const [editingTextFrame, setEditingTextFrame] = useState<number | null>(null)  // Id of a text frame created by "Add text frame" that has not been saved
   // yet: Cancel/close removes it again, only Done keeps it in the storyline.
   const [pendingTextFrame, setPendingTextFrame] = useState<number | null>(null)
-  // Collage editor (same lifecycle: a brand-new collage is removed again on
-  // cancel; photos/layout/animation live in the item's `collage` spec).
+  // A newly added blank collage is removed on cancel; a collage made from
+  // selected timeline photos also has a rollback that restores those rows.
   const [editingCollageFrame, setEditingCollageFrame] = useState<number | null>(null)
   const [pendingCollageFrame, setPendingCollageFrame] = useState<number | null>(null)
+  // Making a collage from timeline photos temporarily replaces those items.
+  // Keep their original positions and selection so Cancel can put them back.
+  const collageRollback = useRef<{
+    id: number
+    entries: Array<{ index: number; item: MediaItem }>
+    selectedIds: number[]
+  } | null>(null)
   // Photo picker opened from the collage editor: chosen files are appended to
   // the edited collage instead of the storyline.
   const [collagePickerFor, setCollagePickerFor] = useState<number | null>(null)
@@ -2158,14 +2165,32 @@ function App() {
     const id = Date.now()
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
+    collageRollback.current = null
     setMedia(items => [...items, { id, name: 'Photo collage', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80, frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 1, textCentered: true, collage: { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 + Math.floor(Math.random() * 9999) } }])
     setPendingCollageFrame(id)
     setEditingCollageFrame(id)
   }
   const closeCollageEditor = (save: boolean) => {
-    if (!save && editingCollageFrame !== null && editingCollageFrame === pendingCollageFrame) {
-      setMedia(items => items.filter(x => x.id !== editingCollageFrame))
-      setSelectedIds(ids => ids.filter(id => id !== editingCollageFrame))
+    const id = editingCollageFrame
+    if (id !== null && id === pendingCollageFrame) {
+      const rollback = collageRollback.current?.id === id ? collageRollback.current : null
+      if (!save && rollback) {
+        // Reinsert in ascending original-index order. Removing the temporary
+        // collage first restores the positions that existed before the move.
+        const entries = [...rollback.entries].sort((a, b) => a.index - b.index)
+        setMedia(items => {
+          const next = items.filter(item => item.id !== id)
+          for (const entry of entries) {
+            next.splice(Math.max(0, Math.min(entry.index, next.length)), 0, entry.item)
+          }
+          return next
+        })
+        setSelectedIds(rollback.selectedIds)
+      } else if (!save) {
+        setMedia(items => items.filter(item => item.id !== id))
+        setSelectedIds(ids => ids.filter(selectedId => selectedId !== id))
+      }
+      if (rollback) collageRollback.current = null
     }
     setPendingCollageFrame(null)
     setEditingCollageFrame(null)
@@ -2222,6 +2247,11 @@ function App() {
     const firstIndex = media.findIndex(x => x.id === photos[0].id)
     const remove = new Set(photos.map(x => x.id))
     const id = Date.now()
+    collageRollback.current = {
+      id,
+      entries: media.flatMap((item, index) => remove.has(item.id) ? [{ index, item }] : []),
+      selectedIds: [...selectedIds],
+    }
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
     const collageItem: MediaItem = {
@@ -2728,6 +2758,8 @@ function App() {
       onPaste={pasteItems}
       onDelete={() => { setMedia(m => m.filter(x => !contextMenu.ids.includes(x.id))); setSelectedIds(ids => ids.filter(id => !contextMenu.ids.includes(id))) }}
       onMoveTo={pos => moveItemsToPosition(contextMenu.ids, pos)}
+      onSelectAll={() => setSelectedIds(media.map(item => item.id))}
+      onSelectNone={() => setSelectedIds([])}
       onAddMedia={() => setShowBrowser(true)}
       onAddText={addTitleFrame}
       onAddCollage={addCollageFrame}
@@ -2771,7 +2803,10 @@ function App() {
       // Switching to the caption editor is not a cancel: a brand-new collage
       // must survive the handover (closeCollageEditor(false) deletes pending
       // ones), so clear the pending flag instead of routing through cancel.
-      if (editingCollageFrame !== null && editingCollageFrame === pendingCollageFrame) setPendingCollageFrame(null)
+      if (editingCollageFrame !== null && editingCollageFrame === pendingCollageFrame) {
+        setPendingCollageFrame(null)
+        if (collageRollback.current?.id === editingCollageFrame) collageRollback.current = null
+      }
       setEditingCollageFrame(null)
       setEditingTextFrame(editingCollageFrame)
     }} audioTracks={audioTracks} audioLoop={audioPolicy === 'Loop & trim'} holdStart={(() => { const idx = media.findIndex(x => x.id === editingCollageFrame); if (idx <= 0) return 0; const { starts } = timelineModel(media); return starts[idx] })()}/>}
@@ -2965,12 +3000,13 @@ function PositionBadge({ index, count, onMove, className = '' }: { index: number
   return <input className={`position-input ${className}`} autoFocus type="number" min={1} max={count} value={text} aria-label="Move to position" title={`Enter a position 1–${count} and press Enter`} onChange={e => setText(e.target.value)} onFocus={e => e.target.select()} onBlur={commit} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} draggable={false} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); commit() } else if (e.key === 'Escape') { setText(String(index + 1)); setEditing(false) } }} />
 }
 
-function StoryContextMenu({ x, y, ids, media, clipboard, onClose, onEdit, onDuplicate, onCut, onCopy, onPaste, onDelete, onMoveTo, onAddMedia, onAddText, onAddCollage, onMakeCollage, onLook, onPreview }: {
+function StoryContextMenu({ x, y, ids, media, clipboard, onClose, onEdit, onDuplicate, onCut, onCopy, onPaste, onDelete, onMoveTo, onSelectAll, onSelectNone, onAddMedia, onAddText, onAddCollage, onMakeCollage, onLook, onPreview }: {
   x: number; y: number; ids: number[]; media: MediaItem[]
   clipboard: { items: MediaItem[]; mode: 'cut' | 'copy' } | null
   onClose: () => void
   onEdit: () => void; onDuplicate: () => void; onCut: () => void; onCopy: () => void; onPaste: () => void
   onDelete: () => void; onMoveTo: (pos: number) => void
+  onSelectAll: () => void; onSelectNone: () => void
   onAddMedia: () => void; onAddText: () => void; onAddCollage: () => void; onMakeCollage: () => void
   onLook: () => void; onPreview: () => void
 }) {
@@ -3006,6 +3042,9 @@ function StoryContextMenu({ x, y, ids, media, clipboard, onClose, onEdit, onDupl
         <button type="submit">Go</button>
       </form>}
     </div>
+    <hr />
+    <Item label="Select all" hint={`${media.length} items`} onClick={onSelectAll} disabled={ids.length === media.length} />
+    <Item label="Select none" onClick={onSelectNone} disabled={ids.length === 0} />
     <hr />
     <Item label="Add media" onClick={onAddMedia} />
     <Item label="Add text frame" onClick={onAddText} />
