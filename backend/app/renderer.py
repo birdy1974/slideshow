@@ -1,7 +1,8 @@
 """FFmpeg slideshow renderer.
 
-Sources are normalized to a common frame rate, time base and timestamp origin.
-Each visual transition is then rendered as an isolated two-input xfade unit;
+Timeline inputs are normalized to a common frame size, pixel format, frame
+rate, time base and timestamp origin. Each visual transition is then rendered
+as an isolated two-input xfade unit;
 the compatible units are joined by FFmpeg's concat demuxer. This avoids the
 performance and reliability problems of a long, serial xfade filter chain.
 """
@@ -492,6 +493,22 @@ def _even(value: float) -> int:
 def fill_frame_filter(width: int, height: int, fps: int) -> str:
     """Cover the frame, cropping the overflowing edges (videos, title cards)."""
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}"
+
+
+def timeline_frame_filter(width: int, height: int) -> str:
+    """Normalize a decoded segment to the renderer's common timeline frame.
+
+    Most segment graphs already produce the requested canvas size, but a few
+    filters/media combinations can leave an intermediate at its source size
+    (for example, a 642x188 collage frame). FFmpeg's xfade requires matching
+    dimensions and the concat stage expects every part to have one video
+    geometry. Fit the complete image, pad any leftover canvas with black, and
+    normalize the pixel format before encoding each hold/transition part.
+    """
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p"
+    )
 
 
 # Bundled fonts (public/fonts in the repo, copied to FONTS_DIR in the image).
@@ -2085,7 +2102,10 @@ class Renderer:
             # frames with trim. Segments are our own libx264 files with 2 s
             # GOPs, so the seek is frame-accurate. This saves a full decode of
             # every hold per transition — pure CPU time on a NAS.
-            hold_graph = f"[0:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
+            hold_graph = (
+                f"[0:v]{timeline_frame_filter(width, height)},"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p{hw_graph_suffix}[vout]"
+            )
             hold_command = [
                 self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,
                 *(["-ss", format_ffmpeg_number(lead_in)] if lead_in > 0.0005 else []),
@@ -2136,11 +2156,12 @@ class Renderer:
             # outgoing handle starts after lead_in + hold, the incoming handle
             # is the head of the next segment. xfade only ever sees the two
             # transition-length clips.
+            frame_filter = timeline_frame_filter(width, height)
             transition_graph = (
-                f"[0:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
-                f"[1:v]settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
+                f"[0:v]{frame_filter},settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
+                f"[1:v]{frame_filter},settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
                 f"[outgoing][incoming]{xfade_fragment},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_graph_suffix}[vout]"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p{hw_graph_suffix}[vout]"
             )
             transition_command = [
                 self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,
