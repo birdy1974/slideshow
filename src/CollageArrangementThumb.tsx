@@ -59,7 +59,7 @@ export function CollageArrangementThumb({ spec, layout, template, photoCount }: 
   return <svg className="collage-arrangement-thumb" viewBox={`0 0 ${W} ${H}`} aria-hidden="true" focusable="false">
     <rect className="tt-frame" x={0} y={0} width={W} height={H} rx={2} />
     {mats.map((p, i) => {
-      const border = frameBorderFrac(fr) * p.w
+      const border = frameBorderFrac(fr) * W
       const bottom = fr.shape === 'polaroid' ? 0.205 * p.w : border
       const photoW = Math.max(0.5, p.w - 2 * border)
       const photoH = photoW / aspect

@@ -33,7 +33,7 @@ from app.collage import (
     collage_template,
     hash01,
     mat_height,
-    mat_height_per_width,
+    mat_line,
     normalize_collage,
     photo_frame,
     photo_delay,
@@ -577,8 +577,8 @@ class CollageTwinTest(unittest.TestCase):
         the frame — for any photo shape, frame style and frame aspect.
         Filmstrip frames overlap on purpose *within* a row; masonry's seeded
         size variety may let neighbouring columns touch by a hair."""
-        def rect(pl, per):
-            h = pl["w"] * per
+        def rect(pl, line):
+            h = line[0] * pl["w"] + line[1]
             return (pl["cx"] - pl["w"] / 2, pl["cx"] + pl["w"] / 2, pl["cy"] - h / 2, pl["cy"] + h / 2)
 
         for layout in ("grid", "filmstrip", "masonry", "honeycomb", "zigzag", "photowall"):
@@ -587,9 +587,9 @@ class CollageTwinTest(unittest.TestCase):
                     for aspect in (16 / 9, 1.0, 9 / 16):
                         for n in range(1, MAX_COLLAGE_PHOTOS + 1):
                             spec = _spec(layout, "drop", shape, n, 5, frame=frame)
-                            per = mat_height_per_width(shape, photo_frame(spec, None), aspect)
+                            line = mat_line(shape, photo_frame(spec, None), aspect)
                             pls = placements(spec, aspect)
-                            rects = [rect(pl, per) for pl in pls]
+                            rects = [rect(pl, line) for pl in pls]
                             where = (layout, shape, frame, round(aspect, 3), n)
                             for r in rects:
                                 assert r[0] >= -1e-6 and r[1] <= 100 + 1e-6 and r[2] >= -1e-6 and r[3] <= 100 + 1e-6, (where, r)
