@@ -606,6 +606,8 @@ function styleGlyph(el: HTMLSpanElement, e: Unit, s: State, em: number, o: Glyph
 export class MotionClock {
   t = 0
   playing = true
+  /** Signed speed multiplier; negative values play backward. */
+  playbackRate = 1
   duration: number
   private tail: number
   private listeners = new Set<(t: number) => void>()
@@ -627,8 +629,9 @@ export class MotionClock {
       const dt = this.last == null ? 0 : (now - this.last) / 1000
       this.last = now
       if (this.playing) {
-        this.t += dt
+        this.t += dt * this.playbackRate
         if (this.t > this.duration + this.tail) this.t = 0
+        else if (this.t < 0) this.t = this.duration + this.tail
         this.emit()
       }
       this.raf = requestAnimationFrame(loop)
@@ -640,5 +643,15 @@ export class MotionClock {
   setDuration(d: number) { this.duration = Math.max(0.2, d); if (this.t > this.duration + this.tail) this.t = 0 }
   seek(t: number) { this.t = Math.max(0, Math.min(this.duration, t)); this.emit() }
   setPlaying(p: boolean) { this.playing = p; this.last = null; this.emit() }
+  setPlaybackRate(rate: number) {
+    const nextRate = Number.isFinite(rate) && rate !== 0 ? rate : 1
+    if (nextRate !== this.playbackRate) {
+      this.playbackRate = nextRate
+      if (nextRate < 0 && this.t <= 0) this.t = this.duration + this.tail
+      else if (nextRate > 0 && this.t >= this.duration + this.tail) this.t = 0
+    }
+    this.last = null
+    this.emit()
+  }
   now() { return Math.min(this.t, this.duration) }
 }

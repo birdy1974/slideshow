@@ -27,7 +27,7 @@ export const COLLAGE_FRAME_SHAPES: CollageFrameShape[] = ['polaroid', 'none', 'r
 export interface CollageFrame {
   /** Missing = polaroid (white mat + caption strip). */
   shape?: CollageFrameShape
-  /** Border thickness as % of the mat width (0 = none, typical 2–8). Missing = 4.5 for polaroid, 3 otherwise. */
+  /** Border thickness as % of the frame width (0 = none). Missing = 1.0; ignored for `none`. */
   width?: number
   /** Border / mat colour. Missing = #ffffff. */
   color?: string
@@ -172,8 +172,9 @@ export function photoFrame (spec: { frame?: CollageFrame } | null | undefined, p
   const b = photo?.frame || {}
   const shape = (COLLAGE_FRAME_SHAPES as string[]).includes(b.shape as string) ? b.shape as CollageFrameShape
     : (COLLAGE_FRAME_SHAPES as string[]).includes(a.shape as string) ? a.shape as CollageFrameShape : 'polaroid'
-  const rawW = b.width !== undefined ? b.width : a.width
-  const width = Number.isFinite(Number(rawW)) ? Math.max(0, Math.min(12, Number(rawW))) : (shape === 'polaroid' ? 4.5 : shape === 'none' ? 0 : 3)
+  const rawW: unknown = b.width !== undefined ? b.width : a.width
+  const numericW = rawW === null || typeof rawW === 'boolean' || (typeof rawW === 'string' && rawW.trim() === '') ? NaN : Number(rawW)
+  const width = Number.isFinite(numericW) ? Math.max(0, Math.min(12, numericW)) : 1.0
   const color = (typeof b.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(b.color) ? b.color : (typeof a.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(a.color) ? a.color : '#ffffff'))
   const rawR = b.radius !== undefined ? b.radius : a.radius
   const radius = Number.isFinite(Number(rawR)) ? Math.max(0, Math.min(50, Number(rawR))) : 12

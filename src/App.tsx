@@ -3,7 +3,7 @@ import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp,
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
-  Scissors, Settings2, Shuffle, Sparkles, Square, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
+  Scissors, Settings2, Shuffle, Sparkles, Square, FastForward, Rewind, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
   Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom, FolderUp, FolderPlus,
   Route,
 } from 'lucide-react'
@@ -3437,20 +3437,45 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
 
 /** A whole collage slide playing: photos first, caption on top (like the MP4).
  * Any change to the collage itself restarts the choreography from the top so
- * the new size / timing / animation can be watched from the first photo;
- * `replayKey` restarts it on demand (the editor's Replay button). */
-function CollageSlideStage({ item, defaults, playing = true, replayKey = 0, onMovePhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; replayKey?: number; onMovePhoto?: (index: number, cx: number, cy: number) => void }) {
-  const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
+ * the new size / timing / animation can be watched from the first photo. The
+ * editor can additionally expose transport controls for this same clock. */
+function CollageSlideStage({ item, defaults, playing = true, showPlaybackControls = false, onMovePhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; showPlaybackControls?: boolean; onMovePhoto?: (index: number, cx: number, cy: number) => void }) {
+  const [editorPlaying, setEditorPlaying] = useState(true)
+  const [editorRate, setEditorRate] = useState(1)
+  const clock = useMotionClock(
+    Math.max(0.2, Number(item.duration) || 5),
+    showPlaybackControls ? editorPlaying : playing,
+    showPlaybackControls ? editorRate : 1,
+  )
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
   // Moving a Free photo changes only its resting centre; do not restart its
   // entrance animation for every pointer-move event while the user drags it.
   const specKey = JSON.stringify(item.collage ?? null, (key, value) =>
     onMovePhoto && item.collage?.layout === 'free' && (key === 'cx' || key === 'cy') ? undefined : value)
   useEffect(() => { clock.seek(0) }, [specKey, clock])
-  useEffect(() => { clock.seek(0) }, [replayKey, clock])
+  const hasPhotos = (item.collage?.photos?.length ?? 0) > 0
+  const stop = () => {
+    setEditorPlaying(false)
+    setEditorRate(1)
+    clock.seek(0)
+  }
+  const togglePlayPause = () => {
+    if (editorPlaying) setEditorPlaying(false)
+    else { setEditorRate(1); setEditorPlaying(true) }
+  }
+  const playAtRate = (rate: number) => {
+    setEditorRate(rate)
+    setEditorPlaying(true)
+  }
   return <>
     <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} />
     <MotionStage className={`stage-fill${onMovePhoto ? ' collage-caption-stage' : ''}`} input={input} clock={clock} />
+    {showPlaybackControls && <div className="collage-preview-controls" role="group" aria-label="Photo animation preview controls">
+      <button type="button" title="Play the animation in reverse at 2× speed" aria-label="Reverse animation at double speed" aria-pressed={editorRate < 0 && editorPlaying} className={editorRate < 0 && editorPlaying ? 'active' : ''} disabled={!hasPhotos} onClick={() => playAtRate(-2)}><Rewind size={13}/><span>Rev</span></button>
+      <button type="button" title="Stop and return to the start" aria-label="Stop animation" disabled={!hasPhotos} onClick={stop}><Square size={10} fill="currentColor"/><span>Stop</span></button>
+      <button type="button" title={editorPlaying ? 'Pause the animation' : 'Play forward at normal speed'} aria-label={editorPlaying ? 'Pause animation' : 'Play animation'} disabled={!hasPhotos} onClick={togglePlayPause}>{editorPlaying ? <Pause size={12}/> : <Play size={12} fill="currentColor"/>}<span>{editorPlaying ? 'Pause' : 'Play'}</span></button>
+      <button type="button" title="Fast-forward the animation at 2× speed" aria-label="Fast-forward animation at double speed" aria-pressed={editorRate > 1 && editorPlaying} className={editorRate > 1 && editorPlaying ? 'active' : ''} disabled={!hasPhotos} onClick={() => playAtRate(2)}><FastForward size={13}/><span>FF</span></button>
+    </div>}
   </>
 }
 
@@ -3957,6 +3982,11 @@ const COLLAGE_BG_FITS: { id: CollageBgFit; label: string; hint: string }[] = [
   { id: 'span', label: 'Span', hint: 'Scale to the frame width, crop top and bottom if needed' },
 ]
 
+const COLLAGE_EDITOR_SECTIONS = [
+  'arrangement', 'photo-animation', 'photo-exit', 'photo-size-timing', 'beat-sync', 'photo-shape',
+  'frame', 'stickers', 'variation-seed', 'camera', 'caption-optional', 'background',
+] as const
+
 /** Header row of a collapsible settings section: the whole row toggles it. */
 function CollageGroupHead({ id, open, onToggle, children }: { id: string; open: boolean; onToggle: (id: string) => void; children: ReactNode }) {
   return <div className="collage-group-head" role="button" tabIndex={0} aria-expanded={open} title={open ? 'Click to collapse this section' : 'Click to expand this section'}
@@ -3991,13 +4021,23 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => {
     setSpec({ photos: photos.map((p, i) => i === index ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
   }
-  // Collapsible settings sections: click anywhere on a section's header row.
-  // The open/closed choice is remembered like the layout toggle.
+  // Settings start collapsed; explicit open/closed choices are remembered.
+  // Merging stored values over the new defaults also migrates older `{}`
+  // preferences to the requested collapsed-by-default layout.
   const [closedSections, setClosedSections] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem('collageEditorClosedSections') || '{}') || {} } catch { return {} }
+    const defaults: Record<string, boolean> = Object.fromEntries(COLLAGE_EDITOR_SECTIONS.map(id => [id, true]))
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem('collageEditorClosedSections') || 'null')
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return defaults
+      const saved = stored as Record<string, unknown>
+      return Object.fromEntries(COLLAGE_EDITOR_SECTIONS.map(id => [id, typeof saved[id] === 'boolean' ? saved[id] : true]))
+    } catch { return defaults }
   })
   useEffect(() => { try { localStorage.setItem('collageEditorClosedSections', JSON.stringify(closedSections)) } catch { /* ignore */ } }, [closedSections])
   const toggleSection = (id: string) => setClosedSections(prev => ({ ...prev, [id]: !prev[id] }))
+  const allSectionsClosed = COLLAGE_EDITOR_SECTIONS.every(id => closedSections[id])
+  const allSectionsOpen = COLLAGE_EDITOR_SECTIONS.every(id => !closedSections[id])
+  const setAllSections = (closed: boolean) => setClosedSections(Object.fromEntries(COLLAGE_EDITOR_SECTIONS.map(id => [id, closed])))
   const [uiLayout, setUiLayout] = useState<'sidebar' | 'below'>(() => {
     try { return localStorage.getItem('collageEditorLayout') === 'below' ? 'below' : 'sidebar' } catch { return 'sidebar' }
   })
@@ -4077,7 +4117,6 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const resetSizes = () => setSpec({ photos: photos.map(photo => { const { size, ...rest } = photo; return rest }) })
   const total = photos.length ? collageDuration(spec) : 0
   const entrance = ENTRANCE_LENGTH[spec.animation] ?? 0
-  const [replayKey, setReplayKey] = useState(0)
   // Beat sync: fetch the soundtrack's detected onsets and map them into this
   // slide's own hold clock (0 = the hold starts). The stored list is the data
   // BOTH engines then use, so the preview shows exactly what the MP4 does.
@@ -4168,7 +4207,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             placePhotoAt(dragChip, at.x, at.y)
             setDragChip(null); setDragOverChip(null); setDropAt(null)
           }}>
-          <CollageSlideStage item={item} replayKey={replayKey} onMovePhoto={spec.layout === 'free' ? moveFreePhoto : undefined} />
+          <CollageSlideStage item={item} showPlaybackControls onMovePhoto={spec.layout === 'free' ? moveFreePhoto : undefined} />
           {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
           {dropAt && dragChip !== null && photos[dragChip] && shownPlacements[dragChip] && (() => {
             // Ghost of the mat at the drop point — the size and tilt it will
@@ -4183,7 +4222,6 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           {dragChip !== null && <div className="collage-drop-hint" aria-live="polite">{dropAt
             ? <><Move size={11}/> Drop to place photo {dragChip + 1} here{spec.layout === 'free' ? '' : ' — the arrangement becomes Free'}</>
             : <><Move size={11}/> Drop the photo on the preview to place it yourself</>}</div>}
-          <button type="button" className="collage-replay" title="Restart the preview from the first photo" onClick={() => setReplayKey(k => k + 1)}><RotateCcw size={12}/> Replay</button>
         </div>
         <div className="collage-strip">
           {photos.map((photo, i) => <div className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}`} key={`${photo.path}-${i}`}
@@ -4208,6 +4246,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           : 'Drag a photo from this row onto the preview to put it exactly where you want it — the arrangement becomes Free and the other photos stay where they are.'}</small>}
       </div>
       <aside>
+        <div className="collage-section-tools" role="group" aria-label="Collage settings sections">
+          <span>SECTIONS</span>
+          <div>
+            <button type="button" title="Collapse every settings section" disabled={allSectionsClosed} onClick={() => setAllSections(true)}>Collapse all</button>
+            <button type="button" title="Expand every settings section" disabled={allSectionsOpen} onClick={() => setAllSections(false)}>Expand all</button>
+          </div>
+        </div>
         <div className={`collage-choices-group${closedSections['arrangement'] ? ' closed' : ''}`}><CollageGroupHead id="arrangement" open={!closedSections['arrangement']} onToggle={toggleSection}>Arrangement</CollageGroupHead>
           <div className="collage-arrangements">
             {ARRANGEMENT_FAMILIES.map(family => <div key={family.id} className="collage-arrangement-family">

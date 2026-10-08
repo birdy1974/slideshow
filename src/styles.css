@@ -1565,8 +1565,12 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-timing-row .number-stepper input{flex:none;width:34px;font-size:10px;padding:0}
 .collage-timing-row .number-stepper .step-suffix{display:none}
 .collage-timing-actions{margin-left:auto;display:flex;gap:6px}
-.collage-replay{position:absolute;right:8px;bottom:8px;z-index:5;display:flex;align-items:center;gap:5px;border:0;border-radius:5px;background:#000a;color:#fff;font-size:9px;font-weight:700;padding:5px 8px;cursor:pointer}
-.collage-replay:hover{background:#000c}
+.collage-preview-controls{position:absolute;top:8px;right:8px;z-index:8;display:flex;align-items:center;gap:2px;padding:3px;border:1px solid #ffffff30;border-radius:7px;background:#111d;color:#f4f6f0;box-shadow:0 2px 8px #0005;backdrop-filter:blur(6px)}
+.collage-preview-controls button{height:25px;display:flex;align-items:center;justify-content:center;gap:4px;padding:0 6px;border:1px solid transparent;border-radius:4px;background:transparent;color:inherit;font:700 8px Manrope,sans-serif;cursor:pointer;transition:background .12s,border-color .12s,color .12s}
+.collage-preview-controls button:hover:not(:disabled){background:#ffffff18;border-color:#ffffff26}
+.collage-preview-controls button.active{background:#718f463b;border-color:#a4ca6c;color:#d1ef9d}
+.collage-preview-controls button:disabled{opacity:.4;cursor:not-allowed}
+.collage-preview-controls svg{flex:none}
 .collage-choices-group .collage-total{float:right;font-style:normal;font-size:8px;color:var(--lime);letter-spacing:.5px}
 /* Arrangement picker: one thumbnail per option (CollageArrangementThumb) in
    three families — generated layouts, magazine mosaics, polaroid wall. The
@@ -1627,6 +1631,12 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .frame-editor .font-size-presets button.active{background:#3d4a2c;border-color:#8cbc43;color:#e8f0c8}
 
 /* Collapsible settings sections: the whole header row is the toggle. */
+.collage-section-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px;padding:0 0 9px;border-bottom:1px solid #3a3e36}
+.collage-section-tools>span{font:800 8px Manrope,sans-serif;letter-spacing:.8px;color:#92978e}
+.collage-section-tools>div{display:flex;gap:5px}
+.collage-section-tools button{height:23px;border:1px solid #494e45;border-radius:5px;background:#20231f;color:#c9cec2;padding:0 7px;font:700 8px Manrope,sans-serif;cursor:pointer}
+.collage-section-tools button:hover:not(:disabled){border-color:var(--lime);color:var(--lime)}
+.collage-section-tools button:disabled{opacity:.4;cursor:not-allowed}
 .collage-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;user-select:none;border-radius:5px;margin:0 -4px;padding:3px 4px}
 .collage-group-head:hover{background:#ffffff0d}
 .collage-group-head:focus-visible{outline:1px solid var(--lime);outline-offset:1px}
