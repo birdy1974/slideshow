@@ -4251,7 +4251,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <input type="checkbox" checked={spec.sway === true} onChange={e => setSpec({ sway: e.target.checked || undefined })} />
             <span>Idle sway — a gentle corkboard wobble once photos have landed</span>
           </label></div>
-        <div className={`collage-choices-group${closedSections['photo-exit'] ? ' closed' : ''}`}><CollageGroupHead id="photo-exit" open={!closedSections['photo-exit']} onToggle={toggleSection}>Photo exit</CollageGroupHead>
+        <div className="collage-choices-group"><FieldLabel>Photo exit</FieldLabel>
           <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
           <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small></div>
         <div className={`collage-choices-group${closedSections['photo-size-timing'] ? ' closed' : ''}`}><CollageGroupHead id="photo-size-timing" open={!closedSections['photo-size-timing']} onToggle={toggleSection}>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></CollageGroupHead>
@@ -4317,7 +4317,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <small>{spec.animation === 'none'
             ? `All ${photos.length} photos appear immediately and the slide holds for ${spec.hold ?? 2}s. The size sliders work in every animation mode.`
             : `The slide lasts exactly as long as the photos need: the waits add up to ${photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes ${entrance}s, plus the hold${exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — ${total}s in total. The storyline duration follows automatically. Bigger photos overlap their neighbours; smaller ones tuck in.`}</small></div>
-        <div className={`collage-choices-group${closedSections['beat-sync'] ? ' closed' : ''}`}><CollageGroupHead id="beat-sync" open={!closedSections['beat-sync']} onToggle={toggleSection}>Beat sync</CollageGroupHead>
+        <div className="collage-choices-group"><FieldLabel>Beat sync</FieldLabel>
           <label className={`collage-check${spec.animation === 'none' ? ' disabled' : ''}`}>
             <input type="checkbox" checked={spec.beatSync === true} disabled={spec.animation === 'none'} onChange={e => setSpec({ beatSync: e.target.checked })} />
             <span>Snap photo landings to the music — each photo waits for the next beat</span>
@@ -4326,7 +4326,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         <div className={`collage-choices-group${closedSections['photo-shape'] ? ' closed' : ''}`}><CollageGroupHead id="photo-shape" open={!closedSections['photo-shape']} onToggle={toggleSection}>Photo shape</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_SHAPES.map(s => <button key={s.id} type="button" className={spec.shape === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ shape: s.id })}>{s.label}</button>)}</div>
           <small>{COLLAGE_SHAPES.find(s => s.id === spec.shape)?.hint}</small></div>
-        <div className={`collage-choices-group${closedSections['frame'] ? ' closed' : ''}`}><CollageGroupHead id="frame" open={!closedSections['frame']} onToggle={toggleSection}>Frame</CollageGroupHead>
+        <div className="collage-choices-group"><FieldLabel>Frame</FieldLabel>
           <div className="collage-choices">{COLLAGE_FRAMES.map(f => <button key={f.id} type="button" className={defFr.shape === f.id ? 'active' : ''} title={f.hint} onClick={() => setFrame({ shape: f.id })}>{f.label}</button>)}</div>
           <small>{COLLAGE_FRAMES.find(f => f.id === defFr.shape)?.hint} — this is the default for every photo; override one in the timing row.</small>
           {defFr.shape !== 'none' && <div className="collage-timing-total">
@@ -4345,17 +4345,17 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <span>Drop shadow under each photo</span>
           </label>
         </div>
-        <div className={`collage-choices-group${closedSections['stickers'] ? ' closed' : ''}`}><CollageGroupHead id="stickers" open={!closedSections['stickers']} onToggle={toggleSection}>Stickers</CollageGroupHead>
+        <div className="collage-choices-group"><FieldLabel>Stickers</FieldLabel>
           <div className="collage-choices">{COLLAGE_STICKERS.map(s => <button key={s.id} type="button" className={(spec.stickers ?? 'none') === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ stickers: s.id === 'none' ? undefined : s.id })}>{s.label}</button>)}</div>
           <small>{COLLAGE_STICKERS.find(s => s.id === (spec.stickers ?? 'none'))?.hint}</small>
         </div>
-        <div className={`collage-choices-group${closedSections['variation-seed'] ? ' closed' : ''}`}><CollageGroupHead id="variation-seed" open={!closedSections['variation-seed']} onToggle={toggleSection}>Variation (seed)</CollageGroupHead>
+        <div className="collage-choices-group"><FieldLabel>Variation (seed)</FieldLabel>
           <div className="collage-seed">
             <NumberStepper value={spec.seed} min={1} max={999999} step={1} ariaLabel="Layout seed" onChange={v => setSpec({ seed: Math.max(1, Math.round(v)) || 1 })} />
             <button type="button" className="btn ghost" title="Re-roll the seeded arrangement — same number always gives the same layout" onClick={() => setSpec({ seed: 1 + Math.floor(Math.random() * 9999) })}><Shuffle size={13}/> Shuffle</button>
           </div>
           <small>{spec.layout === 'free' ? 'Free layout ignores the seed — drag the photos on the preview.' : spec.layout === 'template' ? 'Magazine and polaroid-wall pages are fixed slots. Shuffle does not move them; pick another page instead.' : spec.layout === 'grid' || spec.layout === 'filmstrip' || spec.layout === 'fan' || spec.layout === 'masonry' || spec.layout === 'stack' || spec.layout === 'scatter' ? 'Shuffle re-rolls the seed: tilts, jitter and (for stack/scatter/masonry) positions change, identically in the preview and the render.' : 'The seed pins the layout: the same number always arranges the photos identically.'}</small></div>
-        <div className={`collage-choices-group${closedSections['camera'] ? ' closed' : ''}`}><CollageGroupHead id="camera" open={!closedSections['camera']} onToggle={toggleSection}>Camera</CollageGroupHead>
+        <div className="collage-choices-group"><FieldLabel>Camera</FieldLabel>
           <div className="collage-choices">{COLLAGE_CAMERAS.map(c => <button key={c.id} type="button" className={(spec.camera ?? 'none') === c.id ? 'active' : ''} title={c.hint} onClick={() => setSpec({ camera: c.id === 'none' ? undefined : c.id })}>{c.label}</button>)}</div>
           <small>{COLLAGE_CAMERAS.find(c => c.id === (spec.camera ?? 'none'))?.hint}</small></div>
         <div className={`collage-choices-group${closedSections['caption-optional'] ? ' closed' : ''}`}><CollageGroupHead id="caption-optional" open={!closedSections['caption-optional']} onToggle={toggleSection}>Caption (optional)</CollageGroupHead>
