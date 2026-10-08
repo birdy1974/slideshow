@@ -11,10 +11,11 @@ import type React from 'react'
 import type { BgChange } from './textMotionCore'
 import { FRAME_H, FRAME_W, MotionClock, MotionScene, ensureFont, fontLoaded, paintBackground, prepareScene, type Prepared, type SceneInput } from './textMotionScene'
 
-export function useMotionClock(duration: number, playing = true): MotionClock {
+export function useMotionClock(duration: number, playing = true, playbackRate = 1): MotionClock {
   const clock = useMemo(() => new MotionClock(duration), [])
   useEffect(() => { clock.setDuration(duration) }, [clock, duration])
   useEffect(() => { clock.setPlaying(playing) }, [clock, playing])
+  useEffect(() => { clock.setPlaybackRate(playbackRate) }, [clock, playbackRate])
   return clock
 }
 

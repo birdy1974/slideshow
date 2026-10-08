@@ -200,7 +200,7 @@ def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None
     if raw_w is None:
         raw_w = _num(a, "width")
     if raw_w is None:
-        width = 4.5 if shape == "polaroid" else (0.0 if shape == "none" else 3.0)
+        width = 1.0
     else:
         width = max(0.0, min(12.0, raw_w))
     color = b.get("color") if isinstance(b.get("color"), str) and len(b.get("color")) == 7 and b.get("color").startswith("#") else (
@@ -1355,7 +1355,11 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             ang = f"(-4*(1-{q_flip}){ex_r}{extra_r}{sway_r})*PI/180"
         elif anim == "swing":
             tau = f"max(t-{_n(t0)},0)"
-            ang = f"{_n(pl['rot'])}*PI/180+14*PI/180*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}*PI/180{sway_r}*PI/180"
+            # Keep every component in degrees until the final conversion.
+            # The old expression converted the 14° swing amplitude twice,
+            # leaving only ~0.24° of motion in the rendered MP4 even though
+            # the editor preview uses the full pendulum curve.
+            ang = f"({_n(pl['rot'])}+14*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}{extra_r}{sway_r})*PI/180"
         elif extra_r or sway_r or ex_r or abs(pl["rot"]) > 0.01:
             ang = f"({_n(pl['rot']) if abs(pl['rot']) > 0.01 else '0'}{ex_r}{extra_r}{sway_r})*PI/180"
         else:

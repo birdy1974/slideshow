@@ -1089,7 +1089,8 @@ class CollageTwinTest(unittest.TestCase):
 
     def test_photo_frame_defaults_and_override(self):
         d = photo_frame({}, None)
-        assert d["shape"] == "polaroid" and abs(d["width"] - 4.5) < TOL and d["color"] == "#ffffff" and d["shadow"] is True
+        assert d["shape"] == "polaroid" and abs(d["width"] - 1.0) < TOL and d["color"] == "#ffffff" and d["shadow"] is True
+        assert abs(photo_frame({"frame": {"shape": "none"}}, None)["width"] - 1.0) < TOL
         spec = {"frame": {"shape": "circle", "width": 6, "color": "#00ff00", "shadow": False}}
         assert photo_frame(spec, None)["shape"] == "circle"
         assert photo_frame(spec, {"frame": {"shape": "heart"}})["shape"] == "heart"
