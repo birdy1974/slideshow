@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -885,18 +886,32 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertNotIn("boxblur", head)
         self.assertIn("[0:v]scale=1920:1080", head)
 
+    def test_collage_background_crop_is_applied_before_fitting_the_frame(self) -> None:
+        (self.settings.photos_dir / "bg.jpg").write_bytes(b"x" * 64)
+        (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
+        crop = {"rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.8}}
+        commands = self._segment_commands([self._collage_media(
+            backgroundImage="/photos/bg.jpg", backgroundLook={"crop": crop})])
+        graph = commands[0][commands[0].index("-filter_complex") + 1]
+        head = graph.split("[cb];", 1)[0]
+        source_crop = head.index("crop=w=trunc((iw*0.5)")
+        frame_fit = head.index("scale=1920:1080:force_original_aspect_ratio=increase")
+        self.assertLess(source_crop, frame_fit, "crop fractions are relative to the original picture, before frame fitting")
+        self.assertIn("crop=1920:1080", head[frame_fit:], "the cropped source is then fitted to the output frame")
+        self.assertIn("[cb][lv0_0]overlay=", graph)
+
     def test_collage_per_photo_size_scales_the_mats(self) -> None:
         (self.settings.photos_dir / "b.jpg").write_bytes(b"x" * 64)
         media = self._collage_media()
-        media["photos"] = [{"path": "/photos/a.jpg", "name": "a.jpg", "size": 1.5},
+        media["photos"] = [{"path": "/photos/a.jpg", "name": "a.jpg", "size": 3.0},
                            {"path": "/photos/b.jpg", "name": "b.jpg", "size": 0.5}]
         commands = self._segment_commands([media])
         graph = commands[0][commands[0].index("-filter_complex") + 1]
         pads = re.findall(r"pad=(\d+):\d+:\d+:\d+:color=white", graph)
         self.assertEqual(2, len(pads), graph[:200])
-        # the 1.5x mat is three times the 0.5x mat, give or take rounding
+        # the 300% mat is six times the 50% mat, give or take rounding
         self.assertGreater(int(pads[0]), int(pads[1]))
-        self.assertAlmostEqual(int(pads[0]) / int(pads[1]), 3.0, delta=int(pads[1]) * 0.05 + 2)
+        self.assertAlmostEqual(int(pads[0]) / int(pads[1]), 6.0, delta=int(pads[1]) * 0.05 + 2)
 
     def test_collage_with_missing_background_fails_the_segment(self) -> None:
         media = self._collage_media(backgroundImage="/photos/gone.jpg")
@@ -1264,7 +1279,7 @@ class VideoPlaysToEndTest(unittest.TestCase):
         self.assertFalse(any("compose-L" in str(part) for command in self.commands for part in command))
         concat = next(c for c in self.commands if "-f" in c and c[c.index("-f") + 1] == "concat")
         self.assertIn("-c:v", concat)
-        self.assertEqual("copy", concat[concat.index("-c:v") + 1])
+        self.assertEqual("libx264", concat[concat.index("-c:v") + 1], "without ffprobe, matching SPS/PPS cannot be certified so the join must be re-encoded")
 
 
 class TemporaryCleanupTest(unittest.TestCase):
@@ -2047,7 +2062,7 @@ class UniformStitchTest(unittest.TestCase):
         ]
         self.project = {"id": 1, "media": self.media, "output": {"resolution": "HD · 720p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "Auto · Quick Sync", "path": "/output", "filename": "movie"}}
 
-    def _render(self, fail_first_hold_on_qsv: bool, uniform: bool = True) -> list[list[str]]:
+    def _render(self, fail_first_hold_on_qsv: bool, uniform: bool | list[bool] = True) -> list[list[str]]:
         commands: list[list[str]] = []
         state = {"failed": False}
 
@@ -2059,10 +2074,15 @@ class UniformStitchTest(unittest.TestCase):
             Path(command[-1]).write_bytes(b"part")
 
         self.renderer._qsv_encodable = True
+        parameter_probe = (
+            mock.patch.object(self.renderer, "_parts_share_parameter_set", side_effect=uniform)
+            if isinstance(uniform, list)
+            else mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=uniform)
+        )
         with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
              mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
              mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
-             mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=uniform), \
+             parameter_probe, \
              mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
             work = self.settings.work_dir / "job"; work.mkdir(parents=True, exist_ok=True)
             self.renderer.render(self.project, "render", work, threading.Event(), lambda p, s: None)
@@ -2133,13 +2153,47 @@ class UniformStitchTest(unittest.TestCase):
         self.assertNotIn("copy", join)
         self.assertIn("libx264", join)
 
+    def test_unverified_hardware_parts_are_normalized_before_stitching(self) -> None:
+        # If the hardware streams cannot be proven identical, normalize every
+        # part separately through x264; do not ask concat to decode mixed SPS/PPS.
+        commands = self._render(fail_first_hold_on_qsv=False, uniform=[False, True])
+        parts = self._parts(commands)
+        hardware = [command for command in parts if "h264_qsv" in command]
+        software = [command for command in parts if "libx264" in command]
+        self.assertEqual(3, len(hardware))
+        self.assertEqual(3, len(software))
+        self.assertEqual(
+            {"hold-0000.mp4", "transition-0000.mp4", "hold-0001.mp4"},
+            {Path(command[-1]).name for command in software},
+        )
+        join = next(c for c in commands if "timeline.ffconcat" in " ".join(c))
+        self.assertIn("copy", join, "the normalized, matching parts can now be joined without decoding")
+
     def test_parameter_set_comparison(self) -> None:
-        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[("h264", "High", 41, "yuv420p", 1280, 720, "AA"), ("h264", "High", 41, "yuv420p", 1280, 720, "AA")]):
+        matching = ("h264", "High", 41, "yuv420p", 1280, 720, "AA")
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[matching, matching]):
             self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
-        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[("h264", "High", 41, "yuv420p", 1280, 720, "AA"), ("h264", "Main", 40, "nv12", 1280, 720, "BB")]):
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[matching, ("h264", "Main", 40, "nv12", 1280, 720, "BB")]):
             self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
-        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[None, ("h264", "High", 41, "yuv420p", 1280, 720, "AA")]):
-            self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]), "an unreadable probe never forces the slow path")
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[None, matching]):
+            self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]), "an unreadable probe is not proof that copy-joining is safe")
+
+    def test_stream_signature_requests_and_reads_extradata(self) -> None:
+        stream = {
+            "codec_name": "h264", "profile": "High", "level": 41, "pix_fmt": "yuv420p",
+            "width": 1280, "height": 720, "extradata": "00000000: 0164 0029 SPS/PPS",
+        }
+        with mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=0, stdout=json.dumps({"streams": [stream]}), stderr="")) as run:
+            signature = self.renderer._stream_signature(Path("hold.mp4"))
+        self.assertIn("-show_data", run.call_args.args[0], "ffprobe must emit the SPS/PPS bytes, not just the extradata size")
+        self.assertEqual(stream["extradata"], signature[-1])
+
+    def test_stream_signature_rejects_failed_or_incomplete_probe(self) -> None:
+        with mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=1, stdout="{}", stderr="probe failed")):
+            self.assertIsNone(self.renderer._stream_signature(Path("broken.mp4")))
+        stream = {"codec_name": "h264", "profile": "High", "level": 41, "pix_fmt": "yuv420p", "width": 1280, "height": 720}
+        with mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=0, stdout=json.dumps({"streams": [stream]}), stderr="")):
+            self.assertIsNone(self.renderer._stream_signature(Path("no-extradata.mp4")))
 
 
 class InputWindowTest(UniformStitchTest):

@@ -1251,6 +1251,9 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
    ───────────────────────────────────────────────────────────────────────────── */
 .motion-stage{position:relative;overflow:hidden;display:block}
 .motion-stage.stage-fill{position:absolute;inset:0}
+/* A collage caption is visual-only while its Free-layout photos are draggable;
+   let hit testing pass through to the mats underneath. */
+.motion-stage.collage-caption-stage{pointer-events:none}
 .motion-layer{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none}
 .motion-bg{position:absolute;inset:0;display:block;pointer-events:none}
 .motion-bg-b{opacity:0}
@@ -1587,8 +1590,12 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-arrangement-thumbs button.active .tt-slot.empty .tt-mat{stroke:var(--lime)}
 .collage-arrangement-thumbs button.active .tt-glyph path{stroke:var(--lime)}
 .collage-choices-group small b{color:#c9cec2;font-weight:800}
-.collage-mat.free{cursor:grab}
-.collage-mat.free:active{cursor:grabbing}
+.collage-photos-free .collage-mat.free{pointer-events:auto;touch-action:none;cursor:grab}
+.collage-photos-free .collage-mat.free:active{cursor:grabbing}
+.collage-timing-row .collage-size-ctl input[type=range]{width:88px;accent-color:var(--lime);cursor:pointer}
+.collage-timing-row .collage-size-ctl b{min-width:31px;text-align:right;color:#d9ddd3;font:700 8px Manrope}
+.collage-all-size-slider{width:min(140px,24vw);accent-color:var(--lime);cursor:pointer}
+.collage-all-size-value{min-width:32px;text-align:right;color:#d9ddd3;font:700 9px Manrope}
 html.modal-open,html.modal-open body{overflow:hidden}
 .story-context-menu{position:fixed;z-index:90;min-width:228px;background:#1f221c;color:#e8eadf;border:1px solid #3a3e36;border-radius:9px;padding:6px 0;box-shadow:0 14px 40px #0008}
 .story-context-menu button{width:100%;border:0;background:none;color:inherit;text-align:left;padding:7px 14px;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:12px}

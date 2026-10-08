@@ -57,7 +57,7 @@ export interface CollagePhoto extends CollagePhotoLook {
    *  duration follows from these: total = Σ delays + entrance + hold. */
   delay?: number
   /** Mat size multiplier for this photo (1 = the layout's default width,
-   *  0.5 = half, 1.5 = larger). Missing = 1. */
+   *  0.5 = half, 3 = 300%). Missing = 1. */
   size?: number
   /** Free-layout resting position (percent of the frame). Missing = 50/50. */
   cx?: number
@@ -109,8 +109,8 @@ export interface CollageSpec {
   backgroundFit?: CollageBgFit
   /** Look (filters/crop) applied to the background picture. */
   backgroundLook?: CollagePhotoLook
-  /** Seeded random mat sizes between randomSizeMin and randomSizeMax. An
-   *  explicit per-photo `size` still wins. */
+  /** Seeded random mat sizes between randomSizeMin and randomSizeMax. A
+   *  per-photo size override wins for that photo; Shuffle changes the pattern. */
   randomSize?: boolean
   randomSizeMin?: number
   randomSizeMax?: number
@@ -202,9 +202,11 @@ export function frameClipPath (shape: CollageFrameShape | string | undefined): s
   if (shape === 'triangle') return 'polygon(50% 4%, 96% 92%, 4% 92%)'
   if (shape === 'octagon') return 'polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%)'
   if (shape === 'star') return 'polygon(50% 2%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)'
-  if (shape === 'heart') return 'path("M 50 88 C 18 64 2 42 20 22 C 32 10 50 18 50 34 C 50 18 68 10 80 22 C 98 42 82 64 50 88 Z")'
-  if (shape === 'cloud') return 'path("M 18 62 C 8 62 8 42 22 40 C 24 22 48 18 56 32 C 68 18 92 28 86 48 C 98 52 96 72 78 70 C 70 82 40 84 28 72 C 18 76 12 70 18 62 Z")'
-  if (shape === 'arch') return 'path("M 8 96 L 8 48 A 42 42 0 0 1 92 48 L 92 96 Z")'
+  // `path()` uses fixed CSS-pixel coordinates, so a 100×100 path only showed
+  // a tiny corner of larger mats. Percent-based polygons scale with every mat.
+  if (shape === 'heart') return 'polygon(50% 96%, 37% 84%, 23% 71%, 12% 58%, 4% 46%, 1% 37%, 3% 29%, 9% 21%, 18% 15%, 28% 13%, 38% 17%, 46% 25%, 50% 34%, 54% 25%, 62% 17%, 72% 13%, 82% 15%, 91% 21%, 97% 29%, 99% 37%, 96% 46%, 88% 58%, 77% 71%, 63% 84%)'
+  if (shape === 'cloud') return 'polygon(18% 62%, 13% 62%, 9% 59%, 7% 54%, 7% 48%, 9% 43%, 14% 40%, 18% 39%, 19% 34%, 22% 27%, 28% 21%, 36% 18%, 44% 19%, 51% 23%, 56% 30%, 61% 25%, 67% 21%, 74% 20%, 81% 22%, 87% 27%, 90% 34%, 90% 40%, 88% 46%, 86% 49%, 92% 50%, 97% 54%, 99% 60%, 98% 66%, 95% 71%, 90% 73%, 84% 72%, 80% 77%, 74% 81%, 67% 83%, 59% 83%, 51% 82%, 44% 80%, 38% 76%, 33% 72%, 27% 74%, 22% 73%, 18% 70%, 16% 66%)'
+  if (shape === 'arch') return 'polygon(8% 100%, 8% 48%, 9% 38%, 12% 29%, 17% 21%, 23% 14%, 31% 8%, 39% 4%, 46% 2%, 54% 2%, 61% 4%, 69% 8%, 77% 14%, 83% 21%, 88% 29%, 91% 38%, 92% 48%, 92% 100%)'
   if (shape === 'ticket') return 'polygon(0% 12%, 6% 0%, 94% 0%, 100% 12%, 100% 88%, 94% 100%, 6% 100%, 0% 88%)'
   if (shape === 'rounded') return undefined
   return undefined
@@ -611,6 +613,17 @@ export function photoDelay (spec: CollageSpec, i: number): number {
 export const FREE_MIN_W = 4
 export const FREE_MAX_W = 100
 
+/** Centre reached by dragging a Free-layout mat: preserve the grab offset by
+ *  applying pointer movement as a percentage of the stage dimensions. */
+export function freeDragCenter (cx: number, cy: number, dx: number, dy: number, stageWidth: number, stageHeight: number): { cx: number; cy: number } {
+  const px = stageWidth > 0 ? dx / stageWidth * 100 : 0
+  const py = stageHeight > 0 ? dy / stageHeight * 100 : 0
+  return {
+    cx: Math.max(0, Math.min(100, cx + px)),
+    cy: Math.max(0, Math.min(100, cy + py)),
+  }
+}
+
 /** Photos of a Free arrangement seeded from what another arrangement shows:
  *  each photo keeps its displayed centre, tilt and mat size (the size is
  *  stored as the photo's own width before its size multiplier, so the
@@ -631,7 +644,7 @@ export function freeFromDisplayed (spec: CollageSpec, aspect: number, keepStored
 }
 
 /** Photo i's mat size multiplier — the stored value if present (clamped to
- *  0.5..1.5). When randomSize is on and this photo has no explicit size,
+ *  0.5..3). When randomSize is on and this photo has no explicit size,
  *  a seeded value between randomSizeMin and randomSizeMax is used. */
 export function photoSize (spec: CollageSpec, i: number): number {
   const raw = (spec.photos ?? [])[i]?.size as number | string | boolean | undefined | null
@@ -645,7 +658,33 @@ export function photoSize (spec: CollageSpec, i: number): number {
     v = a + (b - a) * hash01(Math.trunc(spec.seed) || 1, i, 41)
   }
   if (!Number.isFinite(v)) v = 1
-  return Math.max(0.5, Math.min(1.5, v))
+  return Math.max(0.5, Math.min(3, v))
+}
+
+const clampPhotoSize = (value: number): number => Number.isFinite(value) ? Math.max(0.5, Math.min(3, value)) : 1
+
+/** Change one photo's size without materialising defaults for its neighbours.
+ *  In random-size mode, untouched photos therefore stay random. */
+export function setPhotoSize (photos: CollagePhoto[], index: number, size: number): CollagePhoto[] {
+  const value = clampPhotoSize(size)
+  return photos.map((photo, i) => i === index ? { ...photo, size: value } : photo)
+}
+
+/** Scale the whole collage toward a target average size while keeping the
+ *  current relative sizes (including seeded random sizes). The editor stores
+ *  the result on each photo and turns random mode off, so the slider has a
+ *  stable, visible effect until the user asks for a fresh random arrangement. */
+export function scaleAllPhotoSizes (spec: CollageSpec, targetAverage: number): CollagePhoto[] {
+  const photos = spec.photos ?? []
+  if (!photos.length) return []
+  const target = clampPhotoSize(targetAverage)
+  const sizes = photos.map((_, i) => photoSize(spec, i))
+  const average = sizes.reduce((sum, value) => sum + value, 0) / sizes.length || 1
+  const ratio = target / average
+  return photos.map((photo, i) => ({
+    ...photo,
+    size: Math.round(clampPhotoSize(sizes[i] * ratio) * 1000) / 1000,
+  }))
 }
 
 /** The next stored beat at or after time t (in the hold clock), or null when
@@ -1000,7 +1039,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       path: p.path,
       name: typeof p.name === 'string' ? p.name : undefined,
       delay: delay !== undefined ? Math.max(0, Math.min(30, delay)) : undefined,
-      size: size !== undefined ? Math.max(0.5, Math.min(1.5, size)) : undefined,
+      size: size !== undefined ? Math.max(0.5, Math.min(3, size)) : undefined,
       cx: cx !== undefined ? Math.max(0, Math.min(100, cx)) : undefined,
       cy: cy !== undefined ? Math.max(0, Math.min(100, cy)) : undefined,
       rot: rot !== undefined ? Math.max(-45, Math.min(45, rot)) : undefined,

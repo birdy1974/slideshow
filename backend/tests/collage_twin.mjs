@@ -37,6 +37,14 @@ for (const c of input.cases) {
     mapBeats: c.mapBeats
       ? core.slideLocalBeats(c.mapBeats.beats, c.mapBeats.trackStart, c.mapBeats.trimStart, c.mapBeats.trimEnd, c.mapBeats.holdStart)
       : null,
+    sizeActions: c.sizeActions ? {
+      one: core.setPhotoSize(spec.photos, c.sizeActions.index, c.sizeActions.value).map(photo => photo.size ?? null),
+      all: core.scaleAllPhotoSizes(spec, c.sizeActions.target).map(photo => photo.size ?? null),
+    } : null,
+    freeDrag: c.freeDrag
+      ? core.freeDragCenter(c.freeDrag.cx, c.freeDrag.cy, c.freeDrag.dx, c.freeDrag.dy, c.freeDrag.width, c.freeDrag.height)
+      : null,
+    frameClips: c.includeFrameClips ? core.COLLAGE_FRAME_SHAPES.map(shape => [shape, core.frameClipPath(shape) ?? null]) : null,
   })
 }
 process.stdout.write(JSON.stringify(out))

@@ -162,7 +162,7 @@ def _cases() -> list[dict]:
     })
     cases.append({
         "id": "sized-stack-grid",
-        "spec": _spec("grid", "pop", "square", 4, 8, sizes=[0.5, 1.5, 1.0, "1.25"], hold=1),
+        "spec": _spec("grid", "pop", "square", 4, 8, sizes=[0.5, 3.0, 1.0, "1.25"], hold=1),
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.4, 1.6],
         "hashArgs": [8, 4, 29], "matW": 30,
     })
@@ -329,6 +329,15 @@ def _cases() -> list[dict]:
         "spec": {**_spec("free", "drop", "square", 4, 11, delays=[0.2, 0.2, 0.2, 0.2]), "randomSize": True, "randomSizeMin": 0.6, "randomSizeMax": 1.4},
         "aspect": 4 / 3, "leadIn": 0.0, "times": [0.0, 0.6, 2.0], "hashArgs": [11, 4, 29], "matW": 30,
     })
+    cases.append({
+        "id": "random-size-editor-actions",
+        "spec": {**_spec("grid", "none", "4:3", 6, 23, sizes=[None, 0.8, None, None, None, None]),
+                 "randomSize": True, "randomSizeMin": 0.55, "randomSizeMax": 1.45},
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0], "hashArgs": [23, 6, 29], "matW": 30,
+        "sizeActions": {"index": 1, "value": 2.75, "target": 1.8},
+        "freeDrag": {"cx": 50, "cy": 40, "dx": 20, "dy": -10, "width": 400, "height": 200},
+        "includeFrameClips": True,
+    })
     return cases
 
 
@@ -450,19 +459,61 @@ class CollageTwinTest(unittest.TestCase):
         assert photo_size(spec, 1) == 1.0                       # True → default
         assert photo_size(spec, 2) == 1.0                       # "" → default
         assert abs(photo_size(spec, 3) - 0.8) < TOL             # numeric string accepted
-        assert photo_size(spec, 4) == 1.5                       # clamped high
+        assert photo_size(spec, 4) == 3.0                       # clamped high at 300%
         assert photo_size(spec, 5) == 0.5                       # clamped low
 
 
     def test_photo_size_scales_the_mat_width(self):
         base = placements(_spec("grid", "none", "4:3", 3, 5), 16 / 9)
-        sized = placements(_spec("grid", "none", "4:3", 3, 5, sizes=[1.5, 0.5, None]), 16 / 9)
-        assert abs(sized[0]["w"] - base[0]["w"] * 1.5) < TOL
+        sized = placements(_spec("grid", "none", "4:3", 3, 5, sizes=[3.0, 0.5, None]), 16 / 9)
+        assert abs(sized[0]["w"] - base[0]["w"] * 3.0) < TOL
         assert abs(sized[1]["w"] - base[1]["w"] * 0.5) < TOL
         assert abs(sized[2]["w"] - base[2]["w"]) < TOL
         # size never moves the centre — only the mat grows around it
         for a, b in zip(base, sized):
             assert abs(a["cx"] - b["cx"]) < TOL and abs(a["cy"] - b["cy"]) < TOL
+
+
+    def test_random_sizes_are_seeded_and_override_only_the_selected_photo(self):
+        case = next(case for case in _cases() if case["id"] == "random-size-editor-actions")
+        spec = case["spec"]
+        sizes = [photo_size(spec, i) for i in range(len(spec["photos"]))]
+        assert all(0.55 <= size <= 1.45 for size in sizes)
+        assert len({round(size, 5) for size in sizes}) > 1, sizes
+        assert sizes == [photo_size(spec, i) for i in range(len(spec["photos"]))], "the same seed is repeatable"
+        changed_seed = {**spec, "seed": spec["seed"] + 1}
+        assert sizes != [photo_size(changed_seed, i) for i in range(len(spec["photos"]))]
+
+        got = _run_node({"cases": [case]})[0]
+        assert got["sizeActions"]["one"] == [None, 2.75, None, None, None, None], "editing one photo must not freeze random sizes on its neighbours"
+        average = sum(sizes) / len(sizes)
+        ratio = case["sizeActions"]["target"] / average
+        expected_all = [round(max(0.5, min(3.0, size * ratio)) * 1000) / 1000 for size in sizes]
+        assert _ae(got["sizeActions"]["all"], expected_all, 1e-9)
+        assert any(abs(a - b) > 0.01 for a, b in zip(expected_all, [case["sizeActions"]["target"]] * len(sizes))), "scale all preserves relative differences"
+
+
+    def test_free_drag_preserves_grab_offset_and_clamps_to_the_stage(self):
+        case = next(case for case in _cases() if case["id"] == "random-size-editor-actions")
+        clamp_case = {**case, "id": "free-drag-clamped",
+                      "freeDrag": {"cx": 98, "cy": 3, "dx": 1000, "dy": -1000, "width": 400, "height": 200}}
+        normal, clamped = [entry["freeDrag"] for entry in _run_node({"cases": [case, clamp_case]})]
+        assert _ae([normal["cx"], normal["cy"]], [55, 35], TOL)
+        assert _ae([clamped["cx"], clamped["cy"]], [100, 0], TOL)
+
+
+    def test_frame_clip_paths_scale_with_the_photo_mats(self):
+        case = next(case for case in _cases() if case["id"] == "random-size-editor-actions")
+        got = _run_node({"cases": [case]})[0]
+        clips = dict(got["frameClips"])
+        self.assertEqual(15, len(clips))
+        for shape in ("heart", "cloud", "arch"):
+            self.assertTrue(clips[shape].startswith("polygon("), (shape, clips[shape]))
+            self.assertIn("%", clips[shape])
+            self.assertNotIn("path(", clips[shape])
+        for shape, clip in clips.items():
+            if clip is not None:
+                self.assertIn("%", clip, shape)
 
 
     def test_bg_blur_mapping(self):
@@ -604,7 +655,7 @@ class CollageTwinTest(unittest.TestCase):
             {"path": "/photos/c.jpg", "size": True}, {"path": "/photos/d.jpg", "size": "0.6"}]}})
         assert sized is not None
         assert abs(sized["photos"][0]["size"] - 1.25) < TOL
-        assert sized["photos"][1]["size"] == 1.5
+        assert sized["photos"][1]["size"] == 3.0
         assert "size" not in sized["photos"][2]
         assert abs(sized["photos"][3]["size"] - 0.6) < TOL
         # the three new layouts are accepted, junk still falls back to stack
@@ -1061,3 +1112,13 @@ class CollageTwinTest(unittest.TestCase):
         graph = "".join(built[0])
         assert "geq=" in graph and "0xff88aa" in graph
         assert "boxblur" not in graph
+
+    def test_every_decorative_frame_shape_has_a_render_mask(self):
+        shapes = ("rounded", "circle", "oval", "heart", "star", "diamond", "hexagon",
+                  "triangle", "octagon", "cloud", "arch", "ticket")
+        for shape in shapes:
+            item = {"collage": {**_spec("grid", "none", "4:3", 1, 1),
+                                "frame": {"shape": shape, "shadow": False}}}
+            built = collage_graph(item, 1280, 720, 25.0, 3.0, 0.0, 1, "cb")
+            assert built is not None
+            assert "geq=" in "".join(built[0]), shape

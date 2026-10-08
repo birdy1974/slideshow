@@ -533,7 +533,7 @@ def free_from_displayed(spec: dict[str, Any], aspect: float, keep_stored: bool) 
 
 
 def photo_size(spec: dict[str, Any], i: int) -> float:
-    """Photo i's mat size multiplier — stored value (clamped to 0.5..1.5) or 1.
+    """Photo i's mat size multiplier — stored value (clamped to 0.5..3) or 1.
 
     When randomSize is on and this photo has no explicit size, a seeded value
     between randomSizeMin and randomSizeMax is used (twin of photoSize()).
@@ -565,7 +565,7 @@ def photo_size(spec: dict[str, Any], i: int) -> float:
         v = a + (b - a) * hash01(int(spec.get("seed") or 1), i, 41)
     if not math.isfinite(v):
         v = 1.0
-    return max(0.5, min(1.5, v))
+    return max(0.5, min(3.0, v))
 
 
 def next_beat(beats: list[float], t: float) -> float | None:
@@ -966,7 +966,7 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         except (TypeError, ValueError):
             size = None
         if size is not None and math.isfinite(size):
-            entry["size"] = max(0.5, min(1.5, size))
+            entry["size"] = max(0.5, min(3.0, size))
         for key, lo, hi, fallback in (("cx", 0.0, 100.0, None), ("cy", 0.0, 100.0, None), ("rot", -45.0, 45.0, None)):
             try:
                 v = float(p.get(key)) if p.get(key) is not None and not isinstance(p.get(key), bool) else None

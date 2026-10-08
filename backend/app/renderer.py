@@ -1806,8 +1806,11 @@ class Renderer:
                 look_src = (collage_open or {}).get("backgroundLook") if collage_open else item.get("frameBackgroundLook")
                 if not isinstance(look_src, dict):
                     look_src = {}
-                bed = [bg_fit_filter(fit, width, height)]
-                bed += crop_filters(normalize_crop({"crop": look_src.get("crop")}))
+                # The stored crop coordinates are fractions of the source
+                # picture, so straighten/rect-crop it before scaling and fitting
+                # into the output frame (the same order as ordinary pictures).
+                bed = crop_filters(normalize_crop({"crop": look_src.get("crop")}))
+                bed.append(bg_fit_filter(fit, width, height))
                 look = picture_look(look_src, width, height)
                 if look:
                     bed.append(look)
@@ -2198,13 +2201,24 @@ class Renderer:
         timeline = work / "timeline.mp4"
         # Safety net for the -c:v copy stitch: every part must carry the same
         # codec parameters (profile, level, pixel format, extradata = SPS/PPS).
-        # If anything differs the join is re-encoded once instead — slower, but
-        # it can never produce a file whose holds decode as garbage.
+        # If a hardware encoder produced mismatched or uninspectable parts, do
+        # not rely on the concat demuxer to decode streams with different SPS/PPS:
+        # re-encode every part through one software encoder first, then probe
+        # again. The final join remains a re-encode fallback if the parts still
+        # cannot be verified as identical.
         uniform = self._parts_share_parameter_set(timeline_parts)
+        if not uniform and encoder != "libx264" and not cpu_only["on"] and hw_done:
+            log.warning("%s timeline parts have mismatched or unknown H.264 parameters; normalizing every part with libx264", encoder)
+            progress(78, "Hardware codec parameters differ; normalizing timeline on CPU")
+            cpu_only["on"] = True
+            for hardware_command in hw_done:
+                self._run_ffmpeg(cpu_variant(hardware_command), cancelled, log_file)
+            hw_done.clear()
+            uniform = self._parts_share_parameter_set(timeline_parts)
         if uniform:
             join_codec = ["-c:v", "copy"]
         else:
-            log.warning("Timeline parts carry different H.264 parameter sets; re-encoding the join instead of copying")
+            log.warning("Timeline parts have mismatched or unknown H.264 parameters; re-encoding the join instead of copying")
             progress(80, "Parts differ; re-encoding the join")
             join_codec = ["-c:v", "libx264", "-preset", "medium", "-b:v", bitrate, "-maxrate", bitrate,
                           "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "yuv420p"]
@@ -2411,31 +2425,40 @@ class Renderer:
         return parse_loudnorm_stats(stderr_text)
 
     def _stream_signature(self, path: Path) -> tuple | None:
-        """(codec, profile, level, pix_fmt, size, extradata) of a part's video stream."""
+        """(codec, profile, level, pix_fmt, size, SPS/PPS) for one video part."""
         try:
             result = subprocess.run(
-                [self.settings.ffprobe_bin, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                [self.settings.ffprobe_bin, "-v", "error", "-select_streams", "v:0", "-show_data", "-show_entries",
                  "stream=codec_name,profile,level,pix_fmt,width,height,extradata", "-of", "json", str(path)],
                 capture_output=True, text=True, timeout=30,
             )
+            if result.returncode:
+                raise RuntimeError((result.stderr or "ffprobe failed").strip())
             stream = (json.loads(result.stdout or "{}").get("streams") or [{}])[0]
         except Exception as exc:
             log.warning("Could not probe %s for its parameter set: %s", path.name, exc)
             return None
-        if not stream.get("codec_name"):
+        # ffprobe only includes the actual codec extradata with -show_data.
+        # Since H.264-in-MP4 stores SPS/PPS there, an omitted/empty value means
+        # we cannot certify that stream-copy joining is safe.
+        if not stream.get("codec_name") or not stream.get("extradata"):
             return None
         return tuple(stream.get(key) for key in ("codec_name", "profile", "level", "pix_fmt", "width", "height", "extradata"))
 
     def _parts_share_parameter_set(self, parts: list[Path]) -> bool:
-        """True when every part can be bitstream-copied into one H.264 stream.
+        """True only when every part is verified to share one H.264 parameter set.
 
-        Unknown (probe failed) is treated as uniform so a missing ffprobe never
-        forces the slow path — the pinned encoder flags already make the parts
-        match in that case.
+        A missing probe or absent extradata is *unknown*, not a match. Hardware
+        output that cannot be verified is normalized through libx264 before any
+        copy stitch; pinned options alone are not proof that SPS/PPS match.
         """
-        signatures = {self._stream_signature(part) for part in parts}
-        signatures.discard(None)
-        return len(signatures) <= 1
+        if not parts:
+            return True
+        signatures = [self._stream_signature(part) for part in parts]
+        if any(signature is None for signature in signatures):
+            return False
+        first = signatures[0]
+        return all(signature == first for signature in signatures[1:])
 
     def _probe_duration(self, path: Path) -> float:
         result=subprocess.run([self.settings.ffprobe_bin,"-v","error","-show_entries","format=duration","-of","json",str(path)],capture_output=True,text=True,timeout=30)

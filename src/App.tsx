@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, exitTotal, frameBorderFrac, frameClipPath, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, scaleAllPhotoSizes, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
@@ -3299,11 +3299,17 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
   const layerRef = useRef<HTMLDivElement | null>(null)
   const camRef = useRef<HTMLDivElement | null>(null)
   const matRefs = useRef<(HTMLDivElement | null)[]>([])
+  const dragRef = useRef<{ pointerId: number; index: number; startX: number; startY: number; cx: number; cy: number } | null>(null)
   const spec = useMemo<CollageSpec | undefined>(() => normalizeCollage(item.collage) as CollageSpec | undefined, [item.collage])
   // The background picture comes from the raw spec so it also shows behind
   // the "no photos yet" placeholder (normalizeCollage needs >= 1 photo).
   const raw = item.collage
   const bg = typeof raw?.backgroundImage === 'string' && raw.backgroundImage ? raw.backgroundImage : ''
+  const bgUrl = bg ? collagePhotoUrl({ path: bg }) : ''
+  // Unlike a CSS filter, a crop needs pixels to be repainted. Use the same
+  // cached crop canvas as the picture editor, before the chosen background fit.
+  const bgCrop = useCroppedSource(bgUrl, bg ? raw?.backgroundLook : null, 'stage')
+  const bgSrc = bgCrop.ready ? bgCrop.src : bgUrl
   const bgBlur = Math.max(0, Math.min(1, Number(raw?.backgroundBlur) || 0))
   const bgFit = bgFitStyle(raw?.backgroundFit)
   const geo = useMemo(() => {
@@ -3319,6 +3325,7 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
       const photoH = photoW / (COLLAGE_ASPECT[spec.shape] ?? 4 / 3)
       const matH = photoH + border + bottom
       return {
+        cx: pl.cx, cy: pl.cy,
         ax: pl.cx / 100 * FRAME_W,
         ay: pl.cy / 100 * FRAME_H - (pin ? matH / 2 : 0),
         wPx, border, bottom, photoW, photoH, matH, fr,
@@ -3364,11 +3371,11 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
   }, [spec, geo, clock])
 
   if (!spec && !bg) return null
-  return <div ref={hostRef} className="collage-photos stage-fill">
+  return <div ref={hostRef} className={`collage-photos stage-fill${onMovePhoto ? ' collage-photos-free' : ''}`}>
     <div ref={layerRef} className="collage-layer" style={{ width: FRAME_W, height: FRAME_H }}>
       <div ref={camRef} className="collage-camera">
         {bg && <div className="collage-bg" style={{
-          backgroundImage: `url(${collagePhotoUrl({ path: bg })})`,
+          backgroundImage: `url(${bgSrc})`,
           ...bgFit,
           ...pictureFilterStyle(raw?.backgroundLook),
           filter: [pictureFilterStyle(raw?.backgroundLook).filter, bgBlur > 0.004 ? `blur(${bgBlurCssPx(bgBlur)}px)` : ''].filter(Boolean).join(' ') || undefined,
@@ -3385,16 +3392,34 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
           return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
             style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom, background: g.fr.shape === 'none' ? 'transparent' : g.fr.color, borderRadius: g.fr.shape === 'rounded' ? `${g.fr.radius}%` : g.fr.shape === 'circle' ? '50%' : undefined, boxShadow: g.fr.shadow === false ? 'none' : undefined, clipPath: clip, cursor: onMovePhoto ? 'grab' : undefined }}
             onPointerDown={onMovePhoto ? e => {
+              if (e.button !== 0) return
+              const g = geo[i]
+              if (!hostRef.current || !g) return
               e.preventDefault(); e.stopPropagation()
+              dragRef.current = { pointerId: e.pointerId, index: i, startX: e.clientX, startY: e.clientY, cx: g.cx, cy: g.cy }
+              e.currentTarget.setPointerCapture(e.pointerId)
+            } : undefined}
+            onPointerMove={onMovePhoto ? e => {
+              const drag = dragRef.current
               const host = hostRef.current
-              if (!host) return
-              const move = (ev: PointerEvent) => {
-                const r = host.getBoundingClientRect()
-                onMovePhoto(i, Math.max(0, Math.min(100, (ev.clientX - r.left) / r.width * 100)), Math.max(0, Math.min(100, (ev.clientY - r.top) / r.height * 100)))
-              }
-              const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
-              window.addEventListener('pointermove', move)
-              window.addEventListener('pointerup', up)
+              if (!drag || drag.pointerId !== e.pointerId || drag.index !== i || !host) return
+              const rect = host.getBoundingClientRect()
+              const cameraZoom = spec ? cameraState(spec, clock.t, 0, FRAME_W / FRAME_H).z : 1
+              const center = freeDragCenter(drag.cx, drag.cy, e.clientX - drag.startX, e.clientY - drag.startY, rect.width * cameraZoom, rect.height * cameraZoom)
+              onMovePhoto(i, Math.round(center.cx * 10) / 10, Math.round(center.cy * 10) / 10)
+            } : undefined}
+            onPointerUp={onMovePhoto ? e => {
+              const drag = dragRef.current
+              if (drag?.pointerId !== e.pointerId) return
+              dragRef.current = null
+              if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+            } : undefined}
+            onPointerCancel={onMovePhoto ? e => {
+              if (dragRef.current?.pointerId === e.pointerId) dragRef.current = null
+              if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+            } : undefined}
+            onLostPointerCapture={onMovePhoto ? e => {
+              if (dragRef.current?.pointerId === e.pointerId) dragRef.current = null
             } : undefined}>
             {/\.(mp4|mov|webm|mkv|m4v|avi)$/i.test(photo.path)
               ? <video src={collagePhotoUrl(photo)} muted loop playsInline autoPlay
@@ -3417,12 +3442,15 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
 function CollageSlideStage({ item, defaults, playing = true, replayKey = 0, onMovePhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; replayKey?: number; onMovePhoto?: (index: number, cx: number, cy: number) => void }) {
   const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
-  const specKey = JSON.stringify(item.collage ?? null)
+  // Moving a Free photo changes only its resting centre; do not restart its
+  // entrance animation for every pointer-move event while the user drags it.
+  const specKey = JSON.stringify(item.collage ?? null, (key, value) =>
+    onMovePhoto && item.collage?.layout === 'free' && (key === 'cx' || key === 'cy') ? undefined : value)
   useEffect(() => { clock.seek(0) }, [specKey, clock])
   useEffect(() => { clock.seek(0) }, [replayKey, clock])
   return <>
     <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} />
-    <MotionStage className="stage-fill" input={input} clock={clock} />
+    <MotionStage className={`stage-fill${onMovePhoto ? ' collage-caption-stage' : ''}`} input={input} clock={clock} />
   </>
 }
 
@@ -4021,9 +4049,15 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     setSpec({ photos: photos.map((photo, k) => ({ ...photo, delay: k === i ? Math.max(0, Math.min(30, v)) : (photo.delay ?? defaultDelay(n, k)) })) })
   }
   const spreadEvenly = () => setSpec({ photos: photos.map(photo => { const { delay, ...rest } = photo; return rest }) })
-  const setSize = (i: number, v: number) => {
-    setSpec({ photos: photos.map((photo, k) => ({ ...photo, size: k === i ? Math.max(0.5, Math.min(1.5, v)) : (photo.size ?? 1) })) })
-  }
+  const setSize = (i: number, v: number) => setSpec({ photos: setPhotoSize(photos, i, v) })
+  const setAllSizes = (v: number) => setSpec({ photos: scaleAllPhotoSizes(spec, v), randomSize: undefined })
+  const toggleRandomSizes = (enabled: boolean) => setSpec({
+    randomSize: enabled ? true : undefined,
+    ...(enabled ? { photos: photos.map(photo => { const { size, ...rest } = photo; return rest }) } : {}),
+  })
+  const averageSize = photos.length
+    ? Math.round(photos.reduce((sum, _, i) => sum + photoSize(spec, i), 0) / photos.length * 100)
+    : 100
   const resetSizes = () => setSpec({ photos: photos.map(photo => { const { size, ...rest } = photo; return rest }) })
   const total = photos.length ? collageDuration(spec) : 0
   const entrance = ENTRANCE_LENGTH[spec.animation] ?? 0
@@ -4205,60 +4239,68 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
           <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small></div>
         <div className="collage-choices-group"><FieldLabel>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></FieldLabel>
-          {spec.animation === 'none'
-            ? <small>With no entrance animation every photo is on screen from the first frame, so there is nothing to time. Pick an entrance to stagger the photos.</small>
-            : <>
-              <div className="collage-timing">
-                {photos.map((photo, i) => <div className="collage-timing-row" key={`${photo.path}-${i}`}>
-                  <img src={collagePhotoUrl(photo)} alt="" loading="lazy" />
-                  <span className="name" title={photo.name || photo.path}>{photo.name || photo.path.split('/').pop() || `photo ${i + 1}`}{beatsReady && <em title={`Nominal wait ${photoDelay(spec, i).toFixed(2)}s — the beat snaps it to ${photoStart(spec, i, 0).toFixed(2)}s`}>lands {photoStart(spec, i, 0).toFixed(2)}s</em>}</span>
-                  <span className="ctl" title={i === 0 ? 'Seconds after the slide starts before this photo appears' : 'Seconds after the previous photo appears before this one appears'}>
-                    <label>{i === 0 ? 'after start' : 'waits'}</label>
-                    <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.5} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
-                    <label>sec</label>
-                  </span>
-                  <span className="ctl" title="This photo's mat size — 100 % is the layout default; larger photos overlap their neighbours, smaller ones tuck in">
-                    <label>size</label>
-                    <NumberStepper value={Math.round(photoSize(spec, i) * 100)} min={50} max={150} step={5} ariaLabel={`Photo ${i + 1} size`} onChange={v => setSize(i, v / 100)} />
-                    <label>%</label>
-                  </span>
-                  {onEditPhoto && <button type="button" className="btn ghost small" title="Crop and filter this photo" onClick={() => onEditPhoto(i)}><CropIcon size={11}/> Edit</button>}
-                  <span className="ctl" title="Override the default frame for this photo">
-                    <label>frame</label>
-                    <select value={photo.frame?.shape ?? 'default'} onChange={e => setPhotoFrame(i, e.target.value as CollageFrameShape | 'default')} aria-label={`Photo ${i + 1} frame`}>
-                      <option value="default">Default</option>
-                      {COLLAGE_FRAMES.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-                    </select>
-                  </span>
-                </div>)}
-                {photos.length === 0 && <small className="collage-timing-empty">Pick photos to set when each one appears.</small>}
-              </div>
-              <div className="collage-timing-total">
-                <span title="Set every photo's wait to the same value">All waits</span>
-                <NumberStepper value={photos[0] ? photoDelay(spec, 0) : 0.5} min={0} max={30} step={0.5} ariaLabel="Wait for every photo" onChange={setAllDelays} />
-                <span>sec</span>
-                <span title="How long the finished collage stays on screen after the last photo has landed">Hold after last</span>
-                <NumberStepper value={spec.hold ?? 2} min={0} max={60} step={0.5} ariaLabel="Hold after the last photo" onChange={v => setSpec({ hold: Math.max(0, v) })} />
-                <span>sec</span>
-                <span className="collage-timing-actions">
-                  <button type="button" className="btn ghost small" title="Reset every wait to the even auto-stagger" onClick={spreadEvenly}>Spread evenly</button>
-                  <button type="button" className="btn ghost small" title="Reset every photo to the layout's default size" onClick={resetSizes}>Reset sizes</button>
-                </span>
-              </div>
-              <label className="collage-check" title="Seeded random mat sizes. An explicit size on a row still wins.">
-                <input type="checkbox" checked={spec.randomSize === true} onChange={e => setSpec({ randomSize: e.target.checked })} />
-                <span>Random sizes</span>
-              </label>
-              {spec.randomSize && <div className="collage-timing-total">
-                <span>Min</span>
-                <NumberStepper value={Math.round((spec.randomSizeMin ?? 0.7) * 100)} min={50} max={150} step={5} ariaLabel="Random size minimum" onChange={v => setSpec({ randomSizeMin: v / 100 })} />
-                <span>%</span>
-                <span>Max</span>
-                <NumberStepper value={Math.round((spec.randomSizeMax ?? 1.3) * 100)} min={50} max={150} step={5} ariaLabel="Random size maximum" onChange={v => setSpec({ randomSizeMax: v / 100 })} />
-                <span>%</span>
-              </div>}
-              <small>The slide lasts exactly as long as the photos need: the waits add up to {photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes {entrance}s, plus the hold{exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — {total}s in total. The storyline duration follows automatically. Size is per photo: bigger photos overlap their neighbours, smaller ones tuck in.</small>
-            </>}</div>
+          {spec.animation === 'none' && <small>With no entrance animation all photos appear immediately. Photo size, frame and random-size controls still work; only the waits are unused.</small>}
+          <div className="collage-timing">
+            {photos.map((photo, i) => <div className="collage-timing-row" key={`${photo.path}-${i}`}>
+              <img src={collagePhotoUrl(photo)} alt="" loading="lazy" />
+              <span className="name" title={photo.name || photo.path}>{photo.name || photo.path.split('/').pop() || `photo ${i + 1}`}{beatsReady && <em title={`Nominal wait ${photoDelay(spec, i).toFixed(2)}s — the beat snaps it to ${photoStart(spec, i, 0).toFixed(2)}s`}>lands {photoStart(spec, i, 0).toFixed(2)}s</em>}</span>
+              {spec.animation !== 'none' && <span className="ctl" title={i === 0 ? 'Seconds after the slide starts before this photo appears' : 'Seconds after the previous photo appears before this one appears'}>
+                <label>{i === 0 ? 'after start' : 'waits'}</label>
+                <NumberStepper value={photoDelay(spec, i)} min={0} max={30} step={0.5} ariaLabel={`Photo ${i + 1} wait`} onChange={v => setDelay(i, v)} />
+                <label>sec</label>
+              </span>}
+              <span className="ctl collage-size-ctl" title="This photo's mat size — 100% is the layout default; 300% is three times its layout width">
+                <label>size</label>
+                <input type="range" min={50} max={300} step={1} value={Math.round(photoSize(spec, i) * 100)} aria-label={`Photo ${i + 1} size`} onChange={e => setSize(i, Number(e.target.value) / 100)} />
+                <b>{Math.round(photoSize(spec, i) * 100)}%</b>
+              </span>
+              {onEditPhoto && <button type="button" className="btn ghost small" title="Crop and filter this photo" onClick={() => onEditPhoto(i)}><CropIcon size={11}/> Edit</button>}
+              <span className="ctl" title="Override the default frame for this photo">
+                <label>frame</label>
+                <select value={photo.frame?.shape ?? 'default'} onChange={e => setPhotoFrame(i, e.target.value as CollageFrameShape | 'default')} aria-label={`Photo ${i + 1} frame`}>
+                  <option value="default">Default</option>
+                  {COLLAGE_FRAMES.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                </select>
+              </span>
+            </div>)}
+            {photos.length === 0 && <small className="collage-timing-empty">Pick photos to set their size and when each appears.</small>}
+          </div>
+          <div className="collage-timing-total">
+            {spec.animation !== 'none' && <>
+              <span title="Set every photo's wait to the same value">All waits</span>
+              <NumberStepper value={photos[0] ? photoDelay(spec, 0) : 0.5} min={0} max={30} step={0.5} ariaLabel="Wait for every photo" onChange={setAllDelays} />
+              <span>sec</span>
+              <button type="button" className="btn ghost small" title="Reset every wait to the even auto-stagger" onClick={spreadEvenly}>Spread evenly</button>
+            </>}
+            {photos.length > 0 && <>
+              <span title="Scale the whole collage while preserving the current relative sizes">All sizes</span>
+              <input className="collage-all-size-slider" type="range" min={50} max={300} step={1} value={averageSize} aria-label="Scale all photo sizes together" onChange={e => setAllSizes(Number(e.target.value) / 100)} />
+              <b className="collage-all-size-value">{averageSize}%</b>
+            </>}
+            <span title="How long the finished collage stays on screen after the last photo has landed">Hold after last</span>
+            <NumberStepper value={spec.hold ?? 2} min={0} max={60} step={0.5} ariaLabel="Hold after the last photo" onChange={v => setSpec({ hold: Math.max(0, v) })} />
+            <span>sec</span>
+            <span className="collage-timing-actions">
+              <button type="button" className="btn ghost small" title="Reset every photo to the layout's default size" onClick={resetSizes}>Reset sizes</button>
+            </span>
+          </div>
+          {photos.length > 0 && <small>All sizes scales the current photo sizes together while preserving their relative sizes; it stores the result and turns Random sizes off.</small>}
+          <label className="collage-check" title="Seeded random mat sizes. Turning this on clears old per-photo overrides; changing one row afterward overrides random size for that photo only.">
+            <input type="checkbox" checked={spec.randomSize === true} disabled={!photos.length} onChange={e => toggleRandomSizes(e.target.checked)} />
+            <span>Random sizes</span>
+          </label>
+          {spec.randomSize && photos.length > 0 && <div className="collage-timing-total">
+            <span>Min</span>
+            <NumberStepper value={Math.round((spec.randomSizeMin ?? 0.7) * 100)} min={50} max={150} step={5} ariaLabel="Random size minimum" onChange={v => setSpec({ randomSizeMin: v / 100 })} />
+            <span>%</span>
+            <span>Max</span>
+            <NumberStepper value={Math.round((spec.randomSizeMax ?? 1.3) * 100)} min={50} max={150} step={5} ariaLabel="Random size maximum" onChange={v => setSpec({ randomSizeMax: v / 100 })} />
+            <span>%</span>
+          </div>}
+          {spec.randomSize && photos.length > 0 && <small>Random sizes are repeatable from the seed; use Shuffle to reroll. A row slider overrides random sizing for that photo only.</small>}
+          <small>{spec.animation === 'none'
+            ? `All ${photos.length} photos appear immediately and the slide holds for ${spec.hold ?? 2}s. The size sliders work in every animation mode.`
+            : `The slide lasts exactly as long as the photos need: the waits add up to ${photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes ${entrance}s, plus the hold${exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — ${total}s in total. The storyline duration follows automatically. Bigger photos overlap their neighbours; smaller ones tuck in.`}</small></div>
         <div className="collage-choices-group"><FieldLabel>Beat sync</FieldLabel>
           <label className={`collage-check${spec.animation === 'none' ? ' disabled' : ''}`}>
             <input type="checkbox" checked={spec.beatSync === true} disabled={spec.animation === 'none'} onChange={e => setSpec({ beatSync: e.target.checked })} />
