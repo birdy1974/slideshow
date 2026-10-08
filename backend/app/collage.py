@@ -1255,10 +1255,18 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         sin_a, cos_a = math.sin(max_ang), math.cos(max_ang)
         cw = math.ceil(mat_w * cos_a + mat_h * sin_a) + 2 * sm
         if pin:
-            # pivot = pin at the mat's top edge; canvas centre sits on the pin
-            above = math.ceil(mat_w / 2 * sin_a) + sm
-            below = math.ceil(mat_h * cos_a + mat_w / 2 * sin_a) + sm
-            ch = above + below
+            # Swing hangs the mat from a pin at its top-centre edge, and
+            # ffmpeg's rotate turns the sprite about its CENTRE. So the
+            # canvas is sized symmetrically about the pin (the mat's top
+            # edge) — it must reach the mat's full height below the pin and
+            # the swung corners above it — and the mat's top edge sits on
+            # the canvas centre. The canvas centre lands on the pin
+            # (ay_px below = cy - mat_h / 2), exactly where photoState()'s
+            # pinned mat (transform-origin 50% 0) is drawn in the preview.
+            half = max(math.ceil(mat_w / 2 * sin_a) + sm,
+                       math.ceil(mat_h * cos_a + mat_w / 2 * sin_a) + sm)
+            ch = 2 * half
+            above = half
         else:
             ch = math.ceil(mat_w * sin_a + mat_h * cos_a) + 2 * sm
             above = (ch - mat_h) // 2

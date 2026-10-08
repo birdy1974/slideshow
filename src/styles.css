@@ -1501,9 +1501,12 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-chip.lifted{opacity:.45}
 /* Dropping a chip on the preview: the canvas lights up as a target, a ghost
    of the mat (its real size and tilt) follows the pointer at the drop point. */
-.frame-canvas.drop-armed:after{border-color:#d1ef9d88;border-style:dashed}
+/* The photo-collage preview draws no dotted guides: the 7% safe-area box is
+   hidden, and the drag-target cue is a solid lime frame instead of dashes. */
+.collage-editor .frame-canvas:after{display:none}
+.collage-editor .frame-canvas.drop-armed:after{display:block;inset:0;border:2px solid #d1ef9d88;border-style:solid}
 .frame-canvas.drop-over{outline:2px solid var(--lime);outline-offset:-2px}
-.collage-drop-ghost{position:absolute;z-index:6;pointer-events:none;box-sizing:border-box;border:2px dashed var(--lime);border-radius:3px;background:#0006;box-shadow:0 8px 24px #0008;overflow:hidden}
+.collage-drop-ghost{position:absolute;z-index:6;pointer-events:none;box-sizing:border-box;border:2px solid var(--lime);border-radius:3px;background:#0006;box-shadow:0 8px 24px #0008;overflow:hidden}
 .collage-drop-ghost img{width:100%;height:100%;object-fit:cover;opacity:.7;display:block}
 .collage-drop-ghost b{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:var(--lime);color:#1e211d;font:800 11px Manrope;display:grid;place-items:center}
 .collage-drop-hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:6;pointer-events:none;display:flex;align-items:center;gap:5px;white-space:nowrap;background:#000c;color:#fff;border:1px solid #ffffff22;border-radius:5px;padding:5px 9px;font-size:9px;font-weight:700}
