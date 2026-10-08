@@ -158,12 +158,16 @@ automatically). Only sensible if GL transitions are never used, i.e. effectively
   (CQP-only hardware, where the GUI bitrate preset maps to a quantizer:
   20 Mbps→18 · 12→20 · 8→23 · 4→26) plus `-low_power 1` when the probe said the
   host needs it (no `-pix_fmt` — frames arrive as VA-API surfaces). Segment
-  preparation stays on `libx264 -crf 18` (quality intermediates); concat and final
-  mux are stream-copy and untouched. Any hardware failure mid-render retries the
-  same command on CPU via the generalized fallback (device, hwupload, `-low_power`,
-  `-rc_mode` and `-qp` stripped, `-preset medium -pix_fmt yuv420p` added) — a
-  broken driver can never fail a job. On CQP-only hardware the bitrate preset only
-  steers quality, so the file-size estimate is approximate there.
+  preparation stays on `libx264 -crf 18` (quality intermediates). A hardware
+  failure mid-render retries every already-made and remaining timeline part on
+  CPU via the generalized fallback (device, hwupload, `-low_power`, `-rc_mode`
+  and `-qp` stripped, `-preset medium -pix_fmt yuv420p` added) — a broken driver
+  can never leave a mixed-encoder stitch. Before stream-copy joining, `ffprobe`
+  compares each part's full codec extradata/SPS/PPS (`-show_data`); if any
+  hardware part differs or cannot be inspected, every part is normalized through
+  libx264 and checked again. Only verified-uniform parts are copied together; if
+  they remain unverified, the join is re-encoded. On CQP-only hardware the bitrate
+  preset only steers quality, so the file-size estimate is approximate there.
 * **GUI**: the checklist line reports `Hardware encoding available · VAAPI` (check,
   not warning) when `capabilities.vaapi` is true, and the Encoder dropdown gained
   `Hardware · VAAPI`. Render-time estimates already treat it as hardware speed.
