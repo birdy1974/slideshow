@@ -158,13 +158,16 @@ def _template_slots(tid: str | None, n: int) -> list[dict[str, float]]:
     return out
 
 
-def mat_height_per_width(shape: str, fr: dict[str, Any], aspect: float) -> float:
-    """Height of a mat per 1 % of frame width, in % of frame HEIGHT — the pixel
-    maths of the sprite (photo + border + polaroid caption strip) for the
-    resolved frame `fr`, times the frame's W/H. Twin of matHeightPerWidth()."""
-    b = frame_border_frac(fr)
-    bottom = 0.205 if fr["shape"] == "polaroid" else b
-    return ((1 - 2 * b) / _photo_aspect(shape) + b + bottom) * aspect
+def mat_line(shape: str, fr: dict[str, Any], aspect: float) -> tuple[float, float]:
+    """Mat height (% of frame HEIGHT) as a line of the mat width w (% of frame
+    width): height = k * w + c. The border is a fixed share of the FRAME, so it
+    adds the constant c; the polaroid caption strip stays proportional to the
+    mat. Twin of matLine() in src/collageCore.ts."""
+    b = frame_border_frac(fr) * 100.0          # border, % of frame width
+    inv = 1.0 / _photo_aspect(shape)
+    if fr["shape"] == "polaroid":
+        return (inv + 0.205) * aspect, (b - 2 * b * inv) * aspect
+    return inv * aspect, (2 * b - 2 * b * inv) * aspect
 
 
 def _template_slot_width(slot: dict[str, float], spec: dict[str, Any], i: int, aspect: float) -> float:
@@ -173,8 +176,8 @@ def _template_slot_width(slot: dict[str, float], spec: dict[str, Any], i: int, a
     if h is None or not h > 0:
         return slot["w"]
     photos = spec.get("photos") or []
-    per = mat_height_per_width(str(spec.get("shape") or "4:3"), photo_frame(spec, photos[i] if i < len(photos) else None), aspect)
-    return min(slot["w"], h / per)
+    mat_k, mat_c = mat_line(str(spec.get("shape") or "4:3"), photo_frame(spec, photos[i] if i < len(photos) else None), aspect)
+    return min(slot["w"], (h - mat_c) / mat_k)
 
 
 def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -222,7 +225,8 @@ def frame_border_frac(frame: dict[str, Any]) -> float:
 
 def mat_height(w: float, shape: str, aspect: float, frame: dict[str, Any] | None = None) -> float:
     """Mat height in % of frame height for a mat width of w % of frame width."""
-    return w * mat_height_per_width(shape, photo_frame({"frame": frame} if frame else {}, None), aspect)
+    mat_k, mat_c = mat_line(shape, photo_frame({"frame": frame} if frame else {}, None), aspect)
+    return mat_k * w + mat_c
 
 
 def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
@@ -238,14 +242,14 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         margin_x, margin_y = 7.0, 8.0
         return cols, rows, (100 - 2 * margin_x) / cols, (100 - 2 * margin_y) / rows
 
-    # Mat height (% of frame HEIGHT) per 1 % of frame width for the collage's
-    # default frame — twin of `per` in placements() (collageCore.ts): every
+    # Mat height (% of frame HEIGHT) = line_k * w + line_c for the collage's
+    # default frame — twin of matLine() in placements() (collageCore.ts): every
     # layout that fits mats into cells limits their height with it.
-    per = mat_height_per_width(shape, photo_frame(spec, None), aspect)
+    line_k, line_c = mat_line(shape, photo_frame(spec, None), aspect)
 
     def fit_width(cell_w: float, cell_h: float) -> float:
         # 80 % of the cell width, and no taller than 90 % of the cell height
-        return min(cell_w * 0.8, cell_h * 0.9 / per)
+        return min(cell_w * 0.8, (cell_h * 0.9 - line_c) / line_k)
 
     layout = str(spec.get("layout") or "stack")
     # Per-photo size: each photo's mat is the layout width times its
@@ -279,7 +283,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
             col = i if row == 0 else i - first_row
             cell_wr = (100 - 2 * 5) / cols
             cell_h = (100 - 2 * 12) / rows
-            w = min(cell_wr * 1.1, cell_h * 0.9 / per)
+            w = min(cell_wr * 1.1, (cell_h * 0.9 - line_c) / line_k)
             out.append({"cx": 5 + cell_wr * (col + 0.5), "cy": 12 + cell_h * (row + 0.5), "w": width_of(w, i), "rot": (hash01(seed, i, 37) - 0.5) * 8})
     elif layout == "fan":
         # Cards fanned out from a point below the frame — each card tilts
@@ -300,7 +304,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         # Pinterest-style columns: seeded size variety, each photo stacked
         # into the shortest column (a single photo is simply centred).
         if n == 1:
-            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(min(40.0, 76 / per), 0), "rot": 0.0})
+            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(min(40.0, (76 - line_c) / line_k), 0), "rot": 0.0})
         else:
             cols = 2 if n <= 2 else (3 if n <= 9 else 4)
             margin_x = 6.0
@@ -317,7 +321,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
                     for j in range(1, cols):
                         if fills[j] < fills[c] - 1e-9:
                             c = j
-                    mh = ws[i] * scale * per
+                    mh = line_k * ws[i] * scale + line_c
                     res.append({"cx": margin_x + cell_w * (c + 0.5), "cy": 12 + fills[c] + gap / 2 + mh / 2})
                     fills[c] += gap + mh
                 return res, max(fills)
@@ -340,7 +344,7 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         cell_w = (100 - 8) / (cols + 0.5)
         cell_h = (100 - 16) / max(1, rows)
         # Brick-tight: the gutter between rows equals the gutter between columns.
-        w = min(cell_w - gap, (cell_h - gap) / per)
+        w = min(cell_w - gap, (cell_h - gap - line_c) / line_k)
         for i in range(n):
             row, col = divmod(i, cols)
             ox = (row % 2) * cell_w * 0.5
@@ -378,13 +382,13 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
         best_cols, best_rows, best_w, best_empty = 1, n, 0.0, 0
         for cols in range(1, n + 1):
             rows = math.ceil(n / cols)
-            w = min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1)) / (rows * per))
+            w = min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1) - rows * line_c) / (rows * line_k))
             empty = cols * rows - n
             if w > best_w + 1e-9 or (abs(w - best_w) <= 1e-9 and empty < best_empty):
                 best_cols, best_rows, best_w, best_empty = cols, rows, w, empty
         cols, rows = best_cols, best_rows
         w = max(2.0, best_w)
-        mat_h = w * per
+        mat_h = line_k * w + line_c
         y0 = (100 - (rows * mat_h + (rows - 1) * gap)) / 2
         for i in range(n):
             col, row = i % cols, i // cols
@@ -1233,7 +1237,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         photo = spec["photos"][i] if i < len(spec["photos"]) else {}
         fr = photo_frame(spec, photo)
         mat_w = max(24, round(pl["w"] / 100 * width))
-        border = max(0, round(frame_border_frac(fr) * mat_w))
+        border = max(0, round(frame_border_frac(fr) * width))   # share of the FRAME, not the mat
         if fr["shape"] == "none":
             border = 0
         bottom = max(0, round(0.205 * mat_w)) if fr["shape"] == "polaroid" else border
@@ -1255,10 +1259,18 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         sin_a, cos_a = math.sin(max_ang), math.cos(max_ang)
         cw = math.ceil(mat_w * cos_a + mat_h * sin_a) + 2 * sm
         if pin:
-            # pivot = pin at the mat's top edge; canvas centre sits on the pin
-            above = math.ceil(mat_w / 2 * sin_a) + sm
-            below = math.ceil(mat_h * cos_a + mat_w / 2 * sin_a) + sm
-            ch = above + below
+            # Swing hangs the mat from a pin at its top-centre edge, and
+            # ffmpeg's rotate turns the sprite about its CENTRE. So the
+            # canvas is sized symmetrically about the pin (the mat's top
+            # edge) — it must reach the mat's full height below the pin and
+            # the swung corners above it — and the mat's top edge sits on
+            # the canvas centre. The canvas centre lands on the pin
+            # (ay_px below = cy - mat_h / 2), exactly where photoState()'s
+            # pinned mat (transform-origin 50% 0) is drawn in the preview.
+            half = max(math.ceil(mat_w / 2 * sin_a) + sm,
+                       math.ceil(mat_h * cos_a + mat_w / 2 * sin_a) + sm)
+            ch = 2 * half
+            above = half
         else:
             ch = math.ceil(mat_w * sin_a + mat_h * cos_a) + 2 * sm
             above = (ch - mat_h) // 2

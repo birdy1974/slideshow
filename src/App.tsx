@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp,
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
@@ -3319,7 +3319,7 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
     return placements(spec, aspect).map((pl, i) => {
       const fr = photoFrame(spec, spec.photos[i])
       const wPx = pl.w / 100 * FRAME_W
-      const border = frameBorderFrac(fr) * wPx
+      const border = frameBorderFrac(fr) * FRAME_W
       const bottom = fr.shape === 'polaroid' ? 0.205 * wPx : border
       const photoW = Math.max(1, wPx - 2 * border)
       const photoH = photoW / (COLLAGE_ASPECT[spec.shape] ?? 4 / 3)
@@ -3957,6 +3957,15 @@ const COLLAGE_BG_FITS: { id: CollageBgFit; label: string; hint: string }[] = [
   { id: 'span', label: 'Span', hint: 'Scale to the frame width, crop top and bottom if needed' },
 ]
 
+/** Header row of a collapsible settings section: the whole row toggles it. */
+function CollageGroupHead({ id, open, onToggle, children }: { id: string; open: boolean; onToggle: (id: string) => void; children: ReactNode }) {
+  return <div className="collage-group-head" role="button" tabIndex={0} aria-expanded={open} title={open ? 'Click to collapse this section' : 'Click to expand this section'}
+    onClick={() => onToggle(id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(id) } }}>
+    <span className="field-label">{children}</span>
+    <ChevronDown size={14} aria-hidden="true" />
+  </div>
+}
+
 function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, onReplacePhoto, onEditPhoto, onEditBackground, audioTracks = [], holdStart = 0, audioLoop = true }: {
   item: MediaItem
   isNew?: boolean
@@ -3982,6 +3991,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => {
     setSpec({ photos: photos.map((p, i) => i === index ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
   }
+  // Collapsible settings sections: click anywhere on a section's header row.
+  // The open/closed choice is remembered like the layout toggle.
+  const [closedSections, setClosedSections] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('collageEditorClosedSections') || '{}') || {} } catch { return {} }
+  })
+  useEffect(() => { try { localStorage.setItem('collageEditorClosedSections', JSON.stringify(closedSections)) } catch { /* ignore */ } }, [closedSections])
+  const toggleSection = (id: string) => setClosedSections(prev => ({ ...prev, [id]: !prev[id] }))
   const [uiLayout, setUiLayout] = useState<'sidebar' | 'below'>(() => {
     try { return localStorage.getItem('collageEditorLayout') === 'below' ? 'below' : 'sidebar' } catch { return 'sidebar' }
   })
@@ -4192,7 +4208,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           : 'Drag a photo from this row onto the preview to put it exactly where you want it — the arrangement becomes Free and the other photos stay where they are.'}</small>}
       </div>
       <aside>
-        <div className="collage-choices-group"><FieldLabel>Arrangement</FieldLabel>
+        <div className={`collage-choices-group${closedSections['arrangement'] ? ' closed' : ''}`}><CollageGroupHead id="arrangement" open={!closedSections['arrangement']} onToggle={toggleSection}>Arrangement</CollageGroupHead>
           <div className="collage-arrangements">
             {ARRANGEMENT_FAMILIES.map(family => <div key={family.id} className="collage-arrangement-family">
               <em>{family.label} <span>— {family.note}</span></em>
@@ -4220,7 +4236,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <span>%</span>
           </div>}
         </div>
-        <div className="collage-choices-group"><FieldLabel>Photo animation</FieldLabel>
+        <div className={`collage-choices-group${closedSections['photo-animation'] ? ' closed' : ''}`}><CollageGroupHead id="photo-animation" open={!closedSections['photo-animation']} onToggle={toggleSection}>Photo animation</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
           <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
           <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' || spec.animation === 'flip' ? '' : ' disabled'}`}>
@@ -4235,10 +4251,10 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <input type="checkbox" checked={spec.sway === true} onChange={e => setSpec({ sway: e.target.checked || undefined })} />
             <span>Idle sway — a gentle corkboard wobble once photos have landed</span>
           </label></div>
-        <div className="collage-choices-group"><FieldLabel>Photo exit</FieldLabel>
+        <div className={`collage-choices-group${closedSections['photo-exit'] ? ' closed' : ''}`}><CollageGroupHead id="photo-exit" open={!closedSections['photo-exit']} onToggle={toggleSection}>Photo exit</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
           <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small></div>
-        <div className="collage-choices-group"><FieldLabel>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></FieldLabel>
+        <div className={`collage-choices-group${closedSections['photo-size-timing'] ? ' closed' : ''}`}><CollageGroupHead id="photo-size-timing" open={!closedSections['photo-size-timing']} onToggle={toggleSection}>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></CollageGroupHead>
           {spec.animation === 'none' && <small>With no entrance animation all photos appear immediately. Photo size, frame and random-size controls still work; only the waits are unused.</small>}
           <div className="collage-timing">
             {photos.map((photo, i) => <div className="collage-timing-row" key={`${photo.path}-${i}`}>
@@ -4301,16 +4317,16 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <small>{spec.animation === 'none'
             ? `All ${photos.length} photos appear immediately and the slide holds for ${spec.hold ?? 2}s. The size sliders work in every animation mode.`
             : `The slide lasts exactly as long as the photos need: the waits add up to ${photos.length ? photoStart(spec, photos.length - 1, 0).toFixed(2) : '0'}s, the last entrance takes ${entrance}s, plus the hold${exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — ${total}s in total. The storyline duration follows automatically. Bigger photos overlap their neighbours; smaller ones tuck in.`}</small></div>
-        <div className="collage-choices-group"><FieldLabel>Beat sync</FieldLabel>
+        <div className={`collage-choices-group${closedSections['beat-sync'] ? ' closed' : ''}`}><CollageGroupHead id="beat-sync" open={!closedSections['beat-sync']} onToggle={toggleSection}>Beat sync</CollageGroupHead>
           <label className={`collage-check${spec.animation === 'none' ? ' disabled' : ''}`}>
             <input type="checkbox" checked={spec.beatSync === true} disabled={spec.animation === 'none'} onChange={e => setSpec({ beatSync: e.target.checked })} />
             <span>Snap photo landings to the music — each photo waits for the next beat</span>
           </label>
           <small>{beatHint}</small></div>
-        <div className="collage-choices-group"><FieldLabel>Photo shape</FieldLabel>
+        <div className={`collage-choices-group${closedSections['photo-shape'] ? ' closed' : ''}`}><CollageGroupHead id="photo-shape" open={!closedSections['photo-shape']} onToggle={toggleSection}>Photo shape</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_SHAPES.map(s => <button key={s.id} type="button" className={spec.shape === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ shape: s.id })}>{s.label}</button>)}</div>
           <small>{COLLAGE_SHAPES.find(s => s.id === spec.shape)?.hint}</small></div>
-        <div className="collage-choices-group"><FieldLabel>Frame</FieldLabel>
+        <div className={`collage-choices-group${closedSections['frame'] ? ' closed' : ''}`}><CollageGroupHead id="frame" open={!closedSections['frame']} onToggle={toggleSection}>Frame</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_FRAMES.map(f => <button key={f.id} type="button" className={defFr.shape === f.id ? 'active' : ''} title={f.hint} onClick={() => setFrame({ shape: f.id })}>{f.label}</button>)}</div>
           <small>{COLLAGE_FRAMES.find(f => f.id === defFr.shape)?.hint} — this is the default for every photo; override one in the timing row.</small>
           {defFr.shape !== 'none' && <div className="collage-timing-total">
@@ -4329,23 +4345,23 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <span>Drop shadow under each photo</span>
           </label>
         </div>
-        <div className="collage-choices-group"><FieldLabel>Stickers</FieldLabel>
+        <div className={`collage-choices-group${closedSections['stickers'] ? ' closed' : ''}`}><CollageGroupHead id="stickers" open={!closedSections['stickers']} onToggle={toggleSection}>Stickers</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_STICKERS.map(s => <button key={s.id} type="button" className={(spec.stickers ?? 'none') === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ stickers: s.id === 'none' ? undefined : s.id })}>{s.label}</button>)}</div>
           <small>{COLLAGE_STICKERS.find(s => s.id === (spec.stickers ?? 'none'))?.hint}</small>
         </div>
-        <div className="collage-choices-group"><FieldLabel>Variation (seed)</FieldLabel>
+        <div className={`collage-choices-group${closedSections['variation-seed'] ? ' closed' : ''}`}><CollageGroupHead id="variation-seed" open={!closedSections['variation-seed']} onToggle={toggleSection}>Variation (seed)</CollageGroupHead>
           <div className="collage-seed">
             <NumberStepper value={spec.seed} min={1} max={999999} step={1} ariaLabel="Layout seed" onChange={v => setSpec({ seed: Math.max(1, Math.round(v)) || 1 })} />
             <button type="button" className="btn ghost" title="Re-roll the seeded arrangement — same number always gives the same layout" onClick={() => setSpec({ seed: 1 + Math.floor(Math.random() * 9999) })}><Shuffle size={13}/> Shuffle</button>
           </div>
           <small>{spec.layout === 'free' ? 'Free layout ignores the seed — drag the photos on the preview.' : spec.layout === 'template' ? 'Magazine and polaroid-wall pages are fixed slots. Shuffle does not move them; pick another page instead.' : spec.layout === 'grid' || spec.layout === 'filmstrip' || spec.layout === 'fan' || spec.layout === 'masonry' || spec.layout === 'stack' || spec.layout === 'scatter' ? 'Shuffle re-rolls the seed: tilts, jitter and (for stack/scatter/masonry) positions change, identically in the preview and the render.' : 'The seed pins the layout: the same number always arranges the photos identically.'}</small></div>
-        <div className="collage-choices-group"><FieldLabel>Camera</FieldLabel>
+        <div className={`collage-choices-group${closedSections['camera'] ? ' closed' : ''}`}><CollageGroupHead id="camera" open={!closedSections['camera']} onToggle={toggleSection}>Camera</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_CAMERAS.map(c => <button key={c.id} type="button" className={(spec.camera ?? 'none') === c.id ? 'active' : ''} title={c.hint} onClick={() => setSpec({ camera: c.id === 'none' ? undefined : c.id })}>{c.label}</button>)}</div>
           <small>{COLLAGE_CAMERAS.find(c => c.id === (spec.camera ?? 'none'))?.hint}</small></div>
-        <div className="collage-choices-group"><FieldLabel>Caption (optional)</FieldLabel>
+        <div className={`collage-choices-group${closedSections['caption-optional'] ? ' closed' : ''}`}><CollageGroupHead id="caption-optional" open={!closedSections['caption-optional']} onToggle={toggleSection}>Caption (optional)</CollageGroupHead>
           <textarea value={item.text} placeholder="Add a caption on top of the photos…" onChange={e => livePatch({ text: e.target.value })}/>
           <button type="button" className="btn ghost small" onClick={onOpenCaption} title="Font, colour, position and text effects — the full text frame editor"><Pencil size={11}/> Style &amp; effects…</button></div>
-        <div className="collage-choices-group"><FieldLabel>Background</FieldLabel>
+        <div className={`collage-choices-group${closedSections['background'] ? ' closed' : ''}`}><CollageGroupHead id="background" open={!closedSections['background']} onToggle={toggleSection}>Background</CollageGroupHead>
           {spec.backgroundImage
             ? <div className="collage-bg-pick">
                 <img src={collagePhotoUrl({ path: spec.backgroundImage })} alt="" />

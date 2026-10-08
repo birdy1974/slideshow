@@ -181,6 +181,9 @@ export function photoFrame (spec: { frame?: CollageFrame } | null | undefined, p
   return { shape, width, color, radius, shadow }
 }
 
+/** Border width as a share of the FRAME width (0.045 = 4.5 %). It does not
+ *  grow with the photo: a big photo and a small one get the same frame
+ *  thickness, exactly like the frame's share of the picture on screen. */
 export function frameBorderFrac (frame: { shape: CollageFrameShape; width: number }): number {
   if (frame.shape === 'none') return 0
   return Math.max(0, Math.min(0.12, frame.width / 100))
@@ -190,7 +193,8 @@ export function frameBorderFrac (frame: { shape: CollageFrameShape; width: numbe
  *  percentage of the frame HEIGHT. aspect = frameW / frameH. Polaroid
  *  (the default) keeps the classic white border + caption strip. */
 export function matHeight (w: number, shape: CollageShape, aspect: number, frame?: CollageFrame): number {
-  return w * matHeightPerWidth(shape, photoFrame({ frame }, null), aspect)
+  const { k, c } = matLine(shape, photoFrame({ frame }, null), aspect)
+  return k * w + c
 }
 
 /** CSS clip-path for a non-rectangular photo frame. Undefined = rectangle. */
@@ -330,22 +334,26 @@ function templateSlots (id: string | undefined, n: number): TemplateSlot[] {
   return out
 }
 
-/** Height of a mat per 1 % of frame width, in % of frame HEIGHT: the pixel
- *  maths of the stage and the MP4 sprite (photo + border + polaroid caption
- *  strip) for the resolved frame `fr`, times the frame's W/H. Twin of
- *  mat_height_per_width() in backend/app/collage.py. */
-function matHeightPerWidth (shape: CollageShape, fr: ReturnType<typeof photoFrame>, aspect: number): number {
-  const b = frameBorderFrac(fr)
-  const bottom = fr.shape === 'polaroid' ? 0.205 : b
-  return ((1 - 2 * b) / photoAspect(shape) + b + bottom) * aspect
+/** Mat height in % of frame HEIGHT as a line of the mat width w (% of frame
+ *  width): height = k * w + c. The border is a fixed share of the frame, so
+ *  it adds a constant c; the polaroid caption strip (0.205 of the mat width)
+ *  stays proportional. Derived from the pixel maths of the stage and the MP4
+ *  sprite: photo = (w - 2b) / photoAspect, mat = photo + top/side b + bottom,
+ *  with b the border in % of frame width. Twin of mat_line() in
+ *  backend/app/collage.py. */
+function matLine (shape: CollageShape, fr: ReturnType<typeof photoFrame>, aspect: number): { k: number, c: number } {
+  const b = frameBorderFrac(fr) * 100
+  const inv = 1 / photoAspect(shape)
+  if (fr.shape === 'polaroid') return { k: (inv + 0.205) * aspect, c: (b - 2 * b * inv) * aspect }
+  return { k: inv * aspect, c: (2 * b - 2 * b * inv) * aspect }
 }
 
 /** Widest mat that fits a template slot's box for this photo's frame — the
  *  slot width, or less when the mat would be taller than the slot height. */
 function templateSlotWidth (slot: TemplateSlot, spec: CollageSpec, i: number, aspect: number): number {
   if (slot.h === undefined || !(slot.h > 0)) return slot.w
-  const per = matHeightPerWidth(spec.shape, photoFrame(spec, spec.photos[i]), aspect)
-  return Math.min(slot.w, slot.h / per)
+  const { k, c } = matLine(spec.shape, photoFrame(spec, spec.photos[i]), aspect)
+  return Math.min(slot.w, (slot.h - c) / k)
 }
 
 /** Resting placement of every photo. Deterministic given the spec. */
@@ -360,15 +368,15 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const marginY = 8
     return { cols, rows, cellW: (100 - 2 * marginX) / cols, cellH: (100 - 2 * marginY) / rows, }
   }
-  // Mat height (% of frame HEIGHT) per 1 % of frame width for the collage's
-  // default frame — the pixel maths of the stage and the MP4. Every layout
-  // that fits mats into cells limits their height with it, so rows never
-  // overlap whatever the photo shape or frame style.
-  const per = matHeightPerWidth(spec.shape, photoFrame(spec, null), aspect)
+  // Mat height (% of frame HEIGHT) = k * w + c for the collage's default
+  // frame — the pixel maths of the stage and the MP4. Every layout that fits
+  // mats into cells limits their height with it, so rows never overlap
+  // whatever the photo shape or frame style.
+  const { k: lineK, c: lineC } = matLine(spec.shape, photoFrame(spec, null), aspect)
   // Largest mat width (as % of frame width) that fits a grid cell: 80 % of
   // the cell width, and no taller than 90 % of the cell height (the seeded
   // tilt needs the rest).
-  const fitWidth = (cellW: number, cellH: number): number => Math.min(cellW * 0.8, cellH * 0.9 / per)
+  const fitWidth = (cellW: number, cellH: number): number => Math.min(cellW * 0.8, (cellH * 0.9 - lineC) / lineK)
   // Per-photo size: each photo's mat is the layout width times its multiplier
   // (bigger photos overlap their neighbours — that is the point).
   const widthOf = (base: number, i: number): number => base * photoSize(spec, i)
@@ -403,7 +411,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
       const col = row === 0 ? i : i - firstRow
       const cellWr = (100 - 2 * 5) / cols
       const cellH = (100 - 2 * 12) / rows
-      const w = Math.min(cellWr * 1.1, cellH * 0.9 / per)
+      const w = Math.min(cellWr * 1.1, (cellH * 0.9 - lineC) / lineK)
       out.push({ cx: 5 + cellWr * (col + 0.5), cy: 12 + cellH * (row + 0.5), w: widthOf(w, i), rot: (hash01(seed, i, 37) - 0.5) * 8 })
     }
   } else if (spec.layout === 'fan') {
@@ -426,7 +434,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     // Pinterest-style columns: seeded size variety, each photo stacked into
     // the shortest column (a single photo is simply centred).
     if (n === 1) {
-      out.push({ cx: 50, cy: 50, w: widthOf(Math.min(40, 76 / per), 0), rot: 0 })
+      out.push({ cx: 50, cy: 50, w: widthOf(Math.min(40, (76 - lineC) / lineK), 0), rot: 0 })
     } else {
       const cols = n <= 2 ? 2 : n <= 9 ? 3 : 4
       const marginX = 6
@@ -441,7 +449,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
         for (let i = 0; i < n; i++) {
           let c = 0
           for (let j = 1; j < cols; j++) if (fills[j] < fills[c] - 1e-9) c = j
-          const mh = ws[i] * scale * per
+          const mh = lineK * ws[i] * scale + lineC
           res.push({ cx: marginX + cellW * (c + 0.5), cy: 12 + fills[c] + gap / 2 + mh / 2 })
           fills[c] += gap + mh
         }
@@ -459,7 +467,7 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     const cellW = (100 - 8) / (cols + 0.5)
     const cellH = (100 - 16) / Math.max(1, rows)
     // Brick-tight: the gutter between rows equals the gutter between columns.
-    const w = Math.min(cellW - gap, (cellH - gap) / per)
+    const w = Math.min(cellW - gap, (cellH - gap - lineC) / lineK)
     for (let i = 0; i < n; i++) {
       const row = Math.floor(i / cols)
       const col = i % cols
@@ -501,13 +509,13 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
     let best = { cols: 1, rows: n, w: 0, empty: 0 }
     for (let cols = 1; cols <= n; cols++) {
       const rows = Math.ceil(n / cols)
-      const w = Math.min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1)) / (rows * per))
+      const w = Math.min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1) - rows * lineC) / (rows * lineK))
       const empty = cols * rows - n
       if (w > best.w + 1e-9 || (Math.abs(w - best.w) <= 1e-9 && empty < best.empty)) best = { cols, rows, w, empty }
     }
     const { cols, rows } = best
     const w = Math.max(2, best.w)
-    const matH = w * per
+    const matH = lineK * w + lineC
     const y0 = (100 - (rows * matH + (rows - 1) * gap)) / 2
     for (let i = 0; i < n; i++) {
       const col = i % cols

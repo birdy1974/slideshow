@@ -1501,9 +1501,12 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-chip.lifted{opacity:.45}
 /* Dropping a chip on the preview: the canvas lights up as a target, a ghost
    of the mat (its real size and tilt) follows the pointer at the drop point. */
-.frame-canvas.drop-armed:after{border-color:#d1ef9d88;border-style:dashed}
+/* The photo-collage preview draws no dotted guides: the 7% safe-area box is
+   hidden, and the drag-target cue is a solid lime frame instead of dashes. */
+.collage-editor .frame-canvas:after{display:none}
+.collage-editor .frame-canvas.drop-armed:after{display:block;inset:0;border:2px solid #d1ef9d88;border-style:solid}
 .frame-canvas.drop-over{outline:2px solid var(--lime);outline-offset:-2px}
-.collage-drop-ghost{position:absolute;z-index:6;pointer-events:none;box-sizing:border-box;border:2px dashed var(--lime);border-radius:3px;background:#0006;box-shadow:0 8px 24px #0008;overflow:hidden}
+.collage-drop-ghost{position:absolute;z-index:6;pointer-events:none;box-sizing:border-box;border:2px solid var(--lime);border-radius:3px;background:#0006;box-shadow:0 8px 24px #0008;overflow:hidden}
 .collage-drop-ghost img{width:100%;height:100%;object-fit:cover;opacity:.7;display:block}
 .collage-drop-ghost b{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:var(--lime);color:#1e211d;font:800 11px Manrope;display:grid;place-items:center}
 .collage-drop-hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:6;pointer-events:none;display:flex;align-items:center;gap:5px;white-space:nowrap;background:#000c;color:#fff;border:1px solid #ffffff22;border-radius:5px;padding:5px 9px;font-size:9px;font-weight:700}
@@ -1547,14 +1550,20 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-blur input[type=range]{flex:1;accent-color:var(--lime)}
 .collage-blur b{width:30px;text-align:right;color:#d9ddd3}
 .collage-bg-actions{display:flex;gap:6px}
-.collage-timing{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent;padding-right:2px}
-.collage-timing-row{display:grid;grid-template-columns:26px minmax(0,1fr) auto auto auto;gap:6px;align-items:center;border:1px solid #3d423a;border-radius:5px;padding:3px 6px;background:#23261f}
+.collage-timing{display:flex;flex-direction:column;gap:4px}
+.collage-timing-row{display:grid;grid-template-columns:26px minmax(0,1fr) auto auto auto auto;gap:5px;align-items:center;border:1px solid #3d423a;border-radius:5px;padding:3px 6px;background:#23261f}
 .collage-timing-row img{width:26px;height:18px;object-fit:cover;border-radius:2px}
 .collage-timing-row .name{font-size:9px;color:#c9cec2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .collage-timing-row label{font-size:8px;color:#8f948b;white-space:nowrap}
 .collage-timing-empty{color:#8f948b}
 .collage-timing-total{display:flex;gap:7px;align-items:center;margin-top:8px;font-size:9px;color:#b8bcb2;flex-wrap:wrap}
-.collage-timing-row .ctl{display:flex;align-items:center;gap:4px}
+.collage-timing-row .ctl{display:flex;align-items:center;gap:4px;white-space:nowrap}
+/* Compact wait stepper inside a timing row: the whole row (wait, size, edit,
+   frame) fits on one line in the settings column. */
+.collage-timing-row .number-stepper{height:24px;width:auto}
+.collage-timing-row .number-stepper .step-btn{width:15px;font-size:11px}
+.collage-timing-row .number-stepper input{flex:none;width:34px;font-size:10px;padding:0}
+.collage-timing-row .number-stepper .step-suffix{display:none}
 .collage-timing-actions{margin-left:auto;display:flex;gap:6px}
 .collage-replay{position:absolute;right:8px;bottom:8px;z-index:5;display:flex;align-items:center;gap:5px;border:0;border-radius:5px;background:#000a;color:#fff;font-size:9px;font-weight:700;padding:5px 8px;cursor:pointer}
 .collage-replay:hover{background:#000c}
@@ -1592,8 +1601,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-choices-group small b{color:#c9cec2;font-weight:800}
 .collage-photos-free .collage-mat.free{pointer-events:auto;touch-action:none;cursor:grab}
 .collage-photos-free .collage-mat.free:active{cursor:grabbing}
-.collage-timing-row .collage-size-ctl input[type=range]{width:88px;accent-color:var(--lime);cursor:pointer}
-.collage-timing-row .collage-size-ctl b{min-width:31px;text-align:right;color:#d9ddd3;font:700 8px Manrope}
+.collage-timing-row .collage-size-ctl input[type=range]{width:64px;accent-color:var(--lime);cursor:pointer}
+.collage-timing-row .collage-size-ctl b{min-width:28px;text-align:right;color:#d9ddd3;font:700 8px Manrope}
 .collage-all-size-slider{width:min(140px,24vw);accent-color:var(--lime);cursor:pointer}
 .collage-all-size-value{min-width:32px;text-align:right;color:#d9ddd3;font:700 9px Manrope}
 html.modal-open,html.modal-open body{overflow:hidden}
@@ -1616,3 +1625,13 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .font-size-slider input[type=range]{flex:1;accent-color:#728f42}
 .frame-editor .font-size-presets button{background:#2a2e27;border-color:#494e45;color:#c9cec2}
 .frame-editor .font-size-presets button.active{background:#3d4a2c;border-color:#8cbc43;color:#e8f0c8}
+
+/* Collapsible settings sections: the whole header row is the toggle. */
+.collage-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;user-select:none;border-radius:5px;margin:0 -4px;padding:3px 4px}
+.collage-group-head:hover{background:#ffffff0d}
+.collage-group-head:focus-visible{outline:1px solid var(--lime);outline-offset:1px}
+.collage-group-head .field-label{flex:1;min-width:0;cursor:pointer;pointer-events:none}
+.collage-group-head svg{flex:none;color:#8f948b;transition:transform .15s}
+.collage-choices-group.closed .collage-group-head svg{transform:rotate(-90deg)}
+.collage-choices-group.closed>:not(.collage-group-head){display:none}
+.collage-choices-group.closed{margin-bottom:6px}
