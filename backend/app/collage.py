@@ -1374,15 +1374,18 @@ def _shape_mask(fr: dict[str, Any], w: int, h: int) -> str:
     return f",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{expr}'"
 
 
-def collage_graph(settings, item: dict[str, Any], width: int, height: int, fps: float,
-                  duration: float, lead_in: float, first_input: int, base_label: str) -> tuple[list[str], str] | None:
+def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
+                  duration: float, lead_in: float, first_input: int, base_label: str,
+                  settings: Any = None) -> tuple[list[str], str] | None:
     """Filter-graph lines that composite the collage photos onto ``base_label``.
 
     Returns (lines, last_label) — each photo's sprite (mat + soft shadow) is
     overlaid in z-order; `last_label` is the composed result — or None when
-    the item has no collage. Photos are matted (white polaroid border +
-    caption strip), given a soft shadow, and animated with the same curves
-    the preview uses (drop / pop / swing / none).
+    the item has no collage. Photos are matted (border in the frame style),
+    given a soft shadow, and animated with the same curves the preview uses
+    (drop / pop / swing / none). ``settings`` is only needed to probe the
+    real aspect of 'native'-shape photos from disk; without it those fall
+    back to 4:3.
     """
     spec = normalize_collage(item)
     if spec is None:
