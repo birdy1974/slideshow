@@ -1,3 +1,22 @@
+2026-10-09
+- scale the movies so landscape but also portrait orientation movie are shown in full. for portrait give option for background color on the sides or blurred movie 
+- in text frame popup window (new and edit) in case picture is selected as background, add option to blur background picture ( like in background [photo collage)
+- in photo collage add option to set the speed (timing) of the photo exit animation
+- on the preview of the photo collage, the user should also be able to change the size of the photos (select a photo, under the preview show slider to set size of the selected photo)
+- on the preview of the photo collage provide time line bar so user can quickly go to specific time
+- on the preview of the photo collage provide option so user can determine the order of the on the order of the arrangement. so which photo on the arrangement appears in which order (including reverse option)
+- if SLIDE DEFAULT time is changed (apply for all) should not change the time for the movies and photo collage (only the individual pictures) 
+- 
+- do a thorough deep search on the internet to see if there are any other photo collage effects that we do not have. first give an overview before you change any code. you can check the effects in Canva, and other photo collage maker apps.
+- give options to change the border of the photos (for all photos and individual): none, thickness/color of border, rounded, shapes (hart, circle, star, diamond, you advise more)
+
+
+
+
+
+
+
+---= DONE =---
 2026-09-27
 - Photo collage popup: make following improvements
     - Photo size & timing: add option for random sizes (max and min to be set by user)
@@ -26,17 +45,7 @@
 - new/edit text frame popup: add option to use background picture/photo instead of background color
 - if you scroll outside a popup window it should not scroll the background window.
 - main window: detailed list: right bottom of the photo collage should open the edit Photo collage popup and not the text frame editor popup
--
-- do a thorough deep search on the internet to see if there are any other photo collage effects that we do not have. first give an overview before you change any code. you can check the effects in Canva, and other photo collage maker apps.
-- give options to change the border of the photos (for all photos and individual): none, thickness/color of border, rounded, shapes (hart, circle, star, diamond, you advise more)
 
-
-
-
-
-
-
----= DONE =---
 - check how soundtrack is being analyzed (analyze levels) as it takes a really long time before it finish
 
 2026-09-23
