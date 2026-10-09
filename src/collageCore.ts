@@ -15,23 +15,24 @@ export type CollageLayout = 'stack' | 'grid' | 'scatter' | 'filmstrip' | 'fan' |
 export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush'
 export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle'
 export type CollageCamera = 'none' | 'pan' | 'zoom' | 'telescope' | 'droste'
-export type CollageShape = '4:3' | 'square' | '3:4' | '16:9' | '9:16' | '3:2' | '2:3'
+export type CollageShape = '4:3' | 'square' | '3:4' | '16:9' | '9:16' | '3:2' | '2:3' | 'native'
 export type CollageBgFit = 'fill' | 'fit' | 'stretch' | 'tile' | 'center' | 'span'
 export type CollageFrameShape = 'polaroid' | 'none' | 'rect' | 'rounded' | 'circle' | 'oval' | 'heart' | 'star' | 'diamond' | 'hexagon' | 'triangle' | 'octagon' | 'cloud' | 'arch' | 'ticket'
 export type CollageStickers = 'none' | 'tape' | 'pin' | 'mix'
 
 export const COLLAGE_LAYOUTS_ALL: CollageLayout[] = ['stack', 'grid', 'scatter', 'filmstrip', 'fan', 'masonry', 'free', 'template', 'honeycomb', 'zigzag', 'arc', 'photowall', 'booth', 'silhouette', 'cube']
+export const COLLAGE_SHAPES_ALL: CollageShape[] = ['native', '4:3', 'square', '3:4', '16:9', '9:16', '3:2', '2:3']
 export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip', 'fade', 'slide', 'rise', 'tumble', 'zoom', 'fold', 'glitch', 'ink', 'brush', 'none']
 export const COLLAGE_FRAME_SHAPES: CollageFrameShape[] = ['polaroid', 'none', 'rect', 'rounded', 'circle', 'oval', 'heart', 'star', 'diamond', 'hexagon', 'triangle', 'octagon', 'cloud', 'arch', 'ticket']
 
 export interface CollageFrame {
-  /** Missing = polaroid (white mat + caption strip). */
+  /** Missing = rect (plain rectangular border). */
   shape?: CollageFrameShape
-  /** Border thickness as % of the frame width (0 = none). Missing = 1.0; ignored for `none`. */
+  /** Border thickness as % of the frame width (0 = none). Missing = 0.5; ignored for `none`. */
   width?: number
   /** Border / mat colour. Missing = #ffffff. */
   color?: string
-  /** Corner radius as % of the shorter side, for `rounded`. Missing = 12. */
+  /** Corner radius as % of the shorter side, for `rounded`. Missing = 5. */
   radius?: number
   /** Soft drop shadow under the mat. Missing = on. */
   shadow?: boolean
@@ -74,6 +75,9 @@ export interface CollagePhoto extends CollagePhotoLook {
    *  (0 = the first slot). Missing = its own index in the list. The appear
    *  order (list order, `delay`) is independent of this. Free ignores it. */
   slot?: number
+  /** Per-photo shape override (the collage-wide `shape` is the default for
+   *  photos without one). Missing = the collage's shape. */
+  shape?: CollageShape
 }
 
 export interface CollageSpec {
@@ -118,9 +122,12 @@ export interface CollageSpec {
   randomSize?: boolean
   randomSizeMin?: number
   randomSizeMax?: number
-  /** Speed of the photo exit animation, 0.2 (slow) .. 3 (fast). Scales both
+  /** Speed of the photo exit animation, 0.05 (slow) .. 2 (fast). Scales both
    *  the fly-out of each photo and the gap between photos leaving. Missing = 1. */
   exitSpeed?: number
+  /** Reverse the exit order: the last (top) photo leaves first instead of
+   *  the first one. Missing = off. */
+  exitReverse?: boolean
   /** Predefined template id when layout is 'template'. */
   template?: string
   /** Default frame for every photo (per-photo `frame` wins). */
@@ -162,9 +169,32 @@ export function hash01 (...values: number[]): number {
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
-export const COLLAGE_SHAPES: CollageShape[] = ['4:3', '16:9', '3:2', 'square', '2:3', '3:4', '9:16']
+export const COLLAGE_SHAPES: CollageShape[] = ['native', '4:3', '16:9', '3:2', 'square', '2:3', '3:4', '9:16']
 
-export function photoAspect (shape: CollageShape | string): number {
+/** Resolve the aspect ratio to use for a photo. For fixed shapes it's the
+ *  shape's constant; for 'native' it's the photo's own measured w/h, falling
+ *  back to 4:3 when the photo hasn't been measured yet. When classifying an
+ *  UNKNOWN photo (no ratio yet, e.g. on the server before probing) we bucket
+ *  via snapNativeAspect so mats stay at one of the common shapes. */
+export function snapNativeAspect (ratio: number): number {
+  const r = Number(ratio)
+  if (!Number.isFinite(r) || r <= 0) return 4 / 3
+  if (r >= 1.15) {
+    return Math.abs(r - 16 / 9) < Math.abs(r - 4 / 3) ? 16 / 9 : 4 / 3
+  }
+  if (r <= 1 / 1.15) {
+    return Math.abs(r - 9 / 16) < Math.abs(r - 3 / 4) ? 9 / 16 : 3 / 4
+  }
+  return 1
+}
+
+export function photoAspect (shape: CollageShape | string, nativeRatio?: number): number {
+  if (shape === 'native') {
+    // Measured: use the real ratio so the mat matches the photo exactly.
+    // Unmeasured: fall back to a safe 4:3 default until dimensions arrive.
+    const r = Number(nativeRatio)
+    return Number.isFinite(r) && r > 0 ? r : 4 / 3
+  }
   if (shape === 'square') return 1
   if (shape === '3:4') return 3 / 4
   if (shape === '16:9') return 16 / 9
@@ -174,17 +204,32 @@ export function photoAspect (shape: CollageShape | string): number {
   return 4 / 3
 }
 
+/** The effective shape of photo i: its own override when set, else the
+ *  collage-wide default shape. */
+export function photoShape (spec: CollageSpec, i: number): CollageShape {
+  const s = spec.photos[i]?.shape
+  return COLLAGE_SHAPES_ALL.includes(s as CollageShape) ? s as CollageShape : spec.shape
+}
+
+/** Aspect ratio of photo i in a spec — its effective shape, or the measured
+ *  native ratio of that photo when that shape is 'native'. */
+export function photoAspectFor (spec: CollageSpec, i: number, ratios?: ArrayLike<number | undefined>): number {
+  const shape = photoShape(spec, i)
+  if (shape !== 'native') return photoAspect(shape)
+  return photoAspect('native', ratios?.[i])
+}
+
 export function photoFrame (spec: { frame?: CollageFrame } | null | undefined, photo?: { frame?: CollageFrame } | null): { shape: CollageFrameShape; width: number; color: string; radius: number; shadow: boolean } {
   const a = spec?.frame || {}
   const b = photo?.frame || {}
   const shape = (COLLAGE_FRAME_SHAPES as string[]).includes(b.shape as string) ? b.shape as CollageFrameShape
-    : (COLLAGE_FRAME_SHAPES as string[]).includes(a.shape as string) ? a.shape as CollageFrameShape : 'polaroid'
+    : (COLLAGE_FRAME_SHAPES as string[]).includes(a.shape as string) ? a.shape as CollageFrameShape : 'rect'
   const rawW: unknown = b.width !== undefined ? b.width : a.width
   const numericW = rawW === null || typeof rawW === 'boolean' || (typeof rawW === 'string' && rawW.trim() === '') ? NaN : Number(rawW)
-  const width = Number.isFinite(numericW) ? Math.max(0, Math.min(12, numericW)) : 1.0
+  const width = Number.isFinite(numericW) ? Math.max(0, Math.min(12, numericW)) : 0.5
   const color = (typeof b.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(b.color) ? b.color : (typeof a.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(a.color) ? a.color : '#ffffff'))
   const rawR = b.radius !== undefined ? b.radius : a.radius
-  const radius = Number.isFinite(Number(rawR)) ? Math.max(0, Math.min(50, Number(rawR))) : 12
+  const radius = Number.isFinite(Number(rawR)) ? Math.max(0, Math.min(50, Number(rawR))) : 5
   const shadow = (b.shadow !== undefined ? b.shadow : a.shadow) !== false
   return { shape, width, color, radius, shadow }
 }
@@ -199,9 +244,12 @@ export function frameBorderFrac (frame: { shape: CollageFrameShape; width: numbe
 
 /** Height of the mat for a mat width `w` (% of frame width), as a
  *  percentage of the frame HEIGHT. aspect = frameW / frameH. Polaroid
- *  (the default) keeps the classic white border + caption strip. */
+ *  keeps the classic white border + caption strip. */
 export function matHeight (w: number, shape: CollageShape, aspect: number, frame?: CollageFrame): number {
-  const { k, c } = matLine(shape, photoFrame({ frame }, null), aspect)
+  // For callers that don't have per-photo ratios (e.g. the drag ghost), treat
+  // 'native' as a 4:3 default. The actual placements path uses photoMatHeight.
+  const effShape: CollageShape = shape === 'native' ? '4:3' : shape
+  const { k, c } = matLine(effShape, photoFrame({ frame }, null), aspect)
   return k * w + c
 }
 
@@ -348,19 +396,27 @@ function templateSlots (id: string | undefined, n: number): TemplateSlot[] {
  *  stays proportional. Derived from the pixel maths of the stage and the MP4
  *  sprite: photo = (w - 2b) / photoAspect, mat = photo + top/side b + bottom,
  *  with b the border in % of frame width. Twin of mat_line() in
- *  backend/app/collage.py. */
-function matLine (shape: CollageShape, fr: ReturnType<typeof photoFrame>, aspect: number): { k: number, c: number } {
+ *  backend/app/collage.py.
+ *  When `photoNativeRatio` is supplied and shape is 'native', the mat line
+ *  uses that photo's snapped native aspect instead of the global shape. */
+function matLineFor (shape: CollageShape, fr: ReturnType<typeof photoFrame>, aspect: number, photoNativeRatio?: number): { k: number, c: number } {
   const b = frameBorderFrac(fr) * 100
-  const inv = 1 / photoAspect(shape)
+  const a = photoAspect(shape, photoNativeRatio)
+  const inv = 1 / a
   if (fr.shape === 'polaroid') return { k: (inv + 0.205) * aspect, c: (b - 2 * b * inv) * aspect }
   return { k: inv * aspect, c: (2 * b - 2 * b * inv) * aspect }
 }
 
+/** Default frame's mat line (for the global shape, no per-photo override). */
+function matLine (shape: CollageShape, fr: ReturnType<typeof photoFrame>, aspect: number): { k: number, c: number } {
+  return matLineFor(shape, fr, aspect)
+}
+
 /** Widest mat that fits a template slot's box for this photo's frame — the
  *  slot width, or less when the mat would be taller than the slot height. */
-function templateSlotWidth (slot: TemplateSlot, spec: CollageSpec, i: number, aspect: number): number {
+function templateSlotWidth (slot: TemplateSlot, spec: CollageSpec, i: number, aspect: number, ratios?: ArrayLike<number | undefined>): number {
   if (slot.h === undefined || !(slot.h > 0)) return slot.w
-  const { k, c } = matLine(spec.shape, photoFrame(spec, spec.photos[i]), aspect)
+  const { k, c } = matLineFor(photoShape(spec, i), photoFrame(spec, spec.photos[i]), aspect, ratios?.[i])
   return Math.min(slot.w, (slot.h - c) / k)
 }
 
@@ -386,8 +442,8 @@ export function arrangementSlots (spec: CollageSpec): number[] {
   return out
 }
 
-export function placements (spec: CollageSpec, aspect: number): Placement[] {
-  const raw = basePlacements(spec, aspect)
+export function placements (spec: CollageSpec, aspect: number, ratios?: ArrayLike<number | undefined>): Placement[] {
+  const raw = basePlacements(spec, aspect, ratios)
   if (spec.layout === 'free' || spec.photos.length < 2) return raw
   // Move each photo onto its slot's spot. Its own size multiplier stays with
   // the photo, so a big photo moved to a small slot stays big.
@@ -401,7 +457,16 @@ export function placements (spec: CollageSpec, aspect: number): Placement[] {
   })
 }
 
-function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
+/** Mat height (% of frame HEIGHT) for photo i given its mat width w (% of frame
+ *  width). Uses the photo's own shape (override or the collage default); a
+ *  'native' shape uses the photo's measured aspect. */
+export function photoMatHeight (spec: CollageSpec, i: number, w: number, aspect: number, ratios?: ArrayLike<number | undefined>): number {
+  const fr = photoFrame(spec, spec.photos[i])
+  const { k, c } = matLineFor(photoShape(spec, i), fr, aspect, ratios?.[i])
+  return k * w + c
+}
+
+function basePlacements (spec: CollageSpec, aspect: number, ratios?: ArrayLike<number | undefined>): Placement[] {
   const n = Math.max(1, spec.photos.length)
   const seed = Math.trunc(spec.seed) || 1
   const out: Placement[] = []
@@ -415,7 +480,10 @@ function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
   // Mat height (% of frame HEIGHT) = k * w + c for the collage's default
   // frame — the pixel maths of the stage and the MP4. Every layout that fits
   // mats into cells limits their height with it, so rows never overlap
-  // whatever the photo shape or frame style.
+  // whatever the photo shape or frame style. For 'native' shape we use a
+  // 4:3 default for cell sizing (the preview may not have measured every
+  // photo yet); per-photo photoMatHeight is used by masonry/photowall where
+  // heights differ meaningfully between photos.
   const { k: lineK, c: lineC } = matLine(spec.shape, photoFrame(spec, null), aspect)
   // Largest mat width (as % of frame width) that fits a grid cell: 80 % of
   // the cell width, and no taller than 90 % of the cell height (the seeded
@@ -424,6 +492,13 @@ function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
   // Per-photo size: each photo's mat is the layout width times its multiplier
   // (bigger photos overlap their neighbours — that is the point).
   const widthOf = (base: number, i: number): number => base * photoSize(spec, i)
+  // Per-photo mat height helper used by masonry/photowall where photos may
+  // legitimately differ in shape.
+  const matHof = (w: number, i: number): number => {
+    const fr = photoFrame(spec, spec.photos[i])
+    const { k, c } = matLineFor(photoShape(spec, i), fr, aspect, ratios?.[i])
+    return k * w + c
+  }
   if (spec.layout === 'grid') {
     const { cols, cellW, cellH } = cells(n)
     const w = fitWidth(cellW, cellH)
@@ -476,9 +551,11 @@ function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
     }
   } else if (spec.layout === 'masonry') {
     // Pinterest-style columns: seeded size variety, each photo stacked into
-    // the shortest column (a single photo is simply centred).
+    // the shortest column (a single photo is simply centred). Per-photo
+    // heights respect each photo's own aspect when shape === 'native'.
     if (n === 1) {
-      out.push({ cx: 50, cy: 50, w: widthOf(Math.min(40, (76 - lineC) / lineK), 0), rot: 0 })
+      const wMax = photoShape(spec, 0) === 'native' ? 48 : Math.min(40, (76 - lineC) / lineK)
+      out.push({ cx: 50, cy: 50, w: widthOf(wMax, 0), rot: 0 })
     } else {
       const cols = n <= 2 ? 2 : n <= 9 ? 3 : 4
       const marginX = 6
@@ -493,7 +570,7 @@ function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
         for (let i = 0; i < n; i++) {
           let c = 0
           for (let j = 1; j < cols; j++) if (fills[j] < fills[c] - 1e-9) c = j
-          const mh = lineK * ws[i] * scale + lineC
+          const mh = matHof(ws[i] * scale, i)
           res.push({ cx: marginX + cellW * (c + 0.5), cy: 12 + fills[c] + gap / 2 + mh / 2 })
           fills[c] += gap + mh
         }
@@ -548,18 +625,38 @@ function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
     // A compact block of equal tiles with a small gutter. The column count
     // is the one that gives the largest tile for this frame and mat shape
     // (ties: the fewest empty cells); the block is centred and a short last
-    // row is centred too, so the wall never has a hole.
+    // row is centred too, so the wall never has a hole. For 'native' shape
+    // we size every tile by the TALLEST photo so even portrait mats fit in
+    // every cell.
     const gap = Number.isFinite(Number(spec.gap)) ? Math.max(0, Math.min(12, Number(spec.gap))) : 0.7
+    // Per-photo mat-height for a given tile width w (uses ratios when known);
+    // the default frame's line is used when ratios are missing.
+    const tileH = (w: number): number => {
+      let h = 0
+      for (let i = 0; i < n; i++) h = Math.max(h, matHof(w, i))
+      return h
+    }
     let best = { cols: 1, rows: n, w: 0, empty: 0 }
     for (let cols = 1; cols <= n; cols++) {
       const rows = Math.ceil(n / cols)
-      const w = Math.min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1) - rows * lineC) / (rows * lineK))
+      const wAvail = (100 - gap * (cols + 1)) / cols
+      // Find the largest w <= wAvail such that tileH(w) fits the row height.
+      // For a non-native shape matH is linear (k*w+c); for native the tallest
+      // photo's (k,c) is also linear so binary search works fine.
+      let lo = 2, hi = Math.max(lo, wAvail)
+      for (let _ = 0; _ < 12; _++) {
+        const mid = (lo + hi) / 2
+        const mh = tileH(mid)
+        if (mh * rows + gap * (rows + 1) <= 100) lo = mid
+        else hi = mid
+      }
+      const w = lo
       const empty = cols * rows - n
       if (w > best.w + 1e-9 || (Math.abs(w - best.w) <= 1e-9 && empty < best.empty)) best = { cols, rows, w, empty }
     }
     const { cols, rows } = best
     const w = Math.max(2, best.w)
-    const matH = lineK * w + lineC
+    const matH = tileH(w)
     const y0 = (100 - (rows * matH + (rows - 1) * gap)) / 2
     for (let i = 0; i < n; i++) {
       const col = i % cols
@@ -623,7 +720,7 @@ function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
     // the mosaic keeps its rows and columns whatever the photo shape or
     // frame style; the per-photo size multiplier still applies on top.
     const slots = templateSlots(spec.template, n)
-    for (let i = 0; i < n; i++) out.push({ cx: slots[i].cx, cy: slots[i].cy, w: widthOf(templateSlotWidth(slots[i], spec, i, aspect), i), rot: slots[i].rot })
+    for (let i = 0; i < n; i++) out.push({ cx: slots[i].cx, cy: slots[i].cy, w: widthOf(templateSlotWidth(slots[i], spec, i, aspect, ratios), i), rot: slots[i].rot })
   } else {
     // stack: overlapping polaroids around the middle, seeded tilts
     const w = n <= 3 ? 42 : n <= 6 ? 34 : 30
@@ -683,9 +780,9 @@ export function freeDragCenter (cx: number, cy: number, dx: number, dy: number, 
  *  stored free position/size over the displayed one (the "Free" choice in
  *  the picker restores a manual layout that way); a drop onto the preview
  *  wants exactly what is on screen and passes false. */
-export function freeFromDisplayed (spec: CollageSpec, aspect: number, keepStored: boolean): CollagePhoto[] {
+export function freeFromDisplayed (spec: CollageSpec, aspect: number, keepStored: boolean, ratios?: ArrayLike<number | undefined>): CollagePhoto[] {
   if (spec.layout === 'free') return spec.photos
-  const pls = placements(spec, aspect)
+  const pls = placements(spec, aspect, ratios)
   return spec.photos.map((p, i) => {
     const pl = pls[i]
     const shown = pl ? { cx: pl.cx, cy: pl.cy, rot: pl.rot, w: pl.w / photoSize(spec, i) } : { cx: 50, cy: 50, rot: 0, w: undefined }
@@ -780,8 +877,8 @@ export const EXIT_LENGTH: Record<Exclude<CollageExit, 'none'>, number> = { sweep
 export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.05, deal: 0.22, shuffle: 0.1 }
 
 /** Bounds of the exit speed multiplier (the editor slider uses the same range). */
-export const EXIT_SPEED_MIN = 0.2
-export const EXIT_SPEED_MAX = 3
+export const EXIT_SPEED_MIN = 0.05
+export const EXIT_SPEED_MAX = 2
 
 /** The exit speed multiplier, clamped; 1 when missing or malformed. */
 export function exitSpeed (spec: CollageSpec): number {
@@ -802,14 +899,16 @@ export function exitMode (spec: CollageSpec): CollageExit {
 
 /** When photo i starts leaving, relative to the end of the hold. 'deal'
  *  clears the top of the pile first (photo n-1 leaves first); the others
- *  go in story order. */
+ *  go in story order. `exitReverse` flips the order so the last/top photo
+ *  leaves first in every mode. */
 export function exitOffset (spec: CollageSpec, i: number): number {
   const mode = exitMode(spec)
   if (mode === 'none') return 0
   const n = spec.photos?.length ?? 0
   const speed = exitSpeed(spec)
-  if (mode === 'deal') return EXIT_STAGGER.deal / speed * Math.max(0, n - 1 - i)
-  return EXIT_STAGGER[mode] / speed * i
+  const rev = spec.exitReverse === true
+  if (mode === 'deal') return EXIT_STAGGER.deal / speed * Math.max(0, rev ? i : n - 1 - i)
+  return EXIT_STAGGER[mode] / speed * (rev ? Math.max(0, n - 1 - i) : i)
 }
 
 /** Total seconds the exit adds to the slide (the longest offset + fly). */
@@ -856,7 +955,7 @@ export function bgBlurRadius (blur: number): number {
 }
 
 /** Animated state of photo i at segment time t. */
-export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0, aspect = 16 / 9): PhotoState {
+export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0, aspect = 16 / 9, ratios?: ArrayLike<number | undefined>): PhotoState {
   const t0 = photoStart(spec, i, leadIn)
   const push = pushDepth(spec, i, t, leadIn)
   let st: PhotoState
@@ -942,7 +1041,7 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
       const ease = qe * qe                       // accelerating fly
       if (mode === 'sweep') {
         // Outward through the photo's own anchor direction.
-        const pl = placements(spec, aspect)[i]
+        const pl = placements(spec, aspect, ratios)[i]
         const vx = (pl?.cx ?? 50) - 50
         const vy = (pl?.cy ?? 50) - 50
         const len = Math.hypot(vx, vy)
@@ -998,7 +1097,7 @@ export function pushDepth (spec: CollageSpec, i: number, t: number, leadIn = 0):
  *  views of the same numbers. */
 export interface CameraState { z: number; cx: number; cy: number }
 
-export function cameraState (spec: CollageSpec, t: number, leadIn = 0, aspect = 16 / 9): CameraState {
+export function cameraState (spec: CollageSpec, t: number, leadIn = 0, aspect = 16 / 9, ratios?: ArrayLike<number | undefined>): CameraState {
   const mode = (['pan', 'zoom', 'telescope', 'droste'] as readonly CollageCamera[]).includes(spec.camera as CollageCamera) ? spec.camera as CollageCamera : 'none'
   if (mode === 'none') return { z: 1, cx: 50, cy: 50 }
   const D = Math.max(0.2, collageDuration(spec))
@@ -1008,7 +1107,7 @@ export function cameraState (spec: CollageSpec, t: number, leadIn = 0, aspect = 
   // a sub-pixel grid) with this same curve, so preview and MP4 stay in step.
   const p = raw * raw * (3 - 2 * raw)
   if (mode === 'pan') return { z: 1.09, cx: 54 - 8 * p, cy: 50 }
-  const pls = placements(spec, aspect)
+  const pls = placements(spec, aspect, ratios)
   const a = pls.length ? pls[pls.length - 1] : { cx: 50, cy: 50, w: 30, rot: 0 }
   let z = 1
   if (mode === 'zoom') z = 1 + 0.35 * p
@@ -1116,6 +1215,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       w: w !== undefined && w > 0 ? Math.max(FREE_MIN_W, Math.min(FREE_MAX_W, w)) : undefined,
       slot: slot !== undefined && Number.isInteger(slot) && slot >= 0 ? Math.min(MAX_COLLAGE_PHOTOS - 1, slot) : undefined,
       frame: frameFields(p.frame),
+      shape: COLLAGE_SHAPES_ALL.includes(p.shape as CollageShape) ? p.shape as CollageShape : undefined,
       ...look,
     })
     if (photos.length >= MAX_COLLAGE_PHOTOS) break
@@ -1142,8 +1242,9 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     animation: COLLAGE_ANIMS_ALL.includes(c.animation as CollageAnim) ? c.animation as CollageAnim : 'drop',
     exit: (['sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
     exitSpeed: num(c.exitSpeed) !== undefined && num(c.exitSpeed)! > 0 && num(c.exitSpeed) !== 1 ? Math.max(EXIT_SPEED_MIN, Math.min(EXIT_SPEED_MAX, num(c.exitSpeed)!)) : undefined,
+    exitReverse: c.exitReverse === true ? true : undefined,
     camera: (['pan', 'zoom', 'telescope', 'droste'] as readonly CollageCamera[]).includes(c.camera as CollageCamera) ? c.camera as CollageCamera : undefined,
-    shape: (['4:3', 'square', '3:4', '16:9', '9:16', '3:2', '2:3'] as const).includes(c.shape as CollageShape) ? c.shape as CollageShape : '4:3',
+    shape: COLLAGE_SHAPES_ALL.includes(c.shape as CollageShape) ? c.shape as CollageShape : '4:3',
     seed: Number.isFinite(Number(c.seed)) ? Math.trunc(Number(c.seed)) : 1,
     hold: hold !== undefined ? Math.max(0, Math.min(120, hold)) : undefined,
     beatSync: c.beatSync === true ? true : undefined,

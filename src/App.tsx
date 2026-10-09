@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, scaleAllPhotoSizes, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAspect, photoMatHeight, pinAnchor, placements, scaleAllPhotoSizes, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -2175,7 +2175,7 @@ function App() {
     const duration = clampSlideDefault(globalSlideDuration)
     const transitionTime = clampTransitionDefault(globalDuration)
     collageRollback.current = null
-    setMedia(items => [...items, { id, name: 'Photo collage', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80, frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 1, textCentered: true, collage: { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 + Math.floor(Math.random() * 9999) } }])
+    setMedia(items => [...items, { id, name: 'Photo collage', path: 'Generated frame', src: '', type: 'title', duration, effect: 'None', transition: 'Fade', transitionTime, text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80, frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline, textSteadySeconds: 1, textCentered: true, collage: { photos: [], layout: 'stack', animation: 'drop', shape: 'native', seed: 1 + Math.floor(Math.random() * 9999) } }])
     setPendingCollageFrame(id)
     setEditingCollageFrame(id)
   }
@@ -2268,7 +2268,7 @@ function App() {
       text: '', textMode: 'frame', textStart: 0, textEnd: duration, textFx: withIds(defaultStack), textX: defaultTextX, textY: 80,
       frameBackground: '#2e3138', fontFamily, fontSize: Number(fontSize) || 40, fontColor, textBold, textItalic, textUnderline,
       textSteadySeconds: 1, textCentered: true,
-      collage: { photos: photos.map(p => ({ path: p.path, name: p.name })), layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 + Math.floor(Math.random() * 9999) },
+      collage: { photos: photos.map(p => ({ path: p.path, name: p.name })), layout: 'stack', animation: 'drop', shape: 'native', seed: 1 + Math.floor(Math.random() * 9999) },
     }
     setMedia(items => {
       const next = items.filter(x => !remove.has(x.id))
@@ -3305,8 +3305,6 @@ function FrameMotionPreview({ item, defaults, playing = true, className = '' }: 
 // clock so photo choreography and caption play in sync.
 // ---------------------------------------------------------------------------
 
-const COLLAGE_ASPECT: Record<string, number> = { '4:3': 4 / 3, square: 1, '3:4': 3 / 4, '16:9': 16 / 9, '9:16': 9 / 16, '3:2': 3 / 2, '2:3': 2 / 3 }
-
 /** The photo layer of a collage slide. Scaled to its host like MotionStage. */
 function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -3315,6 +3313,9 @@ function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto 
   const matRefs = useRef<(HTMLDivElement | null)[]>([])
   const dragRef = useRef<{ pointerId: number; index: number; startX: number; startY: number; cx: number; cy: number } | null>(null)
   const spec = useMemo<CollageSpec | undefined>(() => normalizeCollage(item.collage) as CollageSpec | undefined, [item.collage])
+  // Measured native aspect ratio (width ÷ height) of each photo/video, used
+  // wherever a photo's effective shape is 'native' so each mat matches its photo.
+  const [ratios, setRatios] = useState<(number | undefined)[]>([])
   // The background picture comes from the raw spec so it also shows behind
   // the "no photos yet" placeholder (normalizeCollage needs >= 1 photo).
   const raw = item.collage
@@ -3326,17 +3327,63 @@ function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto 
   const bgSrc = bgCrop.ready ? bgCrop.src : bgUrl
   const bgBlur = Math.max(0, Math.min(1, Number(raw?.backgroundBlur) || 0))
   const bgFit = bgFitStyle(raw?.backgroundFit)
+
+  // Pre-measure every photo/video so 'native' shape can size each mat to
+  // that photo's real aspect. Measurements are best-effort and off-DOM;
+  // ratios start undefined (layout falls back to 4:3) and fill in as loads fire.
+  useEffect(() => {
+    const photos = spec?.photos ?? []
+    if (!spec || !photos.some((_, i) => photoShape(spec, i) === 'native')) { setRatios([]); return }
+    const next: (number | undefined)[] = new Array(photos.length).fill(undefined)
+    let cancelled = false
+    let pending = photos.length
+    const done = () => { if (!cancelled) setRatios(prev => prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : [...next]) }
+    photos.forEach((photo, i) => {
+      const url = collagePhotoUrl(photo)
+      const isVideo = /\.(mp4|mov|webm|mkv|m4v|avi)$/i.test(photo.path)
+      if (isVideo) {
+        const v = document.createElement('video')
+        v.muted = true; v.preload = 'metadata'
+        const onMeta = () => {
+          if (cancelled) return
+          if (v.videoWidth && v.videoHeight) next[i] = v.videoWidth / v.videoHeight
+          v.removeAttribute('src'); v.load()
+          pending--; if (pending === 0) done()
+        }
+        const onErr = () => {
+          if (cancelled) return
+          v.removeAttribute('src'); v.load()
+          pending--; if (pending === 0) done()
+        }
+        v.addEventListener('loadedmetadata', onMeta, { once: true })
+        v.addEventListener('error', onErr, { once: true })
+        v.src = url
+      } else {
+        const img = new Image()
+        img.onload = () => {
+          if (cancelled) return
+          if (img.naturalWidth && img.naturalHeight) next[i] = img.naturalWidth / img.naturalHeight
+          pending--; if (pending === 0) done()
+        }
+        img.onerror = () => { if (!cancelled) { pending--; if (pending === 0) done() } }
+        img.src = url
+      }
+    })
+    return () => { cancelled = true }
+  }, [spec])
+
   const geo = useMemo(() => {
     if (!spec) return []
     const aspect = FRAME_W / FRAME_H
     const pin = pinAnchor(spec)
-    return placements(spec, aspect).map((pl, i) => {
+    return placements(spec, aspect, ratios).map((pl, i) => {
       const fr = photoFrame(spec, spec.photos[i])
       const wPx = pl.w / 100 * FRAME_W
       const border = frameBorderFrac(fr) * FRAME_W
       const bottom = fr.shape === 'polaroid' ? 0.205 * wPx : border
       const photoW = Math.max(1, wPx - 2 * border)
-      const photoH = photoW / (COLLAGE_ASPECT[spec.shape] ?? 4 / 3)
+      const a = photoAspect(photoShape(spec, i), ratios[i])
+      const photoH = photoW / a
       const matH = photoH + border + bottom
       return {
         cx: pl.cx, cy: pl.cy,
@@ -3345,7 +3392,7 @@ function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto 
         wPx, border, bottom, photoW, photoH, matH, fr,
       }
     })
-  }, [spec])
+  }, [spec, ratios])
 
   useEffect(() => {
     const el = hostRef.current
@@ -3363,11 +3410,12 @@ function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto 
   useEffect(() => {
     if (!spec) return
     const pin = pinAnchor(spec)
+    const aspect = FRAME_W / FRAME_H
     return clock.subscribe(t => {
       geo.forEach((g, i) => {
         const el = matRefs.current[i]
         if (!el) return
-        const st = photoState(spec, i, t, 0, FRAME_W / FRAME_H)
+        const st = photoState(spec, i, t, 0, aspect, ratios)
         el.style.left = `${g.ax + st.dx / 100 * FRAME_W}px`
         el.style.top = `${g.ay + st.dy / 100 * FRAME_H}px`
         el.style.transformOrigin = pin ? '50% 0' : '50% 50%'
@@ -3378,11 +3426,11 @@ function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto 
       // Virtual camera over the whole scene (background + photos): the same
       // window maths the render's crop/zoompan chain uses.
       if (camRef.current) {
-        const cs = cameraState(spec, t, 0, FRAME_W / FRAME_H)
+        const cs = cameraState(spec, t, 0, aspect, ratios)
         camRef.current.style.transform = `translate(${((50 - cs.cx) * cs.z).toFixed(3)}%, ${((50 - cs.cy) * cs.z).toFixed(3)}%) scale(${cs.z.toFixed(5)})`
       }
     })
-  }, [spec, geo, clock])
+  }, [spec, geo, clock, ratios])
 
   if (!spec && !bg) return null
   return <div ref={hostRef} className={`collage-photos stage-fill${onMovePhoto ? ' collage-photos-free' : ''}`}>
@@ -3419,7 +3467,7 @@ function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto 
               const host = hostRef.current
               if (!drag || drag.pointerId !== e.pointerId || drag.index !== i || !host) return
               const rect = host.getBoundingClientRect()
-              const cameraZoom = spec ? cameraState(spec, clock.t, 0, FRAME_W / FRAME_H).z : 1
+              const cameraZoom = spec ? cameraState(spec, clock.t, 0, FRAME_W / FRAME_H, ratios).z : 1
               const center = freeDragCenter(drag.cx, drag.cy, e.clientX - drag.startX, e.clientY - drag.startY, rect.width * cameraZoom, rect.height * cameraZoom)
               onMovePhoto(i, Math.round(center.cx * 10) / 10, Math.round(center.cy * 10) / 10)
             } : undefined}
@@ -3438,9 +3486,9 @@ function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto 
             } : undefined}>
             {/\.(mp4|mov|webm|mkv|m4v|avi)$/i.test(photo.path)
               ? <video src={collagePhotoUrl(photo)} muted loop playsInline autoPlay
-                  style={{ width: g.photoW, height: g.photoH, objectFit: 'cover', borderRadius: g.fr.shape === 'rounded' ? `${Math.max(0, g.fr.radius - 4)}%` : g.fr.shape === 'circle' ? '50%' : undefined, ...look }} />
+                  style={{ width: g.photoW, height: g.photoH, objectFit: spec && photoShape(spec, i) === 'native' ? 'contain' : 'cover', borderRadius: g.fr.shape === 'rounded' ? `${Math.max(0, g.fr.radius - 4)}%` : g.fr.shape === 'circle' ? '50%' : undefined, background: g.fr.color, ...look }} />
               : <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy"
-                  style={{ width: g.photoW, height: g.photoH, objectFit: 'cover', borderRadius: g.fr.shape === 'rounded' ? `${Math.max(0, g.fr.radius - 4)}%` : g.fr.shape === 'circle' ? '50%' : undefined, ...look }} />}
+                  style={{ width: g.photoW, height: g.photoH, objectFit: spec && photoShape(spec, i) === 'native' ? 'contain' : 'cover', borderRadius: g.fr.shape === 'rounded' ? `${Math.max(0, g.fr.radius - 4)}%` : g.fr.shape === 'circle' ? '50%' : undefined, background: g.fr.color, ...look }} />}
             {tape && <span className="collage-tape" aria-hidden />}
             {pinDot && <span className="collage-pin" aria-hidden />}
           </div>
@@ -3999,6 +4047,7 @@ const COLLAGE_CAMERAS: { id: NonNullable<CollageSpec['camera']>; label: string; 
   { id: 'droste', label: 'Droste', hint: 'An accelerating deep zoom — the endless-zoom feel' },
 ]
 const COLLAGE_SHAPES: { id: CollageSpec['shape']; label: string; hint: string }[] = [
+  { id: 'native', label: 'Native', hint: 'Each photo keeps its own shape — landscape 16:9 or 4:3, portrait 9:16 or 3:4' },
   { id: '16:9', label: '16:9', hint: 'Widescreen landscape (crop to 16:9)' },
   { id: '4:3', label: '4:3', hint: 'Classic landscape (crop to 4:3)' },
   { id: '3:2', label: 'Landscape', hint: 'Still-camera landscape (crop to 3:2)' },
@@ -4047,13 +4096,16 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   holdStart?: number
   audioLoop?: boolean
 }) {
-  const spec: CollageSpec = item.collage ?? { photos: [], layout: 'stack', animation: 'drop', shape: '4:3', seed: 1 }
+  const spec: CollageSpec = item.collage ?? { photos: [], layout: 'stack', animation: 'drop', shape: 'native', seed: 1 }
   const photos = spec.photos ?? []
   const setSpec = (change: Partial<CollageSpec>) => livePatch({ collage: { ...spec, ...change } })
   const defFr = photoFrame(spec, null)
   const setFrame = (change: Partial<NonNullable<CollageSpec['frame']>>) => setSpec({ frame: { ...defFr, ...change } })
   const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => {
     setSpec({ photos: photos.map((p, i) => i === index ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
+  }
+  const setPhotoShape = (index: number, shape: CollageShape | 'default') => {
+    setSpec({ photos: photos.map((p, i) => i === index ? { ...p, shape: shape === 'default' ? undefined : shape } : p) })
   }
   // Settings start collapsed; explicit open/closed choices are remembered.
   // Merging stored values over the new defaults also migrates older `{}`
@@ -4384,8 +4436,12 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small>
           {(spec.exit ?? 'none') !== 'none' && <label className="collage-exit-speed" title="How fast the photos leave: scales the fly-out of each photo and the gap between photos. The slide length follows.">
             <span>Exit speed</span>
-            <input type="range" min={0.2} max={3} step={0.1} value={exitSpeed(spec)} aria-label="Photo exit speed" onChange={e => setSpec({ exitSpeed: Math.round(Number(e.target.value) * 10) / 10 === 1 ? undefined : Math.round(Number(e.target.value) * 10) / 10 })} />
-            <b>{exitSpeed(spec).toFixed(1)}×</b>
+            <input type="range" min={0.05} max={2} step={0.05} value={exitSpeed(spec)} aria-label="Photo exit speed" onChange={e => setSpec({ exitSpeed: Math.round(Number(e.target.value) * 20) / 20 === 1 ? undefined : Math.round(Number(e.target.value) * 20) / 20 })} />
+            <b>{exitSpeed(spec).toFixed(2)}×</b>
+          </label>}
+          {(spec.exit ?? 'none') !== 'none' && <label className="collage-check" title="Flip the order the photos leave: the last (top) photo disappears first instead of the first one.">
+            <input type="checkbox" checked={spec.exitReverse === true} onChange={e => setSpec({ exitReverse: e.target.checked || undefined })} />
+            <span>Reverse order — the last (top) photo leaves first</span>
           </label>}
         </div>
         <div className={`collage-choices-group${closedSections['photo-size-timing'] ? ' closed' : ''}`}><CollageGroupHead id="photo-size-timing" open={!closedSections['photo-size-timing']} onToggle={toggleSection}>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></CollageGroupHead>
@@ -4410,6 +4466,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 <select value={photo.frame?.shape ?? 'default'} onChange={e => setPhotoFrame(i, e.target.value as CollageFrameShape | 'default')} aria-label={`Photo ${i + 1} frame`}>
                   <option value="default">Default</option>
                   {COLLAGE_FRAMES.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                </select>
+              </span>
+              <span className="ctl" title="Override the default photo shape for this photo — e.g. keep one portrait photo portrait in a landscape collage">
+                <label>shape</label>
+                <select value={photo.shape ?? 'default'} onChange={e => setPhotoShape(i, e.target.value as CollageShape | 'default')} aria-label={`Photo ${i + 1} shape`}>
+                  <option value="default">Default</option>
+                  {COLLAGE_SHAPES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </span>
             </div>)}
@@ -4459,13 +4522,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <small>{beatHint}</small></div>
         <div className={`collage-choices-group${closedSections['photo-shape'] ? ' closed' : ''}`}><CollageGroupHead id="photo-shape" open={!closedSections['photo-shape']} onToggle={toggleSection}>Photo shape</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_SHAPES.map(s => <button key={s.id} type="button" className={spec.shape === s.id ? 'active' : ''} title={s.hint} onClick={() => setSpec({ shape: s.id })}>{s.label}</button>)}</div>
-          <small>{COLLAGE_SHAPES.find(s => s.id === spec.shape)?.hint}</small></div>
+          <small>{COLLAGE_SHAPES.find(s => s.id === spec.shape)?.hint} — this is the default for every photo; give a single photo a different shape in the timing row above.</small></div>
         <div className={`collage-choices-group${closedSections['frame'] ? ' closed' : ''}`}><CollageGroupHead id="frame" open={!closedSections['frame']} onToggle={toggleSection}>Frame</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_FRAMES.map(f => <button key={f.id} type="button" className={defFr.shape === f.id ? 'active' : ''} title={f.hint} onClick={() => setFrame({ shape: f.id })}>{f.label}</button>)}</div>
           <small>{COLLAGE_FRAMES.find(f => f.id === defFr.shape)?.hint} — this is the default for every photo; override one in the timing row.</small>
           {defFr.shape !== 'none' && <div className="collage-timing-total">
             <span>Thickness</span>
-            <NumberStepper value={defFr.width} min={0} max={12} step={0.5} ariaLabel="Frame thickness" onChange={v => setFrame({ width: v })} />
+            <NumberStepper value={defFr.width} min={0} max={12} step={0.1} ariaLabel="Frame thickness" onChange={v => setFrame({ width: Math.round(v * 10) / 10 })} />
             <span>%</span>
             <label className="custom-bg" title="Frame colour"><input type="color" value={defFr.color} onChange={e => setFrame({ color: e.target.value })}/> {defFr.color.toUpperCase()}</label>
             {defFr.shape === 'rounded' && <>
@@ -4519,7 +4582,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 <button type="button" className="btn ghost small" onClick={onPickBackground} title="Fill the frame with a library picture — optionally blurred — behind the photos"><ImageIcon size={12}/> Picture…</button>
               </div>}
           <small>{spec.backgroundImage ? 'The picture fills the frame behind the photos. Blur keeps the polaroids readable on a busy picture; the colour and its change are unused while a picture is set.' : 'A flat colour behind the photos — or a library picture, optionally blurred.'}</small></div>
-        <p><Info size={13}/> 6–10 photos per collage render best. Photos are fitted into {spec.shape === '3:4' ? 'portrait' : spec.shape === 'square' ? 'square' : 'landscape'} mats with a polaroid frame and a soft shadow, exactly as the preview shows. Order matters: later photos land on top.</p>
+        <p><Info size={13}/> 6–10 photos per collage render best. Photos are fitted into {spec.shape === 'native' ? 'their native (landscape or portrait)' : spec.shape === '3:4' || spec.shape === '9:16' || spec.shape === '2:3' ? 'portrait' : spec.shape === 'square' ? 'square' : 'landscape'} mats with a frame and a soft shadow, exactly as the preview shows. Order matters: later photos land on top.</p>
       </aside>
     </div>
     <div className="modal-foot"><span>{photos.length} of {MAX_COLLAGE_PHOTOS} photos · seed {spec.seed}{total > 0 ? ` · ${total}s` : ''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!photos.length} onClick={onSave}><Check size={14}/> Done</button></div>

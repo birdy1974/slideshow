@@ -1502,6 +1502,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-mat.no-shadow{box-shadow:none}
 .collage-mat-none{background:transparent;box-shadow:none}
 .collage-mat img{display:block;border-radius:1px;object-fit:cover;background:#dcdcd8}
+.collage-mat video{display:block;border-radius:1px;object-fit:cover;background:#000}
 .collage-tape{position:absolute;top:-6%;right:8%;width:28%;height:12%;background:linear-gradient(180deg,#f3e2b0,#e2c56a);opacity:.86;transform:rotate(12deg);box-shadow:0 1px 2px rgba(0,0,0,.25);pointer-events:none}
 .collage-pin{position:absolute;top:-3%;left:50%;width:10px;height:10px;margin-left:-5px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#ff8a8a,#c62828 70%);box-shadow:0 1px 2px rgba(0,0,0,.4);pointer-events:none}
 .collage-timing-row select{font:inherit;font-size:11px;background:#1c1f1b;color:#e8ece4;border:1px solid #4a4e45;border-radius:4px;padding:2px 4px;max-width:92px}
