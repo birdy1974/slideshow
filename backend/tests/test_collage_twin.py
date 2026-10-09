@@ -40,6 +40,8 @@ from app.collage import (
     photo_size,
     photo_start,
     push_depth,
+    arrangement_slots,
+    exit_fly_length,
     photo_state,
     pin_anchor,
     placements,
@@ -242,6 +244,24 @@ def _cases() -> list[dict]:
         "aspect": 9 / 16, "leadIn": 0.0, "times": [0.0, 1.5, 3.0, 3.6, 4.2],
         "hashArgs": [3, 4, 71], "matW": 30,
     })
+    # arrangement slots: photos moved to other spots of the layout, sizes stay with the photo
+    slotted = _spec("grid", "drop", "4:3", 4, 4, delays=[0.15, 0.3, 0.3, 0.3], hold=1.5, exit="sweep")
+    for i, slot in enumerate([3, 1, 0, 2]):
+        slotted["photos"][i]["slot"] = slot
+    slotted["photos"][1]["size"] = 1.5
+    cases.append({
+        "id": "arrangement-slots-exit-slow",
+        "spec": {**slotted, "exitSpeed": 0.5},
+        "aspect": 16 / 9, "leadIn": 0.2, "times": [0.0, 0.8, 1.6, 2.4, 3.2, 4.0],
+        "hashArgs": [4, 4, 37], "matW": 30,
+    })
+    # exit speed fast on a deal exit
+    cases.append({
+        "id": "exit-deal-fast",
+        "spec": {**_spec("stack", "pop", "3:4", 3, 6, delays=[0.2, 0.2, 0.25], hold=1, exit="deal"), "exitSpeed": 2.5},
+        "aspect": 9 / 16, "leadIn": 0.0, "times": [0.0, 0.5, 1.2, 1.8, 2.3],
+        "hashArgs": [6, 3, 71], "matW": 30,
+    })
     # virtual cameras over the composed scene
     for camera in ("pan", "zoom", "telescope", "droste"):
         cases.append({
@@ -410,6 +430,26 @@ class CollageTwinTest(unittest.TestCase):
                 }[int(case["id"].rsplit("-", 1)[1])]
                 assert _ae(got["mapBeats"], expect, TOL), f"{where} mapBeats: {got['mapBeats']} != {expect}"
 
+
+    def test_exit_speed_scales_the_whole_exit(self):
+        base = _spec("grid", "drop", "4:3", 4, 1, delays=[0.15, 0.3, 0.3, 0.3], hold=2, exit="deal")
+        fast = {**base, "exitSpeed": 2.0}
+        slow = {**base, "exitSpeed": 0.5}
+        assert _ae(exit_fly_length(fast), exit_fly_length(base) / 2)
+        assert _ae(exit_fly_length(slow), exit_fly_length(base) * 2)
+        assert _ae(exit_total(fast), exit_total(base) / 2)
+        assert _ae(exit_offset(slow, 0), exit_offset(base, 0) * 2)
+        # junk or out-of-range speeds fall back / clamp
+        assert _ae(exit_fly_length({**base, "exitSpeed": "fast"}), exit_fly_length(base))
+        assert _ae(exit_fly_length({**base, "exitSpeed": 99}), exit_fly_length(base) / 3)
+
+    def test_arrangement_slots_fall_back_to_list_order(self):
+        spec = _spec("grid", "drop", "4:3", 4, 1)
+        spec["photos"][0]["slot"] = 2
+        spec["photos"][1]["slot"] = 2          # duplicate: loses its slot
+        spec["photos"][2]["slot"] = 9          # out of range
+        assert arrangement_slots(spec) == [2, 0, 1, 3]
+        assert arrangement_slots(_spec("grid", "drop", "4:3", 3, 1)) == [0, 1, 2]
 
     def test_untouched_collage_keeps_the_legacy_stagger(self):
         """A spec saved before per-photo timing existed must animate exactly as it

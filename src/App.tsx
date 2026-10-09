@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, scaleAllPhotoSizes, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoSize, photoStart, photoState, pinAnchor, placements, scaleAllPhotoSizes, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -537,6 +537,14 @@ function frameColourChange(item: MediaItem) {
   return { from: item.frameBackground, to: item.frameBackground2, transition: item.frameTransition || 'Fade', time, start, hold }
 }
 // CSS approximation of the FFmpeg transition for editor/thumbnail previews.
+// A text frame's background picture: the picture filters plus its blur (0..1),
+// scaled to the editor canvas. The blur overscans so the soft edge stays covered.
+function frameBgStyle(look: Parameters<typeof pictureFilterStyle>[0], blur: number | undefined, scale: number): React.CSSProperties {
+  const b = Math.max(0, Math.min(1, Number(blur) || 0))
+  const filters = [pictureFilterStyle(look).filter, b > 0.001 ? `blur(${(bgBlurCssPx(b) * (scale || 1)).toFixed(1)}px)` : ''].filter(Boolean).join(' ')
+  return { ...(filters ? { filter: filters } : {}), ...(b > 0.001 ? { transform: 'scale(1.12)' } : {}) }
+}
+
 // Static gradient chip for thumbnails: A on the left, B on the right.
 function frameBackgroundStyle(item: MediaItem): React.CSSProperties {
   // A collage's background picture becomes the clip face (crisp at thumbnail
@@ -2396,11 +2404,16 @@ function App() {
   // renderer would only pad a longer value with a frozen last frame.
   const applySlideDuration = () => {
     const value = clampSlideDefault(globalSlideDuration)
-    const slides = media.filter(item => item.type !== 'video').length
-    const videos = media.length - slides
-    if (!slides) { notify(videos ? 'No photos or text frames to update · videos keep their own length' : 'No slides in the storyline yet'); return }
-    setMedia(items => items.map(item => item.type === 'video' ? item : resizeClip(item, value)))
-    notify(`Applied ${value.toFixed(1)}s to ${slides} slide${slides === 1 ? '' : 's'}${videos ? ` · ${videos} video${videos === 1 ? '' : 's'} kept their own length` : ''}`)
+    // Photo collages are skipped like movies: their length comes from the
+    // photo timings and the exit, so only the individual pictures and text
+    // frames take the slide default.
+    const kept = (item: MediaItem) => item.type === 'video' || isCollageItem(item)
+    const slides = media.filter(item => !kept(item)).length
+    const others = media.length - slides
+    const note = others ? ` · ${others} movie${others === 1 ? '' : 's'}/collage${others === 1 ? '' : 's'} kept their own length` : ''
+    if (!slides) { notify(others ? 'No photos or text frames to update · movies and collages keep their own length' : 'No slides in the storyline yet'); return }
+    setMedia(items => items.map(item => kept(item) ? item : resizeClip(item, value)))
+    notify(`Applied ${value.toFixed(1)}s to ${slides} slide${slides === 1 ? '' : 's'}${note}`)
   }
   // Progress only arrives once a second; tick in between so the countdown in the
   // header keeps moving instead of freezing between polls.
@@ -2664,7 +2677,7 @@ function App() {
             <div className="panel-title"><div><span className="step">01</span><div><h2>Storyline</h2><p>{media.length} items · {Math.floor(total / 60)}m {Math.floor(total % 60)}s estimated</p></div></div><div className="toolbar"><button className="btn soft" onClick={() => setShowBrowser(true)}><Plus size={16}/> Add media</button><button className="btn soft" onClick={addTitleFrame}><Plus size={15}/> Text frame</button><button className="btn soft" onClick={addCollageFrame} title="A slide of up to 12 photos — polaroid stack, grid or scatter, with drop-in, pop-in or swing animation"><Plus size={15}/> Photo collage</button><button className="btn soft" disabled={selectedIds.length === 0} onClick={() => setShowDeleteConfirm(true)}><Trash2 size={15}/> Delete selected</button><button className="btn soft" title="Start a completely new blank project" onClick={requestNewProject}><Plus size={15}/> New project</button></div></div>
             <div className="bulk-tools"><button className="btn soft default-text-style-bulk" onClick={()=>setShowTextStyles(true)}><Type size={15}/> Default text style</button><div><span>PHOTO SELECTION</span><strong>{selectedIds.length ? `${selectedIds.length} selected` : 'All photos'}</strong></div><Select value={bulkEffect} onChange={setBulkEffect}>{effects.filter(x => x !== 'Original motion').map(x => <option key={x}>{x}</option>)}</Select><button onClick={applyBulkEffect} title="Apply the selected effect to the selection — or to every photo when nothing is selected. “None” removes the Ken Burns motion.">Apply effect</button><button className="random-button" onClick={randomizeBulkEffect}><Shuffle size={13}/> Random</button><button className="random-button text-trans-random" onClick={randomizeTextTransitions} title="Give these photos a random text animation: each gets a curated preset (a whole stack of enter / while / exit effects) · every photo when nothing is selected"><Shuffle size={13}/> Text effects</button><Select value={bulkFilter} onChange={setBulkFilter} ariaLabel="Picture filter">{LOOK_GROUPS.map(group => <optgroup key={group} label={group}>{LOOK_PRESETS.filter(preset => preset.group === group).map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</optgroup>)}</Select><button onClick={applyBulkFilter} title="Apply this filter to the selection — or to every photo and movie when nothing is selected"><Sparkles size={12}/> Apply filter</button><i/><div><span>MOVE SELECTED</span><strong>{selectedIds.length ? `${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'}` : 'Select items first'}</strong></div><div className="move-to"><label>to <input type="number" min={1} max={media.length} value={bulkPosition} disabled={!selectedIds.length} onChange={e => setBulkPosition(Number(e.target.value))} onKeyDown={e => { if (e.key === 'Enter') moveItemsToPosition(selectedIds, bulkPosition) }} aria-label="Target position"/></label><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, bulkPosition)} title="Insert the selection at this position; other items shift">Move</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, 1)} title="Move selection to the start"><ArrowUp size={12}/> Start</button><button disabled={!selectedIds.length} onClick={() => moveItemsToPosition(selectedIds, media.length)} title="Move selection to the end"><ArrowDown size={12}/> End</button></div><i/><div><span>TRANSITION SELECTION</span><strong>{selectedTransitions.length ? `${selectedTransitions.length} selected` : 'All transitions'}</strong></div><TransitionChip value={bulkTransition} onChange={setBulkTransition} onOpenGallery={() => setShowTransitionGallery(true)} /><button onClick={applyBulkTransition}>Apply effect</button></div>
 
-            <div className="bulk-bar"><span title="Hold time of every new photo and text frame · videos always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><label className="check-label random-params-toggle" title="When set, randomizing also draws fresh values for every transition parameter — easing and the selected transition's size, zoom, colour, smoothness and other registry values (reverse is always left unchecked). Transition durations are never changed."><input type="checkbox" checked={randomizeParams} onChange={e => setRandomizeParams(e.target.checked)}/><span><Check size={11}/></span> params</label><button className="random-button" title={`Randomize every transition using: ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''} · durations and Ken Burns motion are left untouched`} onClick={() => { randomize(); notify(`Transitions randomized · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters randomized' : ''}`) }}><Shuffle size={14}/> Randomize all</button><button className="random-button" title={`Randomize only the transitions between neighbouring selected slides · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''}`} onClick={randomizeSelectedTransitions}><Shuffle size={14}/> Randomize selected</button><i/><button className="gallery-button" title={`Open a full-screen gallery with a small example of every transition`} onClick={() => setShowTransitionGallery(true)}><LayoutGrid size={14}/> Browse all {totalTransitionCount}</button></div>
+            <div className="bulk-bar"><span title="Hold time of every new photo and text frame · movies and photo collages always keep their own length">SLIDE DEFAULT</span><NumberStepper value={globalSlideDuration} min={MIN_CLIP_SECONDS} max={MAX_DEFAULT_SLIDE_SECONDS} step={0.5} suffix="sec" ariaLabel="Default slide duration" onChange={setGlobalSlideDuration} /><button onClick={applySlideDuration} title="Set every photo and text frame to this length · videos keep their native runtime">Apply to all</button><em className="bulk-divider"/><span title="Duration of every new transition">TRANSITION DEFAULT</span><NumberStepper value={globalDuration} min={0.1} max={MAX_DEFAULT_TRANSITION_SECONDS} step={0.1} suffix="sec" ariaLabel="Default transition duration" onChange={setGlobalDuration} /><button onClick={applyDuration} title="Set every transition to this duration">Apply to all</button><i/><span className="random-scope-label">RANDOM SOURCE</span><RandomScopeSelect value={randomScope} onChange={setRandomScope}/><label className="check-label random-params-toggle" title="When set, randomizing also draws fresh values for every transition parameter — easing and the selected transition's size, zoom, colour, smoothness and other registry values (reverse is always left unchecked). Transition durations are never changed."><input type="checkbox" checked={randomizeParams} onChange={e => setRandomizeParams(e.target.checked)}/><span><Check size={11}/></span> params</label><button className="random-button" title={`Randomize every transition using: ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''} · durations and Ken Burns motion are left untouched`} onClick={() => { randomize(); notify(`Transitions randomized · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters randomized' : ''}`) }}><Shuffle size={14}/> Randomize all</button><button className="random-button" title={`Randomize only the transitions between neighbouring selected slides · ${randomScopeLabels[randomScope]}${randomizeParams ? ' · all transition parameters are randomized too' : ''}`} onClick={randomizeSelectedTransitions}><Shuffle size={14}/> Randomize selected</button><i/><button className="gallery-button" title={`Open a full-screen gallery with a small example of every transition`} onClick={() => setShowTransitionGallery(true)}><LayoutGrid size={14}/> Browse all {totalTransitionCount}</button></div>
 
             <div className="overview-head"><div><strong>OVERALL TIMELINE</strong><span>Drag selected clips as a group · edit text above each clip · click transitions · videos keep their own rows in story order</span></div><SelectAllSlides allSelected={allSlidesSelected} selectedCount={selectedIds.length} totalCount={media.length} onToggle={toggleAllSlides}/><div className="story-layout"><label>Lines</label><div className="line-count-control"><NumberStepper value={visibleRows} min={1} max={99} step={1} ariaLabel="Timeline lines" onChange={value => setTimelineRows(String(Math.round(value)))} /><button type="button" className={`line-auto ${timelineRows === 'auto' ? 'active' : ''}`} aria-pressed={timelineRows === 'auto'} title={`Use automatic line count · ${autoLineCount} line${autoLineCount === 1 ? '' : 's'}`} onClick={() => setTimelineRows('auto')}>Auto</button></div></div><div className="zoom-controls"><button onClick={() => setTimelineZoom(z => Math.max(.6, +(z - .2).toFixed(1)))} title="Zoom out"><ZoomOut size={14}/></button><input className="zoom-slider" type="range" min={0.6} max={2.4} step={0.1} value={timelineZoom} aria-label="Timeline zoom" onChange={e => setTimelineZoom(Number(e.target.value))}/><span>{Math.round(timelineZoom * 100)}%</span><button onClick={() => setTimelineZoom(z => Math.min(2.4, +(z + .2).toFixed(1)))} title="Zoom in"><ZoomIn size={14}/></button><button className="fit-button" onClick={() => setTimelineZoom(1)} title="Reset zoom to show complete timeline">Fit</button></div></div>
             <div className="timeline-overview">{media.length===0&&<button className="empty-story" onClick={()=>setShowBrowser(true)}><FolderOpen size={22}/><strong>Your storyline is empty</strong><span>Browse the mounted /photos and /videos folders to begin.</span></button>}{timelineLines.map((line, lineIndex) => {
@@ -3295,7 +3308,7 @@ function FrameMotionPreview({ item, defaults, playing = true, className = '' }: 
 const COLLAGE_ASPECT: Record<string, number> = { '4:3': 4 / 3, square: 1, '3:4': 3 / 4, '16:9': 16 / 9, '9:16': 9 / 16, '3:2': 3 / 2, '2:3': 2 / 3 }
 
 /** The photo layer of a collage slide. Scaled to its host like MotionStage. */
-function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void }) {
+function CollagePhotos({ item, clock, onMovePhoto, selectedIndex, onSelectPhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const layerRef = useRef<HTMLDivElement | null>(null)
   const camRef = useRef<HTMLDivElement | null>(null)
@@ -3390,7 +3403,8 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
           const stickers = spec?.stickers
           const tape = stickers === 'tape' || stickers === 'mix'
           const pinDot = stickers === 'pin' || stickers === 'mix'
-          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
+          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${selectedIndex === i ? ' selected' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
+            onClick={onSelectPhoto ? e => { e.stopPropagation(); onSelectPhoto(i) } : undefined}
             style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom, background: g.fr.shape === 'none' ? 'transparent' : g.fr.color, borderRadius: g.fr.shape === 'rounded' ? `${g.fr.radius}%` : g.fr.shape === 'circle' ? '50%' : undefined, boxShadow: g.fr.shadow === false ? 'none' : undefined, clipPath: clip, cursor: onMovePhoto ? 'grab' : undefined }}
             onPointerDown={onMovePhoto ? e => {
               if (e.button !== 0) return
@@ -3440,7 +3454,7 @@ function CollagePhotos({ item, clock, onMovePhoto }: { item: MediaItem; clock: R
  * Any change to the collage itself restarts the choreography from the top so
  * the new size / timing / animation can be watched from the first photo. The
  * editor can additionally expose transport controls for this same clock. */
-function CollageSlideStage({ item, defaults, playing = true, showPlaybackControls = false, onMovePhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; showPlaybackControls?: boolean; onMovePhoto?: (index: number, cx: number, cy: number) => void }) {
+function CollageSlideStage({ item, defaults, playing = true, showPlaybackControls = false, onMovePhoto, selectedIndex, onSelectPhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; showPlaybackControls?: boolean; onMovePhoto?: (index: number, cx: number, cy: number) => void; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
   const [editorPlaying, setEditorPlaying] = useState(true)
   const [editorRate, setEditorRate] = useState(1)
   const clock = useMotionClock(
@@ -3469,7 +3483,7 @@ function CollageSlideStage({ item, defaults, playing = true, showPlaybackControl
     setEditorPlaying(true)
   }
   return <>
-    <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} />
+    <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} selectedIndex={selectedIndex} onSelectPhoto={onSelectPhoto} />
     <MotionStage className={`stage-fill${onMovePhoto ? ' collage-caption-stage' : ''}`} input={input} clock={clock} />
     {showPlaybackControls && <div className="collage-preview-controls" role="group" aria-label="Photo animation preview controls">
       <button type="button" title="Play the animation in reverse at 2× speed" aria-label="Reverse animation at double speed" aria-pressed={editorRate < 0 && editorPlaying} className={editorRate < 0 && editorPlaying ? 'active' : ''} disabled={!hasPhotos} onClick={() => playAtRate(-2)}><Rewind size={13}/><span>Rev</span></button>
@@ -3477,7 +3491,21 @@ function CollageSlideStage({ item, defaults, playing = true, showPlaybackControl
       <button type="button" title={editorPlaying ? 'Pause the animation' : 'Play forward at normal speed'} aria-label={editorPlaying ? 'Pause animation' : 'Play animation'} disabled={!hasPhotos} onClick={togglePlayPause}>{editorPlaying ? <Pause size={12}/> : <Play size={12} fill="currentColor"/>}<span>{editorPlaying ? 'Pause' : 'Play'}</span></button>
       <button type="button" title="Fast-forward the animation at 2× speed" aria-label="Fast-forward animation at double speed" aria-pressed={editorRate > 1 && editorPlaying} className={editorRate > 1 && editorPlaying ? 'active' : ''} disabled={!hasPhotos} onClick={() => playAtRate(2)}><FastForward size={13}/><span>FF</span></button>
     </div>}
+    {showPlaybackControls && <CollageTimeline clock={clock} duration={Math.max(0.2, Number(item.duration) || 5)} onSeek={t => { setEditorPlaying(false); clock.seek(t) }} />}
   </>
+}
+
+/** Timeline bar under the collage preview: drag (or click) to jump to any moment
+ *  of the slide. Reads the same clock the preview draws from. */
+function CollageTimeline({ clock, duration, onSeek }: { clock: ReturnType<typeof useMotionClock>; duration: number; onSeek: (t: number) => void }) {
+  const [t, setT] = useState(() => clock.now())
+  useEffect(() => clock.subscribe(v => setT(v)), [clock])
+  const total = Math.max(0.2, duration)
+  const at = Math.min(Math.max(0, t), total)
+  return <div className="collage-timeline-bar" onPointerDown={e => e.stopPropagation()}>
+    <input type="range" min={0} max={total} step={0.01} value={at} aria-label="Collage timeline" title="Jump to a moment of the slide" onChange={e => onSeek(Number(e.target.value))} />
+    <span>{at.toFixed(1)}s / {total.toFixed(1)}s</span>
+  </div>
 }
 
 /** The face of a generated slide in a thumb-sized clip: a "T" for text
@@ -3680,7 +3708,7 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
           {isFrame && draft.frameBackgroundImage && <div className="collage-bg" style={{
             backgroundImage: `url(${collagePhotoUrl({ path: draft.frameBackgroundImage })})`,
             ...bgFitStyle(draft.frameBackgroundFit),
-            ...pictureFilterStyle(draft.frameBackgroundLook),
+            ...frameBgStyle(draft.frameBackgroundLook, draft.frameBackgroundBlur, frameScale),
           }} />}
           {!isFrame && src && <div className="stage-blur" style={{ backgroundImage: `url(${canvasPhoto.src})`, filter: `blur(${backdropBlurPx(frameScale).toFixed(1)}px) brightness(0.88) saturate(1.2)` }} />}
           {!isFrame && src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={canvasPhoto.src} alt="" draggable={false} />)}
@@ -3763,6 +3791,11 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
                     </div>
                   </div>
                 : <button type="button" className="btn ghost small" onClick={() => onPickBackground?.()}><ImageIcon size={12}/> Picture instead of colour…</button>}
+              {draft.frameBackgroundImage && <label className="collage-bg-blur" title="Blur the background picture behind the text — same control as the photo collage background">
+                <span>Blur</span>
+                <input type="range" min={0} max={100} step={1} value={Math.round(Math.max(0, Math.min(1, Number(draft.frameBackgroundBlur) || 0)) * 100)} aria-label="Blur background picture" onChange={e => apply({ frameBackgroundBlur: Number(e.target.value) / 100 } as any)} />
+                <b>{Math.round(Math.max(0, Math.min(1, Number(draft.frameBackgroundBlur) || 0)) * 100)}%</b>
+              </label>}
               <small>{draft.frameBackgroundImage ? 'The picture fills the frame. Colour A → B is unused while a picture is set.' : 'A flat colour — or a library picture behind the text.'}</small>
             </div>
             <div className="bg-columns">
@@ -4079,6 +4112,21 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   }
   const [dragChip, setDragChip] = useState<number | null>(null)
   const [dragOverChip, setDragOverChip] = useState<number | null>(null)
+  // The photo picked on the preview: its size slider appears under the preview.
+  const [selectedPhoto, setSelectedPhoto] = useState<number | null>(null)
+  // Arrangement position of every photo (its layout slot), and how to change it.
+  const slots = arrangementSlots(spec)
+  const freeLayout = spec.layout === 'free'
+  const setSlot = (i: number, k: number) => {
+    const current = slots[i]
+    if (k === current) return
+    const other = slots.indexOf(k)
+    setSpec({ photos: photos.map((p, idx) => ({ ...p, slot: idx === i ? k : idx === other ? current : slots[idx] })) })
+  }
+  const reverseArrangement = () => {
+    const n = photos.length
+    setSpec({ photos: photos.map((p, i) => ({ ...p, slot: n - 1 - slots[i] })) })
+  }
   const dropChip = (onto: number) => {
     if (dragChip !== null && dragChip !== onto) {
       const next = [...photos]
@@ -4208,7 +4256,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             placePhotoAt(dragChip, at.x, at.y)
             setDragChip(null); setDragOverChip(null); setDropAt(null)
           }}>
-          <CollageSlideStage item={item} showPlaybackControls onMovePhoto={spec.layout === 'free' ? moveFreePhoto : undefined} />
+          <CollageSlideStage item={item} showPlaybackControls onMovePhoto={spec.layout === 'free' ? moveFreePhoto : undefined} selectedIndex={selectedPhoto} onSelectPhoto={setSelectedPhoto} />
           {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
           {dropAt && dragChip !== null && photos[dragChip] && shownPlacements[dragChip] && (() => {
             // Ghost of the mat at the drop point — the size and tilt it will
@@ -4224,6 +4272,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             ? <><Move size={11}/> Drop to place photo {dragChip + 1} here{spec.layout === 'free' ? '' : ' — the arrangement becomes Free'}</>
             : <><Move size={11}/> Drop the photo on the preview to place it yourself</>}</div>}
         </div>
+        {selectedPhoto !== null && photos[selectedPhoto] ? <div className="collage-selected-size" role="group" aria-label="Selected photo size">
+          <b>Photo {selectedPhoto + 1}</b>
+          <span>size</span>
+          <input type="range" min={50} max={300} step={1} value={Math.round(photoSize(spec, selectedPhoto) * 100)} aria-label={`Size of photo ${selectedPhoto + 1}`} onChange={e => setSize(selectedPhoto, Number(e.target.value) / 100)} />
+          <b>{Math.round(photoSize(spec, selectedPhoto) * 100)}%</b>
+          <button type="button" className="btn ghost small" onClick={() => setSelectedPhoto(null)}>Done</button>
+        </div> : photos.length > 0 && <small className="collage-select-hint"><Info size={11}/> Click a photo on the preview to change its size.</small>}
         <div className="collage-strip">
           {photos.map((photo, i) => <div className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}`} key={`${photo.path}-${i}`}
             draggable onDragStart={e => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move'; setDragChip(i) }} onDragEnd={() => { setDragChip(null); setDragOverChip(null); setDropAt(null) }}
@@ -4232,6 +4287,12 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             title={`${photo.name || photo.path} — drag to reorder, or drop it on the preview to place it yourself`}>
             <span className="chip-num">{i + 1}</span>
             <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy" />
+            <label className="chip-slot" title={freeLayout ? 'Free layout places photos by dragging them on the preview' : 'Arrangement position: where this photo sits in the final layout (1 = the first slot)'} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+              <span>pos</span>
+              <select value={slots[i]} disabled={freeLayout} aria-label={`Arrangement position of photo ${i + 1}`} draggable={false} onChange={e => setSlot(i, Number(e.target.value))}>
+                {photos.map((_, k) => <option key={k} value={k}>{k + 1}</option>)}
+              </select>
+            </label>
             <span className="chip-actions">
               <button type="button" title="Replace this photo with another from the library — keeps its wait and size" onClick={() => onReplacePhoto(i)}><RefreshCw size={11}/></button>
               <button type="button" disabled={i === 0} title="Move earlier (photos later in the list land on top)" onClick={() => movePhoto(i, -1)}><ChevronLeft size={11}/></button>
@@ -4242,6 +4303,10 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           {!full && <button type="button" className="collage-add" onClick={onPickPhotos} title="Choose photos from the media library"><Plus size={15}/> Add photos…</button>}
           {full && <span className="collage-full"><Info size={12}/> {MAX_COLLAGE_PHOTOS} photos is the maximum</span>}
         </div>
+        {photos.length > 1 && <div className="collage-arrange-tools" role="group" aria-label="Arrangement positions">
+          <span>Arrangement positions — set each photo's <b>pos</b> number, or reverse them all</span>
+          <button type="button" className="btn ghost small" disabled={freeLayout} title={freeLayout ? 'Free layout places photos by dragging them' : 'Reverse: the first photo takes the last position and so on'} onClick={reverseArrangement}>Reverse positions</button>
+        </div>}
         {photos.length > 0 && <small className="collage-strip-hint"><Move size={11}/> {spec.layout === 'free'
           ? 'Drag a photo from this row onto the preview to put it where you want it, or drag the photos on the preview itself.'
           : 'Drag a photo from this row onto the preview to put it exactly where you want it — the arrangement becomes Free and the other photos stay where they are.'}</small>}
@@ -4299,7 +4364,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           </label></div>
         <div className={`collage-choices-group${closedSections['photo-exit'] ? ' closed' : ''}`}><CollageGroupHead id="photo-exit" open={!closedSections['photo-exit']} onToggle={toggleSection}>Photo exit</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
-          <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small></div>
+          <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small>
+          {(spec.exit ?? 'none') !== 'none' && <label className="collage-exit-speed" title="How fast the photos leave: scales the fly-out of each photo and the gap between photos. The slide length follows.">
+            <span>Exit speed</span>
+            <input type="range" min={0.2} max={3} step={0.1} value={exitSpeed(spec)} aria-label="Photo exit speed" onChange={e => setSpec({ exitSpeed: Math.round(Number(e.target.value) * 10) / 10 === 1 ? undefined : Math.round(Number(e.target.value) * 10) / 10 })} />
+            <b>{exitSpeed(spec).toFixed(1)}×</b>
+          </label>}
+        </div>
         <div className={`collage-choices-group${closedSections['photo-size-timing'] ? ' closed' : ''}`}><CollageGroupHead id="photo-size-timing" open={!closedSections['photo-size-timing']} onToggle={toggleSection}>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></CollageGroupHead>
           {spec.animation === 'none' && <small>With no entrance animation all photos appear immediately. Photo size, frame and random-size controls still work; only the waits are unused.</small>}
           <div className="collage-timing">

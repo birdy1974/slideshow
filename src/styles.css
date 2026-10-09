@@ -1585,6 +1585,19 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-preview-controls button.active{background:#718f463b;border-color:#a4ca6c;color:#d1ef9d}
 .collage-preview-controls button:disabled{opacity:.4;cursor:not-allowed}
 .collage-preview-controls svg{flex:none}
+.collage-timeline-bar{position:absolute;left:8px;right:8px;bottom:8px;z-index:8;display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid #ffffff30;border-radius:7px;background:#111d;color:#f4f6f0;backdrop-filter:blur(6px)}
+.collage-timeline-bar input{flex:1;min-width:0;accent-color:#a4ca6c}
+.collage-timeline-bar span{font:700 9px Manrope,sans-serif;white-space:nowrap;font-variant-numeric:tabular-nums}
+.collage-mat.selected{outline:2px solid #a4ca6c;outline-offset:5px}
+.collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445}
+.collage-selected-size input{flex:1;min-width:120px;accent-color:#718f46}
+.collage-selected-size b{font-variant-numeric:tabular-nums}
+.collage-select-hint{display:flex;align-items:center;gap:5px;margin:6px 0 2px;color:#92978e;font-size:9px}
+.collage-arrange-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 2px;font-size:9px;color:#6e7466}
+.collage-arrange-tools b{color:#4c5445}
+.chip-slot{position:absolute;right:2px;top:2px;z-index:4;display:flex;align-items:center;gap:3px;padding:1px 3px;border-radius:4px;background:#111c;color:#fff;font:700 8px Manrope,sans-serif}
+.chip-slot select{height:14px;width:22px;border:0;background:transparent;color:#fff;font:700 8px Manrope,sans-serif;padding:0}
+.chip-slot select option{color:#111}
 .collage-choices-group .collage-total{float:right;font-style:normal;font-size:8px;color:var(--lime);letter-spacing:.5px}
 /* Arrangement picker: one thumbnail per option (CollageArrangementThumb) in
    three families — generated layouts, magazine mosaics, polaroid wall. The

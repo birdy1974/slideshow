@@ -1859,6 +1859,15 @@ class Renderer:
                 # into the output frame (the same order as ordinary pictures).
                 bed = crop_filters(normalize_crop({"crop": look_src.get("crop")}))
                 bed.append(bg_fit_filter(fit, width, height))
+                if collage_open is None:
+                    # Text frame with a picture: the same blur strength the photo
+                    # collage offers (0..1, twin of the preview's .collage-bg blur).
+                    try:
+                        frame_blur = float(item.get("frameBackgroundBlur") or 0.0)
+                    except (TypeError, ValueError):
+                        frame_blur = 0.0
+                    if frame_blur > 0.001:
+                        bed.append(f"boxblur={bg_blur_radius(min(1.0, frame_blur))}:2")
                 look = picture_look(look_src, width, height)
                 if look:
                     bed.append(look)

@@ -229,8 +229,53 @@ def mat_height(w: float, shape: str, aspect: float, frame: dict[str, Any] | None
     return mat_k * w + mat_c
 
 
+def arrangement_slots(spec: dict[str, Any]) -> list[int]:
+    """Arrangement slot of every photo — twin of arrangementSlots() in collageCore.ts.
+
+    Stored slots are used when they form a valid permutation; photos with a
+    missing, duplicate or out-of-range slot take the lowest free slots in list order.
+    """
+    n = len(spec.get("photos") or [])
+    out = [-1] * n
+    taken: set[int] = set()
+    for i, p in enumerate(spec.get("photos") or []):
+        v = p.get("slot") if isinstance(p, dict) else None
+        if isinstance(v, bool) or not isinstance(v, int):
+            continue
+        if 0 <= v < n and v not in taken:
+            out[i] = v
+            taken.add(v)
+    free = 0
+    for i in range(n):
+        if out[i] >= 0:
+            continue
+        while free in taken:
+            free += 1
+        out[i] = free
+        taken.add(free)
+    return out
+
+
 def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
-    """Resting placement of every photo — twin of placements() in collageCore.ts."""
+    """Resting placement of every photo — twin of placements() in collageCore.ts:
+    the layout's slots, with each photo moved onto its arrangement slot (its own
+    size multiplier stays with the photo). Free positions are per photo."""
+    raw = _base_placements(spec, aspect)
+    if spec.get("layout") == "free" or len(raw) < 2:
+        return raw
+    slots = arrangement_slots(spec)
+    if all(slot == i for i, slot in enumerate(slots)):
+        return raw
+    out = []
+    for i, slot in enumerate(slots):
+        frm = raw[slot]
+        base = frm["w"] / photo_size(spec, slot)
+        out.append({"cx": frm["cx"], "cy": frm["cy"], "rot": frm["rot"], "w": base * photo_size(spec, i)})
+    return out
+
+
+def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
+    """Layout slots of the photos, before the arrangement remap."""
     n = max(1, len(spec.get("photos") or []))
     seed = int(spec.get("seed") or 1)
     shape = str(spec.get("shape") or "4:3")
@@ -614,6 +659,26 @@ EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4}
 EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1}
 
 
+EXIT_SPEED_MIN, EXIT_SPEED_MAX = 0.2, 3.0
+
+
+def exit_speed(spec: dict[str, Any]) -> float:
+    """The exit speed multiplier, clamped; 1 when missing or malformed (twin of exitSpeed())."""
+    try:
+        v = float(spec.get("exitSpeed"))
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(v) or v <= 0:
+        return 1.0
+    return max(EXIT_SPEED_MIN, min(EXIT_SPEED_MAX, v))
+
+
+def exit_fly_length(spec: dict[str, Any]) -> float:
+    """One photo's fly-out length in seconds at the spec's exit speed (twin of exitFlyLength())."""
+    mode = exit_mode(spec)
+    return 0.0 if mode == "none" else EXIT_LENGTH[mode] / exit_speed(spec)
+
+
 def exit_mode(spec: dict[str, Any]) -> str:
     """The spec's exit mode, sanitised."""
     return spec.get("exit") if spec.get("exit") in ("sweep", "deal", "shuffle") else "none"
@@ -626,9 +691,10 @@ def exit_offset(spec: dict[str, Any], i: int) -> float:
     if mode == "none":
         return 0.0
     n = len(spec.get("photos") or [])
+    speed = exit_speed(spec)
     if mode == "deal":
-        return EXIT_STAGGER["deal"] * max(0, n - 1 - i)
-    return EXIT_STAGGER[mode] * i
+        return EXIT_STAGGER["deal"] / speed * max(0, n - 1 - i)
+    return EXIT_STAGGER[mode] / speed * i
 
 
 def exit_total(spec: dict[str, Any]) -> float:
@@ -639,7 +705,7 @@ def exit_total(spec: dict[str, Any]) -> float:
     n = len(spec.get("photos") or [])
     if not n:
         return 0.0
-    return EXIT_LENGTH[mode] + max(exit_offset(spec, 0), exit_offset(spec, n - 1))
+    return exit_fly_length(spec) + max(exit_offset(spec, 0), exit_offset(spec, n - 1))
 
 
 def _round2(v: float) -> float:
@@ -901,7 +967,7 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     if mode != "none":
         seed = int(spec.get("seed") or 1)
         te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
-        qe = _clamp01((t - te0) / EXIT_LENGTH[mode])
+        qe = _clamp01((t - te0) / exit_fly_length(spec))
         if qe > 0:
             ease = qe * qe
             if mode == "sweep":
@@ -984,6 +1050,9 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             own_w = None
         if own_w is not None and math.isfinite(own_w) and own_w > 0:
             entry["w"] = max(FREE_MIN_W, min(FREE_MAX_W, own_w))
+        slot_in = p.get("slot")
+        if isinstance(slot_in, int) and not isinstance(slot_in, bool) and 0 <= slot_in < MAX_COLLAGE_PHOTOS:
+            entry["slot"] = slot_in
         if isinstance(p.get("filter"), str) and p.get("filter"):
             entry["filter"] = p["filter"]
         try:
@@ -1006,6 +1075,11 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     layout = raw.get("layout") if raw.get("layout") in LAYOUTS else "stack"
     animation = raw.get("animation") if raw.get("animation") in ANIMS else "drop"
     exit_ = raw.get("exit") if raw.get("exit") in ("sweep", "deal", "shuffle") else None
+    try:
+        speed_in = float(raw.get("exitSpeed")) if raw.get("exitSpeed") is not None and not isinstance(raw.get("exitSpeed"), bool) else None
+    except (TypeError, ValueError):
+        speed_in = None
+    exit_speed_value = max(EXIT_SPEED_MIN, min(EXIT_SPEED_MAX, speed_in)) if speed_in is not None and math.isfinite(speed_in) and speed_in > 0 else None
     camera = raw.get("camera") if raw.get("camera") in ("pan", "zoom", "telescope", "droste") else None
     shape = raw.get("shape") if raw.get("shape") in ("4:3", "square", "3:4", "16:9", "9:16", "3:2", "2:3") else "4:3"
     try:
@@ -1055,6 +1129,8 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         spec["depth"] = True
     if exit_ is not None:
         spec["exit"] = exit_
+    if exit_speed_value is not None and exit_speed_value != 1.0:
+        spec["exitSpeed"] = exit_speed_value
     if camera is not None:
         spec["camera"] = camera
     if bg is not None:
@@ -1288,9 +1364,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         t_end = None
         if ex_mode != "none":
             te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
-            t_end = te0 + EXIT_LENGTH[ex_mode]
-            qe = f"min(max((t-{_n(te0)})/{_n(EXIT_LENGTH[ex_mode])},0),1)"
-            fade_d = 0.25 * EXIT_LENGTH[ex_mode]
+            fly = exit_fly_length(spec)
+            t_end = te0 + fly
+            qe = f"min(max((t-{_n(te0)})/{_n(fly)},0),1)"
+            fade_d = 0.25 * fly
             fade_out = f",fade=t=out:st={_n(t_end - fade_d)}:d={_n(fade_d)}:alpha=1"
             if ex_mode == "sweep":
                 vx, vy = pl["cx"] - 50, pl["cy"] - 50

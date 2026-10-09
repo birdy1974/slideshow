@@ -137,6 +137,9 @@ export type MediaItem = {
   // transition that starts `frameTransitionStart` seconds into the frame and
   // lasts `frameTransitionTime` seconds. The caption stays fixed on top.
   frameBackground2?: string; frameTransition?: string; frameTransitionTime?: number; frameTransitionStart?: number;
+  // Text frames with a picture background: blur strength 0..1 (0 = sharp),
+  // the same control as a photo collage's background. Mirrored by the renderer.
+  frameBackgroundBlur?: number;
   // Movies only: use just the [trimStart, trimEnd) section of the file instead
   // of the whole recording. Both are seconds in the source file; 0 / missing
   // means "from the start" / "to the end", which is what every project saved

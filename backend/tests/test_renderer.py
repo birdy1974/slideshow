@@ -755,6 +755,17 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertIn("force_original_aspect_ratio=decrease", filters[1])
         self.assertIn("gblur", filters[1])
 
+    def test_text_frame_picture_background_can_be_blurred(self) -> None:
+        bg = self.settings.photos_dir / "frame-bg.jpg"
+        bg.parent.mkdir(parents=True, exist_ok=True)
+        bg.write_bytes(b"jpg")
+        base = {"id": 2, "type": "title", "path": "Generated frame", "duration": 2, "text": "Hi", "effect": "None",
+                "transition": "Fade", "transitionTime": 0.5, "frameBackgroundImage": "/photos/frame-bg.jpg"}
+        sharp = self._segment_filters([dict(base)])[0]
+        blurred = self._segment_filters([{**base, "frameBackgroundBlur": 0.6}])[0]
+        self.assertNotIn("boxblur", sharp)
+        self.assertIn("boxblur=", blurred)
+
     def test_ken_burns_zoom_is_centred_and_bounded(self) -> None:
         filters = self._segment_filters([
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 3, "effect": "Ken Burns · Zoom in", "transition": "Fade", "transitionTime": 0.5},

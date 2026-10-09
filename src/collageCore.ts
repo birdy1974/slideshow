@@ -70,6 +70,10 @@ export interface CollagePhoto extends CollagePhotoLook {
   frame?: CollageFrame
   /** Free-layout resting tilt in degrees. Missing = 0. */
   rot?: number
+  /** Arrangement position: which slot of the layout this photo occupies
+   *  (0 = the first slot). Missing = its own index in the list. The appear
+   *  order (list order, `delay`) is independent of this. Free ignores it. */
+  slot?: number
 }
 
 export interface CollageSpec {
@@ -114,6 +118,9 @@ export interface CollageSpec {
   randomSize?: boolean
   randomSizeMin?: number
   randomSizeMax?: number
+  /** Speed of the photo exit animation, 0.2 (slow) .. 3 (fast). Scales both
+   *  the fly-out of each photo and the gap between photos leaving. Missing = 1. */
+  exitSpeed?: number
   /** Predefined template id when layout is 'template'. */
   template?: string
   /** Default frame for every photo (per-photo `frame` wins). */
@@ -358,7 +365,43 @@ function templateSlotWidth (slot: TemplateSlot, spec: CollageSpec, i: number, as
 }
 
 /** Resting placement of every photo. Deterministic given the spec. */
+/** Arrangement slot of every photo (index = photo index, value = slot index).
+ *  Stored slots are used when they form a valid permutation; photos with a
+ *  missing, duplicate or out-of-range slot take the lowest free slots in
+ *  list order, so adding or removing photos never leaves a hole. */
+export function arrangementSlots (spec: CollageSpec): number[] {
+  const n = spec.photos?.length ?? 0
+  const out: number[] = new Array(n).fill(-1)
+  const taken = new Set<number>()
+  for (let i = 0; i < n; i++) {
+    const v = Number(spec.photos[i]?.slot)
+    if (Number.isInteger(v) && v >= 0 && v < n && !taken.has(v)) { out[i] = v; taken.add(v) }
+  }
+  let free = 0
+  for (let i = 0; i < n; i++) {
+    if (out[i] >= 0) continue
+    while (taken.has(free)) free++
+    out[i] = free; taken.add(free)
+  }
+  return out
+}
+
 export function placements (spec: CollageSpec, aspect: number): Placement[] {
+  const raw = basePlacements(spec, aspect)
+  if (spec.layout === 'free' || spec.photos.length < 2) return raw
+  // Move each photo onto its slot's spot. Its own size multiplier stays with
+  // the photo, so a big photo moved to a small slot stays big.
+  const slots = arrangementSlots(spec)
+  if (slots.every((slot, i) => slot === i)) return raw
+  return slots.map((slot, i) => {
+    const from = raw[slot]
+    if (!from) return raw[i]
+    const base = from.w / photoSize(spec, slot)
+    return { cx: from.cx, cy: from.cy, rot: from.rot, w: base * photoSize(spec, i) }
+  })
+}
+
+function basePlacements (spec: CollageSpec, aspect: number): Placement[] {
   const n = Math.max(1, spec.photos.length)
   const seed = Math.trunc(spec.seed) || 1
   const out: Placement[] = []
@@ -736,6 +779,22 @@ export const EXIT_LENGTH: Record<Exclude<CollageExit, 'none'>, number> = { sweep
 /** Delay between consecutive photos leaving. */
 export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.05, deal: 0.22, shuffle: 0.1 }
 
+/** Bounds of the exit speed multiplier (the editor slider uses the same range). */
+export const EXIT_SPEED_MIN = 0.2
+export const EXIT_SPEED_MAX = 3
+
+/** The exit speed multiplier, clamped; 1 when missing or malformed. */
+export function exitSpeed (spec: CollageSpec): number {
+  const v = Number(spec.exitSpeed)
+  return Number.isFinite(v) && v > 0 ? Math.max(EXIT_SPEED_MIN, Math.min(EXIT_SPEED_MAX, v)) : 1
+}
+
+/** One photo's fly-out length, in seconds, at the spec's exit speed. */
+export function exitFlyLength (spec: CollageSpec): number {
+  const mode = exitMode(spec)
+  return mode === 'none' ? 0 : EXIT_LENGTH[mode] / exitSpeed(spec)
+}
+
 /** The spec's exit mode, sanitised. */
 export function exitMode (spec: CollageSpec): CollageExit {
   return (['sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(spec.exit as CollageExit) ? spec.exit as CollageExit : 'none'
@@ -748,8 +807,9 @@ export function exitOffset (spec: CollageSpec, i: number): number {
   const mode = exitMode(spec)
   if (mode === 'none') return 0
   const n = spec.photos?.length ?? 0
-  if (mode === 'deal') return EXIT_STAGGER.deal * Math.max(0, n - 1 - i)
-  return EXIT_STAGGER[mode] * i
+  const speed = exitSpeed(spec)
+  if (mode === 'deal') return EXIT_STAGGER.deal / speed * Math.max(0, n - 1 - i)
+  return EXIT_STAGGER[mode] / speed * i
 }
 
 /** Total seconds the exit adds to the slide (the longest offset + fly). */
@@ -758,7 +818,7 @@ export function exitTotal (spec: CollageSpec): number {
   if (mode === 'none') return 0
   const n = spec.photos?.length ?? 0
   if (!n) return 0
-  return EXIT_LENGTH[mode] + Math.max(exitOffset(spec, 0), exitOffset(spec, n - 1))
+  return exitFlyLength(spec) + Math.max(exitOffset(spec, 0), exitOffset(spec, n - 1))
 }
 
 const round2 = (v: number) => Math.round(v * 100) / 100
@@ -877,7 +937,7 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   if (mode !== 'none') {
     const seed = Math.trunc(Number(spec.seed)) || 1
     const te0 = leadIn + baseDuration(spec) + exitOffset(spec, i)
-    const qe = clamp01((t - te0) / EXIT_LENGTH[mode])
+    const qe = clamp01((t - te0) / exitFlyLength(spec))
     if (qe > 0) {
       const ease = qe * qe                       // accelerating fly
       if (mode === 'sweep') {
@@ -1043,6 +1103,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     const cy = num(p.cy)
     const rot = num(p.rot)
     const w = num(p.w)
+    const slot = num(p.slot)
     const look = photoLookOf(p)
     photos.push({
       path: p.path,
@@ -1053,6 +1114,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       cy: cy !== undefined ? Math.max(0, Math.min(100, cy)) : undefined,
       rot: rot !== undefined ? Math.max(-45, Math.min(45, rot)) : undefined,
       w: w !== undefined && w > 0 ? Math.max(FREE_MIN_W, Math.min(FREE_MAX_W, w)) : undefined,
+      slot: slot !== undefined && Number.isInteger(slot) && slot >= 0 ? Math.min(MAX_COLLAGE_PHOTOS - 1, slot) : undefined,
       frame: frameFields(p.frame),
       ...look,
     })
@@ -1079,6 +1141,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     layout: COLLAGE_LAYOUTS_ALL.includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
     animation: COLLAGE_ANIMS_ALL.includes(c.animation as CollageAnim) ? c.animation as CollageAnim : 'drop',
     exit: (['sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
+    exitSpeed: num(c.exitSpeed) !== undefined && num(c.exitSpeed)! > 0 && num(c.exitSpeed) !== 1 ? Math.max(EXIT_SPEED_MIN, Math.min(EXIT_SPEED_MAX, num(c.exitSpeed)!)) : undefined,
     camera: (['pan', 'zoom', 'telescope', 'droste'] as readonly CollageCamera[]).includes(c.camera as CollageCamera) ? c.camera as CollageCamera : undefined,
     shape: (['4:3', 'square', '3:4', '16:9', '9:16', '3:2', '2:3'] as const).includes(c.shape as CollageShape) ? c.shape as CollageShape : '4:3',
     seed: Number.isFinite(Number(c.seed)) ? Math.trunc(Number(c.seed)) : 1,
