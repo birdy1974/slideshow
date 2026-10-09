@@ -752,6 +752,50 @@ def fit_frame_filter(width: int, height: int, fps: int, zoom_headroom: float = 1
     )
 
 
+# Movies are shown whole: the picture is fitted into the frame (never cropped)
+# and the bars left over on the sides/top/bottom are filled either with a
+# blurred copy of the movie itself or with a solid colour chosen by the user.
+MOVIE_BACKGROUNDS = ("blur", "colour")
+DEFAULT_MOVIE_BACKGROUND_COLOUR = "#000000"
+
+
+def movie_background(item: dict[str, Any]) -> tuple[str, str]:
+    """(mode, colour) of the area around a movie: ``blur`` (default) or ``colour``.
+
+    Movies saved before the option existed take the blurred backdrop, which is
+    the same look the photos get. The colour is a CSS hex value or the black
+    default, so a malformed value never reaches FFmpeg.
+    """
+    mode = str(item.get("movieBackground") or "blur")
+    if mode not in MOVIE_BACKGROUNDS:
+        mode = "blur"
+    colour = str(item.get("movieBackgroundColour") or DEFAULT_MOVIE_BACKGROUND_COLOUR)
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", colour):
+        colour = DEFAULT_MOVIE_BACKGROUND_COLOUR
+    return mode, colour.lower()
+
+
+def movie_frame_filter(item: dict[str, Any], width: int, height: int, fps: int) -> str:
+    """Show a whole movie inside the frame, with the chosen backdrop filling the rest."""
+    mode, colour = movie_background(item)
+    if mode == "colour":
+        return (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x{colour[1:]},setsar=1,fps={fps}"
+        )
+    # Blurred backdrop: same construction as the photos (fit_frame_filter), but
+    # the foreground keeps even dimensions so yuv420p overlays stay exact.
+    blur_w, blur_h = _even(max(32, width / 8)), _even(max(32, height / 8))
+    sigma = format_ffmpeg_number(max(3.0, blur_w / 32))
+    return (
+        "split=2[bgsrc][fgsrc];"
+        f"[bgsrc]scale={blur_w}:{blur_h}:force_original_aspect_ratio=increase,crop={blur_w}:{blur_h},"
+        f"gblur=sigma={sigma},scale={width}:{height},eq=brightness=-0.12:saturation=1.2,setsar=1[bgblur];"
+        f"[fgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fgfit];"
+        f"[bgblur][fgfit]overlay=(W-w)/2:(H-h)/2,setsar=1,fps={fps}"
+    )
+
+
 def _detect_beats_pcm(ffmpeg_bin: str, source: Path, max_beats: int = 1200) -> list[float]:
     """Energy-based onset detection over mono 8 kHz PCM (see Renderer.detect_beats).
 
@@ -1691,6 +1735,10 @@ class Renderer:
                 # fitted smaller (by the slide's own strength) so the zoom still
                 # cannot reach the picture edges.
                 base_filter = fit_frame_filter(width, height, fps, ken_burns["zoom"] if ken_burns else 1.0)
+            elif kind_name == "video":
+                # Movies are never cropped either: the whole picture is shown
+                # over the chosen backdrop (blurred movie or a solid colour).
+                base_filter = movie_frame_filter(item, width, height, fps)
             else:
                 base_filter = fill_frame_filter(width, height, fps)
             command = [self.settings.ffmpeg_bin, "-hide_banner", "-y"]
@@ -1811,6 +1859,15 @@ class Renderer:
                 # into the output frame (the same order as ordinary pictures).
                 bed = crop_filters(normalize_crop({"crop": look_src.get("crop")}))
                 bed.append(bg_fit_filter(fit, width, height))
+                if collage_open is None:
+                    # Text frame with a picture: the same blur strength the photo
+                    # collage offers (0..1, twin of the preview's .collage-bg blur).
+                    try:
+                        frame_blur = float(item.get("frameBackgroundBlur") or 0.0)
+                    except (TypeError, ValueError):
+                        frame_blur = 0.0
+                    if frame_blur > 0.001:
+                        bed.append(f"boxblur={bg_blur_radius(min(1.0, frame_blur))}:2")
                 look = picture_look(look_src, width, height)
                 if look:
                     bed.append(look)

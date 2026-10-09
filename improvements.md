@@ -1,11 +1,4 @@
 2026-10-09
-- scale the movies so landscape but also portrait orientation movie are shown in full. for portrait give option for background color on the sides or blurred movie 
-- in text frame popup window (new and edit) in case picture is selected as background, add option to blur background picture ( like in background [photo collage)
-- in photo collage add option to set the speed (timing) of the photo exit animation
-- on the preview of the photo collage, the user should also be able to change the size of the photos (select a photo, under the preview show slider to set size of the selected photo)
-- on the preview of the photo collage provide time line bar so user can quickly go to specific time
-- on the preview of the photo collage provide option so user can determine the order of the on the order of the arrangement. so which photo on the arrangement appears in which order (including reverse option)
-- if SLIDE DEFAULT time is changed (apply for all) should not change the time for the movies and photo collage (only the individual pictures) 
 - 
 - do a thorough deep search on the internet to see if there are any other photo collage effects that we do not have. first give an overview before you change any code. you can check the effects in Canva, and other photo collage maker apps.
 - give options to change the border of the photos (for all photos and individual): none, thickness/color of border, rounded, shapes (hart, circle, star, diamond, you advise more)
@@ -17,6 +10,15 @@
 
 
 ---= DONE =---
+2026-10-10
+- text frame: blur the background picture (Blur slider, same as the photo collage background)
+- photo collage: exit speed slider (0.2x to 3x) scales the fly-out and the gap between photos; the slide length follows
+- photo collage preview: click a photo to get its size slider under the preview
+- photo collage preview: timeline bar to jump to any moment of the slide
+- photo collage: arrangement positions — each photo's 'pos' number sets where it sits in the final layout, plus Reverse positions (appear order stays the list order)
+- SLIDE DEFAULT 'apply to all' no longer changes movies or photo collages, only photos and text frames
+2026-10-09
+- movies are shown in full (landscape and portrait, never cropped). The area around a movie is a blurred copy of the movie (default) or a solid colour chosen in the movie editor ("Area around the movie")
 2026-09-27
 - Photo collage popup: make following improvements
     - Photo size & timing: add option for random sizes (max and min to be set by user)

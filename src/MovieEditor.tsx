@@ -12,6 +12,7 @@ import { formatClockPrecise } from './time'
 import type { MediaItem } from './mediaItem'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { useEscapeToClose, useLayer } from './layers'
+import { MOVIE_BACKGROUND_COLOURS, MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 
 // Shortest section a movie can be cut down to.
 const MIN_KEEP = 0.5
@@ -29,7 +30,9 @@ export function MovieEditor({ item, src, onChange, onClose }: {
   const [drag, setDrag] = useState<null | 'in' | 'out' | 'seek'>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const stripRef = useRef<HTMLDivElement | null>(null)
-  const original = useRef({ trimStart: item.trimStart, trimEnd: item.trimEnd, duration: item.duration })
+  const original = useRef({ trimStart: item.trimStart, trimEnd: item.trimEnd, duration: item.duration, movieBackground: item.movieBackground, movieBackgroundColour: item.movieBackgroundColour })
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const frame = movieBackgroundOf(item)
   // Real frames for the strip: the browser grabs them from the stream; when
   // it cannot decode the file (camera AVI and friends) the backend FFmpeg
   // filmstrip is fetched instead; only if both fail do the colour bars stay.
@@ -184,7 +187,8 @@ export function MovieEditor({ item, src, onChange, onClose }: {
       <div className="preview-top"><div><strong>{item.name}</strong><span>MOVIE EDITOR · SELECT THE SECTION TO USE</span></div><button type="button" onClick={cancel} aria-label="Close editor"><X size={20} /></button></div>
 
       <div className="editor-body">
-        <div className="movie-stage">
+        <div className="movie-stage" ref={stageRef} style={movieFrameStyle(item)}>
+          {frame.mode === 'blur' && total > 0 && <MovieBlurBackdrop src={effectiveSrc} hostRef={stageRef} />}
           <video
             ref={videoRef}
             src={effectiveSrc}
@@ -234,6 +238,18 @@ export function MovieEditor({ item, src, onChange, onClose }: {
             <TimeField label="End (OUT)" value={end} min={start + MIN_KEEP} max={total} onCommit={setOut} />
             <div className="time-field static"><span>Kept length</span><b>{formatClockPrecise(kept)}</b></div>
             <div className="time-field static"><span>File length</span><b>{formatClockPrecise(total)}</b></div>
+          </div>
+          <div className="movie-frame-options">
+            <span className="movie-frame-label">Area around the movie</span>
+            <p className="editor-note"><Info size={13} /> The whole movie is always shown, landscape or portrait. Use this for the space left over at the sides or top and bottom.</p>
+            <div className="movie-frame-choices">
+              <button type="button" className={frame.mode === 'blur' ? 'active' : ''} onClick={() => onChange({ movieBackground: 'blur' })}>Blurred movie</button>
+              <button type="button" className={frame.mode === 'colour' ? 'active' : ''} onClick={() => onChange({ movieBackground: 'colour' })}>Colour</button>
+            </div>
+            {frame.mode === 'colour' && <div className="movie-frame-swatches">
+              {MOVIE_BACKGROUND_COLOURS.map(c => <button key={c} type="button" className={`${frame.colour === c ? 'active' : ''}`} style={{ background: c }} title={c} aria-label={`Background ${c}`} onClick={() => onChange({ movieBackground: 'colour', movieBackgroundColour: c })} />)}
+              <label className="movie-frame-custom" title="Pick any colour"><input type="color" value={frame.colour} onChange={e => onChange({ movieBackground: 'colour', movieBackgroundColour: e.target.value })} aria-label="Custom background colour" /></label>
+            </div>}
           </div>
           <p className="editor-note"><Info size={13} /> Drag the green handles to choose where the movie starts and ends. Only the selected section is rendered, and the clip on the timeline becomes exactly that long.</p>
         </div>

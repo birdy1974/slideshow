@@ -520,8 +520,22 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
    ───────────────────────────────────────────────────────────────────────────── */
 .movie-backdrop{z-index:60}
 .movie-editor{width:min(1020px,96vw)}
-.movie-stage{position:relative;height:min(44vh,330px);background:#0b0c0a;border:1px solid #3a3d37;border-radius:8px;overflow:hidden;display:grid;place-items:center}
-.movie-stage video{max-width:100%;max-height:100%;background:#000}
+.movie-stage{position:relative;isolation:isolate;height:min(44vh,330px);background:#0b0c0a;border:1px solid #3a3d37;border-radius:8px;overflow:hidden;display:grid;place-items:center}
+.movie-stage video{position:relative;z-index:1;width:100%;height:100%;object-fit:contain;background:transparent}
+.movie-blur-bg{position:absolute;inset:-6%;width:112%;height:112%;object-fit:cover;z-index:-1;filter:blur(18px) brightness(.62) saturate(1.2);pointer-events:none}
+.movie-frame-options{display:flex;flex-direction:column;gap:6px}
+.movie-frame-label{font:700 9px Manrope;letter-spacing:.4px;color:#6e7466}
+.movie-frame-choices{display:flex;gap:6px}
+.movie-frame-choices button{height:28px;padding:0 12px;border:1px solid #cfd3c6;background:#fff;border-radius:6px;font-size:10px;font-weight:600;color:#3f4439}
+.movie-frame-choices button.active{background:#31362d;color:#d1ef9d;border-color:#31362d}
+.movie-frame-swatches{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.movie-frame-swatches>button{width:24px;height:24px;border-radius:5px;border:2px solid transparent;box-shadow:inset 0 0 0 1px #0002}
+.movie-frame-swatches>button.active{border-color:#718f46}
+.movie-frame-custom{width:24px;height:24px;border-radius:5px;overflow:hidden;position:relative;border:1px solid #cfd3c6;display:inline-block}
+.movie-frame-custom input{position:absolute;inset:-6px;width:40px;height:40px;border:0;padding:0;background:none;cursor:pointer}
+.video-stage.movie-framed{isolation:isolate}
+.video-stage.movie-framed video{background:transparent}
+
 .movie-stage-note{position:absolute;font:600 10px Manrope;color:#8d9285;letter-spacing:.4px}
 /* Synthetic filmstrip: same role as the soundtrack's waveform bars — a stable
    pattern that makes the cut region readable without decoding frames. */
@@ -1571,6 +1585,21 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-preview-controls button.active{background:#718f463b;border-color:#a4ca6c;color:#d1ef9d}
 .collage-preview-controls button:disabled{opacity:.4;cursor:not-allowed}
 .collage-preview-controls svg{flex:none}
+.collage-timeline-bar{position:absolute;left:8px;right:8px;bottom:8px;z-index:8;display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid #ffffff30;border-radius:7px;background:#111d;color:#f4f6f0;backdrop-filter:blur(6px)}
+.collage-timeline-bar input{flex:1;min-width:0;accent-color:#a4ca6c}
+.collage-timeline-bar span{font:700 9px Manrope,sans-serif;white-space:nowrap;font-variant-numeric:tabular-nums}
+.collage-mat.selected{outline:2px solid #a4ca6c;outline-offset:5px}
+.collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445}
+.collage-selected-size input{flex:1;min-width:120px;accent-color:#718f46}
+.collage-selected-size b{font-variant-numeric:tabular-nums}
+.collage-select-hint{display:flex;align-items:center;gap:5px;margin:6px 0 2px;color:#92978e;font-size:9px}
+.collage-arrange-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 2px;font-size:9px;color:#6e7466}
+.collage-arrange-tools b{color:#4c5445}
+.collage-arrange-buttons{display:flex;gap:6px;flex:none}
+.collage-arrange-buttons svg{vertical-align:-1px;margin-right:3px}
+.chip-slot{position:absolute;right:2px;top:2px;z-index:4;display:flex;align-items:center;gap:3px;padding:1px 3px;border-radius:4px;background:#111c;color:#fff;font:700 8px Manrope,sans-serif}
+.chip-slot select{height:14px;width:22px;border:0;background:transparent;color:#fff;font:700 8px Manrope,sans-serif;padding:0}
+.chip-slot select option{color:#111}
 .collage-choices-group .collage-total{float:right;font-style:normal;font-size:8px;color:var(--lime);letter-spacing:.5px}
 /* Arrangement picker: one thumbnail per option (CollageArrangementThumb) in
    three families — generated layouts, magazine mosaics, polaroid wall. The
