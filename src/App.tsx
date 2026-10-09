@@ -4127,6 +4127,20 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     const n = photos.length
     setSpec({ photos: photos.map((p, i) => ({ ...p, slot: n - 1 - slots[i] })) })
   }
+  // Random positions: a fresh random permutation of the slots (never the
+  // same order twice in a row when there is more than one photo).
+  const randomArrangement = () => {
+    const n = photos.length
+    if (n < 2) return
+    const next = Array.from({ length: n }, (_, k) => k)
+    do {
+      for (let k = n - 1; k > 0; k--) {
+        const j = Math.floor(Math.random() * (k + 1))
+        ;[next[k], next[j]] = [next[j], next[k]]
+      }
+    } while (next.every((slot, i) => slot === slots[i]))
+    setSpec({ photos: photos.map((p, i) => ({ ...p, slot: next[i] })) })
+  }
   const dropChip = (onto: number) => {
     if (dragChip !== null && dragChip !== onto) {
       const next = [...photos]
@@ -4304,8 +4318,11 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           {full && <span className="collage-full"><Info size={12}/> {MAX_COLLAGE_PHOTOS} photos is the maximum</span>}
         </div>
         {photos.length > 1 && <div className="collage-arrange-tools" role="group" aria-label="Arrangement positions">
-          <span>Arrangement positions — set each photo's <b>pos</b> number, or reverse them all</span>
-          <button type="button" className="btn ghost small" disabled={freeLayout} title={freeLayout ? 'Free layout places photos by dragging them' : 'Reverse: the first photo takes the last position and so on'} onClick={reverseArrangement}>Reverse positions</button>
+          <span>Arrangement positions — set each photo's <b>pos</b> number, or reverse or randomise them all</span>
+          <span className="collage-arrange-buttons">
+            <button type="button" className="btn ghost small" disabled={freeLayout} title={freeLayout ? 'Free layout places photos by dragging them' : 'Reverse: the first photo takes the last position and so on'} onClick={reverseArrangement}>Reverse positions</button>
+            <button type="button" className="btn ghost small" disabled={freeLayout} title={freeLayout ? 'Free layout places photos by dragging them' : 'Put the photos into random positions of the layout'} onClick={randomArrangement}><Shuffle size={11}/> Random positions</button>
+          </span>
         </div>}
         {photos.length > 0 && <small className="collage-strip-hint"><Move size={11}/> {spec.layout === 'free'
           ? 'Drag a photo from this row onto the preview to put it where you want it, or drag the photos on the preview itself.'
