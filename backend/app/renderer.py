@@ -1946,7 +1946,7 @@ class Renderer:
                 base_chain = ",".join(base_filters)
                 photo_lines, last = collage_graph(
                     item, width, height, fps, duration, lead_in,
-                    1 + (1 if colour_change is not None else 0), "cb")
+                    1 + (1 if colour_change is not None else 0), "cb", self.settings)
                 tail = ([text_filter] if isinstance(text_filter, str) and text_filter else []) + \
                        ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
                 if colour_change is not None:

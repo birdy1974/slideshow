@@ -27,7 +27,10 @@ export function CollageArrangementThumb({ spec, layout, template, photoCount }: 
   photoCount: number
 }) {
   const fr = photoFrame(spec, null)
-  const aspect = photoAspect(spec.shape)
+  // Arrangement thumbs compare layouts, not individual photos; for 'native'
+  // shape fall back to 4:3 (the most common photo ratio) so every slot in
+  // the schematic is the same height. The real preview measures each photo.
+  const aspect = photoAspect(spec.shape === 'native' ? '4:3' : spec.shape)
   const n = Math.max(0, Math.floor(photoCount))
   const round = fr.shape === 'circle' || fr.shape === 'oval'
   const isTemplate = layout === 'template'

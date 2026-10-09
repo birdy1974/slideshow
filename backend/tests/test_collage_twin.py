@@ -277,6 +277,43 @@ def _cases() -> list[dict]:
         "aspect": 16 / 9, "leadIn": 0.25, "times": [0.0, 1.0, 2.5, 3.4, 4.0, 4.6],
         "hashArgs": [2, 3, 11], "matW": 30, "camera": "zoom",
     })
+    # per-photo shape overrides: each mat follows its own shape while the
+    # collage-wide shape stays the default for the rest. 'native' has no
+    # measured ratios in the twin, so both engines fall back to 4:3 for it.
+    per_shape = _spec("masonry", "drop", "16:9", 4, 9, delays=[0.2, 0.2, 0.2, 0.2], hold=1)
+    per_shape["photos"][0]["shape"] = "9:16"
+    per_shape["photos"][1]["shape"] = "square"
+    per_shape["photos"][2]["shape"] = "native"
+    cases.append({
+        "id": "per-photo-shapes-masonry",
+        "spec": per_shape,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": times, "hashArgs": [9, 4, 41], "matW": 30,
+    })
+    per_shape_wall = _spec("photowall", "pop", "4:3", 5, 4, delays=[0.15, 0.15, 0.15, 0.15, 0.15], hold=1)
+    per_shape_wall["photos"][0]["shape"] = "3:4"
+    per_shape_wall["photos"][3]["shape"] = "16:9"
+    cases.append({
+        "id": "per-photo-shapes-photowall",
+        "spec": per_shape_wall,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": times, "hashArgs": [4, 5, 11], "matW": 30,
+    })
+    single_native = _spec("masonry", "none", "4:3", 1, 1)
+    single_native["photos"][0]["shape"] = "native"
+    cases.append({
+        "id": "per-photo-shapes-single-native",
+        "spec": single_native,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.5, 1.0], "hashArgs": [1, 1, 41], "matW": 30,
+    })
+    # reversed exit order: the last (top) photo leaves first
+    for mode in ("sweep", "deal", "shuffle"):
+        rev = _spec("stack", "drop", "4:3", 4, 6, delays=[0.2, 0.2, 0.2, 0.2], hold=1, exit=mode)
+        rev["exitReverse"] = True
+        cases.append({
+            "id": f"exit-reverse-{mode}",
+            "spec": rev,
+            "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.5, 2.0, 2.4, 2.8, 3.4],
+            "hashArgs": [6, 4, 71], "matW": 30,
+        })
     # the editor's track→slide beat mapping, evaluated in the TS twin
     for i, mb in enumerate([
         {"beats": [0.0, 0.5, 1.0, 1.5, 2.0], "trackStart": 0.0, "trimStart": 0.0, "trimEnd": 0.0, "holdStart": 1.25},
@@ -439,9 +476,10 @@ class CollageTwinTest(unittest.TestCase):
         assert _ae(exit_fly_length(slow), exit_fly_length(base) * 2)
         assert _ae(exit_total(fast), exit_total(base) / 2)
         assert _ae(exit_offset(slow, 0), exit_offset(base, 0) * 2)
-        # junk or out-of-range speeds fall back / clamp
+        # junk or out-of-range speeds fall back / clamp (range 0.05..2)
         assert _ae(exit_fly_length({**base, "exitSpeed": "fast"}), exit_fly_length(base))
-        assert _ae(exit_fly_length({**base, "exitSpeed": 99}), exit_fly_length(base) / 3)
+        assert _ae(exit_fly_length({**base, "exitSpeed": 99}), exit_fly_length(base) / 2)
+        assert _ae(exit_fly_length({**base, "exitSpeed": 0.001}), exit_fly_length(base) * 20)
 
     def test_arrangement_slots_fall_back_to_list_order(self):
         spec = _spec("grid", "drop", "4:3", 4, 1)
@@ -1129,12 +1167,13 @@ class CollageTwinTest(unittest.TestCase):
 
     def test_photo_frame_defaults_and_override(self):
         d = photo_frame({}, None)
-        assert d["shape"] == "polaroid" and abs(d["width"] - 1.0) < TOL and d["color"] == "#ffffff" and d["shadow"] is True
-        assert abs(photo_frame({"frame": {"shape": "none"}}, None)["width"] - 1.0) < TOL
+        assert d["shape"] == "rect" and abs(d["width"] - 0.5) < TOL and d["color"] == "#ffffff" and d["shadow"] is True
+        assert abs(d["radius"] - 5.0) < TOL
+        assert abs(photo_frame({"frame": {"shape": "none"}}, None)["width"] - 0.5) < TOL
         spec = {"frame": {"shape": "circle", "width": 6, "color": "#00ff00", "shadow": False}}
         assert photo_frame(spec, None)["shape"] == "circle"
         assert photo_frame(spec, {"frame": {"shape": "heart"}})["shape"] == "heart"
-        assert abs(mat_height(34, "4:3", 16 / 9) - mat_height(34, "4:3", 16 / 9, {"shape": "polaroid"})) < TOL
+        assert abs(mat_height(34, "4:3", 16 / 9) - mat_height(34, "4:3", 16 / 9, {"shape": "rect"})) < TOL
 
     def test_new_layouts_place_photos(self):
         for layout in ("honeycomb", "zigzag", "arc", "photowall", "booth", "silhouette", "cube"):

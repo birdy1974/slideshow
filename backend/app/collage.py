@@ -9,11 +9,14 @@ stream with the caption drawn on top.
 """
 from __future__ import annotations
 
+import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
-from .media import source_path
+from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, source_path
 from .picture_crop import crop_filters, normalize_crop
 from .picture_filters import picture_look
 
@@ -36,7 +39,81 @@ def _clamp01(v: float) -> float:
     return 0.0 if v < 0 else (1.0 if v > 1 else v)
 
 
-def _photo_aspect(shape: str) -> float:
+def _snap_native_aspect(ratio: float) -> float:
+    """Snap a measured photo/video aspect (w/h) to the nearest canonical bucket.
+    Landscape (>= 1/0.87 = 1.15) snaps to 16:9 or 4:3; portrait (<= 1/1.15) to
+    9:16 or 3:4; anything in between stays square. Twin of snapNativeAspect()."""
+    try:
+        r = float(ratio)
+    except (TypeError, ValueError):
+        r = 0.0
+    if not math.isfinite(r) or r <= 0:
+        return 4.0 / 3.0
+    if r >= 1.15:
+        return 16.0 / 9.0 if abs(r - 16.0 / 9.0) < abs(r - 4.0 / 3.0) else 4.0 / 3.0
+    if r <= 1.0 / 1.15:
+        return 9.0 / 16.0 if abs(r - 9.0 / 16.0) < abs(r - 3.0 / 4.0) else 3.0 / 4.0
+    return 1.0
+
+
+def _probe_aspect(path: Path, ffprobe_bin: str) -> float | None:
+    """Best-effort aspect (w/h) of a photo or video. None if unreadable.
+    Returns the REAL measured ratio (not snapped to a bucket) so each mat
+    exactly matches its photo in 'native' mode."""
+    try:
+        ext = path.suffix.lower()
+        if ext in IMAGE_EXTENSIONS:
+            try:
+                from PIL import Image  # type: ignore
+                with Image.open(path) as im:
+                    w, h = im.size
+                if w and h:
+                    return w / h
+            except Exception:  # noqa: BLE001 - fall through to ffprobe
+                pass
+        probe = shutil.which(ffprobe_bin)
+        if not probe:
+            return None
+        result = subprocess.run(
+            [probe, "-hide_banner", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=10.0, check=False,
+        )
+        data = json.loads(result.stdout or "{}")
+        streams = data.get("streams") or []
+        if streams:
+            w = int(streams[0].get("width") or 0)
+            h = int(streams[0].get("height") or 0)
+            if w and h:
+                return w / h
+    except Exception:  # noqa: BLE001 - never fail a render over metadata
+        return None
+    return None
+
+
+# Valid photo shapes (twin of COLLAGE_SHAPES_ALL in src/collageCore.ts).
+SHAPES = ("native", "4:3", "square", "3:4", "16:9", "9:16", "3:2", "2:3")
+
+
+def _photo_shape(spec: dict[str, Any], i: int) -> str:
+    """Effective shape of photo i: its own override when valid, else the
+    collage-wide default (twin of photoShape() in src/collageCore.ts)."""
+    photos = spec.get("photos") or []
+    p = photos[i] if 0 <= i < len(photos) else None
+    s = p.get("shape") if isinstance(p, dict) else None
+    if s in SHAPES:
+        return str(s)
+    shape = spec.get("shape")
+    return str(shape) if shape in SHAPES else "4:3"
+
+
+def _photo_aspect(shape: str, native_ratio: float | None = None) -> float:
+    if shape == "native":
+        # Measured photos use their real aspect so the mat fits exactly; when
+        # probing failed (None) fall back to a safe 4:3 default.
+        if native_ratio is not None and math.isfinite(native_ratio) and native_ratio > 0:
+            return native_ratio
+        return 4.0 / 3.0
     if shape == "square":
         return 1.0
     if shape == "3:4":
@@ -158,25 +235,31 @@ def _template_slots(tid: str | None, n: int) -> list[dict[str, float]]:
     return out
 
 
-def mat_line(shape: str, fr: dict[str, Any], aspect: float) -> tuple[float, float]:
-    """Mat height (% of frame HEIGHT) as a line of the mat width w (% of frame
-    width): height = k * w + c. The border is a fixed share of the FRAME, so it
-    adds the constant c; the polaroid caption strip stays proportional to the
-    mat. Twin of matLine() in src/collageCore.ts."""
-    b = frame_border_frac(fr) * 100.0          # border, % of frame width
-    inv = 1.0 / _photo_aspect(shape)
+def _mat_line_for(shape: str, fr: dict[str, Any], aspect: float, native_ratio: float | None = None) -> tuple[float, float]:
+    """Mat height line for a given frame. `native_ratio` is the measured w/h of
+    photo i; used when shape == 'native'. Twin of matLineFor()."""
+    b = frame_border_frac(fr) * 100.0
+    inv = 1.0 / _photo_aspect(shape, native_ratio)
     if fr["shape"] == "polaroid":
         return (inv + 0.205) * aspect, (b - 2 * b * inv) * aspect
     return inv * aspect, (2 * b - 2 * b * inv) * aspect
 
 
-def _template_slot_width(slot: dict[str, float], spec: dict[str, Any], i: int, aspect: float) -> float:
+def mat_line(shape: str, fr: dict[str, Any], aspect: float) -> tuple[float, float]:
+    """Mat height (% of frame HEIGHT) as a line of the mat width w (% of frame
+    width): height = k * w + c. The border is a fixed share of the FRAME, so it
+    adds the constant c; the polaroid caption strip stays proportional to the
+    mat. Twin of matLine() in src/collageCore.ts."""
+    return _mat_line_for(shape, fr, aspect)
+
+
+def _template_slot_width(slot: dict[str, float], spec: dict[str, Any], i: int, aspect: float, ratios=None) -> float:
     """Widest mat that fits the slot's box for photo i's frame — twin of templateSlotWidth()."""
     h = slot.get("h")
     if h is None or not h > 0:
         return slot["w"]
     photos = spec.get("photos") or []
-    mat_k, mat_c = mat_line(str(spec.get("shape") or "4:3"), photo_frame(spec, photos[i] if i < len(photos) else None), aspect)
+    mat_k, mat_c = _mat_line_for(_photo_shape(spec, i), photo_frame(spec, photos[i] if i < len(photos) else None), aspect, ratios[i] if ratios and i < len(ratios) else None)
     return min(slot["w"], (h - mat_c) / mat_k)
 
 
@@ -184,7 +267,7 @@ def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None
     """Resolved frame for a photo — twin of photoFrame()."""
     a = (spec or {}).get("frame") if isinstance((spec or {}).get("frame"), dict) else {}
     b = (photo or {}).get("frame") if isinstance((photo or {}).get("frame"), dict) else {}
-    shape = b.get("shape") if b.get("shape") in FRAME_SHAPES else (a.get("shape") if a.get("shape") in FRAME_SHAPES else "polaroid")
+    shape = b.get("shape") if b.get("shape") in FRAME_SHAPES else (a.get("shape") if a.get("shape") in FRAME_SHAPES else "rect")
 
     def _num(src: dict, key: str) -> float | None:
         v = src.get(key)
@@ -200,7 +283,7 @@ def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None
     if raw_w is None:
         raw_w = _num(a, "width")
     if raw_w is None:
-        width = 1.0
+        width = 0.5
     else:
         width = max(0.0, min(12.0, raw_w))
     color = b.get("color") if isinstance(b.get("color"), str) and len(b.get("color")) == 7 and b.get("color").startswith("#") else (
@@ -208,7 +291,7 @@ def photo_frame(spec: dict[str, Any] | None, photo: dict[str, Any] | None = None
     raw_r = _num(b, "radius")
     if raw_r is None:
         raw_r = _num(a, "radius")
-    radius = 12.0 if raw_r is None else max(0.0, min(50.0, raw_r))
+    radius = 5.0 if raw_r is None else max(0.0, min(50.0, raw_r))
     shadow = True
     if "shadow" in b:
         shadow = b.get("shadow") is not False
@@ -256,11 +339,11 @@ def arrangement_slots(spec: dict[str, Any]) -> list[int]:
     return out
 
 
-def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
+def placements(spec: dict[str, Any], aspect: float, ratios=None) -> list[dict[str, float]]:
     """Resting placement of every photo — twin of placements() in collageCore.ts:
     the layout's slots, with each photo moved onto its arrangement slot (its own
     size multiplier stays with the photo). Free positions are per photo."""
-    raw = _base_placements(spec, aspect)
+    raw = _base_placements(spec, aspect, ratios)
     if spec.get("layout") == "free" or len(raw) < 2:
         return raw
     slots = arrangement_slots(spec)
@@ -274,7 +357,14 @@ def placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
     return out
 
 
-def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, float]]:
+def _photo_mat_height(spec: dict[str, Any], i: int, w: float, aspect: float, ratios=None) -> float:
+    photos = spec.get("photos") or []
+    fr = photo_frame(spec, photos[i] if i < len(photos) else None)
+    k, c = _mat_line_for(_photo_shape(spec, i), fr, aspect, ratios[i] if ratios and i < len(ratios) else None)
+    return k * w + c
+
+
+def _base_placements(spec: dict[str, Any], aspect: float, ratios=None) -> list[dict[str, float]]:
     """Layout slots of the photos, before the arrangement remap."""
     n = max(1, len(spec.get("photos") or []))
     seed = int(spec.get("seed") or 1)
@@ -289,7 +379,9 @@ def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, floa
 
     # Mat height (% of frame HEIGHT) = line_k * w + line_c for the collage's
     # default frame — twin of matLine() in placements() (collageCore.ts): every
-    # layout that fits mats into cells limits their height with it.
+    # layout that fits mats into cells limits their height with it. For
+    # 'native' shape this is the default (4:3) line used for grid cells;
+    # masonry/photowall use per-photo heights via mat_h_of.
     line_k, line_c = mat_line(shape, photo_frame(spec, None), aspect)
 
     def fit_width(cell_w: float, cell_h: float) -> float:
@@ -301,6 +393,9 @@ def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, floa
     # multiplier (bigger photos overlap their neighbours — that is the point).
     def width_of(base: float, i: int) -> float:
         return base * photo_size(spec, i)
+
+    def mat_h_of(w: float, i: int) -> float:
+        return _photo_mat_height(spec, i, w, aspect, ratios)
 
     if layout == "grid":
         cols, _, cell_w, cell_h = cells(n)
@@ -349,7 +444,8 @@ def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, floa
         # Pinterest-style columns: seeded size variety, each photo stacked
         # into the shortest column (a single photo is simply centred).
         if n == 1:
-            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(min(40.0, (76 - line_c) / line_k), 0), "rot": 0.0})
+            w_max = 48.0 if _photo_shape(spec, 0) == "native" else min(40.0, (76 - line_c) / line_k)
+            out.append({"cx": 50.0, "cy": 50.0, "w": width_of(w_max, 0), "rot": 0.0})
         else:
             cols = 2 if n <= 2 else (3 if n <= 9 else 4)
             margin_x = 6.0
@@ -366,7 +462,7 @@ def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, floa
                     for j in range(1, cols):
                         if fills[j] < fills[c] - 1e-9:
                             c = j
-                    mh = line_k * ws[i] * scale + line_c
+                    mh = mat_h_of(ws[i] * scale, i)
                     res.append({"cx": margin_x + cell_w * (c + 0.5), "cy": 12 + fills[c] + gap / 2 + mh / 2})
                     fills[c] += gap + mh
                 return res, max(fills)
@@ -418,22 +514,38 @@ def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, floa
         # A compact block of equal tiles with a small gutter — twin of the
         # photowall branch in collageCore.ts: the column count that gives the
         # largest tile (ties: fewest empty cells), block and short last row
-        # centred.
+        # centred. For 'native' shape we size by the TALLEST photo so every
+        # portrait mat fits in its cell.
         try:
             gap = float(spec.get("gap")) if spec.get("gap") is not None and not isinstance(spec.get("gap"), bool) else 0.7
         except (TypeError, ValueError):
             gap = 0.7
         gap = max(0.0, min(12.0, gap if math.isfinite(gap) else 0.7))
+
+        def tile_h(w: float) -> float:
+            h = 0.0
+            for i in range(n):
+                h = max(h, mat_h_of(w, i))
+            return h
+
         best_cols, best_rows, best_w, best_empty = 1, n, 0.0, 0
         for cols in range(1, n + 1):
             rows = math.ceil(n / cols)
-            w = min((100 - gap * (cols + 1)) / cols, (100 - gap * (rows + 1) - rows * line_c) / (rows * line_k))
+            w_avail = (100 - gap * (cols + 1)) / cols
+            lo, hi = 2.0, max(2.0, w_avail)
+            for _ in range(12):
+                mid = (lo + hi) / 2
+                if tile_h(mid) * rows + gap * (rows + 1) <= 100:
+                    lo = mid
+                else:
+                    hi = mid
+            w = lo
             empty = cols * rows - n
             if w > best_w + 1e-9 or (abs(w - best_w) <= 1e-9 and empty < best_empty):
                 best_cols, best_rows, best_w, best_empty = cols, rows, w, empty
         cols, rows = best_cols, best_rows
         w = max(2.0, best_w)
-        mat_h = line_k * w + line_c
+        mat_h = tile_h(w)
         y0 = (100 - (rows * mat_h + (rows - 1) * gap)) / 2
         for i in range(n):
             col, row = i % cols, i // cols
@@ -507,7 +619,7 @@ def _base_placements(spec: dict[str, Any], aspect: float) -> list[dict[str, floa
         # frame style; the per-photo size multiplier still applies on top.
         slots = _template_slots(spec.get("template"), n)
         for i in range(n):
-            out.append({"cx": slots[i]["cx"], "cy": slots[i]["cy"], "w": width_of(_template_slot_width(slots[i], spec, i, aspect), i), "rot": slots[i]["rot"]})
+            out.append({"cx": slots[i]["cx"], "cy": slots[i]["cy"], "w": width_of(_template_slot_width(slots[i], spec, i, aspect, ratios), i), "rot": slots[i]["rot"]})
     else:  # stack
         w = 42.0 if n <= 3 else (34.0 if n <= 6 else 30.0)
         for i in range(n):
@@ -553,7 +665,7 @@ FREE_MIN_W = 4.0
 FREE_MAX_W = 100.0
 
 
-def free_from_displayed(spec: dict[str, Any], aspect: float, keep_stored: bool) -> list[dict[str, Any]]:
+def free_from_displayed(spec: dict[str, Any], aspect: float, keep_stored: bool, ratios=None) -> list[dict[str, Any]]:
     """Photos of a Free arrangement seeded from what another arrangement shows
     (twin of ``freeFromDisplayed``): each photo keeps its displayed centre, tilt
     and mat size — the size stored as the photo's own width before its size
@@ -561,7 +673,7 @@ def free_from_displayed(spec: dict[str, Any], aspect: float, keep_stored: bool) 
     photos = list(spec.get("photos") or [])
     if spec.get("layout") == "free":
         return photos
-    pls = placements(spec, aspect)
+    pls = placements(spec, aspect, ratios)
     out = []
     for i, p in enumerate(photos):
         if i < len(pls):
@@ -659,7 +771,7 @@ EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4}
 EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1}
 
 
-EXIT_SPEED_MIN, EXIT_SPEED_MAX = 0.2, 3.0
+EXIT_SPEED_MIN, EXIT_SPEED_MAX = 0.05, 2.0
 
 
 def exit_speed(spec: dict[str, Any]) -> float:
@@ -686,15 +798,17 @@ def exit_mode(spec: dict[str, Any]) -> str:
 
 def exit_offset(spec: dict[str, Any], i: int) -> float:
     """When photo i starts leaving, relative to the end of the hold. 'deal'
-    clears the top of the pile first (photo n-1 leaves first)."""
+    clears the top of the pile first (photo n-1 leaves first). exitReverse
+    flips the order so the last/top photo leaves first in every mode."""
     mode = exit_mode(spec)
     if mode == "none":
         return 0.0
     n = len(spec.get("photos") or [])
     speed = exit_speed(spec)
+    rev = spec.get("exitReverse") is True
     if mode == "deal":
-        return EXIT_STAGGER["deal"] / speed * max(0, n - 1 - i)
-    return EXIT_STAGGER[mode] / speed * i
+        return EXIT_STAGGER["deal"] / speed * max(0, i if rev else n - 1 - i)
+    return EXIT_STAGGER[mode] / speed * (max(0, n - 1 - i) if rev else i)
 
 
 def exit_total(spec: dict[str, Any]) -> float:
@@ -794,7 +908,7 @@ def push_depth(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> 
     return min(DEPTH["max"], p)
 
 
-def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: float = 16 / 9) -> dict[str, float]:
+def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, float]:
     """Virtual camera at segment time t — twin of cameraState() in collageCore.ts.
     Returns the window zoom and centre (% of frame); 'pan' drifts across,
     the zoom family centres on the last photo's anchor, clamped inside the
@@ -808,7 +922,7 @@ def camera_state(spec: dict[str, Any], t: float, lead_in: float = 0.0, aspect: f
     p = raw * raw * (3 - 2 * raw)
     if mode == "pan":
         return {"z": 1.09, "cx": 54 - 8 * p, "cy": 50.0}
-    pls = placements(spec, aspect)
+    pls = placements(spec, aspect, ratios)
     a = pls[-1] if pls else {"cx": 50.0, "cy": 50.0}
     if mode == "zoom":
         z = 1 + 0.35 * p
@@ -843,7 +957,7 @@ def camera_supersample(width: int, height: int) -> int:
 
 
 def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lead_in: float,
-                  aspect: float | None = None) -> str | None:
+                  aspect: float | None = None, ratios=None) -> str | None:
     """The FFmpeg filter chain for the virtual camera over the composed scene,
     or None when the collage has no camera.
 
@@ -859,7 +973,7 @@ def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lea
     cam = spec.get("camera") if spec.get("camera") in ("pan", "zoom", "telescope", "droste") else "none"
     if cam == "none":
         return None
-    pls = placements(spec, width / height if aspect is None else aspect)
+    pls = placements(spec, width / height if aspect is None else aspect, ratios)
     if not pls:
         return None
     d = max(0.2, collage_duration(spec))
@@ -888,7 +1002,7 @@ def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lea
     )
 
 
-def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9) -> dict[str, float]:
+def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, float]:
     """Animated offsets of photo i at segment time t — twin of photoState()."""
     t0 = photo_start(spec, i, lead_in)
     push = push_depth(spec, i, t, lead_in)
@@ -971,7 +1085,7 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         if qe > 0:
             ease = qe * qe
             if mode == "sweep":
-                pl = placements(spec, aspect)[i]
+                pl = placements(spec, aspect, ratios)[i]
                 vx = pl["cx"] - 50
                 vy = pl["cy"] - 50
                 length = math.hypot(vx, vy)
@@ -1067,6 +1181,8 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             entry["crop"] = p["crop"]
         if isinstance(p.get("frame"), dict):
             entry["frame"] = photo_frame({"frame": p["frame"]}, None)
+        if p.get("shape") in SHAPES:
+            entry["shape"] = p["shape"]
         photos.append(entry)
         if len(photos) >= MAX_COLLAGE_PHOTOS:
             break
@@ -1081,7 +1197,7 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         speed_in = None
     exit_speed_value = max(EXIT_SPEED_MIN, min(EXIT_SPEED_MAX, speed_in)) if speed_in is not None and math.isfinite(speed_in) and speed_in > 0 else None
     camera = raw.get("camera") if raw.get("camera") in ("pan", "zoom", "telescope", "droste") else None
-    shape = raw.get("shape") if raw.get("shape") in ("4:3", "square", "3:4", "16:9", "9:16", "3:2", "2:3") else "4:3"
+    shape = raw.get("shape") if raw.get("shape") in SHAPES else "4:3"
     try:
         seed = int(raw.get("seed") or 1)
     except (TypeError, ValueError):
@@ -1131,6 +1247,8 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         spec["exit"] = exit_
     if exit_speed_value is not None and exit_speed_value != 1.0:
         spec["exitSpeed"] = exit_speed_value
+    if raw.get("exitReverse") is True:
+        spec["exitReverse"] = True
     if camera is not None:
         spec["camera"] = camera
     if bg is not None:
@@ -1257,20 +1375,37 @@ def _shape_mask(fr: dict[str, Any], w: int, h: int) -> str:
 
 
 def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
-                  duration: float, lead_in: float, first_input: int, base_label: str) -> tuple[list[str], str] | None:
+                  duration: float, lead_in: float, first_input: int, base_label: str,
+                  settings: Any = None) -> tuple[list[str], str] | None:
     """Filter-graph lines that composite the collage photos onto ``base_label``.
 
     Returns (lines, last_label) — each photo's sprite (mat + soft shadow) is
     overlaid in z-order; `last_label` is the composed result — or None when
-    the item has no collage. Photos are matted (white polaroid border +
-    caption strip), given a soft shadow, and animated with the same curves
-    the preview uses (drop / pop / swing / none).
+    the item has no collage. Photos are matted (border in the frame style),
+    given a soft shadow, and animated with the same curves the preview uses
+    (drop / pop / swing / none). ``settings`` is only needed to probe the
+    real aspect of 'native'-shape photos from disk; without it those fall
+    back to 4:3.
     """
     spec = normalize_collage(item)
     if spec is None:
         return None
     aspect = width / height
-    pls = placements(spec, aspect)
+    # For 'native' shape (collage-wide or per-photo), probe each photo's real
+    # aspect once; unknown files fall back to 4:3 so the render never fails
+    # over metadata.
+    ratios: list[float | None] | None = None
+    if any(_photo_shape(spec, i) == "native" for i in range(len(spec.get("photos") or []))):
+        ratios = []
+        ffprobe_bin = getattr(settings, "ffprobe_bin", "ffprobe") if settings is not None else "ffprobe"
+        for p in spec.get("photos") or []:
+            try:
+                src = source_path(settings, {"path": p["path"], "name": p.get("name", "")})
+            except Exception:  # noqa: BLE001
+                ratios.append(None)
+                continue
+            ratios.append(_probe_aspect(src, ffprobe_bin))
+    pls = placements(spec, aspect, ratios)
     pin = pin_anchor(spec)
     anim = spec["animation"]
     # Depth push-back applies to drop / pop / flip — the same set the twin's
@@ -1318,7 +1453,9 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             border = 0
         bottom = max(0, round(0.205 * mat_w)) if fr["shape"] == "polaroid" else border
         photo_w = max(2, mat_w - 2 * border)
-        photo_h = max(2, round(photo_w / _photo_aspect(spec["shape"])))
+        native_ratio = ratios[i] if ratios is not None and i < len(ratios) else None
+        this_aspect = _photo_aspect(_photo_shape(spec, i), native_ratio)
+        photo_h = max(2, round(photo_w / this_aspect))
         mat_h = photo_h + border + bottom
         hex_c = fr["color"][1:] if isinstance(fr.get("color"), str) and fr["color"].startswith("#") and len(fr["color"]) == 7 else "ffffff"
         pad_color = "white" if hex_c.lower() == "ffffff" else "0x" + hex_c
@@ -1481,7 +1618,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             n_frames = max(1, math.ceil(last_var * fps))
             runs: list[list] = []           # [start_frame, end_frame, W, H]
             for k in range(n_frames + 1):
-                st = photo_state(spec, i, k / fps, lead_in, aspect)
+                st = photo_state(spec, i, k / fps, lead_in, aspect, ratios)
                 w_ = max(2, int(round(cw * st["scale"] * st["scaleX"])))
                 h_ = max(2, int(round(ch * st["scale"])))
                 if runs and runs[-1][2] == w_ and runs[-1][3] == h_:
@@ -1540,10 +1677,19 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         pre = (pre + ",") if pre else ""
         use_shadow = fr.get("shadow") is not False and fr["shape"] != "none"
         mask = _shape_mask(fr, mat_w, mat_h)
+        # 'native' shape shows the WHOLE photo (contain), letterboxing into the
+        # mat with the mat colour; fixed shapes crop to fill (cover) as before.
+        native_mode = _photo_shape(spec, i) == "native"
+        if native_mode:
+            scale_chain = (f"scale={photo_w}:{photo_h}:force_original_aspect_ratio=decrease,"
+                           f"pad={photo_w}:{photo_h}:(ow-iw)/2:(oh-ih)/2:color={pad_color}")
+        else:
+            scale_chain = (f"scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
+                           f"crop={photo_w}:{photo_h}")
         if use_shadow:
             lines.append(
-                f"[{inp}:v]{pre}scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
-                f"crop={photo_w}:{photo_h},pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
+                f"[{inp}:v]{pre}{scale_chain},"
+                f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
                 f"{dim_seg}format=rgba{mask},split[{m}a][{m}b];"
             )
             lines.append(f"[{m}b]pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[{t_}];")
@@ -1554,8 +1700,8 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             lines.append(f"[{sh}][{t_}]overlay=x=0:y=0[sp{i}];")
         else:
             lines.append(
-                f"[{inp}:v]{pre}scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
-                f"crop={photo_w}:{photo_h},pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
+                f"[{inp}:v]{pre}{scale_chain},"
+                f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
                 f"{dim_seg}format=rgba{mask},pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[sp{i}];"
             )
         lines.append(f"[sp{i}]{mid},format=rgba[sp{i}f];")
@@ -1583,7 +1729,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
     # Virtual camera over the composed scene — the last thing before the
     # caption: a supersampled zoompan following camera_state()'s curves
     # (see camera_filter for why not crop, and why supersampled).
-    camera = camera_filter(spec, width, height, fps, lead_in, aspect)
+    camera = camera_filter(spec, width, height, fps, lead_in, aspect, ratios)
     if camera is not None:
         lines.append(f"[{prev}]{camera}[cam];")
         prev = "cam"
