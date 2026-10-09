@@ -142,6 +142,11 @@ export type MediaItem = {
   // means "from the start" / "to the end", which is what every project saved
   // before movie trimming existed stores. The renderer honours the same pair.
   trimStart?: number; trimEnd?: number;
+  // Movies only: how the empty area around a movie that is not the frame's
+  // shape is filled. 'blur' (default) shows a blurred copy of the movie itself,
+  // 'colour' a solid movieBackgroundColour. Mirrored by movie_background() in
+  // backend/app/renderer.py.
+  movieBackground?: 'blur' | 'colour'; movieBackgroundColour?: string;
   // Picture look (filters/effects chosen in the preview popup): a preset id
   // from registry/picture-filters.json, its intensity (0..1) and the manual
   // sliders stacked on top. Like `rotation` this never touches the source file

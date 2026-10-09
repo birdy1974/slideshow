@@ -1,5 +1,4 @@
 2026-10-09
-- scale the movies so landscape but also portrait orientation movie are shown in full. for portrait give option for background color on the sides or blurred movie 
 - in text frame popup window (new and edit) in case picture is selected as background, add option to blur background picture ( like in background [photo collage)
 - in photo collage add option to set the speed (timing) of the photo exit animation
 - on the preview of the photo collage, the user should also be able to change the size of the photos (select a photo, under the preview show slider to set size of the selected photo)
@@ -17,6 +16,8 @@
 
 
 ---= DONE =---
+2026-10-09
+- movies are shown in full (landscape and portrait, never cropped). The area around a movie is a blurred copy of the movie (default) or a solid colour chosen in the movie editor ("Area around the movie")
 2026-09-27
 - Photo collage popup: make following improvements
     - Photo size & timing: add option for random sizes (max and min to be set by user)

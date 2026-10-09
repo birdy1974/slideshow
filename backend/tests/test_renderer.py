@@ -26,6 +26,8 @@ from app.renderer import (
     video_trim_window,
     fill_frame_filter,
     fit_frame_filter,
+    movie_background,
+    movie_frame_filter,
     loudnorm_filter,
     normalization_settings,
     parse_loudnorm_stats,
@@ -577,6 +579,28 @@ class FrameFittingTest(unittest.TestCase):
                 self.assertEqual(0, int(w) % 2, graph)
                 self.assertEqual(0, int(h) % 2, graph)
 
+    def test_movies_are_shown_whole_over_a_blurred_backdrop_by_default(self) -> None:
+        for item in ({"type": "video"}, {"type": "video", "movieBackground": "nonsense"}):
+            graph = movie_frame_filter(item, 1920, 1080, 30)
+            self.assertIn("scale=1920:1080:force_original_aspect_ratio=decrease", graph)
+            self.assertNotIn("force_original_aspect_ratio=increase,crop=1920:1080", graph)
+            self.assertIn("gblur", graph)
+            self.assertIn("overlay=(W-w)/2:(H-h)/2", graph)
+            self.assertTrue(graph.rstrip().endswith("fps=30"))
+
+    def test_movies_can_use_a_solid_colour_backdrop(self) -> None:
+        item = {"type": "video", "movieBackground": "colour", "movieBackgroundColour": "#FF8800"}
+        graph = movie_frame_filter(item, 1280, 720, 25)
+        self.assertIn("scale=1280:720:force_original_aspect_ratio=decrease", graph)
+        self.assertIn("pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=0xff8800", graph)
+        self.assertNotIn("gblur", graph)
+        self.assertNotIn("crop=", graph)
+
+    def test_movie_backdrop_colour_is_validated(self) -> None:
+        self.assertEqual(("colour", "#123456"), movie_background({"movieBackground": "colour", "movieBackgroundColour": "#123456"}))
+        self.assertEqual(("colour", "#000000"), movie_background({"movieBackground": "colour", "movieBackgroundColour": "red; drawbox"}))
+        self.assertEqual(("blur", "#000000"), movie_background({}))
+
     def test_videos_and_title_frames_still_fill_the_frame(self) -> None:
         graph = fill_frame_filter(1920, 1080, 30)
         self.assertIn("force_original_aspect_ratio=increase", graph)
@@ -718,7 +742,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         ])
         self.assertIn("-vf", commands[0]); self.assertNotIn("-filter_complex", commands[0])
 
-    def test_image_is_fitted_video_is_filled(self) -> None:
+    def test_image_and_movie_are_both_fitted_not_cropped(self) -> None:
         filters = self._segment_filters([
             {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None", "transition": "Fade", "transitionTime": 0.5},
             {"id": 2, "type": "video", "path": "/videos/a.mp4", "duration": 2, "effect": "Original motion", "transition": "Fade", "transitionTime": 0.5},
@@ -726,8 +750,10 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertEqual(2, len(filters))
         self.assertIn("force_original_aspect_ratio=decrease", filters[0])
         self.assertNotIn("crop=1920:1080", filters[0])
-        self.assertIn("crop=1920:1080", filters[1])
-        self.assertNotIn("force_original_aspect_ratio=decrease", filters[1])
+        # Movies are shown whole too (landscape or portrait), over a blurred backdrop.
+        self.assertNotIn("crop=1920:1080", filters[1])
+        self.assertIn("force_original_aspect_ratio=decrease", filters[1])
+        self.assertIn("gblur", filters[1])
 
     def test_ken_burns_zoom_is_centred_and_bounded(self) -> None:
         filters = self._segment_filters([
