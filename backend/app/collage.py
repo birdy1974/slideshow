@@ -861,14 +861,14 @@ def bg_fit_filter(fit: str | None, width: int, height: int) -> str:
     """How a background picture fills the frame — twin of bgFitStyle()."""
     f = fit if fit in ("fill", "fit", "stretch", "tile", "center", "span") else "fill"
     if f == "fit":
-        return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        return (f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
     if f == "stretch":
         return f"scale={width}:{height},setsar=1"
     if f == "tile":
         return (f"loop=loop=63:size=1,tile=8x8,crop={width}:{height}:0:0,setsar=1")
     if f == "center":
-        return (f"scale='min(iw,{width})':'min(ih,{height})':force_original_aspect_ratio=decrease,"
+        return (f"scale='min(iw,{width})':'min(ih,{height})':force_original_aspect_ratio=decrease:force_divisible_by=2,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
     # fill and span: cover the frame, cropping overflow
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
@@ -1681,7 +1681,12 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # mat with the mat colour; fixed shapes crop to fill (cover) as before.
         native_mode = _photo_shape(spec, i) == "native"
         if native_mode:
-            scale_chain = (f"scale={photo_w}:{photo_h}:force_original_aspect_ratio=decrease,"
+            # force_divisible_by=2: with an odd target height the decrease-scale
+            # of a 4:2:0 (yuvj420p) source can come out one row taller than
+            # requested, and the exact pad that follows then fails with
+            # "Padded dimensions cannot be smaller than input dimensions" (exit
+            # 234). Even output + pad keeps the same visible mat, 1px short at most.
+            scale_chain = (f"scale={photo_w}:{photo_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
                            f"pad={photo_w}:{photo_h}:(ow-iw)/2:(oh-ih)/2:color={pad_color}")
         else:
             scale_chain = (f"scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"

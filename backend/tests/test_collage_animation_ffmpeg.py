@@ -96,3 +96,55 @@ class CollageAnimationRenderTest(unittest.TestCase):
         later = _centroid(frames[round(0.8 * FPS)])
         travel = ((later[0] - early[0]) ** 2 + (later[1] - early[1]) ** 2) ** 0.5
         self.assertGreater(travel, 6.0, f"rendered swing barely moved: {early} -> {later}")
+
+
+def _render_depth_collage(ffmpeg: str, workdir: str) -> subprocess.CompletedProcess:
+    """Render the first frames of a depth-stacked native-shape collage.
+
+    The depth push-back puts an eq/sendcmd dimming chain on the photos, which
+    keeps each scaled photo in 4:2:0. Native photos use a decrease-scale
+    followed by an exact pad; with an odd target height FFmpeg can scale one
+    row taller than asked, so the pad failed with exit 234 ("Padded dimensions
+    cannot be smaller than input dimensions").
+    """
+    photos = []
+    for i in range(3):
+        path = os.path.join(workdir, f"photo{i}.jpg")
+        subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                        "-i", "testsrc2=s=4624x3468:d=0.04", "-frames:v", "1", path],
+                       check=True, timeout=60)
+        photos.append(path)
+    item = {"collage": {
+        "layout": "masonry",
+        "animation": "drop",
+        "depth": True,
+        "shape": "native",
+        "seed": 3,
+        "hold": 2,
+        "frame": {"shape": "classic"},
+        "photos": [{"path": p} for p in photos],
+    }}
+    spec = normalize_collage(item)
+    assert spec is not None
+    duration = min(collage_duration(spec), 6.0)
+    lines, last = collage_graph(item, W, H, FPS, duration, 0, 1, "cb")
+    graph = (f"[0:v]null[cb];{''.join(lines)}"
+             f"[{last}]format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v]")
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+               "-f", "lavfi", "-i", f"color=c=0x606060:s={W}x{H}:r={FPS}:d={duration}"]
+    for path in photos:
+        command += ["-loop", "1", "-framerate", str(FPS), "-t", str(duration), "-i", path]
+    command += ["-filter_complex", graph, "-map", "[v]", "-frames:v", "8",
+                "-f", "null", "-"]
+    return subprocess.run(command, capture_output=True, timeout=180)
+
+
+@unittest.skipIf(_ffmpeg_bin() is None, "no FFmpeg binary available")
+class CollageOddNativeHeightRenderTest(unittest.TestCase):
+    def test_depth_collage_with_odd_native_mat_heights_renders(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as workdir:
+            result = _render_depth_collage(str(_ffmpeg_bin()), workdir)
+        stderr = result.stderr.decode(errors="replace")
+        self.assertEqual(result.returncode, 0, f"collage graph failed to render:\n{stderr[-2000:]}")
+        self.assertNotIn("cannot be smaller than input dimensions", stderr)
