@@ -56,39 +56,416 @@ def _snap_native_aspect(ratio: float) -> float:
     return 1.0
 
 
+# How many leading bytes of a still to scan for dimensions + EXIF. Phone JPEGs
+# often carry a multi-megabyte ICC profile before the frame header; the
+# orientation tag itself is almost always in the first APP1 segment.
+_STILL_HEAD_LIMIT = 4_000_000
+_EXIF_ORIENTATION = 0x0112
+_EXIF_SUB_IFD = 0x8769
+
+
+def _quarter_turn(rotation: float | None) -> bool:
+    """True when a display-matrix rotation (degrees) swaps width and height.
+
+    FFmpeg reports iPhone portrait clips as -90 or 270; either way the picture
+    the viewer sees is the other way up from the stored pixels.
+    """
+    if rotation is None:
+        return False
+    try:
+        turns = abs(float(rotation)) % 360.0
+    except (TypeError, ValueError):
+        return False
+    return abs(turns - 90.0) < 1.5 or abs(turns - 270.0) < 1.5
+
+
+def _display_size(width: int, height: int, swap: bool) -> tuple[int, int]:
+    if swap and width > 0 and height > 0:
+        return height, width
+    return width, height
+
+
+def _tiff_orientation(data: bytes, base: int = 0, depth: int = 0) -> int | None:
+    """EXIF Orientation (1–8) from a TIFF header at ``data[base:]``, or None.
+
+    Orientation lives in IFD0. A few writers park it only in the Exif sub-IFD,
+    so that pointer (tag 0x8769) is followed once. Offsets are relative to the
+    TIFF header, which for a JPEG APP1 segment starts after the ``Exif\\0\\0``
+    prefix — the caller passes that base.
+    """
+    if depth > 3 or base < 0 or base + 8 > len(data):
+        return None
+    endian = data[base:base + 2]
+    if endian == b"II":
+        order = "little"
+    elif endian == b"MM":
+        order = "big"
+    else:
+        return None
+
+    def u16(offset: int) -> int:
+        return int.from_bytes(data[offset:offset + 2], order)
+
+    def u32(offset: int) -> int:
+        return int.from_bytes(data[offset:offset + 4], order)
+
+    if u16(base + 2) != 42:
+        return None
+    return _tiff_ifd_orientation(data, base, base + u32(base + 4), u16, u32, depth)
+
+
+def _tiff_ifd_orientation(data: bytes, base: int, ifd: int, u16, u32, depth: int) -> int | None:
+    if depth > 3 or ifd < 0 or ifd + 2 > len(data):
+        return None
+    count = u16(ifd)
+    if count > 256:
+        return None
+    found: int | None = None
+    sub_ifd: int | None = None
+    for i in range(count):
+        entry = ifd + 2 + i * 12
+        if entry + 12 > len(data):
+            break
+        tag = u16(entry)
+        typ = u16(entry + 2)
+        cnt = u32(entry + 4)
+        if tag == _EXIF_ORIENTATION and cnt >= 1 and typ in (1, 3, 4):
+            value = _tiff_inline(data, base, entry, typ, u16, u32)
+            if value is not None and 1 <= value <= 8:
+                found = value
+        elif tag == _EXIF_SUB_IFD and typ == 4 and cnt >= 1:
+            sub_ifd = base + u32(entry + 8)
+    # A non-default orientation in IFD0 wins. Otherwise look in the Exif
+    # sub-IFD — some cameras write the tag only there.
+    if found not in (None, 1):
+        return found
+    if sub_ifd is not None and sub_ifd != ifd:
+        nested = _tiff_ifd_orientation(data, base, sub_ifd, u16, u32, depth + 1)
+        if nested not in (None, 1):
+            return nested
+    return found
+
+
+def _tiff_inline(data: bytes, base: int, entry: int, typ: int, u16, u32) -> int | None:
+    """The first value of a SHORT/LONG/BYTE IFD entry (inline, or via offset)."""
+    size = {1: 1, 3: 2, 4: 4}.get(typ)
+    if size is None:
+        return None
+    # Values of 4 bytes or less are stored in the entry itself.
+    if size <= 4:
+        raw = entry + 8
+    else:
+        raw = base + u32(entry + 8)
+    if raw < 0 or raw + size > len(data):
+        return None
+    if typ == 1:
+        return data[raw]
+    if typ == 3:
+        return u16(raw)
+    return u32(raw)
+
+
+def _orientation_in_exif_blob(blob: bytes) -> int | None:
+    """Orientation from a raw TIFF EXIF blob, or one prefixed with ``Exif\\0\\0``."""
+    if blob.startswith(b"Exif\x00\x00"):
+        return _tiff_orientation(blob, 6)
+    return _tiff_orientation(blob, 0)
+
+
+def _jpeg_display_size(data: bytes) -> tuple[int, int] | None:
+    """Displayed (width, height) of a JPEG, after the EXIF orientation tag.
+
+    Stored pixels of a phone portrait are usually landscape; the browser (and
+    FFmpeg's autorotate) turn them upright. The mat has to use that displayed
+    size or the upright picture is letterboxed into a landscape frame.
+    """
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None
+    orientation = 1
+    size: tuple[int, int] | None = None
+    i = 2
+    while i + 3 < len(data):
+        if data[i] != 0xFF:
+            break
+        while i < len(data) and data[i] == 0xFF:
+            i += 1
+        if i >= len(data):
+            break
+        marker = data[i]
+        i += 1
+        # Standalone markers (no length): TEM and the RSTn restarts.
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            continue
+        if marker in (0xD8, 0xD9):  # a nested SOI, or EOI
+            if marker == 0xD9:
+                break
+            continue
+        if i + 2 > len(data):
+            break
+        length = int.from_bytes(data[i:i + 2], "big")
+        if length < 2 or i + length > len(data):
+            break
+        payload = data[i + 2:i + length]
+        if marker == 0xE1 and payload.startswith(b"Exif\x00\x00"):
+            found = _tiff_orientation(payload, 6)
+            if found:
+                orientation = found
+        elif marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            # SOF: precision, height, width. This is the stored pixel size.
+            if len(payload) >= 5:
+                height = int.from_bytes(payload[1:3], "big")
+                width = int.from_bytes(payload[3:5], "big")
+                if width and height:
+                    size = (width, height)
+        if marker == 0xDA:  # SOS — entropy-coded data follows, headers are done
+            break
+        i += length
+    if size is None:
+        return None
+    width, height = size
+    return _display_size(width, height, orientation in (5, 6, 7, 8))
+
+
+def _png_display_size(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    width = height = 0
+    orientation = 1
+    i = 8
+    while i + 12 <= len(data):
+        length = int.from_bytes(data[i:i + 4], "big")
+        kind = data[i + 4:i + 8]
+        if length < 0 or i + 12 + length > len(data):
+            break
+        chunk = data[i + 8:i + 8 + length]
+        if kind == b"IHDR" and len(chunk) >= 8:
+            width = int.from_bytes(chunk[0:4], "big")
+            height = int.from_bytes(chunk[4:8], "big")
+        elif kind == b"eXIf":
+            found = _orientation_in_exif_blob(chunk)
+            if found:
+                orientation = found
+        elif kind == b"IEND":
+            break
+        i += 12 + length
+    if not width or not height:
+        return None
+    return _display_size(width, height, orientation in (5, 6, 7, 8))
+
+
+def _webp_display_size(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 16 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return None
+    width = height = 0
+    orientation = 1
+    i = 12
+    while i + 8 <= len(data):
+        kind = data[i:i + 4]
+        size = int.from_bytes(data[i + 4:i + 8], "little")
+        chunk = data[i + 8:i + 8 + size]
+        if len(chunk) < size:
+            break
+        if kind == b"VP8X" and size >= 10:
+            width = 1 + int.from_bytes(chunk[4:7], "little")
+            height = 1 + int.from_bytes(chunk[7:10], "little")
+        elif kind == b"VP8 " and not width and size >= 10 and chunk[3:6] == b"\x9d\x01\x2a":
+            width = int.from_bytes(chunk[6:8], "little") & 0x3FFF
+            height = int.from_bytes(chunk[8:10], "little") & 0x3FFF
+        elif kind == b"VP8L" and not width and size >= 5 and chunk[0] == 0x2F:
+            bits = int.from_bytes(chunk[1:5], "little")
+            width = (bits & 0x3FFF) + 1
+            height = ((bits >> 14) & 0x3FFF) + 1
+        elif kind == b"EXIF":
+            found = _orientation_in_exif_blob(chunk)
+            if found:
+                orientation = found
+        i += 8 + size + (size & 1)
+    if not width or not height:
+        return None
+    return _display_size(width, height, orientation in (5, 6, 7, 8))
+
+
+def _tiff_display_size(data: bytes) -> tuple[int, int] | None:
+    """Displayed size of a TIFF/DNG-style still. Width/length from IFD0."""
+    if len(data) < 8 or data[:2] not in (b"II", b"MM"):
+        return None
+    order = "little" if data[:2] == b"II" else "big"
+
+    def u16(offset: int) -> int:
+        return int.from_bytes(data[offset:offset + 2], order)
+
+    def u32(offset: int) -> int:
+        return int.from_bytes(data[offset:offset + 4], order)
+
+    if u16(2) != 42:
+        return None
+    ifd = u32(4)
+    if ifd + 2 > len(data):
+        return None
+    count = u16(ifd)
+    if count > 512:
+        return None
+    width = height = 0
+    for i in range(count):
+        entry = ifd + 2 + i * 12
+        if entry + 12 > len(data):
+            break
+        tag = u16(entry)
+        typ = u16(entry + 2)
+        if tag not in (0x0100, 0x0101) or typ not in (1, 3, 4):
+            continue
+        value = _tiff_inline(data, 0, entry, typ, u16, u32)
+        if not value:
+            continue
+        if tag == 0x0100:
+            width = value
+        else:
+            height = value
+    if not width or not height:
+        return None
+    orientation = _tiff_orientation(data, 0) or 1
+    return _display_size(width, height, orientation in (5, 6, 7, 8))
+
+
+def _bmp_display_size(data: bytes) -> tuple[int, int] | None:
+    # BMP has no orientation tag; a negative height is just top-down storage.
+    if len(data) < 26 or data[:2] != b"BM":
+        return None
+    width = int.from_bytes(data[18:22], "little", signed=True)
+    height = int.from_bytes(data[22:26], "little", signed=True)
+    if width > 0 and height != 0:
+        return width, abs(height)
+    return None
+
+
+def _still_display_size(path: Path) -> tuple[int, int] | None:
+    """Displayed pixel size of a still, or None if the header can't be read.
+
+    This is the size the browser reports as naturalWidth/naturalHeight: EXIF
+    orientations 5–8 swap the stored width and height. FFmpeg 8 autorotates
+    from the same tag before any user filter, so the collage mat must be
+    sized from this displayed size. Using the raw pixel size letterboxes an
+    upright portrait into a landscape frame (white bars on both sides).
+    """
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_STILL_HEAD_LIMIT)
+    except OSError:
+        return None
+    ext = path.suffix.lower()
+    if ext in {".jpg", ".jpeg"} or head[:2] == b"\xff\xd8":
+        return _jpeg_display_size(head)
+    if ext == ".png" or head[:8] == b"\x89PNG\r\n\x1a\n":
+        return _png_display_size(head)
+    if ext == ".webp" or (head[:4] == b"RIFF" and head[8:12] == b"WEBP"):
+        return _webp_display_size(head)
+    if ext in {".tif", ".tiff"} or head[:2] in (b"II", b"MM"):
+        found = _tiff_display_size(head)
+        if found:
+            return found
+    if ext == ".bmp" or head[:2] == b"BM":
+        return _bmp_display_size(head)
+    return None
+
+
+def _aspect_from_probe_json(data: dict[str, Any]) -> float | None:
+    """Displayed w/h from an ffprobe JSON document.
+
+    Stream width/height are the stored size. A display-matrix rotation (videos)
+    or an Orientation side-data rotation (a decoded still) is applied the same
+    way FFmpeg's autorotate filter turns the frames before ``scale``.
+    """
+    width = height = 0
+    rotation: float | None = None
+
+    def take_rotation(raw: Any) -> None:
+        nonlocal rotation
+        if rotation is not None or raw is None:
+            return
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(value):
+            rotation = value
+
+    containers: list[dict[str, Any]] = []
+    for key in ("streams", "frames"):
+        for item in data.get(key) or []:
+            if isinstance(item, dict):
+                containers.append(item)
+    for item in containers:
+        if not width or not height:
+            try:
+                w = int(item.get("width") or 0)
+                h = int(item.get("height") or 0)
+            except (TypeError, ValueError):
+                w = h = 0
+            if w > 0 and h > 0:
+                width, height = w, h
+        tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
+        take_rotation(tags.get("rotate"))
+        for side in item.get("side_data_list") or []:
+            if isinstance(side, dict):
+                take_rotation(side.get("rotation"))
+    if not width or not height:
+        return None
+    shown_w, shown_h = _display_size(width, height, _quarter_turn(rotation))
+    return shown_w / shown_h
+
+
 def _probe_aspect(path: Path, ffprobe_bin: str) -> float | None:
-    """Best-effort aspect (w/h) of a photo or video. None if unreadable.
-    Returns the REAL measured ratio (not snapped to a bucket) so each mat
-    exactly matches its photo in 'native' mode."""
+    """Displayed aspect (w/h) of a photo or video. None if unreadable.
+
+    Returns the ratio the preview measures (browser naturalWidth/naturalHeight,
+    which already applies EXIF orientation and video rotation) — not the raw
+    stored pixels, and not snapped to a bucket — so a 'native' mat matches the
+    picture FFmpeg actually draws. A portrait phone photo stored as landscape
+    pixels with Orientation=6 must come back portrait; otherwise the upright
+    picture is padded into a landscape mat with white bars on both sides.
+    """
     try:
         ext = path.suffix.lower()
-        if ext in IMAGE_EXTENSIONS:
+        if ext in IMAGE_EXTENSIONS or ext == "":
+            shown = _still_display_size(path)
+            if shown and shown[0] and shown[1]:
+                return shown[0] / shown[1]
+            # Pillow is optional. Image.size is the stored size and ignores
+            # EXIF, which is exactly the bug — only trust it after transposing.
             try:
-                from PIL import Image  # type: ignore
+                from PIL import Image, ImageOps  # type: ignore
                 with Image.open(path) as im:
+                    turned = ImageOps.exif_transpose(im)
+                    if turned is not None:
+                        im = turned
                     w, h = im.size
                 if w and h:
                     return w / h
             except Exception:  # noqa: BLE001 - fall through to ffprobe
                 pass
-        probe = shutil.which(ffprobe_bin)
+        probe = shutil.which(ffprobe_bin) if ffprobe_bin else None
         if not probe:
             return None
-        result = subprocess.run(
-            [probe, "-hide_banner", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=10.0, check=False,
-        )
-        data = json.loads(result.stdout or "{}")
-        streams = data.get("streams") or []
-        if streams:
-            w = int(streams[0].get("width") or 0)
-            h = int(streams[0].get("height") or 0)
-            if w and h:
-                return w / h
+        # Stream header only — no frame decode. A movie's rotation is display-
+        # matrix side data (or the legacy rotate tag) on the stream; stills
+        # are handled above, because a JPEG's EXIF orientation is not a stream
+        # field. The plain width/height query is the fallback if a build
+        # rejects the side-data selector.
+        for entries in (
+            "stream=width,height:stream_tags=rotate:stream_side_data=rotation",
+            "stream=width,height",
+        ):
+            result = subprocess.run(
+                [probe, "-hide_banner", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", entries, "-of", "json", str(path)],
+                capture_output=True, text=True, timeout=10.0, check=False,
+            )
+            aspect = _aspect_from_probe_json(json.loads(result.stdout or "{}"))
+            if aspect:
+                return aspect
+        return None
     except Exception:  # noqa: BLE001 - never fail a render over metadata
         return None
-    return None
 
 
 # Valid photo shapes (twin of COLLAGE_SHAPES_ALL in src/collageCore.ts).
@@ -1391,9 +1768,12 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
     if spec is None:
         return None
     aspect = width / height
-    # For 'native' shape (collage-wide or per-photo), probe each photo's real
-    # aspect once; unknown files fall back to 4:3 so the render never fails
-    # over metadata.
+    # For 'native' shape (collage-wide or per-photo), probe each photo's
+    # *displayed* aspect once — after EXIF orientation / video rotation, the
+    # same size the preview measures and the size FFmpeg autorotates to before
+    # scale. Unknown files fall back to 4:3 so the render never fails over
+    # metadata. A raw (unrotated) probe letterboxes an upright portrait into a
+    # landscape mat: white bars on both sides, the picture small in the middle.
     ratios: list[float | None] | None = None
     if any(_photo_shape(spec, i) == "native" for i in range(len(spec.get("photos") or []))):
         ratios = []
@@ -1679,6 +2059,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         mask = _shape_mask(fr, mat_w, mat_h)
         # 'native' shape shows the WHOLE photo (contain), letterboxing into the
         # mat with the mat colour; fixed shapes crop to fill (cover) as before.
+        # photo_w/photo_h are the *displayed* aspect (see _probe_aspect): FFmpeg
+        # autorotates EXIF / display-matrix before this scale, so a portrait
+        # phone photo must be given a portrait box or it sits small between
+        # two white side bars. Do not add a second transpose here.
         native_mode = _photo_shape(spec, i) == "native"
         if native_mode:
             # force_divisible_by=2: with an odd target height the decrease-scale
