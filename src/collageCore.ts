@@ -1564,6 +1564,26 @@ export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn 
   return { ...plain, bright: 1 + L.bright * env * jitter }
 }
 
+/** The CSS filter the preview puts on a mat: the depth dim first, then the
+ *  photo's animated look — and in the order the render's own filters sit in the
+ *  chain (eq for the dim, one hue for the colour wheel and the saturation, a
+ *  second eq for the brightness, negate for the flip), so a drained, turned or
+ *  flickering photo looks the same on screen and in the MP4. CSS applies filters
+ *  left to right, which is the same order FFmpeg applies its chain.
+ *
+ *  The thresholds are the ones the render uses to decide whether a filter is
+ *  worth emitting at all, so both sides stay quiet about a photo that is not
+ *  being touched. */
+export function matFilterCss (dim: number, look: { sat: number; bright: number; inv: number; hue: number }): string {
+  const parts: string[] = []
+  if (dim > 0.004) parts.push(`brightness(${(1 - dim).toFixed(3)})`)
+  if (Math.abs(look.hue) > 0.2) parts.push(`hue-rotate(${look.hue.toFixed(2)}deg)`)
+  if (Math.abs(look.sat - 1) > 0.002) parts.push(`saturate(${look.sat.toFixed(3)})`)
+  if (Math.abs(look.bright - 1) > 0.002) parts.push(`brightness(${look.bright.toFixed(3)})`)
+  if (look.inv > 0.5) parts.push('invert(1)')
+  return parts.join(' ')
+}
+
 /** The entrance a photo actually performs: its own override when it has one,
  *  the collage's animation otherwise. */
 export function photoAnim (spec: CollageSpec, i: number): CollageAnim {

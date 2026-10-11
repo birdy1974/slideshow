@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -3307,6 +3307,8 @@ function FrameMotionPreview({ item, defaults, playing = true, className = '' }: 
 
 /** Screen-space gap (px) between a mat's top edge and its rotate knob. */
 const ROTATE_KNOB_GAP = 18
+/** The same gap for the knob that turns a motion's end-state ghost. */
+const TURN_KNOB_GAP = 16
 
 /** Screen-space thickness and gap (px) of the selected photo's dotted ring.
  *  The ring is drawn inside the 1920×1080 layer, which the stage scales down to
@@ -3327,7 +3329,7 @@ function matRadiusCss (fr: { shape: string; radius?: number }): string {
  *  and `onRotatePhoto` (Free: drag the knob on the selected mat to turn it) —
  *  both write the same numbers the render reads (`cx`/`cy`/`rot`), so a hand
  *  arrangement on the preview is what the MP4 shows. */
-function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, showMotionTarget, selectedIndex, onSelectPhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
+function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, onTurnTarget, showMotionTarget, selectedIndex, onSelectPhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; onTurnTarget?: (index: number, degrees: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const layerRef = useRef<HTMLDivElement | null>(null)
   const camRef = useRef<HTMLDivElement | null>(null)
@@ -3338,6 +3340,8 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
   const targetBoxRef = useRef<HTMLDivElement | null>(null)
   const targetHandleRef = useRef<HTMLButtonElement | null>(null)
   const targetDragRef = useRef<{ pointerId: number; index: number; startX: number; startY: number; x: number; y: number } | null>(null)
+  const turnHandleRef = useRef<HTMLButtonElement | null>(null)
+  const turnDragRef = useRef<{ pointerId: number; index: number; startAngle: number; startTurn: number } | null>(null)
   const ringRef = useRef<HTMLDivElement | null>(null)
   // The 1920×1080 layer is scaled down to the host; the rotate knob counters
   // that scale so it stays the same size on screen whatever the stage width.
@@ -3564,8 +3568,23 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
         ghost.style.height = `${g.matH.toFixed(2)}px`
         ghost.style.borderWidth = `${Math.max(1.5, 2 / k).toFixed(2)}px`
         ghost.style.borderRadius = matRadiusCss(g.fr)
-        ghost.style.transform = `translate(-50%, -50%) rotate(${angle.toFixed(3)}deg)`
+        // A photo that hangs from a pin turns around its top edge, so its ghost
+        // hangs from the anchor the same way instead of being centred on it.
+        ghost.style.transformOrigin = g.pin ? '50% 0' : '50% 50%'
+        ghost.style.transform = `translate(-50%, ${g.pin ? '0' : '-50%'}) rotate(${angle.toFixed(3)}deg)`
         ghost.style.filter = `drop-shadow(0 0 ${(3 / k).toFixed(2)}px #000e)`
+      }
+      // The knob that turns the ghost: it hangs off the end state's top edge and
+      // swings around the same anchor the photo itself turns around.
+      const turnKnob = turnHandleRef.current
+      if (turnKnob && targetKind === 'turn' && selectIndex !== null && geo[selectIndex]) {
+        const g = geo[selectIndex]
+        const k = Math.max(0.05, layerScaleRef.current * cs.z)
+        const angle = g.rot + photoTurnTo(spec, selectIndex)
+        const up = (g.pin ? 0 : g.matH / 2) + TURN_KNOB_GAP / k
+        turnKnob.style.left = `${g.ax.toFixed(2)}px`
+        turnKnob.style.top = `${g.ay.toFixed(2)}px`
+        turnKnob.style.transform = `translate(-50%, -50%) rotate(${angle.toFixed(3)}deg) translateY(${(-up).toFixed(2)}px) scale(${(1 / k).toFixed(4)})`
       }
       const target = targetHandleRef.current
       if (target && targetKind === 'move' && selectIndex !== null && geo[selectIndex]) {
@@ -3577,7 +3596,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
         target.style.transform = `translate(-50%, -50%) scale(${(1 / k).toFixed(4)})`
       }
     })
-  }, [spec, geo, clock, ratios, selectIndex, rotateIndex, targetKind, onMoveTarget])
+  }, [spec, geo, clock, ratios, selectIndex, rotateIndex, targetKind, onMoveTarget, onTurnTarget])
 
   // Where a mat turns around, in client coordinates: its animated anchor
   // (left/top — the mat centre, or the pin point while a swing hangs from the
@@ -3603,6 +3622,33 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
       x: rect.left + s * (ox + (50 - cs.cx) * cs.z / 100 * FRAME_W + cs.z * (lx - ox)),
       y: rect.top + s * (oy + (50 - cs.cy) * cs.z / 100 * FRAME_H + cs.z * (ly - oy)),
     }
+  }
+
+  // Where a photo's RESTING anchor sits on screen: what matPivotClient does, but
+  // without the animated offset. A motion's end state is measured from where the
+  // photo rests, so a drag on the ghost has to measure its angles around that
+  // point — not around wherever the playhead happens to have moved it to.
+  const restPivotClient = (i: number): { x: number; y: number } | null => {
+    const host = hostRef.current
+    const g = geo[i]
+    if (!host || !g || !spec) return null
+    const rect = host.getBoundingClientRect()
+    if (!(rect.width > 0)) return null
+    const now = clock.now()
+    const cs = cameraState(spec, now, 0, FRAME_W / FRAME_H, ratios)
+    const s = rect.width / FRAME_W
+    const ox = FRAME_W / 2
+    const oy = FRAME_H / 2
+    return {
+      x: rect.left + s * (ox + (50 - cs.cx) * cs.z / 100 * FRAME_W + cs.z * (g.ax - ox)),
+      y: rect.top + s * (oy + (50 - cs.cy) * cs.z / 100 * FRAME_H + cs.z * (g.ay - oy)),
+    }
+  }
+
+  const endTurnDrag = (e: React.PointerEvent<HTMLElement>) => {
+    if (turnDragRef.current?.pointerId !== e.pointerId) return
+    turnDragRef.current = null
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
   }
 
   const endRotateDrag = (e: React.PointerEvent<HTMLElement>) => {
@@ -3762,6 +3808,43 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
               Math.max(-MOVE_RANGE, Math.min(MOVE_RANGE, mv.x + dx)),
               Math.max(-MOVE_RANGE, Math.min(MOVE_RANGE, mv.y + dy)))
           }}><Move size={13} /></button>}
+        {targetKind === 'turn' && onTurnTarget && selectIndex !== null && spec && <button type="button" ref={turnHandleRef}
+          className="collage-turn-handle" style={{ left: -9999, top: -9999 }}
+          title={`The angle photo ${selectIndex + 1} turns to: drag around it (Shift snaps to 15°), or use ← → for 1° steps`}
+          aria-label={`End angle of photo ${selectIndex + 1}'s motion`}
+          onClick={e => e.stopPropagation()}
+          onPointerDown={e => {
+            if (e.button !== 0 || selectIndex === null) return
+            const pivot = restPivotClient(selectIndex)
+            if (!pivot) return
+            e.preventDefault(); e.stopPropagation()
+            e.currentTarget.setPointerCapture(e.pointerId)
+            turnDragRef.current = {
+              pointerId: e.pointerId, index: selectIndex,
+              startAngle: pointerAngle(pivot.x, pivot.y, e.clientX, e.clientY),
+              startTurn: photoTurnTo(spec, selectIndex),
+            }
+          }}
+          onPointerMove={e => {
+            const drag = turnDragRef.current
+            if (!drag || drag.pointerId !== e.pointerId) return
+            const pivot = restPivotClient(drag.index)
+            if (!pivot) return
+            onTurnTarget(drag.index, rotateDragTilt(drag.startTurn, drag.startAngle,
+              pointerAngle(pivot.x, pivot.y, e.clientX, e.clientY), e.shiftKey ? 15 : 0))
+          }}
+          onPointerUp={endTurnDrag}
+          onPointerCancel={endTurnDrag}
+          onLostPointerCapture={e => { if (turnDragRef.current?.pointerId === e.pointerId) turnDragRef.current = null }}
+          onKeyDown={e => {
+            if (selectIndex === null) return
+            const dir = e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1
+              : e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : 0
+            if (!dir) return
+            e.preventDefault(); e.stopPropagation()
+            const by = e.shiftKey ? 15 : 1
+            onTurnTarget(selectIndex, rotateDragTilt(photoTurnTo(spec, selectIndex), 0, dir * by, 0))
+          }}><RotateCw size={13} /></button>}
       </div>
     </div>
   </div>
@@ -3773,7 +3856,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
  *  the new result shows in place — paused exactly where you were, playing on
  *  from there. The transport controls and the timeline bar below the editor
  *  preview are how you go back to the first photo on purpose. */
-function CollageSlideStage({ item, defaults, playing = true, showPlaybackControls = false, onMovePhoto, onRotatePhoto, onMoveTarget, showMotionTarget, selectedIndex, onSelectPhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; showPlaybackControls?: boolean; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
+function CollageSlideStage({ item, defaults, playing = true, showPlaybackControls = false, onMovePhoto, onRotatePhoto, onMoveTarget, onTurnTarget, showMotionTarget, selectedIndex, onSelectPhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; showPlaybackControls?: boolean; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; onTurnTarget?: (index: number, degrees: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
   const [editorPlaying, setEditorPlaying] = useState(true)
   const [editorRate, setEditorRate] = useState(1)
   const clock = useMotionClock(
@@ -3808,7 +3891,7 @@ function CollageSlideStage({ item, defaults, playing = true, showPlaybackControl
     clock.seek(0)
   }
   return <>
-    <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} onRotatePhoto={onRotatePhoto} onMoveTarget={onMoveTarget} showMotionTarget={showMotionTarget} selectedIndex={selectedIndex} onSelectPhoto={onSelectPhoto} />
+    <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} onRotatePhoto={onRotatePhoto} onMoveTarget={onMoveTarget} onTurnTarget={onTurnTarget} showMotionTarget={showMotionTarget} selectedIndex={selectedIndex} onSelectPhoto={onSelectPhoto} />
     <MotionStage className={`stage-fill${onMovePhoto ? ' collage-caption-stage' : ''}`} input={input} clock={clock} />
     {showPlaybackControls && <div className="collage-preview-controls" role="group" aria-label="Photo animation preview controls">
       <button type="button" title="Replay from the first photo — changing a setting keeps the playhead where it is" aria-label="Replay animation" disabled={!hasPhotos} onClick={replay}><RotateCcw size={13}/><span>Replay</span></button>
@@ -4355,23 +4438,6 @@ const COLLAGE_LOOK_ANIMS_UI: { id: CollageLookAnim; label: string; hint: string 
 const hasPhotoLanes = (photo: CollagePhoto | undefined): boolean =>
   !!photo && (photo.anim !== undefined || photo.exit !== undefined
     || photo.motion !== undefined || photo.lookAnim !== undefined)
-/** The CSS filter for a mat: the depth dim first, then the photo's animated
- *  look — the same order the render's eq and hue filters sit in, so a drained
- *  or flickering photo looks the same here and in the MP4. */
-/** The CSS filter for a mat: the depth dim first, then the photo's animated
- *  look — the same order the render's filters sit in (eq for the dim, one hue
- *  for the colour wheel and the saturation, a second eq for the brightness,
- *  negate for the flip), so a drained, turned or flickering photo looks the
- *  same here and in the MP4. */
-const matFilterCss = (dim: number, look: { sat: number; bright: number; inv: number; hue: number }): string => {
-  const parts: string[] = []
-  if (dim > 0.004) parts.push(`brightness(${(1 - dim).toFixed(3)})`)
-  if (Math.abs(look.hue) > 0.2) parts.push(`hue-rotate(${look.hue.toFixed(2)}deg)`)
-  if (Math.abs(look.sat - 1) > 0.002) parts.push(`saturate(${look.sat.toFixed(3)})`)
-  if (Math.abs(look.bright - 1) > 0.002) parts.push(`brightness(${look.bright.toFixed(3)})`)
-  if (look.inv > 0.5) parts.push('invert(1)')
-  return parts.join(' ')
-}
 const COLLAGE_CAMERAS: { id: NonNullable<CollageSpec['camera']>; label: string; hint: string }[] = [
   { id: 'none', label: 'Still', hint: 'A fixed camera on the whole collage' },
   { id: 'pan', label: 'Pan', hint: 'A gentle drift across a slightly zoomed frame — the wall-gallery look' },
@@ -4477,6 +4543,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       ? { ...p, moveX: x === 0 ? undefined : x, moveY: y === 0 ? undefined : y }
       : p),
   })
+  /** Dragging the knob on the dashed ghost: the angle this photo's `turn`
+   *  motion reaches, in degrees from its resting tilt. */
+  const turnPhotoTarget = (index: number, degrees: number) => setSpec({
+    photos: photos.map((p, i) => i === index
+      ? { ...p, turnTo: degrees === 0 ? undefined : degrees }
+      : p),
+  })
   /** A motion's own duration or target: how long it plays, where it ends up,
    *  what angle it turns to. 0 (or empty) drops the field, which is the default
    *  — the rest of the slide, and no travel of its own. */
@@ -4486,7 +4559,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       const next: CollagePhoto = { ...p }
       const v = value !== undefined && Number.isFinite(value) ? value : 0
       if (v === 0) delete next[field]
-      else next[field] = v
+      // The slider steps by 0.1 s but the shortest motion is MOTION_DURATION_MIN:
+      // snap instead of storing a number the engines would clamp behind its back.
+      else next[field] = field === 'motionDuration' && v < MOTION_DURATION_MIN ? MOTION_DURATION_MIN : v
       return next
     }),
   })
@@ -4662,6 +4737,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     ? Math.max(...photos.map((_, i) => photoStart(spec, i, 0) + (ENTRANCE_LENGTH[photoAnim(spec, i)] ?? 0)))
     : 0
   const anyEntrance = photos.some((_, i) => photoAnim(spec, i) !== 'none')
+  // The duration slider stops at the slide's own length: a motion that plays
+  // longer than the photo is on screen is not something anybody can see. A
+  // stored duration past that end (a slide shortened after it was set) reads as
+  // the longest thing this slide can show, so the handle and its readout agree.
+  const laneDurationMax = Math.min(MOTION_DURATION_MAX, Math.max(1, Math.ceil(total)))
+  const laneDurationShown = selectedPhoto !== null && photos[selectedPhoto]
+    ? Math.min(laneDurationMax, photos[selectedPhoto].motionDuration ?? 0) : 0
   // Beat sync: fetch the soundtrack's detected onsets and map them into this
   // slide's own hold clock (0 = the hold starts). The stored list is the data
   // BOTH engines then use, so the preview shows exactly what the MP4 does.
@@ -4752,7 +4834,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             placePhotoAt(dragChip, at.x, at.y)
             setDragChip(null); setDragOverChip(null); setDropAt(null)
           }}>
-          <CollageSlideStage item={item} showPlaybackControls onMovePhoto={freeLayout ? moveFreePhoto : undefined} onRotatePhoto={freeLayout ? rotateFreePhoto : undefined} onMoveTarget={movePhotoTarget} showMotionTarget selectedIndex={selectedPhoto} onSelectPhoto={setSelectedPhoto} />
+          <CollageSlideStage item={item} showPlaybackControls onMovePhoto={freeLayout ? moveFreePhoto : undefined} onRotatePhoto={freeLayout ? rotateFreePhoto : undefined} onMoveTarget={movePhotoTarget} onTurnTarget={turnPhotoTarget} showMotionTarget selectedIndex={selectedPhoto} onSelectPhoto={setSelectedPhoto} />
           {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
           {dropAt && dragChip !== null && photos[dragChip] && shownPlacements[dragChip] && (() => {
             // Ghost of the mat at the drop point — the size and tilt it will
@@ -4816,14 +4898,14 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 onChange={e => setPhotoMotionAmount(selectedPhoto, Number(e.target.value) / 100)} />
               <b>{Math.round(photoMotion(spec, selectedPhoto).amount * 100)}%</b>
             </span>}
-            {photoMotion(spec, selectedPhoto).id !== 'none' && <label className="collage-lane-num" title="How long the motion plays, counted from the moment this photo lands. Empty = the rest of the slide. A motion that goes somewhere finishes there and holds it; one that keeps looping settles back to rest, so it never freezes mid-bob.">
+            {photoMotion(spec, selectedPhoto).id !== 'none' && <span className="collage-lane-amount" title="How long the motion plays, counted from the moment this photo lands. All the way left = the rest of the slide. A motion that goes somewhere finishes there and holds it; one that keeps looping settles back to rest, so it never freezes mid-bob.">
               <span>over</span>
-              <input type="number" min={MOTION_DURATION_MIN} max={MOTION_DURATION_MAX} step={0.1}
-                value={photos[selectedPhoto].motionDuration ?? ''} placeholder="all"
-                aria-label={`Motion duration of photo ${selectedPhoto + 1} in seconds`}
-                onChange={e => setPhotoMotionField(selectedPhoto, 'motionDuration', e.target.value === '' ? undefined : Number(e.target.value))} />
-              <b>s</b>
-            </label>}
+              <input type="range" min={0} max={laneDurationMax} step={0.1}
+                value={laneDurationShown}
+                aria-label={`How long photo ${selectedPhoto + 1}'s motion plays, in seconds`}
+                onChange={e => setPhotoMotionField(selectedPhoto, 'motionDuration', Number(e.target.value))} />
+              <b>{laneDurationShown ? `${laneDurationShown.toFixed(1)}s` : 'all'}</b>
+            </span>}
             {photoMotion(spec, selectedPhoto).id === 'move' && <>
               <label className="collage-lane-num" title="Where the photo ends up: how far it travels from its own spot, in % of the frame width. Dragging the dashed box on the preview writes the same number.">
                 <span>end x</span>

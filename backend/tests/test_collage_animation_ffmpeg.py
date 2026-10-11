@@ -7,6 +7,7 @@ image because of a malformed rotate-angle expression.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -408,11 +409,18 @@ def _lane_negative_count(frame: bytes, lane: str) -> int:
     return total
 
 
-def _alpha_at(frame: bytes, x: float, y: float) -> float:
-    """The opacity of the red lane at one pixel, read back out of its blend with
-    the bed: 1 = the flat primary, 0 = the bed showing through."""
-    o = (int(round(y)) * W + int(round(x))) * 3
-    return (frame[o] - _BED[0]) / (253 - _BED[0])
+def _alpha_at(frame: bytes, x: float, y: float, solid: int, channel: int = 0) -> float:
+    """The opacity of a flat photo at one pixel, read back out of its blend with
+    the bed: `solid` is what that channel holds at full opacity (253 for a pure
+    primary, the photo's own gray once a look has drained it), so this works for
+    a colour the look has changed as well as for one it has not."""
+    o = (int(round(y)) * W + int(round(x))) * 3 + channel
+    return (frame[o] - _BED[channel]) / (solid - _BED[channel])
+
+
+def _channel(frame: bytes, x: float, y: float, channel: int = 0) -> int:
+    o = (int(round(y)) * W + int(round(x))) * 3 + channel
+    return frame[o]
 
 
 def _lane_stats(frame: bytes, lane: str, gray: bool = False) -> dict:
@@ -832,6 +840,7 @@ class CollageMotionTargetRenderTest(unittest.TestCase):
         self.assertAlmostEqual(float(faded.group(2)), fly, delta=1e-3)
         before = _lane_box(frames[int((te0 - 0.08) * FPS)], "red")
         self.assertGreater(before[0], 1500, "it is on screen before its exit")
+        solid = _channel(frames[int((te0 - 0.08) * FPS)], before[1], before[2])
         self.assertLess(_lane_box(frames[-1], "red")[0], 25, "and gone by the end")
         self.assertGreater(_lane_box(frames[-1], "lime")[0], 1500,
                            "the photo whose exit is 'none' stays to the end")
@@ -841,10 +850,136 @@ class CollageMotionTargetRenderTest(unittest.TestCase):
             t = te0 + probe * fly
             k = min(len(frames) - 1, int(t * FPS))
             want = photo_state(spec, 0, k / FPS, 0, W / H)["alpha"]
-            got = _alpha_at(frames[k], before[1], before[2])
+            got = _alpha_at(frames[k], before[1], before[2], solid)
             self.assertAlmostEqual(got, want, delta=0.09,
                                    msg=f"alpha at t={k / FPS:.2f}: rendered {got:.2f}, twin {want:.2f}")
             box = _lane_box(frames[k], "red")
             if box[0] > 200:
                 self.assertAlmostEqual(box[1], before[1], delta=0.6)
                 self.assertAlmostEqual(box[2], before[2], delta=0.6)
+# --- the whole chain: preview maths -> twin -> render -> pixels --------------
+@unittest.skipIf(_ffmpeg_bin() is None, "no FFmpeg binary available")
+class CollagePreviewParityRenderTest(unittest.TestCase):
+    """Everything the per-photo lanes can do, in one render each, measured
+    against the twin.
+
+    This is the closing link of a three-part chain. The twin tests compare the
+    preview's engine (src/collageCore.ts) with the render's (backend/app/
+    collage.py) value by value, including the CSS filter string the preview
+    paints; these compare the render's engine with the pixels the real FFmpeg
+    binary produces. So what the editor shows is what the MP4 holds — and the
+    two halves are checked against the same numbers, not against each other's
+    opinions.
+    """
+
+    def test_every_motion_lands_where_the_twin_says(self):
+        ffmpeg = str(_ffmpeg_bin())
+        # Spaced so that no photo ever travels or turns into another: a covered
+        # lane's centroid is pulled towards the covering one, which would read
+        # as the engine being wrong when it is only the measurement.
+        item = _lane_item({
+            0: {"cx": 12, "cy": 25, "w": 20, "motion": "move",
+                "moveX": 16, "moveY": 24, "motionDuration": 0.9},
+            1: {"cx": 56, "cy": 30, "w": 22, "motion": "turn",
+                "turnTo": -75, "motionDuration": 0.7},
+            2: {"cx": 84, "cy": 75, "w": 18, "motion": "spin",
+                "motionAmount": 1.5, "motionDuration": 1.1},
+        }, animation="none", hold=2.2)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        last = len(frames) - 2
+        for k, lane in enumerate(_LANES):
+            rest = _lane_stats(frames[0], lane)
+            self.assertGreater(rest["count"], 800, f"{lane} should be on screen")
+            # The centre is where the twin puts it, at every moment sampled —
+            # while it travels, while it turns, and after it has finished.
+            #
+            # The slack is the render's own quantisation, not doubt about the
+            # maths: `overlay` composites in yuv420p, so it snaps its x/y to the
+            # even chroma grid (measured: an x of 81.6 lands on 80) and a flat
+            # colour carries a chroma halo at its edges. Sampled at exact frame
+            # times against each photo's own offset at rest, what is left is
+            # that snap: the worst residual measured is 1.5 px on a photo that
+            # travels 66.6 px, 1.1 px on one that spins, and 0.0 px on one that
+            # only turns — at 320x180, a third of that relative to the frame at
+            # 1920x1080, while the preview places a mat to sub-pixel accuracy.
+            # A wrong formula is tens of px out; this catches it.
+            want_rest = _lane_centre(spec, k, 0)
+            bias = (rest["cx"] - want_rest[0], rest["cy"] - want_rest[1])
+            self.assertLess(abs(bias[0]), 2.5, f"{lane} starts off place")
+            self.assertLess(abs(bias[1]), 2.5, f"{lane} starts off place")
+            for kf in (0, 8, 16, 25, 38, last):
+                t = kf / FPS
+                got = _lane_stats(frames[kf], lane)
+                want = _lane_centre(spec, k, t)
+                self.assertLess(abs(got["cx"] - bias[0] - want[0]), 2.5,
+                                f"{lane} is at the wrong x at t={t}")
+                self.assertLess(abs(got["cy"] - bias[1] - want[1]), 2.5,
+                                f"{lane} is at the wrong y at t={t}")
+            # ... and it really did travel, rather than sitting still inside the
+            # slack: photo 0 moves 16% of the frame, the others turn in place.
+            want_end = _lane_centre(spec, k, last / FPS)
+            got_end = _lane_stats(frames[last], lane)
+            travel = math.hypot(want_end[0] - want_rest[0], want_end[1] - want_rest[1])
+            if travel > 8:
+                self.assertGreater(math.hypot(got_end["cx"] - rest["cx"], got_end["cy"] - rest["cy"]),
+                                   travel * 0.9, f"{lane} barely travelled")
+            # when its own duration is up it holds: the twin stops changing and
+            # so do the pixels
+            done, end = 1.6, last / FPS
+            for key in ("dx", "dy", "rot", "scale"):
+                self.assertAlmostEqual(photo_state(spec, k, done, 0, W / H)[key],
+                                       photo_state(spec, k, end, 0, W / H)[key], delta=1e-9,
+                                       msg=f"{lane} should be holding its end state")
+            held_a = _lane_stats(frames[int(done * FPS)], lane)
+            held_b = _lane_stats(frames[last], lane)
+            self.assertEqual((held_a["w"], held_a["h"], held_a["count"]),
+                             (held_b["w"], held_b["h"], held_b["count"]),
+                             f"{lane} moved after its motion was over")
+            # and the box it ends in is the resting box turned by the twin's own
+            # angle — the headroom a target angle needs, measured
+            angle = math.radians(photo_state(spec, k, end, 0, W / H)["rot"])
+            want_w = rest["w"] * abs(math.cos(angle)) + rest["h"] * abs(math.sin(angle))
+            want_h = rest["w"] * abs(math.sin(angle)) + rest["h"] * abs(math.cos(angle))
+            self.assertAlmostEqual(held_b["w"], want_w, delta=3.5, msg=f"{lane} width")
+            self.assertAlmostEqual(held_b["h"], want_h, delta=3.5, msg=f"{lane} height")
+
+    def test_every_look_and_the_fade_match_the_preview(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 22, "cy": 50, "w": 22, "lookAnim": "hueFlip"},
+            1: {"cx": 52, "cy": 50, "w": 22, "lookAnim": "invert"},
+            2: {"cx": 80, "cy": 50, "w": 22, "lookAnim": "toBw", "exit": "fade"},
+        }, animation="none", hold=2.6)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        early, late = frames[0], frames[-1]
+        # red: the colour wheel turns half way round, so it ends in its opposite
+        self.assertGreater(_lane_box(early, "red")[0], 1500)
+        self.assertLess(_lane_box(late, "red")[0], 25)
+        self.assertGreater(_lane_negative_count(late, "red"), 1500)
+        self.assertGreater(photo_look_state(spec, 0, duration - 1 / FPS, 0)["hue"], 179)
+        # lime: a negative that develops into its real colour and stays there
+        self.assertGreater(_lane_negative_count(early, "lime"), 1500)
+        self.assertLess(_lane_box(early, "lime")[0], 25)
+        self.assertGreater(_lane_box(late, "lime")[0], 1500)
+        self.assertEqual(photo_look_state(spec, 1, duration - 1 / FPS, 0)["inv"], 0.0)
+        # blue: drained of colour by the time it leaves, then faded where it
+        # stands — its opacity is the twin's own ramp and its centre never moves
+        fly = exit_fly_length(spec, 2)
+        te0 = base_duration(spec) + exit_offset(spec, 2)
+        before = _lane_stats(frames[int((te0 - 0.06) * FPS)], "blue", gray=True)
+        self.assertGreater(before["count"], 1500, "it is still on screen before its exit")
+        self.assertLess(before["sat"], 45, "and drained by then")
+        self.assertLess(photo_look_state(spec, 2, te0 - 0.06, 0)["sat"], 0.06)
+        solid = _channel(frames[int((te0 - 0.06) * FPS)], before["cx"], before["cy"], 2)
+        for probe in (0.25, 0.6):
+            k = min(len(frames) - 1, int((te0 + probe * fly) * FPS))
+            want = photo_state(spec, 2, k / FPS, 0, W / H)["alpha"]
+            got = _alpha_at(frames[k], before["cx"], before["cy"], solid, 2)
+            self.assertAlmostEqual(got, want, delta=0.09,
+                                   msg=f"blue alpha at t={k / FPS:.2f}: {got:.2f} vs twin {want:.2f}")
+            moved = _lane_stats(frames[k], "blue", gray=True)
+            if moved["count"] > 200:
+                self.assertLess(abs(moved["cx"] - before["cx"]), 0.8)
+                self.assertLess(abs(moved["cy"] - before["cy"]), 0.8)
+        self.assertLess(_lane_stats(late, "blue", gray=True)["count"], 25, "gone by the end")
+        self.assertGreater(_lane_box(late, "lime")[0], 1500, "and the others stay")

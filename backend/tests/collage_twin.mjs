@@ -42,6 +42,10 @@ for (const c of input.cases) {
       // motion would punch on (both engines thin a long list the same way).
       lookState: c.times.map(t => pls.map((_, i) => core.photoLookState(spec, i, t, c.leadIn))),
       punches: c.punchWindow ? core.beatPunches(spec, c.punchWindow[0], c.punchWindow[1]) : null,
+      // The CSS filter string the preview paints each photo with. The render's
+      // filters are compared with the pixels; this is the other half of the
+      // same chain, so the preview cannot drift from the MP4 in colour.
+      filters: c.times.map((t, ti) => states[ti].map((st, i) => core.matFilterCss(st.dim, core.photoLookState(spec, i, t, c.leadIn)))),
       exit: pls.map((_, i) => core.exitMode(spec, i)),
       schedule: core.exitScheduleMode(spec),
       exitOffset: pls.map((_, i) => core.exitOffset(spec, i)),

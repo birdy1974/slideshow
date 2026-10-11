@@ -343,15 +343,32 @@ Two of the motions have an **end state you pick** rather than an amplitude, so a
 strength slider would only scale a target you chose explicitly:
 `COLLAGE_TARGET_MOTIONS` (`move`, `turn`) ignore `motionAmount`, and the editor
 hides the slider and shows the target instead. On the preview the target is a
-dashed ghost of the photo at its end place — drag its handle (Shift snaps to 5 %
-of the frame, arrows step 1 %) and the same numbers land in `moveX` / `moveY`; a
-`turn` shows the ghost turned to `turnTo`. The ghost is drawn from the photo's
-*resting* geometry, never from the playhead, because the end state does not depend
-on when you look.
+dashed **ghost** of the photo at its end place, drawn from the photo's *resting*
+geometry — never from the playhead, because the end state does not depend on when
+you look — and that ghost carries a handle you can drag:
+
+- `move` puts the handle at the ghost's centre. Dragging it writes `moveX` /
+  `moveY` (% of the frame, ±60); **Shift** snaps to 5 %, **arrows** step 1 %.
+- `turn` puts a **knob on the ghost's top edge** — the same knob that turns a
+  photo's resting tilt — and dragging it around the pivot writes `turnTo` (±180,
+  clockwise from that resting tilt); **Shift** snaps to 15°, **arrows** step 1°.
+  The knob hangs off the ghost's *resting* pivot (`restPivotClient`: the
+  placement's `ax`/`ay`, with none of the animation's `dx`/`dy`), turns with the
+  ghost, and lifts `matH/2` above that pivot — nothing at all when the photo is
+  pinned, since then the pivot is already its top edge — plus a fixed screen gap,
+  counter-scaled by `1/k` so it stays the same size at any zoom.
+
+So both target motions are aimed by pointing at the preview, and the number
+fields in the selected-photo bar show the same numbers the handles write.
 
 `motionDuration` says how long a motion plays, counted from the photo's landing
 (0 or missing = the rest of the slide, which is what every existing project does,
-so those graphs are unchanged). What happens when that time is up depends on the
+so those graphs are unchanged). In the editor it is a **slider**, not a number
+field: 0 … min(`MOTION_DURATION_MAX`, the slide's own length rounded up), reading
+`all` at 0 and `1.4s` otherwise, so the longest a motion can be asked to run is
+never longer than the slide. `setPhotoMotionField` snaps a value between 0 and
+`MOTION_DURATION_MIN` up to that minimum, so a stored spec cannot disagree with
+what both engines clamp it to. What happens when that time is up depends on the
 motion, and `COLLAGE_ONESHOT_MOTIONS` is the list:
 
 | kind | motions | when its time is up |
@@ -428,6 +445,52 @@ survives a switch to `turn`. A chip whose photo has any lane of its own carries 
 number. Changing a lane never restarts the preview — the clock keeps running and
 only clamps when the slide's derived duration changes.
 
+## Preview and MP4: what makes them agree
+
+The two engines are written to say the same thing, and three kinds of test hold
+them to it. Each compares against *numbers*, never against the other engine's
+opinion of itself:
+
+1. **Twin tests** (`test_collage_twin.py`) walk the same case list through
+   `src/collageCore.ts` in Node and `backend/app/collage.py` in Python and compare
+   placements, per-photo states, look states, exits, cameras, durations,
+   normalization and the generated filtergraph — value by value. That includes the
+   **CSS filter string the preview paints**: `matFilterCss` lives in the core so
+   the driver can emit it, and Python re-derives it from `photo_state().dim` +
+   `photo_look_state()` and checks the parts, their order and their values
+   (22 790 strings across the cases). If the preview dims a photo by 0.791, the
+   MP4 dims it by 0.791.
+2. **Pixel tests** (`test_collage_animation_ffmpeg.py`) render the Python engine's
+   graph with the real FFmpeg binary and measure the pixels back: where a lane is,
+   how big, what colour, how opaque, at which frame. `CollagePreviewParityRenderTest`
+   is the closing link — one render holding a `move`, a `turn`, a `spin` and a
+   `drift`, every look and a `fade` exit, each measured against the twin at exact
+   frame times.
+3. **Byte identity** for what has not changed: a matrix of 3584 specs is dumped to
+   filtergraph strings and diffed against the previous commit, so a feature that
+   touches one motion cannot silently move 3583 other graphs.
+
+Where the MP4 cannot be *exactly* the preview, the reason is FFmpeg's, and it is
+measured rather than assumed:
+
+- **Position snaps to the even chroma grid.** `overlay` composites in yuv420p, so
+  its `x`/`y` land on even pixels (measured: an x of 81.6 lands on 80), and a flat
+  colour carries a chroma halo at its edges. The preview positions a mat to
+  sub-pixel accuracy; the render cannot. Worst residual measured, against the
+  photo's own offset at rest: **1.5 px** on a photo that travels 66.6 px, **1.1 px**
+  on one that spins, **0.0 px** on one that only turns — at 320×180, i.e. ~0.5 % of
+  the frame, and a sixth of that at 1920×1080.
+- **CSS `hue-rotate()` is a matrix approximation** of a true rotation, so for a
+  saturated primary the preview reads a shade lighter than the yuv-exact MP4
+  (green → CSS (255,110,255) vs ffmpeg (255,76,255)). The render is the accurate
+  one; the difference is documented, not "fixed".
+- **`negate=enable=…` is binary**, so the `invert` look is a hard flip at its
+  moment (alpha preserved), not a crossfade — which is what the preview does too.
+- **`eq` evaluates its expressions once at init**, so brightness looks ride a
+  quantized `sendcmd` staircase and only saturation/hue (`hue=s=`, `hue=H=` in
+  *radians*) and position/rotation/opacity are truly per-frame. Scale needs the
+  same treatment as brightness, which is what the size ladder is for.
+
 ## Tests
 
 - `backend/tests/test_collage_twin.py` — the case list spans layouts ×
@@ -445,7 +508,9 @@ only clamps when the slide's derived duration changes.
   motions (`breathe` / `pulse` / `beat`, with a stored beat list), a beat list
   long enough that both engines have to thin it to the same subset, every look
   animation sampled across the slide, and a junk look / junk motion that both
-  sides must drop the same way.
+  sides must drop the same way. The lane cases also compare the **CSS filter
+  string** each engine paints at each sampled moment (`matFilterCss`, emitted by
+  the driver as `filters`): same parts, same order, same values.
 - `backend/tests/test_collage_animation_ffmpeg.py` — real FFmpeg renders, pixels
   measured. `CollageFreeTiltRenderTest` renders one red photo on a grey bed at
   0°, ±45°, ±90°, 135°, 180° and checks the bounding box turns the right way and
@@ -469,6 +534,14 @@ only clamps when the slide's derived duration changes.
   with the loudest rendered frame being the twin's loudest ask — and the two
   flipping looks have to arrive as a negative / in their own colour and end in
   their opposite, with a part-way frame that is neither.
+  `CollagePreviewParityRenderTest` is the end of the chain: one render holding a
+  `move`, a `turn`, a `spin` and a `drift` — spaced so no photo ever travels into
+  another, since a covered lane's centroid is pulled towards whatever covers it —
+  measured at exact frame times against the twin's own centre, plus a second
+  render in which every look animation and the `fade` exit run together and each
+  pixel is compared with `photoLookState` / the twin's alpha. The positional slack
+  is the render's even-chroma snap (see above), and the test also demands the
+  travel actually happened rather than sitting still inside the slack.
   `CollageMotionTargetRenderTest` measures the motions that go somewhere: a
   `move` has to travel exactly the picked % of the frame and stay there, a `turn`
   has to end standing up with the same amount of photo inside (its headroom comes

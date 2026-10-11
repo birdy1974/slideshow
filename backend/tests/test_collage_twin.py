@@ -86,6 +86,18 @@ def _run_node(cases: dict) -> list:
     return json.loads(proc.stdout)
 
 
+_CSS_FILTER = re.compile(r"(brightness|saturate|hue-rotate|invert)\(([^)]*)\)")
+
+
+def _css_filter_parts(value: str) -> list[tuple[str, float]]:
+    """The preview's CSS filter string as (name, number) pairs, in the order
+    the browser will apply them."""
+    out: list[tuple[str, float]] = []
+    for name, arg in _CSS_FILTER.findall(value or ""):
+        out.append((name, float(arg.strip().removesuffix("deg"))))
+    return out
+
+
 def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
           delays: list | None = None, hold: float | None = None, sizes: list | None = None,
           depth: bool = False, beat_sync: bool = False, beats: list | None = None,
@@ -714,6 +726,36 @@ class CollageTwinTest(unittest.TestCase):
                         assert abs(ts_look[key] - py_look[key]) < TOL, (
                             f"{where} t={t} photo {i} look {key}: "
                             f"{ts_look[key]} != {py_look[key]}")
+            # The preview's own colour path. The FFmpeg tests tie the twin's
+            # numbers to real pixels; this ties the CSS filter string the preview
+            # paints to the same numbers — parts, values AND order, because CSS
+            # applies its filters left to right just as FFmpeg applies its chain
+            # (dim, colour wheel, saturation, brightness, flip). Together they
+            # are the two halves of "the MP4 is what the preview shows".
+            for ti, t in enumerate(case["times"]):
+                for i in range(n_photos):
+                    st = photo_state(spec, i, t, lead_in, aspect)
+                    look = photo_look_state(spec, i, t, lead_in)
+                    want: list[tuple[str, float]] = []
+                    if st["dim"] > 0.004:
+                        want.append(("brightness", 1 - st["dim"]))
+                    if abs(look["hue"]) > 0.2:
+                        want.append(("hue-rotate", look["hue"]))
+                    if abs(look["sat"] - 1) > 0.002:
+                        want.append(("saturate", look["sat"]))
+                    if abs(look["bright"] - 1) > 0.002:
+                        want.append(("brightness", look["bright"]))
+                    if look["inv"] > 0.5:
+                        want.append(("invert", 1.0))
+                    got_css = _css_filter_parts(lanes["filters"][ti][i])
+                    assert [g[0] for g in got_css] == [w[0] for w in want], (
+                        f"{where} t={t} photo {i} CSS filter: "
+                        f"{got_css} != {want}")
+                    for (got_name, got_v), (_, want_v) in zip(got_css, want):
+                        # the string is written with 2-3 decimals
+                        assert abs(got_v - want_v) < 6e-3, (
+                            f"{where} t={t} photo {i} {got_name}: "
+                            f"{got_v} != {want_v}")
             if case.get("punchWindow"):
                 py_punch = beat_punches(spec, *case["punchWindow"])
                 assert len(lanes["punches"]) == len(py_punch), (
