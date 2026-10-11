@@ -1514,6 +1514,10 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-chip{position:relative;flex:0 0 auto;width:54px;height:54px;border-radius:6px;overflow:hidden;border:1px solid #4a4e45;background:#20231f;cursor:grab}
 .collage-chip.over{border-color:var(--lime)}
 .collage-chip.lifted{opacity:.45}
+/* Drawn by a pseudo element, not by the chip's own outline: the hover actions
+   bar and the pos badge are positioned children and would paint over it. */
+.collage-chip.selected{border-color:var(--lime)}
+.collage-chip.selected:after{content:"";position:absolute;inset:0;z-index:5;border-radius:5px;outline:3px dotted var(--lime);outline-offset:-5px;pointer-events:none}
 /* Dropping a chip on the preview: the canvas lights up as a target, a ghost
    of the mat (its real size and tilt) follows the pointer at the drop point. */
 /* The photo-collage preview draws no dotted guides: the 7% safe-area box is
@@ -1526,7 +1530,10 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-drop-ghost b{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:var(--lime);color:#1e211d;font:800 11px Manrope;display:grid;place-items:center}
 .collage-drop-hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:6;pointer-events:none;display:flex;align-items:center;gap:5px;white-space:nowrap;background:#000c;color:#fff;border:1px solid #ffffff22;border-radius:5px;padding:5px 9px;font-size:9px;font-weight:700}
 .collage-chip img{width:100%;height:100%;object-fit:cover;pointer-events:none}
-.collage-chip .chip-num{position:absolute;left:2px;top:2px;z-index:2;background:#0009;color:#fff;font-size:8px;font-weight:700;border-radius:3px;padding:0 3px}
+.collage-chip .chip-num{position:absolute;left:2px;top:2px;z-index:2;background:#0009;color:#fff;font:700 8px Manrope,sans-serif;line-height:1.35;border:0;border-radius:3px;padding:0 3px;cursor:pointer}
+.collage-chip .chip-num:hover{background:#000d;color:#d1ef9d}
+.collage-chip .chip-num[aria-pressed=true]{background:#718f46;color:#fff}
+.collage-chip .chip-num:focus-visible{outline:2px solid #d1ef9d;outline-offset:1px}
 .collage-chip .chip-actions{position:absolute;inset:auto 0 0 0;display:flex;justify-content:space-between;background:#000a;opacity:0;transition:opacity .12s}
 .collage-chip:hover .chip-actions{opacity:1}
 .chip-actions button{border:0;background:none;color:#fff;cursor:pointer;display:grid;place-items:center;padding:2px}
@@ -1589,10 +1596,67 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-timeline-bar{position:absolute;left:8px;right:8px;bottom:8px;z-index:8;display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid #ffffff30;border-radius:7px;background:#111d;color:#f4f6f0;backdrop-filter:blur(6px)}
 .collage-timeline-bar input{flex:1;min-width:0;accent-color:#a4ca6c}
 .collage-timeline-bar span{font:700 9px Manrope,sans-serif;white-space:nowrap;font-variant-numeric:tabular-nums}
-.collage-mat.selected{outline:2px solid #a4ca6c;outline-offset:5px}
-.collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445}
+/* The selected photo's marker. A mat cannot draw its own outline over the
+   photos stacked on top of it, so the ring is a sibling after all the mats and
+   is painted with the selected mat's exact box and transform by the preview.
+   Dotted, like the chip's outline below: one look for "this one is selected". */
+.collage-select-ring{position:absolute;z-index:8;box-sizing:border-box;pointer-events:none;border:4px dotted var(--lime);border-radius:2px}
+/* The Free arrangement's rotate knob. A sibling of the mats — never a child —
+   so a shaped frame's clip-path cannot cut it off and a photo stacked on top
+   cannot cover it. The preview positions it on the selected mat's top edge and
+   counter-scales it, so it is the same size on screen at any stage width. */
+.collage-rotate-handle{position:absolute;z-index:9;display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px solid #a4ca6c;border-radius:50%;background:#1b1f18e8;color:#d1ef9d;box-shadow:0 2px 8px #0009;cursor:grab;pointer-events:auto;touch-action:none}
+.collage-rotate-handle:hover{background:#26301a;border-color:#c9ec92}
+.collage-rotate-handle:active{cursor:grabbing;background:#31401d}
+.collage-rotate-handle:focus-visible{outline:2px solid #d1ef9d;outline-offset:2px}
+.collage-rotate-handle svg{pointer-events:none}
+.collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445;flex-wrap:wrap}
 .collage-selected-size input{flex:1;min-width:120px;accent-color:#718f46}
 .collage-selected-size b{font-variant-numeric:tabular-nums}
+/* The selected photo's own three lanes: entrance / motion / exit. Drawn as the
+   second half of the size panel so "this photo" reads as one block. */
+.collage-selected-size:has(+.collage-selected-lanes){border-radius:8px 8px 0 0;margin-bottom:0}
+.collage-selected-lanes{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-top:1px dashed #d3d6cc;border-radius:0 0 8px 8px;background:#eceee5;font-size:10px;color:#4c5445}
+.collage-selected-lanes label{display:flex;align-items:center;gap:5px;min-width:0}
+.collage-selected-lanes label>span,.collage-lane-amount>span{font-size:8px;color:#8b907f;white-space:nowrap;text-transform:uppercase;letter-spacing:.05em}
+.collage-selected-lanes select{font:inherit;font-size:10px;background:#fff;color:#2f352c;border:1px solid #c7cabf;border-radius:5px;padding:2px 4px;max-width:126px}
+.collage-selected-lanes select:focus-visible,.collage-lane-amount input:focus-visible{outline:2px solid #718f46;outline-offset:1px}
+.collage-lane-amount{display:flex;align-items:center;gap:5px}
+.collage-lane-amount input{width:76px;accent-color:#718f46}
+.collage-lane-amount b{font-variant-numeric:tabular-nums;font-size:9px;min-width:27px}
+
+.collage-lane-num{display:flex;align-items:center;gap:4px}
+
+.collage-lane-num>span{font-size:8px;color:#8b907f;white-space:nowrap;text-transform:uppercase;letter-spacing:.05em}
+
+.collage-lane-num input{width:54px;font:inherit;font-size:10px;background:#fff;color:#2f352c;border:1px solid #c7cabf;border-radius:5px;padding:2px 4px}
+
+.collage-lane-num input:focus-visible{outline:2px solid #718f46;outline-offset:1px}
+
+.collage-lane-num b{font-size:9px;color:#8b907f;min-width:9px}
+
+.collage-move-ghost{position:absolute;z-index:7;box-sizing:border-box;pointer-events:none;border:2px dashed var(--lime);opacity:.92}
+
+.collage-move-handle,.collage-turn-handle{position:absolute;z-index:9;display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px solid #a4ca6c;border-radius:50%;background:#1b1f18e8;color:#d1ef9d;box-shadow:0 2px 8px #0009;cursor:grab;pointer-events:auto;touch-action:none}
+
+.collage-move-handle:hover,.collage-turn-handle:hover{background:#26301a;border-color:#c9ec92}
+
+.collage-move-handle:active,.collage-turn-handle:active{cursor:grabbing;background:#31401d}
+.collage-lanes-hint{display:flex;align-items:center;gap:4px;flex:1 1 100%;margin:1px 0 0;color:#92978e;font-size:9px}
+/* A chip whose photo dances to its own tune: a lime dot on its number. */
+.chip-lane-dot{position:absolute;top:-2px;right:-3px;width:5px;height:5px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 1px #0007}
+.collage-chip.has-lanes .chip-num{background:#22291c}
+/* Tilt of the selected photo: its own line under the size slider, with quarter
+   turns and a straighten button. Free arrangements only. */
+.collage-tilt-ctl{display:flex;align-items:center;gap:7px;flex:1 1 100%;min-width:0;padding-top:7px;margin-top:2px;border-top:1px dashed #d3d6cc}
+.collage-tilt-ctl>span:first-child{flex:none;color:#6e7466}
+.collage-tilt-ctl input{flex:1;min-width:90px;accent-color:#718f46}
+.collage-tilt-ctl>b{min-width:32px;text-align:right;font:700 10px Manrope,sans-serif;color:#3d4a2c}
+.collage-tilt-buttons{display:flex;gap:3px;flex:none}
+.collage-tilt-buttons button{display:grid;place-items:center;min-width:23px;height:22px;padding:0 4px;border:1px solid #cfd3c8;border-radius:5px;background:#fff;color:#4c5445;font:700 9px Manrope,sans-serif;cursor:pointer}
+.collage-tilt-buttons button:hover:not(:disabled){border-color:#718f46;color:#3d4a2c;background:#f2f6ea}
+.collage-tilt-buttons button:disabled{opacity:.42;cursor:not-allowed}
+.collage-tilt-locked{display:flex;align-items:center;gap:4px;margin-left:auto;color:#92978e;font:600 9px Manrope,sans-serif;font-style:normal;white-space:nowrap;cursor:help}
 .collage-select-hint{display:flex;align-items:center;gap:5px;margin:6px 0 2px;color:#92978e;font-size:9px}
 .collage-arrange-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 2px;font-size:9px;color:#6e7466}
 .collage-arrange-tools b{color:#4c5445}

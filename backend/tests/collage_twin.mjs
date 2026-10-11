@@ -25,6 +25,34 @@ for (const c of input.cases) {
     hash: core.hash01(c.hashArgs[0], c.hashArgs[1], c.hashArgs[2]),
     matHeight: core.matHeight(c.matW, spec.shape, c.aspect),
     pin: core.pinAnchor(spec),
+    // The three lanes per photo: what it enters with, what it does while it is
+    // on screen, and how it leaves — plus the timings those imply.
+    lanes: {
+      anim: pls.map((_, i) => core.photoAnim(spec, i)),
+      pin: pls.map((_, i) => core.pinAnchor(spec, i)),
+      motion: pls.map((_, i) => core.photoMotion(spec, i)),
+      // A motion's own duration and target: where `move` travels to, what
+      // angle `turn` reaches, and the sprite headroom that implies.
+      motionDuration: pls.map((_, i) => core.photoMotionDuration(spec, i)),
+      move: pls.map((_, i) => core.photoMove(spec, i)),
+      turnTo: pls.map((_, i) => core.photoTurnTo(spec, i)),
+      motionSpin: pls.map((_, i) => core.motionSpin(spec, i)),
+      look: pls.map((_, i) => core.photoLookAnim(spec, i)),
+      // The animated look at every sampled time, and which beats a 'beat'
+      // motion would punch on (both engines thin a long list the same way).
+      lookState: c.times.map(t => pls.map((_, i) => core.photoLookState(spec, i, t, c.leadIn))),
+      punches: c.punchWindow ? core.beatPunches(spec, c.punchWindow[0], c.punchWindow[1]) : null,
+      // The CSS filter string the preview paints each photo with. The render's
+      // filters are compared with the pixels; this is the other half of the
+      // same chain, so the preview cannot drift from the MP4 in colour.
+      filters: c.times.map((t, ti) => states[ti].map((st, i) => core.matFilterCss(st.dim, core.photoLookState(spec, i, t, c.leadIn)))),
+      exit: pls.map((_, i) => core.exitMode(spec, i)),
+      schedule: core.exitScheduleMode(spec),
+      exitOffset: pls.map((_, i) => core.exitOffset(spec, i)),
+      exitFly: pls.map((_, i) => core.exitFlyLength(spec, i)),
+      exitTotal: core.exitTotal(spec),
+      base: core.baseDuration(spec),
+    },
     start: pls.map((_, i) => core.photoStart(spec, i, c.leadIn)),
     duration: core.collageDuration(spec),
     placements: pls,

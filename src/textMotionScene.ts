@@ -640,7 +640,16 @@ export class MotionClock {
   }
   private stop() { cancelAnimationFrame(this.raf); this.raf = 0; this.last = null }
   private emit() { const t = Math.min(this.t, this.duration); for (const fn of this.listeners) fn(t) }
-  setDuration(d: number) { this.duration = Math.max(0.2, d); if (this.t > this.duration + this.tail) this.t = 0 }
+  /** New length without a rewind: a parameter edit that shortens (or grows)
+   *  the slide keeps the playhead where it is, clamped into the new range, so
+   *  the preview shows the result in place instead of restarting. */
+  setDuration(d: number) {
+    this.duration = Math.max(0.2, d)
+    const end = this.duration + this.tail
+    if (this.t > end) this.t = end
+    else if (this.t < 0) this.t = 0
+    this.emit()
+  }
   seek(t: number) { this.t = Math.max(0, Math.min(this.duration, t)); this.emit() }
   setPlaying(p: boolean) { this.playing = p; this.last = null; this.emit() }
   setPlaybackRate(rate: number) {

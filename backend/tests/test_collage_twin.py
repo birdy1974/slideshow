@@ -18,6 +18,7 @@ from pathlib import Path
 
 from app.collage import (
     COLLAGE_TEMPLATES,
+    ENTRANCE_LENGTH,
     MAX_COLLAGE_PHOTOS,
     base_duration,
     camera_filter,
@@ -25,13 +26,25 @@ from app.collage import (
     camera_supersample,
     exit_mode,
     exit_offset,
+    exit_schedule_mode,
     exit_total,
+    base_duration,
+    photo_anim,
+    photo_look_anim,
+    photo_look_state,
+    photo_motion,
+    photo_motion_duration,
+    photo_move,
+    photo_turn_to,
+    motion_spin,
+    beat_punches,
     free_from_displayed,
     bg_blur_radius,
     collage_duration,
     collage_graph,
     collage_template,
     hash01,
+    ladder_buckets,
     mat_height,
     mat_line,
     normalize_collage,
@@ -71,6 +84,18 @@ def _run_node(cases: dict) -> list:
     if proc.returncode != 0:
         raise AssertionError(f"collage twin driver failed:\n{proc.stderr}\n{proc.stdout}")
     return json.loads(proc.stdout)
+
+
+_CSS_FILTER = re.compile(r"(brightness|saturate|hue-rotate|invert)\(([^)]*)\)")
+
+
+def _css_filter_parts(value: str) -> list[tuple[str, float]]:
+    """The preview's CSS filter string as (name, number) pairs, in the order
+    the browser will apply them."""
+    out: list[tuple[str, float]] = []
+    for name, arg in _CSS_FILTER.findall(value or ""):
+        out.append((name, float(arg.strip().removesuffix("deg"))))
+    return out
 
 
 def _spec(layout: str, animation: str, shape: str, count: int, seed: int,
@@ -262,6 +287,254 @@ def _cases() -> list[dict]:
         "aspect": 9 / 16, "leadIn": 0.0, "times": [0.0, 0.5, 1.2, 1.8, 2.3],
         "hashArgs": [6, 3, 71], "matW": 30,
     })
+    # Per-photo lanes: one photo enters, moves or leaves on its own while the
+    # rest of the collage keeps the shared choreography.
+    mixed_in = _spec("grid", "fade", "4:3", 4, 11, delays=[0.2, 0.25, 0.25, 0.25], hold=1.5)
+    mixed_in["photos"][1]["anim"] = "swing"       # hangs from a pin, 2 s entrance
+    mixed_in["photos"][2]["anim"] = "tumble"
+    mixed_in["photos"][3]["anim"] = "none"        # already there from frame one
+    cases.append({
+        "id": "lanes-mixed-entrance",
+        "spec": mixed_in,
+        "aspect": 16 / 9, "leadIn": 0.4,
+        "times": [0.0, 0.4, 0.9, 1.4, 2.0, 2.6, 3.4, 4.4],
+        "hashArgs": [11, 4, 29], "matW": 30,
+    })
+    mixed_out = _spec("stack", "drop", "4:3", 4, 9, delays=[0.2, 0.3, 0.3, 0.3], hold=2, exit="sweep")
+    mixed_out["photos"][0]["exit"] = "none"       # stays on screen to the end
+    mixed_out["photos"][2]["exit"] = "deal"       # leaves its own way, earlier
+    cases.append({
+        "id": "lanes-mixed-exit",
+        "spec": mixed_out,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 1.0, 3.0, 3.9, 4.2, 4.5, 4.9, 5.4],
+        "hashArgs": [9, 4, 71], "matW": 34,
+    })
+    # No collage exit at all, but one photo leaves on its own: the schedule
+    # falls back to that photo's mode so the stagger is still defined.
+    solo_out = _spec("scatter", "pop", "square", 3, 5, delays=[0.25, 0.3, 0.3], hold=1.75)
+    solo_out["photos"][1]["exit"] = "shuffle"
+    cases.append({
+        "id": "lanes-exit-override-only",
+        "spec": solo_out,
+        "aspect": 1.0, "leadIn": 0.0, "times": [0.0, 0.9, 2.4, 2.9, 3.4],
+        "hashArgs": [5, 3, 73], "matW": 30,
+    })
+    # The while lane: every motion, at different strengths, on one collage.
+    moving = _spec("grid", "pop", "4:3", 5, 21, delays=[0.2, 0.2, 0.2, 0.2, 0.2], hold=2.5)
+    for i, (mo, amt) in enumerate([("drift", None), ("float", 1.75), ("orbit", 0.5),
+                                   ("shake", 2.0), ("sway", 1.25)]):
+        moving["photos"][i]["motion"] = mo
+        if amt is not None:
+            moving["photos"][i]["motionAmount"] = amt
+    cases.append({
+        "id": "lanes-motions",
+        "spec": moving,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, 0.6, 1.2, 1.6, 2.2, 3.0, 4.1, 5.5],
+        "hashArgs": [21, 5, 81], "matW": 30,
+    })
+    # Motions stack with the collage-wide Ken Burns, sway and depth push.
+    stacked = _spec("masonry", "drop", "3:4", 4, 33, delays=[0.3, 0.3, 0.3, 0.3], hold=2, depth=True)
+    stacked["kenBurns"] = True
+    stacked["sway"] = True
+    stacked["photos"][0]["motion"] = "float"
+    stacked["photos"][1]["motion"] = "orbit"
+    stacked["photos"][1]["motionAmount"] = 0.75
+    stacked["photos"][2]["motion"] = "shake"
+    stacked["photos"][3]["anim"] = "swing"
+    stacked["photos"][3]["motion"] = "sway"
+    cases.append({
+        "id": "lanes-motions-stacked",
+        "spec": stacked,
+        "aspect": 4 / 3, "leadIn": 0.0,
+        "times": [0.0, 0.55, 1.1, 1.9, 2.8, 4.0, 5.2],
+        "hashArgs": [33, 4, 83], "matW": 26,
+    })
+    # A motion plus an exit plus a per-photo entrance: the three lanes at once.
+    all_three = _spec("fan", "fade", "4:3", 3, 8, delays=[0.2, 0.4, 0.4], hold=1.5, exit="deal")
+    all_three["photos"][0]["anim"] = "tumble"
+    all_three["photos"][0]["motion"] = "drift"
+    all_three["photos"][1]["exit"] = "sweep"
+    all_three["photos"][1]["motion"] = "shake"
+    all_three["photos"][2]["exit"] = "none"
+    all_three["photos"][2]["motion"] = "sway"
+    all_three["photos"][2]["motionAmount"] = 0.4
+    cases.append({
+        "id": "lanes-all-three",
+        "spec": all_three,
+        "aspect": 16 / 9, "leadIn": 0.3,
+        "times": [0.0, 0.7, 1.5, 2.3, 3.1, 3.8, 4.6],
+        "hashArgs": [8, 3, 85], "matW": 30,
+    })
+    # Junk in the new fields has to be dropped or clamped the same way on both
+    # sides: an unknown entrance inherits, an unknown motion does nothing, and
+    # a silly strength lands on the clamp.
+    junk = _spec("grid", "drop", "4:3", 3, 4, delays=[0.2, 0.2, 0.2], hold=1.5, exit="sweep")
+    junk["photos"][0].update({"anim": "nope", "motion": "spin", "motionAmount": 99, "exit": "explode"})
+    junk["photos"][1].update({"anim": None, "motion": "float", "motionAmount": 0.0})
+    junk["photos"][2].update({"motion": "orbit", "motionAmount": -3, "exit": "none"})
+    cases.append({
+        "id": "lanes-junk-overrides",
+        "spec": junk,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.8, 1.6, 2.4, 3.2],
+        "hashArgs": [4, 3, 81], "matW": 30,
+    })
+    # The scale motions: they ride the size ladder, so the twin's scale at
+    # every moment is what the render has to hold. 'beat' reads the stored
+    # beat times in the slide's own hold clock.
+    scaling = _spec("grid", "pop", "4:3", 4, 17, delays=[0.2, 0.2, 0.2, 0.2], hold=3)
+    scaling["beats"] = [0.6, 1.1, 1.6, 2.1, 2.6, 3.1, 3.6]
+    scaling["photos"][0]["motion"] = "breathe"
+    scaling["photos"][1]["motion"] = "pulse"
+    scaling["photos"][1]["motionAmount"] = 1.5
+    scaling["photos"][2]["motion"] = "beat"
+    scaling["photos"][3]["motion"] = "beat"
+    scaling["photos"][3]["motionAmount"] = 0.5
+    cases.append({
+        "id": "lanes-scale-motions",
+        "spec": scaling,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 0.7, 1.15, 1.7, 2.4, 3.3, 4.6],
+        "hashArgs": [17, 4, 83], "matW": 30,
+        "punchWindow": [0.5, 4.5],
+    })
+    # The animated looks: one drains to black & white, one blooms into colour,
+    # one flickers as it lands.
+    looked = _spec("scatter", "drop", "4:3", 3, 29, delays=[0.25, 0.3, 0.3], hold=2.5)
+    looked["photos"][0]["lookAnim"] = "toBw"
+    looked["photos"][1]["lookAnim"] = "toColor"
+    looked["photos"][2]["lookAnim"] = "flicker"
+    cases.append({
+        "id": "lanes-looks",
+        "spec": looked,
+        "aspect": 16 / 9, "leadIn": 0.0,
+        "times": [0.0, 0.2, 0.55, 0.9, 1.6, 2.6, 3.9],
+        "hashArgs": [29, 3, 87], "matW": 30,
+    })
+    # A long, fast track: more beats than one photo may carry, so both engines
+    # have to thin the list to the same subset.
+    thinned = _spec("stack", "fade", "4:3", 2, 12, delays=[0.2, 0.2], hold=6)
+    thinned["beats"] = [round(0.25 + k * 0.18, 3) for k in range(60)]
+    thinned["photos"][1]["motion"] = "beat"
+    cases.append({
+        "id": "lanes-beat-thinning",
+        "spec": thinned,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, 1.0, 2.5, 4.0, 5.5, 6.6],
+        "hashArgs": [12, 2, 81], "matW": 34,
+        "punchWindow": [0.4, 6.6],
+    })
+    # Everything at once: a scaling motion, an animated look, Ken Burns, the
+    # depth push and its own entrance — all additive on one photo.
+    piled = _spec("masonry", "drop", "3:4", 3, 41, delays=[0.3, 0.3, 0.3], hold=2.5, depth=True)
+    piled["kenBurns"] = True
+    piled["photos"][0]["motion"] = "breathe"
+    piled["photos"][0]["lookAnim"] = "toBw"
+    piled["photos"][1]["anim"] = "swing"
+    piled["photos"][1]["motion"] = "pulse"
+    piled["photos"][1]["lookAnim"] = "flicker"
+    piled["photos"][2]["lookAnim"] = "toColor"
+    piled["photos"][2]["exit"] = "none"
+    cases.append({
+        "id": "lanes-scale-look-stacked",
+        "spec": piled,
+        "aspect": 4 / 3, "leadIn": 0.0,
+        "times": [0.0, 0.4, 1.0, 1.8, 2.9, 4.2, 5.4],
+        "hashArgs": [41, 3, 89], "matW": 26,
+    })
+    # Junk in the look lane has to be dropped the same way on both sides.
+    junk_look = _spec("grid", "pop", "4:3", 2, 6, delays=[0.2, 0.2], hold=1.5)
+    junk_look["photos"][0]["lookAnim"] = "sepia"
+    junk_look["photos"][0]["motion"] = "breathe"
+    junk_look["photos"][1]["lookAnim"] = "toBw"
+    junk_look["photos"][1]["motion"] = "nope"
+    cases.append({
+        "id": "lanes-look-junk",
+        "spec": junk_look,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.6, 1.2, 2.0],
+        "hashArgs": [6, 2, 87], "matW": 30,
+    })
+    # A motion with a target the user picked: where it travels to, what angle
+    # it turns to, and how long each of them takes.
+    targeted = _spec("free", "fade", "4:3", 4, 23, delays=[0.2, 0.25, 0.3, 0.35], hold=3)
+    targeted["photos"][0].update({"motion": "move", "moveX": 18, "moveY": -9, "motionDuration": 1.4})
+    targeted["photos"][1].update({"motion": "turn", "turnTo": -40, "motionDuration": 1})
+    targeted["photos"][2].update({"motion": "spin", "motionAmount": 1.5})
+    targeted["photos"][3].update({"motion": "move", "moveX": 900, "moveY": -900,
+                                  "turnTo": 720, "motionDuration": 99})
+    cases.append({
+        "id": "lanes-target-motions",
+        "spec": targeted,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 0.9, 1.5, 2.2, 3.1, 4.4, 5.9],
+        "hashArgs": [23, 4, 81], "matW": 28,
+    })
+    # A duration on a LOOPING motion: it plays for that long and settles back to
+    # rest, so it cannot freeze mid-bob.
+    timed = _spec("scatter", "pop", "16:9", 3, 31, delays=[0.2, 0.2, 0.2], hold=4)
+    timed["photos"][0].update({"motion": "float", "motionDuration": 1.2})
+    timed["photos"][1].update({"motion": "pulse", "motionDuration": 0.8, "motionAmount": 2})
+    timed["photos"][2].update({"motion": "orbit", "motionDuration": 6})
+    timed["beats"] = [0.4, 0.9, 1.4, 1.9, 2.4, 2.9, 3.4, 3.9]
+    cases.append({
+        "id": "lanes-motion-duration",
+        "spec": timed,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, 0.7, 1.3, 1.9, 2.6, 3.4, 4.9, 6.2],
+        "hashArgs": [31, 3, 83], "matW": 24,
+        "punchWindow": [0.5, 6.0],
+    })
+    # The colour-flipping looks: a hard negative that develops out, and a slow
+    # turn of the colour wheel.
+    flipped = _spec("grid", "swing", "square", 3, 37, delays=[0.2, 0.3, 0.4], hold=2)
+    flipped["photos"][0]["lookAnim"] = "invert"
+    flipped["photos"][1]["lookAnim"] = "hueFlip"
+    flipped["photos"][2].update({"lookAnim": "invert", "anim": "none"})
+    cases.append({
+        "id": "lanes-flip-looks",
+        "spec": flipped,
+        "aspect": 1, "leadIn": 0.0,
+        "times": [0.0, 0.3, 0.9, 1.5, 2.4, 3.6, 5.0],
+        "hashArgs": [37, 3, 87], "matW": 30,
+    })
+    # A fade-out exit: it spends its whole fly fading where it stands, while its
+    # neighbours sweep out and one stays to the end.
+    fading = _spec("stack", "drop", "3:4", 3, 43, delays=[0.25, 0.25, 0.25], hold=2)
+    fading["photos"][0]["exit"] = "fade"
+    fading["photos"][1]["exit"] = "sweep"
+    fading["photos"][2]["exit"] = "none"
+    cases.append({
+        "id": "lanes-exit-fade",
+        "spec": fading,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 1.2, 2.6, 3.2, 3.7, 4.3, 5.1],
+        "hashArgs": [43, 3, 71], "matW": 26,
+    })
+    # A whole collage that fades out, at half speed and in reverse order.
+    fading_all = _spec("masonry", "fade", "4:3", 4, 51, delays=[0.2, 0.2, 0.2, 0.2], hold=1.5)
+    fading_all["exit"] = "fade"
+    fading_all["exitSpeed"] = 0.5
+    fading_all["exitReverse"] = True
+    cases.append({
+        "id": "lanes-exit-fade-all",
+        "spec": fading_all,
+        "aspect": 4 / 3, "leadIn": 0.0,
+        "times": [0.0, 0.8, 1.6, 2.2, 2.9, 3.6],
+        "hashArgs": [51, 4, 73], "matW": 22,
+    })
+    # Junk in the new fields has to be dropped or clamped the same way.
+    junk_target = _spec("grid", "pop", "4:3", 2, 8, delays=[0.2, 0.2], hold=1.5)
+    junk_target["photos"][0].update({"motion": "move", "moveX": "far", "moveY": None,
+                                     "motionDuration": -3, "turnTo": True})
+    junk_target["photos"][1].update({"motion": "teleport", "turnTo": "45",
+                                     "motionDuration": "2", "lookAnim": "negative"})
+    cases.append({
+        "id": "lanes-target-junk",
+        "spec": junk_target,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.5, 1.1, 2.0],
+        "hashArgs": [8, 2, 81], "matW": 30,
+    })
     # virtual cameras over the composed scene
     for camera in ("pan", "zoom", "telescope", "droste"):
         cases.append({
@@ -417,7 +690,91 @@ class CollageTwinTest(unittest.TestCase):
             assert abs(got["hash"] - hash01(*case["hashArgs"])) < TOL, where
             assert abs(got["matHeight"] - mat_height(case["matW"], spec["shape"], aspect)) < TOL, where
             assert got["pin"] == pin_anchor(spec), where
-            py_starts = [photo_start(spec, i, lead_in) for i in range(len(spec["photos"]))]
+            n_photos = len(spec["photos"])
+            lanes = got["lanes"]
+            # Enter lane: which entrance each photo performs, and whether it
+            # hangs from a pin because of it.
+            assert lanes["anim"] == [photo_anim(spec, i) for i in range(n_photos)], where
+            assert lanes["pin"] == [pin_anchor(spec, i) for i in range(n_photos)], where
+            # While lane: the motion id and its clamped strength.
+            py_motion = [photo_motion(spec, i) for i in range(n_photos)]
+            assert len(lanes["motion"]) == n_photos, where
+            for a, (mid, amt) in zip(lanes["motion"], py_motion):
+                assert a["id"] == mid, f"{where} motion: {a} != {(mid, amt)}"
+                assert abs(a["amount"] - amt) < TOL, f"{where} motion amount: {a} != {(mid, amt)}"
+            # A motion's own duration and target, and the headroom they imply.
+            for i in range(n_photos):
+                assert abs(lanes["motionDuration"][i] - photo_motion_duration(spec, i)) < TOL, (
+                    f"{where} photo {i} motion duration")
+                ts_move = lanes["move"][i]
+                py_move = photo_move(spec, i)
+                assert abs(ts_move["x"] - py_move[0]) < TOL, f"{where} photo {i} moveX"
+                assert abs(ts_move["y"] - py_move[1]) < TOL, f"{where} photo {i} moveY"
+                assert abs(lanes["turnTo"][i] - photo_turn_to(spec, i)) < TOL, (
+                    f"{where} photo {i} turn target")
+                assert abs(lanes["motionSpin"][i] - motion_spin(spec, i)) < TOL, (
+                    f"{where} photo {i} motion headroom")
+            # Animated look: which one, and what it does to the colour at
+            # every sampled time (the preview's CSS filter and the render's
+            # hue/eq/negate chain are all driven by these numbers).
+            assert lanes["look"] == [photo_look_anim(spec, i) for i in range(n_photos)], where
+            for ti, t in enumerate(case["times"]):
+                for i in range(n_photos):
+                    py_look = photo_look_state(spec, i, t, lead_in)
+                    ts_look = lanes["lookState"][ti][i]
+                    for key in ("sat", "bright", "inv", "hue"):
+                        assert abs(ts_look[key] - py_look[key]) < TOL, (
+                            f"{where} t={t} photo {i} look {key}: "
+                            f"{ts_look[key]} != {py_look[key]}")
+            # The preview's own colour path. The FFmpeg tests tie the twin's
+            # numbers to real pixels; this ties the CSS filter string the preview
+            # paints to the same numbers — parts, values AND order, because CSS
+            # applies its filters left to right just as FFmpeg applies its chain
+            # (dim, colour wheel, saturation, brightness, flip). Together they
+            # are the two halves of "the MP4 is what the preview shows".
+            for ti, t in enumerate(case["times"]):
+                for i in range(n_photos):
+                    st = photo_state(spec, i, t, lead_in, aspect)
+                    look = photo_look_state(spec, i, t, lead_in)
+                    want: list[tuple[str, float]] = []
+                    if st["dim"] > 0.004:
+                        want.append(("brightness", 1 - st["dim"]))
+                    if abs(look["hue"]) > 0.2:
+                        want.append(("hue-rotate", look["hue"]))
+                    if abs(look["sat"] - 1) > 0.002:
+                        want.append(("saturate", look["sat"]))
+                    if abs(look["bright"] - 1) > 0.002:
+                        want.append(("brightness", look["bright"]))
+                    if look["inv"] > 0.5:
+                        want.append(("invert", 1.0))
+                    got_css = _css_filter_parts(lanes["filters"][ti][i])
+                    assert [g[0] for g in got_css] == [w[0] for w in want], (
+                        f"{where} t={t} photo {i} CSS filter: "
+                        f"{got_css} != {want}")
+                    for (got_name, got_v), (_, want_v) in zip(got_css, want):
+                        # the string is written with 2-3 decimals
+                        assert abs(got_v - want_v) < 6e-3, (
+                            f"{where} t={t} photo {i} {got_name}: "
+                            f"{got_v} != {want_v}")
+            if case.get("punchWindow"):
+                py_punch = beat_punches(spec, *case["punchWindow"])
+                assert len(lanes["punches"]) == len(py_punch), (
+                    f"{where} punches: {lanes['punches']} != {py_punch}")
+                for a, b in zip(lanes["punches"], py_punch):
+                    assert abs(a - b) < TOL, f"{where} punches: {a} != {b}"
+            # Exit lane: who leaves, in which order, when, and for how long.
+            assert lanes["exit"] == [exit_mode(spec, i) for i in range(n_photos)], where
+            assert lanes["schedule"] == exit_schedule_mode(spec), where
+            for key, fn in (("exitOffset", exit_offset), ("exitFly", exit_fly_length)):
+                want = [fn(spec, i) for i in range(n_photos)]
+                assert len(lanes[key]) == n_photos, where
+                for a, b in zip(lanes[key], want):
+                    assert abs(a - b) < TOL, f"{where} {key}: {a} != {b}"
+            assert abs(lanes["exitTotal"] - exit_total(spec)) < TOL, (
+                f"{where} exitTotal: {lanes['exitTotal']} != {exit_total(spec)}")
+            assert abs(lanes["base"] - base_duration(spec)) < TOL, (
+                f"{where} baseDuration: {lanes['base']} != {base_duration(spec)}")
+            py_starts = [photo_start(spec, i, lead_in) for i in range(n_photos)]
             for a, b in zip(got["start"], py_starts):
                 assert abs(a - b) < TOL, where
             assert abs(got["duration"] - collage_duration(spec)) < TOL, f"{where} duration: {got['duration']} != {collage_duration(spec)}"
@@ -1092,10 +1449,19 @@ class CollageTwinTest(unittest.TestCase):
         ngraph = "".join(nlines)
         assert ngraph.count("between(t,0,") == 3
         # flip: width follows the outBack curve, height only the depth shrink
-        flip = {"collage": _spec("grid", "flip", "4:3", 2, 3, depth=True)}
-        flines, _ = collage_graph(flip, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
+        flip_spec = _spec("grid", "flip", "4:3", 2, 3, depth=True)
+        flines, _ = collage_graph({"collage": flip_spec}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
         fgraph = "".join(flines)
-        assert "rotate='(-4*(1-" in fgraph
+        # ... and it opens around each photo's resting tilt (grid's seeded rot),
+        # the angle the preview draws from the first frame on
+        flip_rots = [pl["rot"] for pl in placements(flip_spec, 1280 / 720)]
+        flip_angles = re.findall(r"rotate='([^']*)':c=black", fgraph)
+        assert flip_angles and all(abs(r) > 0.01 for r in flip_rots)
+        for ang in flip_angles:          # one rotate per size level, per photo
+            assert "-4*(1-" in ang
+            head = float(ang.split("-4*(1-")[0].lstrip("("))
+            # _n() writes 4 decimals, so compare with the same rounding
+            assert any(abs(head - rot) < 1e-4 for rot in flip_rots), (ang, flip_rots)
         # flip + depth: the twin's pushDepth covers flip too, so the render
         # must dim it like drop/pop do (the sizes already come from photoState)
         assert "sendcmd=commands=" in fgraph and "eq@dim0" in fgraph
@@ -1136,6 +1502,132 @@ class CollageTwinTest(unittest.TestCase):
         # no camera → the composed photos label is the result, no zoompan
         gglines, gglast = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         assert gglast == "o3" and "zoompan" not in "".join(gglines)
+
+
+    def test_free_tilt_turns_the_photo_in_the_render(self):
+        """A photo turned by hand on the preview (Free's per-photo `rot`) has to
+        come back turned from the MP4: the placement carries the stored angle
+        and every entrance writes it into its rotate expression — flip used to
+        straighten hand-turned photos by leaving the resting tilt out."""
+        for anim in ("none", "fade", "pop", "drop", "swing", "flip", "tumble"):
+            spec = _spec("free", anim, "4:3", 2, 5, delays=[0.2, 0.2], hold=1)
+            spec["photos"][0]["rot"] = -12.5
+            spec["photos"][1]["rot"] = 90
+            pls = placements(spec, 16 / 9)
+            assert abs(pls[0]["rot"] + 12.5) < 1e-9 and abs(pls[1]["rot"] - 90) < 1e-9
+            graph = "".join(collage_graph({"collage": spec}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")[0])
+            angles = re.findall(r"rotate='([^']*)':c=black", graph)
+            assert angles, anim
+            for ang in angles:           # one rotate per size level, per photo
+                assert ang.startswith("(-12.5") or ang.startswith("(90"), (anim, ang)
+            assert any(a.startswith("(-12.5") for a in angles), (anim, angles)
+            assert any(a.startswith("(90") for a in angles), (anim, angles)
+        # a straightened photo stores nothing, and with no tilt of its own the
+        # render emits no rotate filter at all (untouched projects stay identical)
+        plain = _spec("free", "fade", "4:3", 1, 5, hold=1)
+        plain["photos"][0]["rot"] = 0
+        pgraph = "".join(collage_graph({"collage": plain}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")[0])
+        assert "rotate=" not in pgraph
+
+
+    def test_the_size_ladder_follows_the_twin_past_the_entrance(self):
+        """`scale` cannot be animated, so a photo that keeps growing after it
+        lands (Ken Burns, and any per-photo motion that scales) is rendered as a
+        ladder of held sizes. Two things have to be true: the ladder must reach
+        the END of the photo's time on screen — sampling only the entrance left
+        the last level open-ended and froze the zoom at the size the photo had
+        when it landed, so the preview zoomed 8 % and the MP4 never moved — and
+        every held size must stay within one quantisation bucket of the twin.
+        """
+        def levels_of(graph: str, i: int) -> list[tuple[int, int, list[tuple[float, float | None]]]]:
+            """(W, H, windows) per level, in graph order."""
+            single = re.search(rf"\[sp{i}f\]scale=(\d+):(\d+)", graph)
+            if single and f"[b{i}_0]" not in graph:
+                return [(int(single.group(1)), int(single.group(2)), [(0.0, None)])]
+            out = []
+            for m in re.finditer(rf"\[b{i}_(\d+)\]scale=(\d+):(\d+)", graph):
+                k, w, h = m.group(1), int(m.group(2)), int(m.group(3))
+                ov = re.search(rf"\[lv{i}_{k}\]overlay=x='[^']*':y='[^']*'(?::enable='([^']*)')?", graph)
+                windows: list[tuple[float, float | None]] = []
+                for part in (ov.group(1) or "").split("+"):
+                    b = re.match(r"between\(t,([\d.-]+),([\d.-]+)\)", part)
+                    g = re.match(r"gte\(t,([\d.-]+)\)", part)
+                    if b:
+                        windows.append((float(b.group(1)), float(b.group(2))))
+                    elif g:
+                        windows.append((float(g.group(1)), None))
+                out.append((w, h, windows or [(0.0, None)]))
+            return out
+
+        def held_at(levels, t: float) -> tuple[int, int]:
+            for w, h, windows in levels:
+                for a, b in windows:
+                    if t >= a and (b is None or t <= b):
+                        return w, h
+            raise AssertionError(f"no level covers t={t}")
+
+        for anim in ("none", "fade", "pop"):
+            for exit_mode in (None, "sweep"):
+                spec = _spec("grid", anim, "4:3", 3, 5, hold=3, exit=exit_mode)
+                spec["kenBurns"] = True
+                item = {"collage": spec}
+                norm = normalize_collage(item)
+                dur = collage_duration(norm)
+                lead = 0.5
+                graph = "".join(collage_graph(item, 1280, 720, 25.0, dur, lead, 1, "cb")[0])
+                levels = levels_of(graph, 0)
+                # the twin's scale at the first and the last frame the photo
+                # shows — with an exit the ladder stops when the photo is gone,
+                # which is before the slide ends
+                ends = [b for _w, _h, ws in levels for _a, b in ws]
+                cover = lead + dur if any(b is None for b in ends) else max(ends)
+                t_first, t_last = lead + 1 / 25, min(lead + dur, cover) - 1 / 25
+                s_first = photo_state(norm, 0, t_first, lead, 16 / 9)["scale"]
+                s_last = photo_state(norm, 0, t_last, lead, 16 / 9)["scale"]
+                w_first, h_first = held_at(levels, t_first)
+                w_last, h_last = held_at(levels, t_last)
+                if s_last > s_first + 0.02:
+                    # the render must have grown by what the twin says it grows
+                    self.assertAlmostEqual(w_last / w_first, s_last / s_first, delta=0.03,
+                                           msg=(anim, exit_mode, levels))
+                    self.assertAlmostEqual(h_last / h_first, s_last / s_first, delta=0.03,
+                                           msg=(anim, exit_mode, levels))
+                # every held size implies the same resting canvas, within a
+                # bucket — measured at the moment a level TAKES OVER, since a
+                # level holds the size the twin had when its window opened
+                implied_w, implied_h = [], []
+                for w, h, windows in levels:
+                    for a, _b in windows:
+                        t = min(max(a, t_first), t_last)
+                        st = photo_state(norm, 0, t, lead, 16 / 9)
+                        implied_w.append(w / (st["scale"] * st["scaleX"]))
+                        implied_h.append(h / st["scale"])
+                buckets = ladder_buckets(round(sum(implied_w) / len(implied_w)),
+                                         round(sum(implied_h) / len(implied_h)))
+                for implied in (implied_w, implied_h):
+                    spread = (max(implied) - min(implied)) / min(implied)
+                    self.assertLess(spread, 1.5 / buckets + 0.005,
+                                    msg=(anim, exit_mode, spread, buckets, levels))
+                # the entrance keeps its per-frame sizes (a spring crosses many
+                # distinct ones), but the slow tail must stay coarse: that is the
+                # whole point of quantising it
+                entrance_end = photo_start(norm, 0, lead) + ENTRANCE_LENGTH[norm["animation"]]
+                tail_levels = sum(1 for _w, _h, ws in levels if ws[0][0] >= entrance_end - 1e-9)
+                self.assertLessEqual(tail_levels, 10, msg=(anim, exit_mode, levels))
+                self.assertLessEqual(len(levels), 26, msg=(anim, exit_mode, levels))
+
+        # without Ken Burns the ladder is the entrance's, exactly as before: the
+        # size it settles on is the resting canvas and stays there
+        plain = _spec("grid", "pop", "4:3", 3, 5, hold=3)
+        graph = "".join(collage_graph({"collage": plain}, 1280, 720, 25.0,
+                                     collage_duration(normalize_collage({"collage": plain})),
+                                     0.5, 1, "cb")[0])
+        levels = levels_of(graph, 0)
+        w, h, windows = levels[-1]
+        self.assertIsNone(windows[-1][1], "the settled level runs to the end")
+        norm = normalize_collage({"collage": plain})
+        rest = photo_state(norm, 0, collage_duration(norm), 0.5, 16 / 9)
+        self.assertAlmostEqual(rest["scale"], 1.0, delta=1e-9)
 
 
     def test_graph_ladder_handles_repeated_settle_size(self):
