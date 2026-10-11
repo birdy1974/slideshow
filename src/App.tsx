@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAspect, photoMatHeight, photoTilt, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAspect, photoMatHeight, photoTilt, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -4367,12 +4367,17 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     } while (next.every((slot, i) => slot === slots[i]))
     setSpec({ photos: photos.map((p, i) => ({ ...p, slot: next[i] })) })
   }
+  // Reordering and removing keep the selection on the same photo: the ring on
+  // the preview and the highlighted chip follow it, instead of ending up on a
+  // neighbour that slid into the place (or on nothing at all).
   const dropChip = (onto: number) => {
     if (dragChip !== null && dragChip !== onto) {
+      const from = dragChip
       const next = [...photos]
-      const [moved] = next.splice(dragChip, 1)
+      const [moved] = next.splice(from, 1)
       next.splice(onto, 0, moved)
       setSpec({ photos: next })
+      setSelectedPhoto(sel => selectionAfterMove(sel, from, onto))
     }
     setDragChip(null)
     setDragOverChip(null)
@@ -4384,8 +4389,12 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     const [moved] = next.splice(i, 1)
     next.splice(j, 0, moved)
     setSpec({ photos: next })
+    setSelectedPhoto(sel => selectionAfterMove(sel, i, j))
   }
-  const removePhoto = (i: number) => setSpec({ photos: photos.filter((_, k) => k !== i) })
+  const removePhoto = (i: number) => {
+    setSpec({ photos: photos.filter((_, k) => k !== i) })
+    setSelectedPhoto(sel => selectionAfterRemove(sel, i))
+  }
   const full = photos.length >= MAX_COLLAGE_PHOTOS
   // Per-photo timing: editing one wait materialises every photo's delay
   // (untouched ones keep the auto-stagger value they were showing).

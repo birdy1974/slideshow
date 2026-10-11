@@ -93,6 +93,13 @@ appear. The chip's dotted outline is a pseudo element for the same reason — it
 hover actions bar and its *pos* badge are positioned children and would paint
 over an outline on the chip itself.
 
+Photos are identified by their index in the strip, so the selection has to move
+with them: `selectionAfterMove` (drag to reorder, or the ‹ › buttons) and
+`selectionAfterRemove` keep the ring and the highlighted chip on the same photo
+instead of letting a neighbour slide into the marked place, and removing the
+selected photo deselects rather than marking whatever took its slot. Clicking
+the chip's own buttons (replace, ‹ ›, remove) does not select as a side effect.
+
 ## Turning a photo (Free arrangement)
 
 Select a photo on the preview (or in the strip) and a round **knob** appears on
@@ -187,7 +194,8 @@ the same angle the renderer will use.
 - `backend/tests/test_collage_tilt_handles.py` — the turn-a-photo controls,
   which are pointer maths with no render counterpart: Python writes the cases
   and an independent computation, Node evaluates the TypeScript helpers
-  (`tests/tilt_handles.mjs`), including which side of the mat the knob goes on;
+  (`tests/tilt_handles.mjs`), including which side of the mat the knob goes on
+  and where the selection ends up when the strip reorders or removes a photo;
   the last case is a real twin — the `rot` a stored tilt ends up as in the Free
   placements must match `collage.py`.
 - `backend/tests/test_collage_camera_ffmpeg.py`, `test_collage_orientation.py` —

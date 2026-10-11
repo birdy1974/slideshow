@@ -842,6 +842,29 @@ export function rotateKnobLift (gap: number, pivotY: number, upY: number, band: 
   return 0
 }
 
+/** Where the selection ends up when the photo strip moves a photo from one
+ *  index to another (drag to reorder, or the ‹ › buttons): it follows the photo
+ *  it was on instead of silently pointing at whichever neighbour slid into that
+ *  place. `selected` is null when nothing is selected. */
+export function selectionAfterMove (selected: number | null, from: number, to: number): number | null {
+  if (selected === null) return null
+  if (from === to) return selected
+  if (selected === from) return to
+  const lo = Math.min(from, to)
+  const hi = Math.max(from, to)
+  if (selected < lo || selected > hi) return selected
+  return from < to ? selected - 1 : selected + 1
+}
+
+/** Where the selection ends up when a photo leaves the collage: the selected
+ *  photo itself deselects (its size and tilt controls would be about a photo
+ *  that is gone), a later one keeps being the same photo. */
+export function selectionAfterRemove (selected: number | null, removed: number): number | null {
+  if (selected === null) return null
+  if (selected === removed) return null
+  return selected > removed ? selected - 1 : selected
+}
+
 /** Photos of a Free arrangement seeded from what another arrangement shows:
  *  each photo keeps its displayed centre, tilt and mat size (the size is
  *  stored as the photo's own width before its size multiplier, so the

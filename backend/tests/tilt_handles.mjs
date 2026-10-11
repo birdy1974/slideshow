@@ -29,6 +29,10 @@ const out = input.cases.map(c => ({
   drag: c.drag ? core.rotateDragTilt(c.drag[0], c.drag[1], c.drag[2], c.drag[3] ?? 0) : null,
   // rotateKnobLift(gap, pivotY, upY, band, half) — signed, 0 = onto the pivot
   knob: c.knob ? core.rotateKnobLift(c.knob.gap, c.knob.pivotY, c.knob.upY, c.knob.band, c.knob.half) : null,
+  // selectionAfterMove(selected, from, to) — the strip reordering a photo
+  selMove: 'selMove' in c ? core.selectionAfterMove(c.selMove[0], c.selMove[1], c.selMove[2]) : undefined,
+  // selectionAfterRemove(selected, removed) — a photo leaving the collage
+  selRemove: 'selRemove' in c ? core.selectionAfterRemove(c.selRemove[0], c.selRemove[1]) : undefined,
   // the rot a stored tilt becomes in the Free placements (the render reads this)
   freeRot: c.freeRot ? core.placements(core.normalizeCollage(c.freeRot), 16 / 9).map(p => p.rot) : null,
 }))

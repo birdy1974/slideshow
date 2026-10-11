@@ -1,9 +1,11 @@
-"""The preview's turn-a-photo controls (Free arrangement) are pointer maths
-with no render counterpart, so the value-by-value twin in test_collage_twin.py
-cannot cover them: how an angle folds into ±180°, what a pointer position means
-in degrees, what a drag adds to the stored tilt, and how the tilt is written
-onto one photo without touching the others (or the spec at all when it comes
-back to 0°).
+"""The preview's turn-a-photo controls (Free arrangement) and its selection
+bookkeeping are pointer maths with no render counterpart, so the value-by-value
+twin in test_collage_twin.py cannot cover them: how an angle folds into ±180°,
+what a pointer position means in degrees, what a drag adds to the stored tilt,
+how the tilt is written onto one photo without touching the others (or the spec
+at all when it comes back to 0°), which side of the mat the knob goes on when
+the frame would clip it, and where the selected photo ends up when the strip
+reorders or removes one.
 
 Python writes the cases and an independent computation of what they must give;
 Node evaluates src/collageCore.ts on the same input (tests/tilt_handles.mjs).
@@ -83,6 +85,25 @@ def _knob_lift(gap, pivot_y, up_y, band, half) -> float:
     if fits(-reach):
         return -reach
     return 0.0
+
+
+def _sel_move(selected, frm, to):
+    """selectionAfterMove: the selection follows its own photo."""
+    if selected is None or frm == to:
+        return selected
+    if selected == frm:
+        return to
+    lo, hi = min(frm, to), max(frm, to)
+    if selected < lo or selected > hi:
+        return selected
+    return selected - 1 if frm < to else selected + 1
+
+
+def _sel_remove(selected, removed):
+    """selectionAfterRemove: the removed photo deselects, later ones shift down."""
+    if selected is None or selected == removed:
+        return None
+    return selected - 1 if selected > removed else selected
 
 
 class TiltHandleTest(unittest.TestCase):
@@ -211,6 +232,30 @@ class TiltHandleTest(unittest.TestCase):
         self.assertAlmostEqual(got["zero-gap"]["knob"], 0.0, delta=TOL)
         self.assertAlmostEqual(got["junk-gap"]["knob"], 0.0, delta=TOL)
         self.assertAlmostEqual(got["off-frame"]["knob"], 0.0, delta=TOL)
+
+    def test_the_selection_follows_its_photo_through_the_strip(self):
+        """The ring on the preview and the highlighted chip are one state keyed
+        by index, so reordering or removing a photo has to move it with the
+        photo — or the marker silently jumps to a neighbour."""
+        moves = [(None, 0, 2), (2, 0, 3), (0, 0, 3), (3, 0, 3), (4, 0, 3),
+                 (1, 3, 1), (3, 3, 1), (0, 3, 1), (2, 2, 2), (0, 0, 1), (1, 1, 0)]
+        removes = [(None, 0), (2, 2), (3, 2), (1, 2), (0, 0), (0, 3), (2, 0)]
+        cases = ([{"id": f"move-{i}", "selMove": m} for i, m in enumerate(moves)]
+                 + [{"id": f"remove-{i}", "selRemove": r} for i, r in enumerate(removes)])
+        got = _run_node(cases)
+        for i, (sel, frm, to) in enumerate(moves):
+            self.assertEqual(got[f"move-{i}"]["selMove"], _sel_move(sel, frm, to), msg=(sel, frm, to))
+        for i, (sel, gone) in enumerate(removes):
+            self.assertEqual(got[f"remove-{i}"]["selRemove"], _sel_remove(sel, gone), msg=(sel, gone))
+        # the cases that matter most, spelled out
+        self.assertEqual(got["move-1"]["selMove"], 1)      # photo 3 -> 1 when photo 1 jumps to 4
+        self.assertEqual(got["move-2"]["selMove"], 3)      # the selected photo is the one that moved
+        self.assertEqual(got["move-3"]["selMove"], 2)      # the photo at the landing place shifts back
+        self.assertEqual(got["move-4"]["selMove"], 4)      # outside the moved span: untouched
+        self.assertEqual(got["move-5"]["selMove"], 2)      # moving backwards shifts the span up
+        self.assertEqual(got["remove-1"]["selRemove"], None)   # the selected photo is gone
+        self.assertEqual(got["remove-2"]["selRemove"], 2)      # a later photo keeps being itself
+        self.assertEqual(got["remove-3"]["selRemove"], 1)      # an earlier one does not move
 
     def test_a_stored_tilt_is_the_rot_both_engines_place(self):
         spec = {"photos": [{"path": "/photos/a.jpg", "cx": 20, "cy": 30, "rot": -90},
