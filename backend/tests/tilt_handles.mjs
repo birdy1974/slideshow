@@ -27,6 +27,8 @@ const out = input.cases.map(c => ({
   pointer: c.pointer ? core.pointerAngle(c.pointer[0], c.pointer[1], c.pointer[2], c.pointer[3]) : null,
   // rotateDragTilt(startTilt, startAngle, angle, snap)
   drag: c.drag ? core.rotateDragTilt(c.drag[0], c.drag[1], c.drag[2], c.drag[3] ?? 0) : null,
+  // rotateKnobLift(gap, pivotY, upY, band, half) — signed, 0 = onto the pivot
+  knob: c.knob ? core.rotateKnobLift(c.knob.gap, c.knob.pivotY, c.knob.upY, c.knob.band, c.knob.half) : null,
   // the rot a stored tilt becomes in the Free placements (the render reads this)
   freeRot: c.freeRot ? core.placements(core.normalizeCollage(c.freeRot), 16 / 9).map(p => p.rot) : null,
 }))

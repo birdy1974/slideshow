@@ -70,6 +70,21 @@ def _read(photo: dict) -> float:
     return _fold(raw)
 
 
+def _knob_lift(gap, pivot_y, up_y, band, half) -> float:
+    """rotateKnobLift: above the mat, else below it, else onto the pivot."""
+    reach = max(0.0, float(gap) if gap == gap else 0.0)
+
+    def fits(lift: float) -> bool:
+        y = pivot_y + up_y * lift
+        return y - half >= band[0] and y + half <= band[1]
+
+    if fits(reach):
+        return reach
+    if fits(-reach):
+        return -reach
+    return 0.0
+
+
 class TiltHandleTest(unittest.TestCase):
     def test_tilt_folds_rounds_and_wraps(self):
         values = [0, 12.3456, -12.3456, 180, -180, 190, -190, 360, -360,
@@ -162,6 +177,40 @@ class TiltHandleTest(unittest.TestCase):
         self.assertAlmostEqual(got["snap-round"]["drag"], 15.0, delta=TOL)
         self.assertAlmostEqual(got["wrap"]["drag"], 11.8, delta=0.05)
         self.assertAlmostEqual(got["counter"]["drag"], -90.0, delta=TOL)
+
+    def test_the_knob_stays_inside_the_frame(self):
+        """The host clips, so a knob above a photo that hangs over the top edge
+        would be cut off and unreachable: it has to go below the mat instead,
+        and onto the pivot when the photo spans the whole frame."""
+        frame = [0.0, 1080.0]                     # camera-local y the frame shows
+        zoomed = [270.0, 810.0]                   # the same window at zoom 2
+        cases = [
+            # (id, gap, pivotY, upY, band, half)
+            ("middle", 200.0, 540.0, -1.0, frame, 15.0),          # room above: lift up
+            ("over-top", 200.0, 60.0, -1.0, frame, 15.0),         # above is clipped -> below
+            ("turned", 200.0, 1020.0, 1.0, frame, 15.0),          # 180° turn: "above" is down
+            ("spanning", 700.0, 540.0, -1.0, frame, 15.0),        # neither side fits -> pivot
+            ("zoomed", 100.0, 300.0, -1.0, zoomed, 15.0),         # the camera window is the band
+            ("snug", 100.0, 130.0, -1.0, frame, 15.0),            # just fits above
+            ("zero-gap", 0.0, 540.0, -1.0, frame, 15.0),
+            ("junk-gap", float("nan"), 540.0, -1.0, frame, 15.0),
+            ("off-frame", 100.0, -400.0, -1.0, frame, 15.0),      # pivot itself is outside
+        ]
+        got = _run_node([{"id": n, "knob": {"gap": None if g != g else g, "pivotY": py,
+                                            "upY": uy, "band": b, "half": h}}
+                         for n, g, py, uy, b, h in cases])
+        for name, gap, pivot_y, up_y, band, half in cases:
+            want = _knob_lift(0.0 if gap != gap else gap, pivot_y, up_y, band, half)
+            self.assertAlmostEqual(got[name]["knob"], want, delta=TOL, msg=name)
+        self.assertAlmostEqual(got["middle"]["knob"], 200.0, delta=TOL)
+        self.assertAlmostEqual(got["over-top"]["knob"], -200.0, delta=TOL)
+        self.assertAlmostEqual(got["turned"]["knob"], -200.0, delta=TOL)   # down on screen
+        self.assertAlmostEqual(got["spanning"]["knob"], 0.0, delta=TOL)
+        self.assertAlmostEqual(got["zoomed"]["knob"], -100.0, delta=TOL)
+        self.assertAlmostEqual(got["snug"]["knob"], 100.0, delta=TOL)
+        self.assertAlmostEqual(got["zero-gap"]["knob"], 0.0, delta=TOL)
+        self.assertAlmostEqual(got["junk-gap"]["knob"], 0.0, delta=TOL)
+        self.assertAlmostEqual(got["off-frame"]["knob"], 0.0, delta=TOL)
 
     def test_a_stored_tilt_is_the_rot_both_engines_place(self):
         spec = {"photos": [{"path": "/photos/a.jpg", "cx": 20, "cy": 30, "rot": -90},

@@ -72,6 +72,27 @@ Rewinding is still available, and only from explicit controls: the **Replay**
 button in the transport row, **Stop** (rewind + pause), the timeline bar, and
 opening the popup.
 
+## Selecting a photo
+
+One state (`selectedPhoto` in `CollageEditor`), shown in two places, so it works
+in both directions: clicking a photo on the preview rings it *and* highlights its
+chip in the strip below (scrolling the strip to it, which can hold a dozen
+photos), and clicking a chip — or its number badge, a real button so the keyboard
+can do it too — rings that photo on the preview. The selected photo's size
+slider, and in Free its tilt, appear under the preview.
+
+The ring is deliberately not the mat's own outline. Mats are painted in DOM
+order, so the photos stacked on top of the selected one would cover it — which is
+why the marker used to disappear in exactly the arrangements where photos
+overlap. `.collage-select-ring` is a sibling *after* all the mats,
+`pointer-events: none` (it must never steal a drag), and the preview hands it the
+selected mat's exact box, corner radius and transform every frame: it turns,
+scales, fades and flies out with the photo. Its opacity never drops below 0.45,
+so a photo picked from the strip before it has landed still shows where it will
+appear. The chip's dotted outline is a pseudo element for the same reason — its
+hover actions bar and its *pos* badge are positioned children and would paint
+over an outline on the chip itself.
+
 ## Turning a photo (Free arrangement)
 
 Select a photo on the preview (or in the strip) and a round **knob** appears on
@@ -96,8 +117,11 @@ Implementation notes, for the next person:
   camera pixels plus a fixed screen gap above the pivot.
 - The maths lives in `collageCore.ts`: `photoTilt` (read), `setPhotoRot` (write,
   drops 0), `normalizeTilt` (fold into −180…180, round to 0.1°), `pointerAngle`
-  (screen y points down ⇒ clockwise positive, like CSS) and `rotateDragTilt`
-  (start tilt + pointer delta, optionally snapped).
+  (screen y points down ⇒ clockwise positive, like CSS), `rotateDragTilt`
+  (start tilt + pointer delta, optionally snapped) and `rotateKnobLift` (which
+  side of the mat the knob goes on: the host clips, so a knob above a photo that
+  hangs over the top edge would be cut off — it moves below the mat, or onto the
+  pivot when the photo spans the whole frame).
 - The mat transform is `rotate(g.rot + st.rot)deg`: `g.rot` is the resting tilt
   from the placement, `st.rot` the animation's own rotation. That sum is exactly
   what the render draws.
@@ -163,7 +187,8 @@ the same angle the renderer will use.
 - `backend/tests/test_collage_tilt_handles.py` — the turn-a-photo controls,
   which are pointer maths with no render counterpart: Python writes the cases
   and an independent computation, Node evaluates the TypeScript helpers
-  (`tests/tilt_handles.mjs`), and the last case is a real twin — the `rot` a
-  stored tilt ends up as in the Free placements must match `collage.py`.
+  (`tests/tilt_handles.mjs`), including which side of the mat the knob goes on;
+  the last case is a real twin — the `rot` a stored tilt ends up as in the Free
+  placements must match `collage.py`.
 - `backend/tests/test_collage_camera_ffmpeg.py`, `test_collage_orientation.py` —
   camera moves and EXIF orientation through the same chain.

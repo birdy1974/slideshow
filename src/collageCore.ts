@@ -823,6 +823,25 @@ export function rotateDragTilt (startTilt: number, startAngle: number, angle: nu
   return normalizeTilt(step ? Math.round(next / step) * step : next)
 }
 
+/** Signed distance of the preview's rotate knob from a mat's pivot, along the
+ *  mat's own "above the top edge" direction after its turn (`upY` is that
+ *  direction's y component, so a photo turned 180° lifts downwards on screen).
+ *  `band` is the range of camera-local y the frame actually shows — the camera
+ *  window — and `half` the knob's own half height in the same units. A knob
+ *  that the frame would clip jumps to the other side of the mat; when neither
+ *  side is on screen (a photo hanging over both edges) it sits on the pivot, so
+ *  it stays visible and reachable whatever the arrangement. */
+export function rotateKnobLift (gap: number, pivotY: number, upY: number, band: [number, number], half: number): number {
+  const reach = Math.max(0, Number(gap) || 0)
+  const fits = (lift: number) => {
+    const y = pivotY + upY * lift
+    return y - half >= band[0] && y + half <= band[1]
+  }
+  if (fits(reach)) return reach
+  if (fits(-reach)) return -reach
+  return 0
+}
+
 /** Photos of a Free arrangement seeded from what another arrangement shows:
  *  each photo keeps its displayed centre, tilt and mat size (the size is
  *  stored as the photo's own width before its size multiplier, so the

@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAspect, photoMatHeight, photoTilt, pinAnchor, placements, pointerAngle, rotateDragTilt, scaleAllPhotoSizes, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAspect, photoMatHeight, photoTilt, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageBgFit, type CollageFrameShape, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -3308,6 +3308,12 @@ function FrameMotionPreview({ item, defaults, playing = true, className = '' }: 
 /** Screen-space gap (px) between a mat's top edge and its rotate knob. */
 const ROTATE_KNOB_GAP = 18
 
+/** A mat's corner radius from its frame shape — the selection ring copies it so
+ *  a rounded or circular frame is ringed in its own shape. */
+function matRadiusCss (fr: { shape: string; radius?: number }): string {
+  return fr.shape === 'rounded' ? `${fr.radius ?? 5}%` : fr.shape === 'circle' ? '50%' : '2px'
+}
+
 /** The photo layer of a collage slide. Scaled to its host like MotionStage.
  *  The editor can pass `onMovePhoto` (Free: drag a mat to a new resting centre)
  *  and `onRotatePhoto` (Free: drag the knob on the selected mat to turn it) —
@@ -3321,6 +3327,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, selectedIndex,
   const dragRef = useRef<{ pointerId: number; index: number; startX: number; startY: number; cx: number; cy: number } | null>(null)
   const rotDragRef = useRef<{ pointerId: number; index: number; startAngle: number; startTilt: number } | null>(null)
   const rotHandleRef = useRef<HTMLButtonElement | null>(null)
+  const ringRef = useRef<HTMLDivElement | null>(null)
   // The 1920×1080 layer is scaled down to the host; the rotate knob counters
   // that scale so it stays the same size on screen whatever the stage width.
   const layerScaleRef = useRef(1)
@@ -3436,8 +3443,10 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, selectedIndex,
     return () => ro?.disconnect()
   }, [hostRef, layerRef, spec])
 
-  // The Free photo the rotate knob rides: the selected one, in the editor only.
-  const rotateIndex = onRotatePhoto && selectedIndex != null && geo[selectedIndex] ? selectedIndex : null
+  // The selected photo, in the editor only: the dotted ring that marks it (any
+  // arrangement) and the Free rotate knob that rides it.
+  const selectIndex = selectedIndex != null && geo[selectedIndex] ? selectedIndex : null
+  const rotateIndex = onRotatePhoto ? selectIndex : null
 
   useEffect(() => {
     if (!spec) return
@@ -3461,6 +3470,25 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, selectedIndex,
       if (camRef.current) {
         camRef.current.style.transform = `translate(${((50 - cs.cx) * cs.z).toFixed(3)}%, ${((50 - cs.cy) * cs.z).toFixed(3)}%) scale(${cs.z.toFixed(5)})`
       }
+      // The selected photo's dotted ring. A mat cannot draw its own marker on
+      // top of the photos stacked over it, so this is a sibling after all the
+      // mats with the selected mat's exact box and transform.
+      const ring = ringRef.current
+      if (ring && selectIndex !== null) {
+        const g = geo[selectIndex]
+        const st = photoState(spec, selectIndex, t, 0, aspect, ratios)
+        ring.style.left = `${g.ax + st.dx / 100 * FRAME_W}px`
+        ring.style.top = `${g.ay + st.dy / 100 * FRAME_H}px`
+        ring.style.width = `${g.wPx.toFixed(2)}px`
+        ring.style.height = `${g.matH.toFixed(2)}px`
+        ring.style.borderRadius = matRadiusCss(g.fr)
+        ring.style.transformOrigin = pin ? '50% 0' : '50% 50%'
+        ring.style.transform = `translate(-50%, ${pin ? '0' : '-50%'}) rotate(${(g.rot + st.rot).toFixed(3)}deg) scale(${st.scale}) scaleX(${st.scaleX})`
+        // It follows the photo's fade, but never all the way out: a photo
+        // selected from the strip before it has landed still shows where it
+        // will appear.
+        ring.style.opacity = String(Math.max(0.45, st.alpha))
+      }
       // The rotate knob sits on the selected mat's top edge and turns with it.
       // It is a sibling of the mats (never inside one) so a shaped clip-path
       // or a photo stacked on top cannot hide it, and it counters the layer's
@@ -3470,13 +3498,21 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, selectedIndex,
         const g = geo[rotateIndex]
         const st = photoState(spec, rotateIndex, t, 0, aspect, ratios)
         const k = Math.max(0.05, layerScaleRef.current * cs.z)
-        const lift = g.matH * st.scale / 2 + ROTATE_KNOB_GAP / k
+        // What the frame shows, in the camera's own coordinates: the host
+        // clips, so a knob above a photo that hangs over the top edge would be
+        // cut off. It goes below the mat instead (or onto the pivot).
+        const z = Math.max(0.05, cs.z)
+        const oy = FRAME_H / 2
+        const bandTop = oy - (oy + (50 - cs.cy) * z / 100 * FRAME_H) / z
+        const rad = (g.rot + st.rot) * Math.PI / 180
+        const lift = rotateKnobLift(g.matH * st.scale / 2 + ROTATE_KNOB_GAP / k,
+          g.ay + st.dy / 100 * FRAME_H, -Math.cos(rad), [bandTop, bandTop + FRAME_H / z], 13 / k + 2)
         knob.style.left = `${g.ax + st.dx / 100 * FRAME_W}px`
         knob.style.top = `${g.ay + st.dy / 100 * FRAME_H}px`
         knob.style.transform = `translate(-50%, -50%) rotate(${(g.rot + st.rot).toFixed(3)}deg) translateY(${(-lift).toFixed(2)}px) scale(${(1 / k).toFixed(4)})`
       }
     })
-  }, [spec, geo, clock, ratios, rotateIndex])
+  }, [spec, geo, clock, ratios, selectIndex, rotateIndex])
 
   // Where a mat turns around, in client coordinates: its animated anchor
   // (left/top — the mat centre, or the pin point while a swing hangs from the
@@ -3571,6 +3607,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, selectedIndex,
             {pinDot && <span className="collage-pin" aria-hidden />}
           </div>
         })}
+        {selectIndex !== null && <div ref={ringRef} className="collage-select-ring" aria-hidden style={{ left: -9999, top: -9999 }} />}
         {rotateIndex !== null && spec && <button type="button" ref={rotHandleRef} className="collage-rotate-handle"
           style={{ left: -9999, top: -9999 }}
           title={`Turn photo ${rotateIndex + 1}: drag around it (Shift snaps to 15°), or use ← → for 1° steps`}
@@ -4295,6 +4332,14 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const [dragOverChip, setDragOverChip] = useState<number | null>(null)
   // The photo picked on the preview: its size slider appears under the preview.
   const [selectedPhoto, setSelectedPhoto] = useState<number | null>(null)
+  const chipRefs = useRef<(HTMLDivElement | null)[]>([])
+  // Selection works both ways: clicking a chip rings that photo on the preview,
+  // clicking a photo on the preview highlights its chip — and brings it into
+  // view, since the strip scrolls and a collage can hold a dozen photos.
+  useEffect(() => {
+    if (selectedPhoto === null) return
+    chipRefs.current[selectedPhoto]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selectedPhoto, photos.length])
   // Arrangement position of every photo (its layout slot), and how to change it.
   const slots = arrangementSlots(spec)
   const freeLayout = spec.layout === 'free'
@@ -4486,12 +4531,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           </span>}
         </div> : photos.length > 0 && <small className="collage-select-hint"><Info size={11}/> Click a photo on the preview to change its size{freeLayout ? ', or drag the knob above it to turn it' : ''}.</small>}
         <div className="collage-strip">
-          {photos.map((photo, i) => <div className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}`} key={`${photo.path}-${i}`}
+          {photos.map((photo, i) => <div ref={el => { chipRefs.current[i] = el }} className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}${selectedPhoto === i ? ' selected' : ''}`} key={`${photo.path}-${i}`}
             draggable onDragStart={e => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move'; setDragChip(i) }} onDragEnd={() => { setDragChip(null); setDragOverChip(null); setDropAt(null) }}
             onDragOver={e => { e.preventDefault(); setDragOverChip(i) }}
             onDrop={e => { e.preventDefault(); dropChip(i) }}
-            title={`${photo.name || photo.path} — drag to reorder, or drop it on the preview to place it yourself`}>
-            <span className="chip-num">{i + 1}</span>
+            onClick={() => setSelectedPhoto(i)}
+            title={`${photo.name || photo.path} — click to select it (the preview rings it and its size${freeLayout ? ' and tilt' : ''} controls appear below), drag to reorder, or drop it on the preview to place it yourself`}>
+            <button type="button" className="chip-num" aria-pressed={selectedPhoto === i} title={selectedPhoto === i ? `Photo ${i + 1} is selected — its size${freeLayout ? ' and tilt' : ''} controls are below the preview` : `Select photo ${i + 1}`} onClick={e => { e.stopPropagation(); setSelectedPhoto(i) }}>{i + 1}</button>
             <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy" />
             <label className="chip-slot" title={freeLayout ? 'Free layout places photos by dragging them on the preview' : 'Arrangement position: where this photo sits in the final layout (1 = the first slot)'} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
               <span>pos</span>
@@ -4499,7 +4545,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 {photos.map((_, k) => <option key={k} value={k}>{k + 1}</option>)}
               </select>
             </label>
-            <span className="chip-actions">
+            <span className="chip-actions" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
               <button type="button" title="Replace this photo with another from the library — keeps its wait and size" onClick={() => onReplacePhoto(i)}><RefreshCw size={11}/></button>
               <button type="button" disabled={i === 0} title="Move earlier (photos later in the list land on top)" onClick={() => movePhoto(i, -1)}><ChevronLeft size={11}/></button>
               <button type="button" disabled={i === photos.length - 1} title="Move later" onClick={() => movePhoto(i, 1)}><ChevronRight size={11}/></button>
@@ -4517,8 +4563,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           </span>
         </div>}
         {photos.length > 0 && <small className="collage-strip-hint"><Move size={11}/> {spec.layout === 'free'
-          ? 'Drag a photo from this row onto the preview to put it where you want it, or drag the photos on the preview itself. Click a photo to select it: the knob above it turns it (Shift = 15° steps, ← → = 1°), and its size and tilt sliders appear under the preview.'
-          : 'Drag a photo from this row onto the preview to put it exactly where you want it — the arrangement becomes Free and the other photos stay where they are.'}</small>}
+          ? 'Click a photo here or on the preview to select it — both highlight the same one. The selected photo gets a dotted ring on the preview, the knob above it turns it (Shift = 15° steps, ← → = 1°), and its size and tilt sliders appear under the preview. Drag a photo from this row onto the preview to put it where you want it, or drag the photos on the preview itself.'
+          : 'Click a photo here or on the preview to select it — both mark the same one, and its size slider appears under the preview. Drag a photo from this row onto the preview to put it exactly where you want it — the arrangement becomes Free and the other photos stay where they are.'}</small>}
       </div>
       <aside>
         <div className="collage-section-tools" role="group" aria-label="Collage settings sections">
