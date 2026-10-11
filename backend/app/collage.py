@@ -1147,6 +1147,27 @@ FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart"
 EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4}
 EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1}
 
+# Motion one photo keeps doing while it is on screen — the "while" lane of the
+# three-lane model the text layers use (enter / while / exit). Twin of MOTION
+# in collageCore.ts: dx / dy in % of the frame, rot in degrees, speed in
+# radians per second, decay in 1/s. These five only move and turn a photo,
+# which FFmpeg can do per frame; a scaling motion cannot be (see size_levels).
+MOTIONS = ("none", "drift", "float", "orbit", "shake", "sway")
+MOTION = {
+    "drift": {"dx": 9.0, "dy": 3.0, "rot": 0.0, "speed": 0.0, "decay": 0.0},
+    "float": {"dx": 0.7, "dy": 1.6, "rot": 1.2, "speed": 1.1, "decay": 0.0},
+    "orbit": {"dx": 1.8, "dy": 1.3, "rot": 0.0, "speed": 0.9, "decay": 0.0},
+    "shake": {"dx": 2.2, "dy": 1.4, "rot": 1.8, "speed": 34.0, "decay": 2.2},
+    "sway": {"dx": 0.0, "dy": 0.0, "rot": 1.5, "speed": 2.15, "decay": 0.0},
+}
+# The turn a motion reaches at full amplitude — sprite-canvas headroom, the
+# same job ENTRANCE_SPIN does for an entrance.
+MOTION_SPIN = {"drift": 0.0, "float": 1.2, "orbit": 0.0, "shake": 1.8, "sway": 1.5}
+MOTION_AMOUNT_MIN, MOTION_AMOUNT_MAX = 0.25, 2.0
+# Seconds a motion takes to fade in once the photo has landed, so it starts
+# from exactly the resting pose instead of jumping.
+MOTION_RAMP = 0.35
+
 # Widest angle (degrees) each entrance / exit / idle sway turns a photo beyond
 # its resting tilt. The sprite canvas is sized for the widest moment, so a
 # turned photo (a Free arrangement the user arranged by hand) never loses its
@@ -1173,10 +1194,15 @@ def ladder_buckets(cw: int, ch: int) -> int:
     return max(8, min(64, int(round(min(cw, ch) / 6))))
 
 
-def choreography_spin(anim: str, ex_mode: str, sway: bool) -> float:
-    """Degrees the choreography can add to a photo's resting tilt."""
+def choreography_spin(anim: str, ex_mode: str, sway: bool, motion: str = "none",
+                      amount: float = 1.0) -> float:
+    """Degrees the choreography can add to a photo's resting tilt: its
+    entrance, its exit, the idle sway and its own motion, whichever turns it
+    furthest. MOTION_SPIN is an upper bound for the motion's amplitude, so a
+    moving photo keeps its corners inside the sprite canvas."""
     spin = max(ENTRANCE_SPIN.get(anim, 0.0), EXIT_SPIN.get(ex_mode, 0.0), BASE_SPIN)
-    return spin + (SWAY_SPIN if sway else 0.0)
+    spin += SWAY_SPIN if sway else 0.0
+    return spin + MOTION_SPIN.get(motion, 0.0) * amount
 
 
 EXIT_SPEED_MIN, EXIT_SPEED_MAX = 0.05, 2.0
@@ -1193,22 +1219,49 @@ def exit_speed(spec: dict[str, Any]) -> float:
     return max(EXIT_SPEED_MIN, min(EXIT_SPEED_MAX, v))
 
 
-def exit_fly_length(spec: dict[str, Any]) -> float:
-    """One photo's fly-out length in seconds at the spec's exit speed (twin of exitFlyLength())."""
-    mode = exit_mode(spec)
+def exit_fly_length(spec: dict[str, Any], i: int | None = None) -> float:
+    """A photo's fly-out length in seconds at the spec's exit speed (twin of
+    exitFlyLength()). Pass i for a photo that leaves on its own."""
+    mode = exit_mode(spec) if i is None else exit_mode(spec, i)
     return 0.0 if mode == "none" else EXIT_LENGTH[mode] / exit_speed(spec)
 
 
-def exit_mode(spec: dict[str, Any]) -> str:
-    """The spec's exit mode, sanitised."""
+def exit_mode(spec: dict[str, Any], i: int | None = None) -> str:
+    """The exit mode: the collage's setting, or photo i's own when i is given.
+    A missing or unknown override inherits; "none" has to be written explicitly
+    to keep one photo on screen while the others leave."""
+    if i is not None:
+        photos = spec.get("photos") or []
+        if i < len(photos) and isinstance(photos[i], dict):
+            own = photos[i].get("exit")
+            if own in ("none", "sweep", "deal", "shuffle"):
+                return own
     return spec.get("exit") if spec.get("exit") in ("sweep", "deal", "shuffle") else "none"
+
+
+def exit_schedule_mode(spec: dict[str, Any]) -> str:
+    """The mode that sets the ORDER of the exit: the collage's own exit when it
+    has one, otherwise the first photo that leaves on its own. A mixed exit
+    still needs one shared schedule, or the photos would leave in an order
+    nobody chose."""
+    own = exit_mode(spec)
+    if own != "none":
+        return own
+    for i in range(len(spec.get("photos") or [])):
+        m = exit_mode(spec, i)
+        if m != "none":
+            return m
+    return "none"
 
 
 def exit_offset(spec: dict[str, Any], i: int) -> float:
     """When photo i starts leaving, relative to the end of the hold. 'deal'
     clears the top of the pile first (photo n-1 leaves first). exitReverse
-    flips the order so the last/top photo leaves first in every mode."""
-    mode = exit_mode(spec)
+    flips the order so the last/top photo leaves first in every mode. A photo
+    that stays (its own exit "none") has no offset at all."""
+    if exit_mode(spec, i) == "none":
+        return 0.0
+    mode = exit_schedule_mode(spec)
     if mode == "none":
         return 0.0
     n = len(spec.get("photos") or [])
@@ -1220,14 +1273,17 @@ def exit_offset(spec: dict[str, Any], i: int) -> float:
 
 
 def exit_total(spec: dict[str, Any]) -> float:
-    """Total seconds the exit adds to the slide (longest offset + fly)."""
-    mode = exit_mode(spec)
-    if mode == "none":
-        return 0.0
+    """Total seconds the exit adds to the slide: when the last photo to leave
+    is gone — its own offset plus its own fly."""
     n = len(spec.get("photos") or [])
     if not n:
         return 0.0
-    return exit_fly_length(spec) + max(exit_offset(spec, 0), exit_offset(spec, n - 1))
+    worst = 0.0
+    for i in range(n):
+        if exit_mode(spec, i) == "none":
+            continue
+        worst = max(worst, exit_offset(spec, i) + exit_fly_length(spec, i))
+    return worst
 
 
 def _round2(v: float) -> float:
@@ -1250,11 +1306,20 @@ def base_duration(spec: dict[str, Any]) -> float:
     if not math.isfinite(hold):
         hold = 2.0
     hold = max(0.0, min(120.0, hold))
-    anim = str(spec.get("animation") or "drop")
-    if anim == "none":
+    # With per-photo entrances the slide has to stay up until the LAST photo
+    # has finished arriving — not necessarily the last one to start. A collage
+    # whose photos all just appear is on screen from frame one, so it is only
+    # the hold (the stagger delays are not waiting time then).
+    last = 0.0
+    animated = False
+    for i in range(len(photos)):
+        a = photo_anim(spec, i)
+        if a != "none":
+            animated = True
+        last = max(last, photo_start(spec, i, 0.0) + ENTRANCE_LENGTH.get(a, 0.0))
+    if not animated:
         return _round2(hold)
-    last = photo_start(spec, len(photos) - 1, 0.0)
-    return _round2(last + ENTRANCE_LENGTH.get(anim, 0.0) + hold)
+    return _round2(last + hold)
 
 
 def collage_duration(spec: dict[str, Any]) -> float:
@@ -1306,11 +1371,13 @@ def push_depth(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> 
     anim = str(spec.get("animation") or "drop")
     if anim not in ("drop", "pop", "flip"):
         return 0.0
-    e = ENTRANCE_LENGTH[anim]
     n = len(spec.get("photos") or [])
     p = 0.0
     for j in range(i + 1, n):
         tj = photo_start(spec, j, lead_in)
+        # The push follows the ARRIVING photo's landing, so a photo with its
+        # own entrance pushes back on its own clock.
+        e = ENTRANCE_LENGTH.get(photo_anim(spec, j), 0.0)
         q = _clamp01((t - (tj + DEPTH["delay"] * e)) / DEPTH["span"])
         p += q * q * (3 - 2 * q)
     return min(DEPTH["max"], p)
@@ -1414,7 +1481,8 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     """Animated offsets of photo i at segment time t — twin of photoState()."""
     t0 = photo_start(spec, i, lead_in)
     push = push_depth(spec, i, t, lead_in)
-    anim = str(spec.get("animation") or "drop")
+    anim = photo_anim(spec, i)
+    ent = ENTRANCE_LENGTH.get(anim, 0.0)
     if anim == "drop":
         q = _clamp01((t - t0) / 0.55)
         settle = (1 - q) ** 3
@@ -1475,21 +1543,23 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     else:
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0}
     if spec.get("kenBurns") is True:
-        land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+        land = t0 + ent
         dur = collage_duration(spec)
         kb = _clamp01((t - land) / max(0.8, dur * 0.7))
         seed = int(spec.get("seed") or 1)
         st["scale"] *= 1 + 0.08 * kb
         st["dx"] += (hash01(seed, i, 51) - 0.5) * 5 * kb
         st["dy"] += (hash01(seed, i, 53) - 0.5) * 3.5 * kb
-    if spec.get("sway") is True and (t - t0) > ENTRANCE_LENGTH.get(anim, 0.0) * 0.7:
+    if spec.get("sway") is True and (t - t0) > ent * 0.7:
         st["rot"] += 1.5 * math.sin(t * 2.15 + i * 0.9)
-    # Exit: after the hold (and every entrance) the photos leave the frame.
-    mode = exit_mode(spec)
+    add_motion(spec, i, t, st, t0, ent)
+    # Exit: after the hold (and every entrance) the photos leave the frame —
+    # each one its own way when it has an override.
+    mode = exit_mode(spec, i)
     if mode != "none":
         seed = int(spec.get("seed") or 1)
         te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
-        qe = _clamp01((t - te0) / exit_fly_length(spec))
+        qe = _clamp01((t - te0) / exit_fly_length(spec, i))
         if qe > 0:
             ease = qe * qe
             if mode == "sweep":
@@ -1515,8 +1585,91 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     return st
 
 
-def pin_anchor(spec: dict[str, Any]) -> bool:
-    return str(spec.get("animation") or "drop") == "swing"
+def pin_anchor(spec: dict[str, Any], i: int | None = None) -> bool:
+    """Does this photo hang from a pin? Only a swing does — and with per-photo
+    entrances one photo can swing while its neighbours do not, so the anchor
+    (and the sprite's rotation origin) is per photo."""
+    anim = str(spec.get("animation") or "drop") if i is None else photo_anim(spec, i)
+    return anim == "swing"
+
+
+def photo_anim(spec: dict[str, Any], i: int) -> str:
+    """The entrance photo i actually performs: its own override when it has
+    one, the collage's animation otherwise (twin of photoAnim())."""
+    photos = spec.get("photos") or []
+    if i < len(photos) and isinstance(photos[i], dict):
+        own = photos[i].get("anim")
+        if own in ANIMS:
+            return own
+    return str(spec.get("animation") or "drop")
+
+
+def photo_motion(spec: dict[str, Any], i: int) -> tuple[str, float]:
+    """The motion photo i keeps doing while on screen, and how strongly
+    (twin of photoMotion())."""
+    photos = spec.get("photos") or []
+    p = photos[i] if i < len(photos) and isinstance(photos[i], dict) else {}
+    mid = p.get("motion") if p.get("motion") in MOTIONS else "none"
+    try:
+        v = float(p.get("motionAmount"))
+    except (TypeError, ValueError):
+        v = float("nan")
+    amount = max(MOTION_AMOUNT_MIN, min(MOTION_AMOUNT_MAX, v)) if math.isfinite(v) and v > 0 else 1.0
+    return mid, amount
+
+
+def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
+               t0: float | None = None, ent: float | None = None) -> dict[str, float]:
+    """The "while" lane: one photo's own motion, added on top of its entrance,
+    Ken Burns and the collage-wide sway (twin of addMotion()).
+
+    Every term is additive and eases in from the resting pose over MOTION_RAMP,
+    so switching a motion on for one photo cannot disturb the others — and
+    every term is a closed-form function of t, because the render has to build
+    the same numbers as FFmpeg expressions (motion_terms() below): position and
+    rotation can be evaluated per frame, scale cannot.
+    """
+    mid, a = photo_motion(spec, i)
+    if mid == "none":
+        return st
+    m = MOTION[mid]
+    start = photo_start(spec, i, 0.0) if t0 is None else t0
+    e0 = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0) if ent is None else ent
+    u = max(0.0, t - (start + e0))
+    g = _clamp01(u / MOTION_RAMP)
+    span = max(0.8, collage_duration(spec) * 0.7)
+    seed = int(spec.get("seed") or 1)
+    tau = math.pi * 2
+    r1 = hash01(seed, i, 81)
+    r2 = hash01(seed, i, 83)
+    r3 = hash01(seed, i, 85)
+    if mid == "drift":
+        # One-way pan that ramps in across the hold; the seeded direction keeps
+        # a grid of photos from sliding as one block.
+        e = _clamp01(u / span)
+        st["dx"] += (r1 - 0.5) * 2 * m["dx"] * a * e
+        st["dy"] += (r2 - 0.5) * 2 * m["dy"] * a * e
+    elif mid == "shake":
+        # A jolt as it lands, dying away — attention without fidgeting.
+        e = math.exp(-m["decay"] * u) * g
+        st["dx"] += m["dx"] * a * math.sin(u * m["speed"] + r1 * tau) * e
+        st["dy"] += m["dy"] * a * math.sin(u * m["speed"] * 0.91 + r2 * tau) * e
+        st["rot"] += m["rot"] * a * math.sin(u * m["speed"] * 0.85 + r3 * tau) * e
+    elif mid == "sway":
+        # The collage-wide pendulum, but for one photo at its own strength.
+        # Absolute clock, so photos that share it stay in step (i * 0.9 phase).
+        st["rot"] += m["rot"] * a * math.sin(t * m["speed"] + i * 0.9) * g
+    elif mid == "orbit":
+        # A slow ellipse around the resting spot.
+        w = u * m["speed"] + r3 * tau
+        st["dx"] += m["dx"] * a * math.cos(w) * g
+        st["dy"] += m["dy"] * a * math.sin(w) * g
+    else:
+        # float: a bob with a little lean, three unrelated slow frequencies.
+        st["dx"] += m["dx"] * a * math.sin(u * m["speed"] * 0.64 + r1 * tau) * g
+        st["dy"] += m["dy"] * a * math.sin(u * m["speed"] + r3 * tau) * g
+        st["rot"] += m["rot"] * a * math.sin(u * m["speed"] * 0.73 + r2 * tau) * g
+    return st
 
 
 def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -1591,6 +1744,19 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             entry["frame"] = photo_frame({"frame": p["frame"]}, None)
         if p.get("shape") in SHAPES:
             entry["shape"] = p["shape"]
+        if p.get("anim") in ANIMS:
+            entry["anim"] = p["anim"]
+        if p.get("exit") in ("none", "sweep", "deal", "shuffle"):
+            entry["exit"] = p["exit"]
+        if p.get("motion") in MOTIONS:
+            entry["motion"] = p["motion"]
+        amount = p.get("motionAmount")
+        try:
+            amount = float(amount) if amount is not None and not isinstance(amount, bool) else None
+        except (TypeError, ValueError):
+            amount = None
+        if amount is not None and math.isfinite(amount) and amount > 0:
+            entry["motionAmount"] = max(MOTION_AMOUNT_MIN, min(MOTION_AMOUNT_MAX, amount))
         photos.append(entry)
         if len(photos) >= MAX_COLLAGE_PHOTOS:
             break
@@ -1817,11 +1983,14 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 continue
             ratios.append(_probe_aspect(src, ffprobe_bin))
     pls = placements(spec, aspect, ratios)
-    pin = pin_anchor(spec)
-    anim = spec["animation"]
-    # Depth push-back applies to drop / pop / flip — the same set the twin's
-    # pushDepth() covers (swing/none never push back).
-    depth_on = spec.get("depth") is True and anim in ("drop", "pop", "flip")
+    # The collage's own entrance family. Each photo may override its entrance,
+    # its exit and its idle motion, so the values that drive one photo's sprite
+    # (anim / ex_mode / pin, below) are read inside the loop. What stays
+    # collage-wide is whether the depth push is on at all — the twin's
+    # pushDepth() gates on the spec's animation, not on each photo's, and a
+    # photo with a different entrance is still part of the same pile.
+    collage_anim = spec["animation"]
+    depth_on = spec.get("depth") is True and collage_anim in ("drop", "pop", "flip")
 
     def dim_ladder(i: int) -> str | None:
         """Per-frame eq commands that dim photo i as later photos land.
@@ -1834,9 +2003,13 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         """
         if not depth_on or i >= len(pls) - 1:
             return None
-        e = ENTRANCE_LENGTH[anim]
-        first = photo_start(spec, i + 1, lead_in) + DEPTH["delay"] * e
-        last = photo_start(spec, len(pls) - 1, lead_in) + DEPTH["delay"] * e + DEPTH["span"]
+        # The push follows each ARRIVING photo's own landing, so a photo that
+        # enters on its own clock pushes back on that clock.
+        first = (photo_start(spec, i + 1, lead_in)
+                 + DEPTH["delay"] * ENTRANCE_LENGTH.get(photo_anim(spec, i + 1), 0.0))
+        last = (photo_start(spec, len(pls) - 1, lead_in)
+                + DEPTH["delay"] * ENTRANCE_LENGTH.get(photo_anim(spec, len(pls) - 1), 0.0)
+                + DEPTH["span"])
         cmds: list[str] = []
         prev_m: float | None = None
         for k in range(max(0, math.floor(first * fps)), math.ceil(last * fps) + 1):
@@ -1853,10 +2026,15 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
     lines: list[str] = []
     prev = base_label
     seed = int(spec.get("seed") or 1)
-    ex_mode = exit_mode(spec)
     for i, pl in enumerate(pls):
         inp = first_input + i
         photo = spec["photos"][i] if i < len(spec["photos"]) else {}
+        # This photo's three lanes: how it enters, how it leaves, and what it
+        # keeps doing in between. A missing override inherits the collage's.
+        anim = photo_anim(spec, i)
+        ex_mode = exit_mode(spec, i)
+        pin = pin_anchor(spec, i)
+        mo_id, mo_amt = photo_motion(spec, i)
         fr = photo_frame(spec, photo)
         mat_w = max(24, round(pl["w"] / 100 * width))
         border = max(0, round(frame_border_frac(fr) * width))   # share of the FRAME, not the mat
@@ -1881,7 +2059,8 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # it (a wide mat turned 90° is a tall box).
         rest = math.radians(pl["rot"])
         reach = max(abs(rest)
-                    + math.radians(choreography_spin(anim, ex_mode, spec.get("sway") is True)),
+                    + math.radians(choreography_spin(anim, ex_mode, spec.get("sway") is True,
+                                                     mo_id, mo_amt)),
                     MIN_TILT_HEADROOM)
         sm = border + 4                       # shadow margin around the mat
         # The turned mat's bounding box, w*|cos a| + h*|sin a|, grows until
@@ -1923,7 +2102,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         t_end = None
         if ex_mode != "none":
             te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
-            fly = exit_fly_length(spec)
+            fly = exit_fly_length(spec, i)
             t_end = te0 + fly
             qe = f"min(max((t-{_n(te0)})/{_n(fly)},0),1)"
             fade_d = 0.25 * fly
@@ -1949,10 +2128,66 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         def fly_term(value: float, expr: str) -> str:
             # Sign-aware term so generated expressions never contain '+-'.
             return (f"-{_n(abs(value))}" if value < 0 else f"+{_n(value)}") + f"*{expr}"
+
+        def motion_terms(idx: int) -> tuple[str, str, str]:
+            """This photo's 'while' lane as FFmpeg expression terms: (x px,
+            y px, rotation degrees), each already signed so it can be appended
+            to the overlay position and to the rotate angle. Twin of
+            addMotion() in collageCore.ts — same amplitudes, same seeded
+            phases, same ease-in from the resting pose, and the factors are
+            left in the same order so both engines round the same way.
+
+            Only position and rotation live here: FFmpeg evaluates an overlay's
+            x/y and a rotate angle per frame, while `scale` freezes its output
+            size at init, so a motion that changes size has to ride the size
+            ladder instead (see size_levels).
+            """
+            if mo_id == "none":
+                return "", "", ""
+            m = MOTION[mo_id]
+            land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+            u = f"max(t-{_n(land)},0)"                  # seconds since it landed
+            ramp = f"min({u}/{_n(MOTION_RAMP)},1)"      # eases in from rest
+            r1 = hash01(seed, idx, 81)
+            r2 = hash01(seed, idx, 83)
+            r3 = hash01(seed, idx, 85)
+            tau = math.pi * 2
+            span = max(0.8, collage_duration(spec) * 0.7)
+            if mo_id == "drift":
+                e = f"min({u}/{_n(span)},1)"
+                return (fly_term((r1 - 0.5) * 2 * m["dx"] * mo_amt / 100 * width, e),
+                        fly_term((r2 - 0.5) * 2 * m["dy"] * mo_amt / 100 * height, e),
+                        "")
+            if mo_id == "shake":
+                e = f"exp(-{_n(m['decay'])}*{u})*{ramp}"
+                return (fly_term(m["dx"] * mo_amt / 100 * width,
+                                 f"sin({u}*{_n(m['speed'])}+{_n(r1 * tau)})*{e}"),
+                        fly_term(m["dy"] * mo_amt / 100 * height,
+                                 f"sin({u}*{_n(m['speed'])}*0.91+{_n(r2 * tau)})*{e}"),
+                        fly_term(m["rot"] * mo_amt,
+                                 f"sin({u}*{_n(m['speed'])}*0.85+{_n(r3 * tau)})*{e}"))
+            if mo_id == "sway":
+                # Absolute clock, so photos that share the motion stay in step.
+                return ("", "",
+                        fly_term(m["rot"] * mo_amt,
+                                 f"sin({_n(m['speed'])}*t+{_n(idx * 0.9)})*{ramp}"))
+            if mo_id == "orbit":
+                w = f"{u}*{_n(m['speed'])}+{_n(r3 * tau)}"
+                return (fly_term(m["dx"] * mo_amt / 100 * width, f"cos({w})*{ramp}"),
+                        fly_term(m["dy"] * mo_amt / 100 * height, f"sin({w})*{ramp}"),
+                        "")
+            # float: a bob with a little lean, three unrelated slow frequencies
+            return (fly_term(m["dx"] * mo_amt / 100 * width,
+                             f"sin({u}*{_n(m['speed'])}*0.64+{_n(r1 * tau)})*{ramp}"),
+                    fly_term(m["dy"] * mo_amt / 100 * height,
+                             f"sin({u}*{_n(m['speed'])}+{_n(r3 * tau)})*{ramp}"),
+                    fly_term(m["rot"] * mo_amt,
+                             f"sin({u}*{_n(m['speed'])}*0.73+{_n(r2 * tau)})*{ramp}"))
         ex_x = fly_term(ex_dx, f"pow({qe},2)") if ex_dx is not None else ""
         ex_y = (fly_term(ex_dy, f"pow({qe},2)") if ex_mode != "deal"
                 else fly_term(ex_dy, f"sin(PI*{qe})")) if ex_dy is not None else ""
         ex_r = fly_term(ex_rot, qe) if ex_rot is not None else ""
+        mo_x, mo_y, mo_r = motion_terms(i)
 
         # Time-varying rotation: the entrance's settle plus the exit spin,
         # one expression per animation (empty when the photo never rotates).
@@ -1986,22 +2221,22 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             extra_y = (extra_y or "") + fly_term((hash01(seed, i, 53) - 0.5) * 0.035 * height, kb)
         sway_r = f"+1.5*sin(2.15*t+{_n(i * 0.9)})" if spec.get("sway") is True else ""
         if anim == "drop":
-            ang = f"({_n(pl['rot'])}-7*pow(1-{q_drop},3){ex_r}{extra_r}{sway_r})*PI/180"
+            ang = f"({_n(pl['rot'])}-7*pow(1-{q_drop},3){ex_r}{extra_r}{sway_r}{mo_r})*PI/180"
         elif anim == "flip":
             # The resting tilt rides along: the preview draws the photo turned
             # by its placement rot from the first frame (a Free photo turned by
             # hand, a seeded scatter tilt), so the flip has to open around that
             # same angle instead of straightening it.
-            ang = f"({_n(pl['rot'])}-4*(1-{q_flip}){ex_r}{extra_r}{sway_r})*PI/180"
+            ang = f"({_n(pl['rot'])}-4*(1-{q_flip}){ex_r}{extra_r}{sway_r}{mo_r})*PI/180"
         elif anim == "swing":
             tau = f"max(t-{_n(t0)},0)"
             # Keep every component in degrees until the final conversion.
             # The old expression converted the 14° swing amplitude twice,
             # leaving only ~0.24° of motion in the rendered MP4 even though
             # the editor preview uses the full pendulum curve.
-            ang = f"({_n(pl['rot'])}+14*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}{extra_r}{sway_r})*PI/180"
-        elif extra_r or sway_r or ex_r or abs(pl["rot"]) > 0.01:
-            ang = f"({_n(pl['rot']) if abs(pl['rot']) > 0.01 else '0'}{ex_r}{extra_r}{sway_r})*PI/180"
+            ang = f"({_n(pl['rot'])}+14*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6){ex_r}{extra_r}{sway_r}{mo_r})*PI/180"
+        elif extra_r or sway_r or ex_r or mo_r or abs(pl["rot"]) > 0.01:
+            ang = f"({_n(pl['rot']) if abs(pl['rot']) > 0.01 else '0'}{ex_r}{extra_r}{sway_r}{mo_r})*PI/180"
         else:
             ang = ""
         rot_seg = f",rotate='{ang}':c=black@0.0" if ang else ""
@@ -2046,7 +2281,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # only to `last_var` left the last level open-ended, which held the
             # size the photo had when it landed for the rest of the slide — the
             # preview zoomed to 1.08 and the MP4 never moved. The tail is
-            # quantised (LADDER_BUCKETS steps of the resting scale, 1.0 being a
+            # quantised (ladder_buckets() steps of the resting scale, 1.0 being a
             # fixed point) so a slow ramp costs a handful of levels instead of
             # one per frame, and a photo that does not scale after its entrance
             # emits exactly the sizes it always did.
@@ -2177,8 +2412,8 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # short label the camera/caption chains consume
             out = f"o{i}" if is_last else f"o{i}_{k}"
             lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
-            x_expr = f"{_n(ax_px - W / 2)}{ex_x}{extra_x}"
-            y_expr = f"{_n(ay_px - H / 2)}{fall}{ex_y}{extra_y}"
+            x_expr = f"{_n(ax_px - W / 2)}{ex_x}{extra_x}{mo_x}"
+            y_expr = f"{_n(ay_px - H / 2)}{fall}{ex_y}{extra_y}{mo_y}"
             enable = enable_expr(windows)
             lines.append(f"[{prev}][lv{i}_{k}]overlay=x='{x_expr}':y='{y_expr}'{enable}[{out}];")
             prev = out

@@ -26,7 +26,11 @@ from app.collage import (
     camera_supersample,
     exit_mode,
     exit_offset,
+    exit_schedule_mode,
     exit_total,
+    base_duration,
+    photo_anim,
+    photo_motion,
     free_from_displayed,
     bg_blur_radius,
     collage_duration,
@@ -264,6 +268,99 @@ def _cases() -> list[dict]:
         "aspect": 9 / 16, "leadIn": 0.0, "times": [0.0, 0.5, 1.2, 1.8, 2.3],
         "hashArgs": [6, 3, 71], "matW": 30,
     })
+    # Per-photo lanes: one photo enters, moves or leaves on its own while the
+    # rest of the collage keeps the shared choreography.
+    mixed_in = _spec("grid", "fade", "4:3", 4, 11, delays=[0.2, 0.25, 0.25, 0.25], hold=1.5)
+    mixed_in["photos"][1]["anim"] = "swing"       # hangs from a pin, 2 s entrance
+    mixed_in["photos"][2]["anim"] = "tumble"
+    mixed_in["photos"][3]["anim"] = "none"        # already there from frame one
+    cases.append({
+        "id": "lanes-mixed-entrance",
+        "spec": mixed_in,
+        "aspect": 16 / 9, "leadIn": 0.4,
+        "times": [0.0, 0.4, 0.9, 1.4, 2.0, 2.6, 3.4, 4.4],
+        "hashArgs": [11, 4, 29], "matW": 30,
+    })
+    mixed_out = _spec("stack", "drop", "4:3", 4, 9, delays=[0.2, 0.3, 0.3, 0.3], hold=2, exit="sweep")
+    mixed_out["photos"][0]["exit"] = "none"       # stays on screen to the end
+    mixed_out["photos"][2]["exit"] = "deal"       # leaves its own way, earlier
+    cases.append({
+        "id": "lanes-mixed-exit",
+        "spec": mixed_out,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 1.0, 3.0, 3.9, 4.2, 4.5, 4.9, 5.4],
+        "hashArgs": [9, 4, 71], "matW": 34,
+    })
+    # No collage exit at all, but one photo leaves on its own: the schedule
+    # falls back to that photo's mode so the stagger is still defined.
+    solo_out = _spec("scatter", "pop", "square", 3, 5, delays=[0.25, 0.3, 0.3], hold=1.75)
+    solo_out["photos"][1]["exit"] = "shuffle"
+    cases.append({
+        "id": "lanes-exit-override-only",
+        "spec": solo_out,
+        "aspect": 1.0, "leadIn": 0.0, "times": [0.0, 0.9, 2.4, 2.9, 3.4],
+        "hashArgs": [5, 3, 73], "matW": 30,
+    })
+    # The while lane: every motion, at different strengths, on one collage.
+    moving = _spec("grid", "pop", "4:3", 5, 21, delays=[0.2, 0.2, 0.2, 0.2, 0.2], hold=2.5)
+    for i, (mo, amt) in enumerate([("drift", None), ("float", 1.75), ("orbit", 0.5),
+                                   ("shake", 2.0), ("sway", 1.25)]):
+        moving["photos"][i]["motion"] = mo
+        if amt is not None:
+            moving["photos"][i]["motionAmount"] = amt
+    cases.append({
+        "id": "lanes-motions",
+        "spec": moving,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, 0.6, 1.2, 1.6, 2.2, 3.0, 4.1, 5.5],
+        "hashArgs": [21, 5, 81], "matW": 30,
+    })
+    # Motions stack with the collage-wide Ken Burns, sway and depth push.
+    stacked = _spec("masonry", "drop", "3:4", 4, 33, delays=[0.3, 0.3, 0.3, 0.3], hold=2, depth=True)
+    stacked["kenBurns"] = True
+    stacked["sway"] = True
+    stacked["photos"][0]["motion"] = "float"
+    stacked["photos"][1]["motion"] = "orbit"
+    stacked["photos"][1]["motionAmount"] = 0.75
+    stacked["photos"][2]["motion"] = "shake"
+    stacked["photos"][3]["anim"] = "swing"
+    stacked["photos"][3]["motion"] = "sway"
+    cases.append({
+        "id": "lanes-motions-stacked",
+        "spec": stacked,
+        "aspect": 4 / 3, "leadIn": 0.0,
+        "times": [0.0, 0.55, 1.1, 1.9, 2.8, 4.0, 5.2],
+        "hashArgs": [33, 4, 83], "matW": 26,
+    })
+    # A motion plus an exit plus a per-photo entrance: the three lanes at once.
+    all_three = _spec("fan", "fade", "4:3", 3, 8, delays=[0.2, 0.4, 0.4], hold=1.5, exit="deal")
+    all_three["photos"][0]["anim"] = "tumble"
+    all_three["photos"][0]["motion"] = "drift"
+    all_three["photos"][1]["exit"] = "sweep"
+    all_three["photos"][1]["motion"] = "shake"
+    all_three["photos"][2]["exit"] = "none"
+    all_three["photos"][2]["motion"] = "sway"
+    all_three["photos"][2]["motionAmount"] = 0.4
+    cases.append({
+        "id": "lanes-all-three",
+        "spec": all_three,
+        "aspect": 16 / 9, "leadIn": 0.3,
+        "times": [0.0, 0.7, 1.5, 2.3, 3.1, 3.8, 4.6],
+        "hashArgs": [8, 3, 85], "matW": 30,
+    })
+    # Junk in the new fields has to be dropped or clamped the same way on both
+    # sides: an unknown entrance inherits, an unknown motion does nothing, and
+    # a silly strength lands on the clamp.
+    junk = _spec("grid", "drop", "4:3", 3, 4, delays=[0.2, 0.2, 0.2], hold=1.5, exit="sweep")
+    junk["photos"][0].update({"anim": "nope", "motion": "spin", "motionAmount": 99, "exit": "explode"})
+    junk["photos"][1].update({"anim": None, "motion": "float", "motionAmount": 0.0})
+    junk["photos"][2].update({"motion": "orbit", "motionAmount": -3, "exit": "none"})
+    cases.append({
+        "id": "lanes-junk-overrides",
+        "spec": junk,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.8, 1.6, 2.4, 3.2],
+        "hashArgs": [4, 3, 81], "matW": 30,
+    })
     # virtual cameras over the composed scene
     for camera in ("pan", "zoom", "telescope", "droste"):
         cases.append({
@@ -419,7 +516,31 @@ class CollageTwinTest(unittest.TestCase):
             assert abs(got["hash"] - hash01(*case["hashArgs"])) < TOL, where
             assert abs(got["matHeight"] - mat_height(case["matW"], spec["shape"], aspect)) < TOL, where
             assert got["pin"] == pin_anchor(spec), where
-            py_starts = [photo_start(spec, i, lead_in) for i in range(len(spec["photos"]))]
+            n_photos = len(spec["photos"])
+            lanes = got["lanes"]
+            # Enter lane: which entrance each photo performs, and whether it
+            # hangs from a pin because of it.
+            assert lanes["anim"] == [photo_anim(spec, i) for i in range(n_photos)], where
+            assert lanes["pin"] == [pin_anchor(spec, i) for i in range(n_photos)], where
+            # While lane: the motion id and its clamped strength.
+            py_motion = [photo_motion(spec, i) for i in range(n_photos)]
+            assert len(lanes["motion"]) == n_photos, where
+            for a, (mid, amt) in zip(lanes["motion"], py_motion):
+                assert a["id"] == mid, f"{where} motion: {a} != {(mid, amt)}"
+                assert abs(a["amount"] - amt) < TOL, f"{where} motion amount: {a} != {(mid, amt)}"
+            # Exit lane: who leaves, in which order, when, and for how long.
+            assert lanes["exit"] == [exit_mode(spec, i) for i in range(n_photos)], where
+            assert lanes["schedule"] == exit_schedule_mode(spec), where
+            for key, fn in (("exitOffset", exit_offset), ("exitFly", exit_fly_length)):
+                want = [fn(spec, i) for i in range(n_photos)]
+                assert len(lanes[key]) == n_photos, where
+                for a, b in zip(lanes[key], want):
+                    assert abs(a - b) < TOL, f"{where} {key}: {a} != {b}"
+            assert abs(lanes["exitTotal"] - exit_total(spec)) < TOL, (
+                f"{where} exitTotal: {lanes['exitTotal']} != {exit_total(spec)}")
+            assert abs(lanes["base"] - base_duration(spec)) < TOL, (
+                f"{where} baseDuration: {lanes['base']} != {base_duration(spec)}")
+            py_starts = [photo_start(spec, i, lead_in) for i in range(n_photos)]
             for a, b in zip(got["start"], py_starts):
                 assert abs(a - b) < TOL, where
             assert abs(got["duration"] - collage_duration(spec)) < TOL, f"{where} duration: {got['duration']} != {collage_duration(spec)}"

@@ -1613,6 +1613,21 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445;flex-wrap:wrap}
 .collage-selected-size input{flex:1;min-width:120px;accent-color:#718f46}
 .collage-selected-size b{font-variant-numeric:tabular-nums}
+/* The selected photo's own three lanes: entrance / motion / exit. Drawn as the
+   second half of the size panel so "this photo" reads as one block. */
+.collage-selected-size:has(+.collage-selected-lanes){border-radius:8px 8px 0 0;margin-bottom:0}
+.collage-selected-lanes{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-top:1px dashed #d3d6cc;border-radius:0 0 8px 8px;background:#eceee5;font-size:10px;color:#4c5445}
+.collage-selected-lanes label{display:flex;align-items:center;gap:5px;min-width:0}
+.collage-selected-lanes label>span,.collage-lane-amount>span{font-size:8px;color:#8b907f;white-space:nowrap;text-transform:uppercase;letter-spacing:.05em}
+.collage-selected-lanes select{font:inherit;font-size:10px;background:#fff;color:#2f352c;border:1px solid #c7cabf;border-radius:5px;padding:2px 4px;max-width:126px}
+.collage-selected-lanes select:focus-visible,.collage-lane-amount input:focus-visible{outline:2px solid #718f46;outline-offset:1px}
+.collage-lane-amount{display:flex;align-items:center;gap:5px}
+.collage-lane-amount input{width:76px;accent-color:#718f46}
+.collage-lane-amount b{font-variant-numeric:tabular-nums;font-size:9px;min-width:27px}
+.collage-lanes-hint{display:flex;align-items:center;gap:4px;flex:1 1 100%;margin:1px 0 0;color:#92978e;font-size:9px}
+/* A chip whose photo dances to its own tune: a lime dot on its number. */
+.chip-lane-dot{position:absolute;top:-2px;right:-3px;width:5px;height:5px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 1px #0007}
+.collage-chip.has-lanes .chip-num{background:#22291c}
 /* Tilt of the selected photo: its own line under the size slider, with quarter
    turns and a straighten button. Free arrangements only. */
 .collage-tilt-ctl{display:flex;align-items:center;gap:7px;flex:1 1 100%;min-width:0;padding-top:7px;margin-top:2px;border-top:1px dashed #d3d6cc}

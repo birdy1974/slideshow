@@ -23,16 +23,20 @@ Per photo (`spec.photos[i]`):
 | field | meaning |
 | --- | --- |
 | `path`, `name` | the media file (photo or movie) |
-| `wait` | seconds of pause before this photo lands |
+| `delay` | seconds of pause before this photo lands |
 | `size` | scale factor of its mat, 0.5–3.0 (100 % = the arrangement's own size) |
 | `crop`, `filter` | the same look the single-photo editor uses |
 | `shape` | its own mat shape/aspect, overriding the collage frame |
 | `slot` | its place in the arrangement (order ≠ position) |
 | `cx`, `cy` | Free arrangement only: where it sits, in % of the frame |
 | `rot` | Free arrangement only: its resting tilt in degrees, clockwise, −180…180 |
+| `anim` | its own entrance, overriding `spec.animation` (missing = inherit) |
+| `motion`, `motionAmount` | what it keeps doing once it has landed, and how strongly (0.25–2) |
+| `exit` | how it leaves, overriding `spec.exit`; `none` keeps it on screen |
 
-`rot` is written only when it is not zero (`setPhotoRot` drops it at 0°), so a
-project nobody ever turned stays byte-identical through a save.
+`rot` is written only when it is not zero (`setPhotoRot` drops it at 0°), and the
+three lanes only when they differ from the collage's, so a project nobody ever
+touched stays byte-identical through a save.
 
 ## The two engines
 
@@ -227,17 +231,113 @@ reach the end of the photo's time on screen, and every held size must stay
 within one bucket of the twin — and `CollageKenBurnsRenderTest` measures real
 pixels: the rendered photo has to grow by the factor the twin says it grows by.
 
+## One photo's own three lanes
+
+The collage-wide choreography (`animation`, `exit`, `sway`, `kenBurns`) is the
+default for every photo; a single photo can carry its own. The model is the same
+three-lane split the text layers use — **enter / while / exit** — and each lane
+inherits when it is not written, so an untouched project is untouched.
+
+| lane | spec field | accessor (TS / Python) | falls back to |
+| --- | --- | --- | --- |
+| enter | `photo.anim` | `photoAnim()` / `photo_anim()` | `spec.animation` |
+| while | `photo.motion` + `motionAmount` | `photoMotion()` / `photo_motion()` | nothing — the default is `none` |
+| exit | `photo.exit` | `exitMode(spec, i)` / `exit_mode(spec, i)` | `spec.exit` |
+
+What follows from a per-photo lane:
+
+- **The slide waits for the slowest arrival.** `baseDuration` is
+  `max_i(photoStart(i) + ENTRANCE_LENGTH[anim_i]) + hold`, not "the last photo's
+  start plus the collage's entrance". A `swing` in the middle of a `fade`
+  collage holds the slide up by its own two seconds. A collage whose photos are
+  all `none` is still just the hold.
+- **A swing pins only its own photo.** `pinAnchor(spec, i)` decides where the
+  mat's anchor sits — hanging from its top edge instead of centred — in the
+  preview (`transform-origin: 50% 0`) *and* in the render, where the sprite
+  canvas is built symmetrically about the pin. One photo can hang and swing
+  while its neighbours fade in place; the render's canvas for it is byte-for-byte
+  the one a whole-collage swing produces.
+- **The exit order stays a group decision.** How a photo leaves is its own
+  (`exitMode(spec, i)` sets its fly, its spin and its direction); *when* it
+  leaves comes from one shared schedule, `exitScheduleMode()` — the collage's
+  exit when it has one, otherwise the first photo that leaves on its own.
+  `exitTotal` is simply when the last photo to go is gone,
+  `max_i(exitOffset(i) + exitFlyLength(i))`, which is the old
+  "fly + longest offset" for a uniform exit. `photo.exit = 'none'` is a real
+  choice: that photo stays on screen while the others sweep out.
+- **Depth push-back stays collage-wide.** Whether the push is on at all follows
+  `spec.animation` (drop / pop / flip), because it is a property of the pile;
+  but each push follows the *arriving* photo's own entrance length, so a photo
+  that arrives on its own clock pushes its neighbours back on that clock.
+
+### The while lane
+
+`MOTION` in `collageCore.ts` and `MOTION` in `collage.py` hold the amplitudes —
+dx / dy in % of the frame, rot in degrees, speed in radians per second, decay in
+1/s — and both engines derive their numbers from that one table. A motion starts
+when the photo has landed, eases in from the resting pose over `MOTION_RAMP`
+(0.35 s) so it cannot jump, and is added on top of the entrance, Ken Burns and
+the collage-wide sway (`addMotion()` / `add_motion()`). Directions and phases are
+seeded per photo with `hash01(seed, i, 81/83/85)`, so a grid of drifting photos
+does not slide as one block.
+
+| motion | what it does |
+| --- | --- |
+| `drift` | a slow one-way pan that ramps in across the hold |
+| `float` | a bob with a little lean, three unrelated slow frequencies |
+| `orbit` | a slow ellipse around the resting spot |
+| `shake` | a jolt as it lands, dying away — picks one photo out of a group |
+| `sway` | the corkboard pendulum, for this photo alone, at its own strength |
+
+All five move and turn a photo only, which is exactly what FFmpeg can do per
+frame: the render adds the terms to the `overlay` x/y and to the `rotate` angle
+(`motion_terms()`), with the factors left in the same order as the twin so both
+round the same way. Nothing is emitted for a photo without a motion, so an
+untouched graph is unchanged. `MOTION_SPIN` feeds the sprite-canvas headroom
+through `choreography_spin()`, which is why a shaking photo keeps its corners.
+
+Motions that change *size* (breathe, pulse, a beat-locked punch) are deliberately
+not in this list yet: `scale` cannot be animated per frame, so they have to ride
+the size ladder below.
+
+### Where it is in the editor
+
+Selecting a photo — on the preview or on its chip — opens the per-photo panel
+under the stage: size and tilt, and a second row with **entrance / motion /
+exit**. Each select's first entry is the collage's own setting ("Drop ·
+collage"), which is also what picking it again does: the override is removed, so
+the photo follows later changes to the collage-wide choreography. A motion brings
+a strength slider (25–200 %), and an **Inherit** button drops all three lanes at
+once. A chip whose photo has any lane of its own carries a lime dot on its
+number. Changing a lane never restarts the preview — the clock keeps running and
+only clamps when the slide's derived duration changes.
+
 ## Tests
 
-- `backend/tests/test_collage_twin.py` — 37 twin cases: placements (incl. Free
-  `rot`), per-photo motion, camera, duration, `free_from_displayed`,
-  normalization, and the generated filtergraph (the flip expression must contain
-  the resting tilt; `_n()` writes 4 decimals, so command comparisons use 1e-4).
+- `backend/tests/test_collage_twin.py` — the case list spans layouts ×
+  entrances × shapes × photo counts × aspects × timings, plus dedicated cases
+  for exits, cameras, per-photo shapes, beat snapping and the three per-photo
+  lanes. Every case compares placements (incl. Free `rot`), per-photo motion,
+  camera, duration, `free_from_displayed`, normalization, the lane accessors
+  (`photoAnim` / `photoMotion` / `exitMode(i)` / `exitOffset` / `exitFlyLength(i)`
+  / `exitTotal` / `baseDuration` / `pinAnchor(i)`) and the generated filtergraph
+  (the flip expression must contain the resting tilt; `_n()` writes 4 decimals,
+  so command comparisons use 1e-4). `test_the_size_ladder_follows_the_twin_past_
+  the_entrance` parses the ladder's sizes and enable windows back out of the
+  graph and checks them against `photoState()`.
 - `backend/tests/test_collage_animation_ffmpeg.py` — real FFmpeg renders, pixels
   measured. `CollageFreeTiltRenderTest` renders one red photo on a grey bed at
   0°, ±45°, ±90°, 135°, 180° and checks the bounding box turns the right way and
   that no red is lost: a 90° turn comes back 72×96 where the straight one is
-  96×72, with the same amount of red inside.
+  96×72, with the same amount of red inside. `CollageKenBurnsRenderTest` checks
+  the zoom actually happens (the photo's bounding box on the last frame against
+  an early one, by the factor the twin predicts). `CollagePhotoLanesRenderTest`
+  renders collages of flat primary colours — one colour per photo — so a frame
+  can be split back into "which photo is where": a drifting photo has to travel
+  by the twin's own amounts while its neighbour does not move at all, a photo
+  whose exit is `none` has to still be on screen at the end while the others have
+  swept out, and a per-photo swing has to hang from a canvas built symmetrically
+  about its pin and swing while its neighbour holds still.
 - `backend/tests/test_collage_tilt_handles.py` — the turn-a-photo controls,
   which are pointer maths with no render counterpart: Python writes the cases
   and an independent computation, Node evaluates the TypeScript helpers

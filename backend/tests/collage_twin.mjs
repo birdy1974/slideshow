@@ -25,6 +25,19 @@ for (const c of input.cases) {
     hash: core.hash01(c.hashArgs[0], c.hashArgs[1], c.hashArgs[2]),
     matHeight: core.matHeight(c.matW, spec.shape, c.aspect),
     pin: core.pinAnchor(spec),
+    // The three lanes per photo: what it enters with, what it does while it is
+    // on screen, and how it leaves — plus the timings those imply.
+    lanes: {
+      anim: pls.map((_, i) => core.photoAnim(spec, i)),
+      pin: pls.map((_, i) => core.pinAnchor(spec, i)),
+      motion: pls.map((_, i) => core.photoMotion(spec, i)),
+      exit: pls.map((_, i) => core.exitMode(spec, i)),
+      schedule: core.exitScheduleMode(spec),
+      exitOffset: pls.map((_, i) => core.exitOffset(spec, i)),
+      exitFly: pls.map((_, i) => core.exitFlyLength(spec, i)),
+      exitTotal: core.exitTotal(spec),
+      base: core.baseDuration(spec),
+    },
     start: pls.map((_, i) => core.photoStart(spec, i, c.leadIn)),
     duration: core.collageDuration(spec),
     placements: pls,
