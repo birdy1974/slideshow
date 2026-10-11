@@ -30,7 +30,10 @@ from app.collage import (
     exit_total,
     base_duration,
     photo_anim,
+    photo_look_anim,
+    photo_look_state,
     photo_motion,
+    beat_punches,
     free_from_displayed,
     bg_blur_radius,
     collage_duration,
@@ -361,6 +364,81 @@ def _cases() -> list[dict]:
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.8, 1.6, 2.4, 3.2],
         "hashArgs": [4, 3, 81], "matW": 30,
     })
+    # The scale motions: they ride the size ladder, so the twin's scale at
+    # every moment is what the render has to hold. 'beat' reads the stored
+    # beat times in the slide's own hold clock.
+    scaling = _spec("grid", "pop", "4:3", 4, 17, delays=[0.2, 0.2, 0.2, 0.2], hold=3)
+    scaling["beats"] = [0.6, 1.1, 1.6, 2.1, 2.6, 3.1, 3.6]
+    scaling["photos"][0]["motion"] = "breathe"
+    scaling["photos"][1]["motion"] = "pulse"
+    scaling["photos"][1]["motionAmount"] = 1.5
+    scaling["photos"][2]["motion"] = "beat"
+    scaling["photos"][3]["motion"] = "beat"
+    scaling["photos"][3]["motionAmount"] = 0.5
+    cases.append({
+        "id": "lanes-scale-motions",
+        "spec": scaling,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 0.7, 1.15, 1.7, 2.4, 3.3, 4.6],
+        "hashArgs": [17, 4, 83], "matW": 30,
+        "punchWindow": [0.5, 4.5],
+    })
+    # The animated looks: one drains to black & white, one blooms into colour,
+    # one flickers as it lands.
+    looked = _spec("scatter", "drop", "4:3", 3, 29, delays=[0.25, 0.3, 0.3], hold=2.5)
+    looked["photos"][0]["lookAnim"] = "toBw"
+    looked["photos"][1]["lookAnim"] = "toColor"
+    looked["photos"][2]["lookAnim"] = "flicker"
+    cases.append({
+        "id": "lanes-looks",
+        "spec": looked,
+        "aspect": 16 / 9, "leadIn": 0.0,
+        "times": [0.0, 0.2, 0.55, 0.9, 1.6, 2.6, 3.9],
+        "hashArgs": [29, 3, 87], "matW": 30,
+    })
+    # A long, fast track: more beats than one photo may carry, so both engines
+    # have to thin the list to the same subset.
+    thinned = _spec("stack", "fade", "4:3", 2, 12, delays=[0.2, 0.2], hold=6)
+    thinned["beats"] = [round(0.25 + k * 0.18, 3) for k in range(60)]
+    thinned["photos"][1]["motion"] = "beat"
+    cases.append({
+        "id": "lanes-beat-thinning",
+        "spec": thinned,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, 1.0, 2.5, 4.0, 5.5, 6.6],
+        "hashArgs": [12, 2, 81], "matW": 34,
+        "punchWindow": [0.4, 6.6],
+    })
+    # Everything at once: a scaling motion, an animated look, Ken Burns, the
+    # depth push and its own entrance — all additive on one photo.
+    piled = _spec("masonry", "drop", "3:4", 3, 41, delays=[0.3, 0.3, 0.3], hold=2.5, depth=True)
+    piled["kenBurns"] = True
+    piled["photos"][0]["motion"] = "breathe"
+    piled["photos"][0]["lookAnim"] = "toBw"
+    piled["photos"][1]["anim"] = "swing"
+    piled["photos"][1]["motion"] = "pulse"
+    piled["photos"][1]["lookAnim"] = "flicker"
+    piled["photos"][2]["lookAnim"] = "toColor"
+    piled["photos"][2]["exit"] = "none"
+    cases.append({
+        "id": "lanes-scale-look-stacked",
+        "spec": piled,
+        "aspect": 4 / 3, "leadIn": 0.0,
+        "times": [0.0, 0.4, 1.0, 1.8, 2.9, 4.2, 5.4],
+        "hashArgs": [41, 3, 89], "matW": 26,
+    })
+    # Junk in the look lane has to be dropped the same way on both sides.
+    junk_look = _spec("grid", "pop", "4:3", 2, 6, delays=[0.2, 0.2], hold=1.5)
+    junk_look["photos"][0]["lookAnim"] = "sepia"
+    junk_look["photos"][0]["motion"] = "breathe"
+    junk_look["photos"][1]["lookAnim"] = "toBw"
+    junk_look["photos"][1]["motion"] = "nope"
+    cases.append({
+        "id": "lanes-look-junk",
+        "spec": junk_look,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.6, 1.2, 2.0],
+        "hashArgs": [6, 2, 87], "matW": 30,
+    })
     # virtual cameras over the composed scene
     for camera in ("pan", "zoom", "telescope", "droste"):
         cases.append({
@@ -528,6 +606,24 @@ class CollageTwinTest(unittest.TestCase):
             for a, (mid, amt) in zip(lanes["motion"], py_motion):
                 assert a["id"] == mid, f"{where} motion: {a} != {(mid, amt)}"
                 assert abs(a["amount"] - amt) < TOL, f"{where} motion amount: {a} != {(mid, amt)}"
+            # Animated look: which one, and what it does to the colour at
+            # every sampled time (the preview's CSS filter and the render's
+            # hue/eq chain are both driven by these two numbers).
+            assert lanes["look"] == [photo_look_anim(spec, i) for i in range(n_photos)], where
+            for ti, t in enumerate(case["times"]):
+                for i in range(n_photos):
+                    py_look = photo_look_state(spec, i, t, lead_in)
+                    ts_look = lanes["lookState"][ti][i]
+                    for key in ("sat", "bright"):
+                        assert abs(ts_look[key] - py_look[key]) < TOL, (
+                            f"{where} t={t} photo {i} look {key}: "
+                            f"{ts_look[key]} != {py_look[key]}")
+            if case.get("punchWindow"):
+                py_punch = beat_punches(spec, *case["punchWindow"])
+                assert len(lanes["punches"]) == len(py_punch), (
+                    f"{where} punches: {lanes['punches']} != {py_punch}")
+                for a, b in zip(lanes["punches"], py_punch):
+                    assert abs(a - b) < TOL, f"{where} punches: {a} != {b}"
             # Exit lane: who leaves, in which order, when, and for how long.
             assert lanes["exit"] == [exit_mode(spec, i) for i in range(n_photos)], where
             assert lanes["schedule"] == exit_schedule_mode(spec), where

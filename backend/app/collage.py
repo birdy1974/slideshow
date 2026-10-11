@@ -1152,14 +1152,36 @@ EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1}
 # in collageCore.ts: dx / dy in % of the frame, rot in degrees, speed in
 # radians per second, decay in 1/s. These five only move and turn a photo,
 # which FFmpeg can do per frame; a scaling motion cannot be (see size_levels).
-MOTIONS = ("none", "drift", "float", "orbit", "shake", "sway")
+MOTIONS = ("none", "drift", "float", "orbit", "shake", "sway", "breathe", "pulse", "beat")
+# Motions that change SIZE. FFmpeg's `scale` freezes its output dimensions at
+# init, so these cannot ride an expression the way position and rotation do:
+# they ride the size ladder, which samples the twin, quantises the tail and
+# holds each size for its window.
+SCALE_MOTIONS = ("breathe", "pulse", "beat")
 MOTION = {
-    "drift": {"dx": 9.0, "dy": 3.0, "rot": 0.0, "speed": 0.0, "decay": 0.0},
-    "float": {"dx": 0.7, "dy": 1.6, "rot": 1.2, "speed": 1.1, "decay": 0.0},
-    "orbit": {"dx": 1.8, "dy": 1.3, "rot": 0.0, "speed": 0.9, "decay": 0.0},
-    "shake": {"dx": 2.2, "dy": 1.4, "rot": 1.8, "speed": 34.0, "decay": 2.2},
-    "sway": {"dx": 0.0, "dy": 0.0, "rot": 1.5, "speed": 2.15, "decay": 0.0},
+    "drift": {"dx": 9.0, "dy": 3.0, "rot": 0.0, "speed": 0.0, "decay": 0.0, "scale": 0.0},
+    "float": {"dx": 0.7, "dy": 1.6, "rot": 1.2, "speed": 1.1, "decay": 0.0, "scale": 0.0},
+    "orbit": {"dx": 1.8, "dy": 1.3, "rot": 0.0, "speed": 0.9, "decay": 0.0, "scale": 0.0},
+    "shake": {"dx": 2.2, "dy": 1.4, "rot": 1.8, "speed": 34.0, "decay": 2.2, "scale": 0.0},
+    "sway": {"dx": 0.0, "dy": 0.0, "rot": 1.5, "speed": 2.15, "decay": 0.0, "scale": 0.0},
+    "breathe": {"dx": 0.0, "dy": 0.0, "rot": 0.0, "speed": 0.0, "decay": 0.0, "scale": 0.08},
+    "pulse": {"dx": 0.0, "dy": 0.0, "rot": 0.0, "speed": 2.4, "decay": 0.0, "scale": 0.035},
+    "beat": {"dx": 0.0, "dy": 0.0, "rot": 0.0, "speed": 0.0, "decay": 7.0, "scale": 0.09},
 }
+# Animated looks: how far the colour travels (saturation or brightness
+# multiplier) and how fast it dies out. Each look moves only ONE of the two, so
+# the preview's CSS filters and the render's filters cannot disagree about how
+# they compose.
+LOOK_ANIMS = ("none", "toBw", "toColor", "flicker")
+LOOK_ANIM = {
+    "toBw": {"sat": 1.0, "bright": 0.0, "speed": 0.0, "decay": 0.0},
+    "toColor": {"sat": 1.0, "bright": 0.0, "speed": 0.0, "decay": 0.0},
+    "flicker": {"sat": 0.0, "bright": 0.16, "speed": 41.0, "decay": 1.8},
+}
+# Most beat punches one photo carries: a long slide of fast music would
+# otherwise put hundreds of size windows into one photo's ladder. Both engines
+# thin the list the same way, so they still agree.
+BEAT_PUNCH_MAX = 24
 # The turn a motion reaches at full amplitude — sprite-canvas headroom, the
 # same job ENTRANCE_SPIN does for an entrance.
 MOTION_SPIN = {"drift": 0.0, "float": 1.2, "orbit": 0.0, "shake": 1.8, "sway": 1.5}
@@ -1552,7 +1574,7 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         st["dy"] += (hash01(seed, i, 53) - 0.5) * 3.5 * kb
     if spec.get("sway") is True and (t - t0) > ent * 0.7:
         st["rot"] += 1.5 * math.sin(t * 2.15 + i * 0.9)
-    add_motion(spec, i, t, st, t0, ent)
+    add_motion(spec, i, t, st, t0, ent, lead_in)
     # Exit: after the hold (and every entrance) the photos leave the frame —
     # each one its own way when it has an override.
     mode = exit_mode(spec, i)
@@ -1618,8 +1640,68 @@ def photo_motion(spec: dict[str, Any], i: int) -> tuple[str, float]:
     return mid, amount
 
 
+def beat_punches(spec: dict[str, Any], start: float, end: float) -> list[float]:
+    """The beats a 'beat' motion punches on: the stored beat times inside this
+    photo's window, thinned to BEAT_PUNCH_MAX by taking every k-th one (twin of
+    beatPunches())."""
+    raw = spec.get("beats")
+    beats = [b for b in (raw if isinstance(raw, list) else [])
+             if isinstance(b, (int, float)) and not isinstance(b, bool)
+             and math.isfinite(b) and start <= b <= end]
+    if len(beats) <= BEAT_PUNCH_MAX:
+        return beats
+    step = math.ceil(len(beats) / BEAT_PUNCH_MAX)
+    return [b for k, b in enumerate(beats) if k % step == 0]
+
+
+def photo_look_anim(spec: dict[str, Any], i: int) -> str:
+    """The animated look of photo i, sanitised (twin of photoLookAnim())."""
+    photos = spec.get("photos") or []
+    if i < len(photos) and isinstance(photos[i], dict):
+        own = photos[i].get("lookAnim")
+        if own in LOOK_ANIMS:
+            return own
+    return "none"
+
+
+def photo_look_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> dict[str, float]:
+    """How the animated look tints photo i at time t: a saturation multiplier
+    and a brightness multiplier, 1.0 = untouched (twin of photoLookState()).
+
+    The preview applies them as CSS saturate() / brightness() on the mat. The
+    render drives saturation with a per-frame `hue=s='...'` expression — hue
+    evaluates its expressions every frame while eq evaluates them once at init,
+    measured on the render binary — and brightness with a sendcmd ladder into a
+    second eq, the same machinery the depth dim uses.
+    """
+    lid = photo_look_anim(spec, i)
+    if lid == "none":
+        return {"sat": 1.0, "bright": 1.0}
+    look = LOOK_ANIM[lid]
+    t0 = photo_start(spec, i, lead_in)
+    ent = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0)
+    land = t0 + ent
+    if lid == "toBw":
+        # colour drains away across the hold, at Ken Burns' pace
+        return {"sat": 1 - look["sat"] * _clamp01((t - land) / max(0.8, collage_duration(spec) * 0.7)),
+                "bright": 1.0}
+    if lid == "toColor":
+        # it arrives in black & white and blooms into colour during the entrance
+        return {"sat": _clamp01((t - t0) / max(0.45, ent)), "bright": 1.0}
+    # flicker: an old-projector brightness jitter that dies out after landing
+    u = max(0.0, t - land)
+    seed = int(spec.get("seed") or 1)
+    tau = math.pi * 2
+    r1 = hash01(seed, i, 87)
+    r2 = hash01(seed, i, 89)
+    env = math.exp(-look["decay"] * u)
+    jitter = 0.6 * math.sin(u * look["speed"] + r1 * tau) + 0.4 * math.sin(u * look["speed"] * 0.578 + r2 * tau)
+    return {"sat": 1.0, "bright": 1 + look["bright"] * env * jitter}
+
+
 def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
-               t0: float | None = None, ent: float | None = None) -> dict[str, float]:
+               t0: float | None = None, ent: float | None = None,
+               lead_in: float = 0.0) -> dict[str, float]:
     """The "while" lane: one photo's own motion, added on top of its entrance,
     Ken Burns and the collage-wide sway (twin of addMotion()).
 
@@ -1633,7 +1715,7 @@ def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
     if mid == "none":
         return st
     m = MOTION[mid]
-    start = photo_start(spec, i, 0.0) if t0 is None else t0
+    start = photo_start(spec, i, lead_in) if t0 is None else t0
     e0 = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0) if ent is None else ent
     u = max(0.0, t - (start + e0))
     g = _clamp01(u / MOTION_RAMP)
@@ -1664,6 +1746,26 @@ def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
         w = u * m["speed"] + r3 * tau
         st["dx"] += m["dx"] * a * math.cos(w) * g
         st["dy"] += m["dy"] * a * math.sin(w) * g
+    elif mid == "breathe":
+        # Ken Burns' zoom for one photo: a slow ramp across the hold. A render
+        # can only hold discrete sizes, so this one rides the size ladder.
+        st["scale"] *= 1 + m["scale"] * a * _clamp01(u / span)
+    elif mid == "pulse":
+        # A rhythmic zoom around the resting size, eased in like the rest.
+        st["scale"] *= 1 + m["scale"] * a * math.sin(u * m["speed"] + r2 * tau) * g
+    elif mid == "beat":
+        # A punch on every stored beat: each one swells the photo and lets it
+        # fall back. Beat times live in the hold clock (0 = the hold starts),
+        # so the photo's own lead-in is taken back off t.
+        # Only beats that have already sounded count — a beat still ahead would
+        # otherwise swell the photo from the moment it lands — and the punch
+        # eases in with the rest of the motion so landing mid-beat cannot pop.
+        punch = 0.0
+        for b in beat_punches(spec, start + e0 - lead_in, collage_duration(spec)):
+            since = t - lead_in - b
+            if since >= 0:
+                punch += math.exp(-m["decay"] * since)
+        st["scale"] *= 1 + m["scale"] * a * punch * g
     else:
         # float: a bob with a little lean, three unrelated slow frequencies.
         st["dx"] += m["dx"] * a * math.sin(u * m["speed"] * 0.64 + r1 * tau) * g
@@ -1750,6 +1852,8 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             entry["exit"] = p["exit"]
         if p.get("motion") in MOTIONS:
             entry["motion"] = p["motion"]
+        if p.get("lookAnim") in LOOK_ANIMS:
+            entry["lookAnim"] = p["lookAnim"]
         amount = p.get("motionAmount")
         try:
             amount = float(amount) if amount is not None and not isinstance(amount, bool) else None
@@ -2023,6 +2127,57 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             prev_m = m
         return ";".join(cmds) if cmds else None
 
+    def look_segment(i: int) -> str:
+        """Filters that carry photo i's animated look, or '' when it has none.
+
+        Saturation rides `hue=s='...'`: hue re-evaluates its expressions on
+        every frame (eq evaluates them once at init — both measured on the
+        render binary), so a slow drain to black & white is one exact
+        expression instead of a staircase. Brightness has no per-frame filter,
+        so it rides sendcmd into its own eq instance, exactly like the depth
+        dim does — a separate instance, because the dim's eq is already using
+        contrast+saturation+brightness together to stay multiplicative.
+
+        Both sit where the dim sits: after the mat is padded, before the alpha
+        and the shape mask, so the frame border and a 'native' letterbox react
+        the same way the CSS filter on the preview's mat does.
+        """
+        lid = photo_look_anim(spec, i)
+        if lid == "none":
+            return ""
+        t0 = photo_start(spec, i, lead_in)
+        ent = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0)
+        land = t0 + ent
+        segs: list[str] = []
+        if lid in ("toBw", "toColor"):
+            if lid == "toBw":
+                span = max(0.8, collage_duration(spec) * 0.7)
+                expr = f"1-min(max((t-{_n(land)})/{_n(span)},0),1)"
+            else:
+                expr = f"min(max((t-{_n(t0)})/{_n(max(0.45, ent))},0),1)"
+            segs.append(f"hue=s='{expr}'")
+        else:
+            look = LOOK_ANIM[lid]
+            r1 = hash01(seed, i, 87)
+            r2 = hash01(seed, i, 89)
+            tau = math.pi * 2
+            first = land
+            last = lead_in + duration
+            cmds: list[str] = []
+            prev_b: float | None = None
+            for k in range(max(0, math.floor(first * fps)), math.ceil(last * fps) + 1):
+                t = k / fps
+                b = photo_look_state(spec, i, t, lead_in)["bright"]
+                if prev_b is not None and abs(b - prev_b) <= 0.004:
+                    continue
+                cmds.append(f"{_n(t)} eq@fx{i} contrast {_n(b)}")
+                cmds.append(f"{_n(t)} eq@fx{i} brightness {_n(128 * (b - 1) / 255)}")
+                prev_b = b
+            if cmds:
+                flick = ";".join(cmds)
+                segs.append(f"sendcmd=commands='{flick}',eq@fx{i}=contrast=1:brightness=0")
+        return ",".join(segs) + ("," if segs else "")
+
     lines: list[str] = []
     prev = base_label
     seed = int(spec.get("seed") or 1)
@@ -2265,7 +2420,8 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             """Distinct (W, H) sprite sizes photo i shows, each with the
             [start, end) frame windows it is on screen. The last window is
             open-ended (end=None)."""
-            varies = anim in ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble") or depth_on or spec.get("kenBurns") is True
+            varies = (anim in ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble")
+                      or depth_on or spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS)
             if not varies:
                 return [(cw, ch, [[0.0, None]])]
             # the timeline only moves during the entrance and the depth push
@@ -2276,8 +2432,9 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 for j in range(i + 1, len(pls)):
                     tj = photo_start(spec, j, lead_in)
                     last_var = max(last_var, tj + DEPTH["delay"] * e + DEPTH["span"])
-            # Ken Burns keeps scaling the sprite long after the entrance has
-            # settled, so the ladder has to cover the tail as well: sampling
+            # Ken Burns — and a breathe / pulse / beat motion — keeps scaling
+            # the sprite long after the entrance has settled, so the ladder has
+            # to cover the tail as well: sampling
             # only to `last_var` left the last level open-ended, which held the
             # size the photo had when it landed for the rest of the slide — the
             # preview zoomed to 1.08 and the MP4 never moved. The tail is
@@ -2285,7 +2442,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # fixed point) so a slow ramp costs a handful of levels instead of
             # one per frame, and a photo that does not scale after its entrance
             # emits exactly the sizes it always did.
-            tail = spec.get("kenBurns") is True
+            tail = spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS
             end_var = last_var
             if tail:
                 end_var = max(last_var, t_end if t_end is not None else lead_in + duration)
@@ -2353,6 +2510,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         ladder = dim_ladder(i)
         dim_seg = (f"sendcmd=commands='{ladder}',eq@dim{i}=contrast=1:saturation=1:brightness=0,"
                    if ladder is not None else "")
+        look_seg = look_segment(i)
         photo = spec["photos"][i] if i < len(spec["photos"]) else {}
         look = picture_look(photo, photo_w, photo_h)
         crop_chain = ",".join(crop_filters(normalize_crop({"crop": photo.get("crop")})))
@@ -2382,7 +2540,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             lines.append(
                 f"[{inp}:v]{pre}{scale_chain},"
                 f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
-                f"{dim_seg}format=rgba{mask},split[{m}a][{m}b];"
+                f"{dim_seg}{look_seg}format=rgba{mask},split[{m}a][{m}b];"
             )
             lines.append(f"[{m}b]pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[{t_}];")
             lines.append(
@@ -2394,7 +2552,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             lines.append(
                 f"[{inp}:v]{pre}{scale_chain},"
                 f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
-                f"{dim_seg}format=rgba{mask},pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[sp{i}];"
+                f"{dim_seg}{look_seg}format=rgba{mask},pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[sp{i}];"
             )
         lines.append(f"[sp{i}]{mid},format=rgba[sp{i}f];")
         if len(levels) > 1:

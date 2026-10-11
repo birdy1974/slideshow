@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoMatHeight, photoMotion, photoTilt, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, COLLAGE_LOOK_ANIMS, COLLAGE_SCALE_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoTilt, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -3472,7 +3472,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, selectedIndex,
         el.style.transformOrigin = g.pin ? '50% 0' : '50% 50%'
         el.style.transform = `translate(-50%, ${g.pin ? '0' : '-50%'}) rotate(${g.rot + st.rot}deg) scale(${st.scale}) scaleX(${st.scaleX})`
         el.style.opacity = String(st.alpha)
-        el.style.filter = st.dim > 0.004 ? `brightness(${(1 - st.dim).toFixed(3)})` : ''
+        el.style.filter = matFilterCss(st.dim, photoLookState(spec, i, t, 0))
       })
       // Virtual camera over the whole scene (background + photos): the same
       // window maths the render's crop/zoompan chain uses.
@@ -4233,10 +4233,31 @@ const COLLAGE_MOTIONS_UI: { id: CollageMotion; label: string; hint: string }[] =
   { id: 'orbit', label: 'Orbit', hint: 'A slow ellipse around its resting spot' },
   { id: 'shake', label: 'Shake', hint: 'A short jolt as it lands, dying away — picks one photo out of the group' },
   { id: 'sway', label: 'Sway', hint: 'The corkboard wobble, for this photo alone and at its own strength' },
+  { id: 'breathe', label: 'Breathe', hint: 'A slow zoom of its own — Ken Burns for this photo alone, without the pan' },
+  { id: 'pulse', label: 'Pulse', hint: 'A rhythmic swell and settle around its resting size' },
+  { id: 'beat', label: 'Beat', hint: 'A punch on every beat of the soundtrack — needs the beats the Beat sync section found' },
 ]
-/** Does this photo carry any of its own three lanes? */
+/** The animated looks: how one photo's colour changes while it is on screen. */
+const COLLAGE_LOOK_ANIMS_UI: { id: CollageLookAnim; label: string; hint: string }[] = [
+  { id: 'none', label: 'Still colour', hint: 'The photo keeps the colour it was given' },
+  { id: 'toColor', label: 'To colour', hint: 'It arrives in black & white and blooms into colour as it lands' },
+  { id: 'toBw', label: 'To black & white', hint: 'The colour drains away across the slide, ending in black & white' },
+  { id: 'flicker', label: 'Flicker', hint: 'An old-projector brightness jitter as it lands, dying away' },
+]
+/** Does this photo carry any of its own lanes? */
 const hasPhotoLanes = (photo: CollagePhoto | undefined): boolean =>
-  !!photo && (photo.anim !== undefined || photo.exit !== undefined || photo.motion !== undefined)
+  !!photo && (photo.anim !== undefined || photo.exit !== undefined
+    || photo.motion !== undefined || photo.lookAnim !== undefined)
+/** The CSS filter for a mat: the depth dim first, then the photo's animated
+ *  look — the same order the render's eq and hue filters sit in, so a drained
+ *  or flickering photo looks the same here and in the MP4. */
+const matFilterCss = (dim: number, look: { sat: number; bright: number }): string => {
+  const parts: string[] = []
+  if (dim > 0.004) parts.push(`brightness(${(1 - dim).toFixed(3)})`)
+  if (Math.abs(look.sat - 1) > 0.002) parts.push(`saturate(${look.sat.toFixed(3)})`)
+  if (Math.abs(look.bright - 1) > 0.002) parts.push(`brightness(${look.bright.toFixed(3)})`)
+  return parts.join(' ')
+}
 const COLLAGE_CAMERAS: { id: NonNullable<CollageSpec['camera']>; label: string; hint: string }[] = [
   { id: 'none', label: 'Still', hint: 'A fixed camera on the whole collage' },
   { id: 'pan', label: 'Pan', hint: 'A gentle drift across a slightly zoomed frame — the wall-gallery look' },
@@ -4308,13 +4329,14 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   /** One photo's enter / while / exit lane. An empty value means "inherit the
    *  collage's setting" and removes the override again, so a photo follows
    *  later changes to the collage-wide animation. */
-  const setPhotoLane = (index: number, lane: 'anim' | 'exit' | 'motion', value: string) => {
+  const setPhotoLane = (index: number, lane: 'anim' | 'exit' | 'motion' | 'lookAnim', value: string) => {
     setSpec({
       photos: photos.map((p, i) => {
         if (i !== index) return p
         const next: CollagePhoto = { ...p }
         if (lane === 'anim') { if (value === '') delete next.anim; else next.anim = value as CollageAnim }
         else if (lane === 'exit') { if (value === '') delete next.exit; else next.exit = value as CollageExit }
+        else if (lane === 'lookAnim') { if (value === 'none') delete next.lookAnim; else next.lookAnim = value as CollageLookAnim }
         else if (value === 'none') { delete next.motion; delete next.motionAmount }
         else next.motion = value as CollageMotion
         return next
@@ -4335,6 +4357,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       delete next.exit
       delete next.motion
       delete next.motionAmount
+      delete next.lookAnim
       return next
     }),
   })
@@ -4628,7 +4651,16 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <label title={COLLAGE_MOTIONS_UI.find(m => m.id === photoMotion(spec, selectedPhoto).id)?.hint ?? 'What this photo keeps doing once it has landed'}>
               <span>motion</span>
               <select value={photos[selectedPhoto].motion ?? 'none'} aria-label={`Motion of photo ${selectedPhoto + 1}`} onChange={e => setPhotoLane(selectedPhoto, 'motion', e.target.value)}>
-                {COLLAGE_MOTIONS_UI.map(m => <option key={m.id} value={m.id} title={m.hint}>{m.label}</option>)}
+                {COLLAGE_MOTIONS_UI.filter(m => !COLLAGE_SCALE_MOTIONS.includes(m.id)).map(m => <option key={m.id} value={m.id} title={m.hint}>{m.label}</option>)}
+                <optgroup label="Changes its size — a little slower to render">
+                  {COLLAGE_MOTIONS_UI.filter(m => COLLAGE_SCALE_MOTIONS.includes(m.id)).map(m => <option key={m.id} value={m.id} title={m.hint}>{m.label}</option>)}
+                </optgroup>
+              </select>
+            </label>
+            <label title={COLLAGE_LOOK_ANIMS_UI.find(l => l.id === photoLookAnim(spec, selectedPhoto))?.hint ?? 'How the colour of this photo changes while it is on screen'}>
+              <span>look</span>
+              <select value={photos[selectedPhoto].lookAnim ?? 'none'} aria-label={`Animated look of photo ${selectedPhoto + 1}`} onChange={e => setPhotoLane(selectedPhoto, 'lookAnim', e.target.value)}>
+                {COLLAGE_LOOK_ANIMS_UI.map(l => <option key={l.id} value={l.id} title={l.hint}>{l.label}</option>)}
               </select>
             </label>
             {photoMotion(spec, selectedPhoto).id !== 'none' && <span className="collage-lane-amount" title="How far the motion travels and how hard it turns — 100% is the preset's own amplitude">
@@ -4647,7 +4679,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
               </select>
             </label>
             {hasPhotoLanes(photos[selectedPhoto]) && <button type="button" className="btn ghost small" title="Drop this photo's own entrance, motion and exit — it follows the collage's choreography again" onClick={() => clearPhotoLanes(selectedPhoto)}>Inherit</button>}
-            <small className="collage-lanes-hint"><Sparkles size={11}/> Only photo {selectedPhoto + 1} — the rest keep the collage's {COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label.toLowerCase() ?? 'drop'}</small>
+            <small className="collage-lanes-hint"><Sparkles size={11}/> Only photo {selectedPhoto + 1} — the rest keep the collage's {COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label.toLowerCase() ?? 'drop'}. Motion and look are stored on the photo, so the rendered MP4 does the same.</small>
           </div></> : photos.length > 0 && <small className="collage-select-hint"><Info size={11}/> Click a photo on the preview to change its size{freeLayout ? ', or drag the knob above it to turn it' : ''}, and to give it its own entrance, motion and exit.</small>}
         <div className="collage-strip">
           {photos.map((photo, i) => <div ref={el => { chipRefs.current[i] = el }} className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}${selectedPhoto === i ? ' selected' : ''}${hasPhotoLanes(photo) ? ' has-lanes' : ''}`} key={`${photo.path}-${i}`}
@@ -4655,7 +4687,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             onDragOver={e => { e.preventDefault(); setDragOverChip(i) }}
             onDrop={e => { e.preventDefault(); dropChip(i) }}
             onClick={() => setSelectedPhoto(i)}
-            title={`${photo.name || photo.path} — click to select it (the preview rings it and its size${freeLayout ? ', tilt' : ''} and motion controls appear below), drag to reorder, or drop it on the preview to place it yourself${hasPhotoLanes(photo) ? `. Its own lanes: ${[photo.anim ? `entrance ${photo.anim}` : '', photo.motion ? `motion ${photo.motion}` : '', photo.exit ? `exit ${photo.exit}` : ''].filter(Boolean).join(', ')}` : ''}`}>
+            title={`${photo.name || photo.path} — click to select it (the preview rings it and its size${freeLayout ? ', tilt' : ''} and motion controls appear below), drag to reorder, or drop it on the preview to place it yourself${hasPhotoLanes(photo) ? `. Its own lanes: ${[photo.anim ? `entrance ${photo.anim}` : '', photo.motion ? `motion ${photo.motion}` : '', photo.lookAnim ? `look ${photo.lookAnim}` : '', photo.exit ? `exit ${photo.exit}` : ''].filter(Boolean).join(', ')}` : ''}`}>
             <button type="button" className="chip-num" aria-pressed={selectedPhoto === i} title={selectedPhoto === i ? `Photo ${i + 1} is selected — its size${freeLayout ? ', tilt' : ''} and motion controls are below the preview` : `Select photo ${i + 1}`} onClick={e => { e.stopPropagation(); setSelectedPhoto(i) }}>{i + 1}{hasPhotoLanes(photo) && <em className="chip-lane-dot" aria-label="This photo has its own entrance, motion or exit" />}</button>
             <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy" />
             <label className="chip-slot" title={freeLayout ? 'Free layout places photos by dragging them on the preview' : 'Arrangement position: where this photo sits in the final layout (1 = the first slot)'} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>

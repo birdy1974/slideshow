@@ -16,10 +16,12 @@ import unittest
 from app.collage import (
     ENTRANCE_LENGTH,
     MOTION_RAMP,
+    beat_punches,
     collage_duration,
     collage_graph,
     normalize_collage,
     photo_anim,
+    photo_look_state,
     photo_start,
     photo_state,
 )
@@ -313,11 +315,42 @@ class CollageKenBurnsRenderTest(unittest.TestCase):
 # the MP4 instead of only in the filter graph.
 _LANES = ("red", "lime", "blue")
 _LANE_HEX = {"red": "0xff0000", "lime": "0x00ff00", "blue": "0x0000ff"}
-_LANE_MATCH = {
+# Two ways to recognise a photo's pixels.
+#
+# The strict one asks for the flat primary it started as, so a translucent
+# photo mid-fade or an edge the codec feathered is simply not counted — good
+# for position tests, where counting only fully saturated pixels keeps the
+# centroid exact and every frame comparable.
+_LANE_STRICT = {
     "red": lambda r, g, b: r > 150 and g < 100 and b < 100,
     "lime": lambda r, g, b: g > 150 and r < 100 and b < 100,
     "blue": lambda r, g, b: b > 150 and r < 100 and g < 100,
 }
+# The colour-blind one finds a photo even when an animated look has drained it
+# (hue=s=0 keeps the luma and drops the chroma): the three primaries live in
+# three luma bands that stay disjoint whether the photo is saturated or gray,
+# and the bed is excluded by distance. Use it with opaque photos only — a
+# translucent primary blends toward the bed gray and leaves its band.
+_LANE_LUMA = {"red": (61, 115), "lime": (116, 255), "blue": (0, 60)}
+_BED = (96, 96, 96)
+
+
+def _lane_luma_owns(lane: str):
+    lo, hi = _LANE_LUMA[lane]
+
+    def owns(r: int, g: int, b: int) -> bool:
+        luma = 0.299 * r + 0.587 * g + 0.114 * b
+        if not lo <= luma <= hi:
+            return False
+        if abs(r - _BED[0]) + abs(g - _BED[1]) + abs(b - _BED[2]) <= 20:
+            return False                    # the gray bed, and codec noise on it
+        if lane == "red":
+            return r >= g and r >= b
+        if lane == "lime":
+            return g >= r and g >= b
+        return b >= r and b >= g
+
+    return owns
 
 
 def _render_lanes(ffmpeg: str, item: dict) -> tuple[list[bytes], object, float]:
@@ -350,25 +383,45 @@ def _render_lanes(ffmpeg: str, item: dict) -> tuple[list[bytes], object, float]:
     return frames, spec, duration
 
 
-def _lane_box(frame: bytes, lane: str) -> tuple[int, float, float]:
-    """(pixel count, centroid x, centroid y) of one photo's colour in a frame.
+def _lane_stats(frame: bytes, lane: str, gray: bool = False) -> dict:
+    """One photo's footprint in a frame: how many pixels it owns, where its
+    centre is, its bounding box, and the mean saturation and luma of those
+    pixels (saturation 0 = gray, ~250 = the flat primary it started as).
 
-    A colour owns a pixel when its channel is clearly dominant, so the gray
-    bed, black shadows and the interpolated edge of a turned sprite are all
-    left out and the centroid stays the mat's centre.
+    With `gray` the photo is found by luma instead of by colour, which is what
+    an animated look that drains the colour out of it needs.
     """
-    owns = _LANE_MATCH[lane]
-    total = x_sum = y_sum = 0
+    owns = _lane_luma_owns(lane) if gray else _LANE_STRICT[lane]
+    total = x_sum = y_sum = sat_sum = luma_sum = 0
+    x0 = y0 = 10 ** 6
+    x1 = y1 = -1
     for y in range(H):
         row = y * W * 3
         for x in range(W):
             o = row + x * 3
-            if not owns(frame[o], frame[o + 1], frame[o + 2]):
+            r, g, b = frame[o], frame[o + 1], frame[o + 2]
+            if not owns(r, g, b):
                 continue
             total += 1
             x_sum += x
             y_sum += y
-    return total, (x_sum / total if total else 0.0), (y_sum / total if total else 0.0)
+            sat_sum += max(r, g, b) - min(r, g, b)
+            luma_sum += 0.299 * r + 0.587 * g + 0.114 * b
+            x0 = min(x0, x)
+            x1 = max(x1, x)
+            y0 = min(y0, y)
+            y1 = max(y1, y)
+    if not total:
+        return {"count": 0, "cx": 0.0, "cy": 0.0, "w": 0, "h": 0, "sat": 0.0, "luma": 0.0}
+    return {"count": total, "cx": x_sum / total, "cy": y_sum / total,
+            "w": x1 - x0 + 1, "h": y1 - y0 + 1,
+            "sat": sat_sum / total, "luma": luma_sum / total}
+
+
+def _lane_box(frame: bytes, lane: str) -> tuple[int, float, float]:
+    """(pixel count, centroid x, centroid y) of one photo in a frame."""
+    st = _lane_stats(frame, lane)
+    return st["count"], st["cx"], st["cy"]
 
 
 def _lane_item(photos: dict, **spec_extra) -> dict:
@@ -482,3 +535,128 @@ class CollagePhotoLanesRenderTest(unittest.TestCase):
         self.assertGreater(abs(swung[1] - rested[1]), 2.5,
                            f"the rendered swing barely moved: {swung[1]:.2f} vs {rested[1]:.2f}")
         self.assertAlmostEqual(neighbour_mid[1] - neighbour_rest[1], 0.0, delta=0.6)
+
+
+# --- a photo's own size and colour, measured in real pixels -----------------
+@unittest.skipIf(_ffmpeg_bin() is None, "no FFmpeg binary available")
+class CollagePhotoLooksRenderTest(unittest.TestCase):
+    """Scale motions and animated looks on one photo, measured in the MP4.
+
+    A scale has no per-frame filter in ffmpeg (scale freezes its output size at
+    init), so it rides the size ladder the render already builds for Ken Burns;
+    a colour has one (hue re-evaluates its expressions every frame) except for
+    brightness, which needs the sendcmd staircase the depth dim uses. Both are
+    driven by the same twin maths the preview paints with.
+    """
+
+    def test_an_animated_look_reaches_the_mp4(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 20, "cy": 50, "w": 24, "lookAnim": "toBw"},
+            1: {"cx": 50, "cy": 50, "w": 24, "lookAnim": "toColor"},
+            2: {"cx": 80, "cy": 50, "w": 24},
+        }, animation="none", hold=3)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
+        # saturation is one per-frame expression, one per photo that asks for it
+        self.assertEqual(len(re.findall(r"hue=s='", graph)), 2, graph[:400])
+        first, last = frames[0], frames[-1]
+        ends = {}
+        for lane in _LANES:
+            ends[lane] = (_lane_stats(first, lane, gray=True), _lane_stats(last, lane, gray=True))
+        for lane in _LANES:
+            self.assertGreater(min(st["count"] for st in ends[lane]), 2000,
+                               f"{lane} should be a solid photo at both ends")
+        red_a, red_z = ends["red"]
+        lime_a, lime_z = ends["lime"]
+        blue_a, blue_z = ends["blue"]
+        self.assertGreater(red_a["sat"], 150, "it arrives in full colour")
+        self.assertLess(red_z["sat"], 40, "and ends in black & white")
+        self.assertLess(lime_a["sat"], 60, "it arrives in black & white")
+        self.assertGreater(lime_z["sat"], 150, "and blooms into colour")
+        self.assertGreater(min(blue_a["sat"], blue_z["sat"]), 150,
+                           "a photo with no look of its own keeps its colour")
+        # hue drops the chroma and keeps the luma, so draining a photo is not
+        # darkening it — the difference an eq-based grayscale would make
+        self.assertAlmostEqual(red_z["luma"], red_a["luma"], delta=14)
+        # and both ends are the twin's own curve, not a coincidence
+        self.assertGreater(photo_look_state(spec, 0, 0, 0)["sat"], 0.99)
+        self.assertLess(photo_look_state(spec, 0, duration - 1 / FPS, 0)["sat"], 0.02)
+        self.assertLess(photo_look_state(spec, 1, 0, 0)["sat"], 0.02)
+        self.assertGreater(photo_look_state(spec, 1, duration - 1 / FPS, 0)["sat"], 0.99)
+
+    def test_a_scale_motion_rides_the_size_ladder(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({0: {"cx": 50, "cy": 50, "w": 40, "motion": "breathe"}},
+                          animation="none", hold=3)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
+        levels = re.findall(r"\[b0_(\d+)\]scale=(\d+):(\d+)", graph)
+        self.assertGreater(len(levels), 2, "a breathing photo needs more than one ladder level")
+        early = _lane_stats(frames[int(0.2 * FPS)], "red")
+        late = _lane_stats(frames[-2], "red")
+        s_early = photo_state(spec, 0, 0.2, 0, W / H)["scale"]
+        s_late = photo_state(spec, 0, duration - 2 / FPS, 0, W / H)["scale"]
+        self.assertGreater(s_late, s_early + 0.05, "the twin should be breathing")
+        self.assertGreater(late["w"], early["w"] + 3, "the MP4 must grow, not hold the landed size")
+        self.assertAlmostEqual(late["w"] / early["w"], s_late / s_early, delta=0.05)
+        self.assertAlmostEqual(late["h"] / early["h"], s_late / s_early, delta=0.06)
+        # breathing is a scale, not a drift: the mat stays where it was put
+        self.assertAlmostEqual(late["cx"], early["cx"], delta=2.0)
+        self.assertAlmostEqual(late["cy"], early["cy"], delta=2.0)
+
+    def test_a_beat_punch_swells_the_photo_on_the_beat(self):
+        ffmpeg = str(_ffmpeg_bin())
+        beats = [0.6, 1.1, 1.6, 2.1]
+        item = _lane_item({0: {"cx": 50, "cy": 50, "w": 40, "motion": "beat"}},
+                          animation="none", hold=2.6, beats=beats)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        # both engines thin a beat list to the same subset before punching
+        self.assertEqual(beat_punches(spec, 0.0, duration), beats)
+        on_beat = frames[int((1.1 + 1 / FPS) * FPS)]
+        between = frames[int((1.1 + 0.42) * FPS)]
+        s_on = photo_state(spec, 0, 1.1 + 1 / FPS, 0, W / H)["scale"]
+        s_between = photo_state(spec, 0, 1.52, 0, W / H)["scale"]
+        self.assertGreater(s_on, s_between + 0.03, "the twin should be mid-punch")
+        punch, rest = _lane_stats(on_beat, "red"), _lane_stats(between, "red")
+        self.assertGreater(punch["w"], rest["w"] + 2, "a beat must be visible in the MP4")
+        self.assertAlmostEqual(punch["w"] / rest["w"], s_on / s_between, delta=0.06)
+        self.assertAlmostEqual(punch["cx"], rest["cx"], delta=2.0,
+                               msg="the punch grows the photo about its own centre")
+        # and after the last beat the photo is back to its resting size
+        after = _lane_stats(frames[-2], "red")
+        self.assertLessEqual(after["w"], rest["w"] + 1)
+        self.assertLess(photo_state(spec, 0, duration - 2 / FPS, 0, W / H)["scale"], 1.02)
+
+    def test_the_flicker_look_jitters_and_settles(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({0: {"cx": 50, "cy": 50, "w": 40, "lookAnim": "flicker"}},
+                          animation="none", hold=3)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
+        # brightness has no per-frame filter, so it rides a sendcmd staircase
+        # into its own eq instance — the depth dim's eq is already taken
+        self.assertIn("eq@fx0", graph, graph[:400])
+        self.assertGreater(len(re.findall(r"eq@fx0 (?:contrast|brightness)", graph)), 20)
+
+        def spread(t0: float, span: float) -> float:
+            lumas = [_lane_stats(frames[int((t0 + k / FPS) * FPS)], "red", gray=True)["luma"]
+                     for k in range(int(span * FPS))]
+            return max(lumas) - min(lumas)
+
+        # the jitter is loud while it lands and gone by the time the slide ends
+        # (what is left at the end is the sendcmd staircase's own 0.01 steps)
+        self.assertGreater(spread(0.0, 0.36), 3.0)
+        self.assertLess(spread(duration - 0.8, 0.6), 1.5)
+        # and the rendered brightness follows the twin's: of the frames where
+        # the twin asks for a clear swing, the loudest one is the brightest ask
+        # and the quietest the darkest. (eq works on the video-range luma, so a
+        # saturated primary moves less than a mid-tone would — the order is what
+        # carries, not the size of the step.)
+        twin = [(k / FPS, photo_look_state(spec, 0, k / FPS, 0)["bright"]) for k in range(12)]
+        loud = [tb for tb in twin if abs(tb[1] - 1) > 0.05]
+        self.assertGreaterEqual(len(loud), 3, "the landing should carry a visible jitter")
+        lumas = {t: _lane_stats(frames[int(t * FPS)], "red", gray=True)["luma"] for t, _ in loud}
+        self.assertEqual(max(lumas, key=lumas.get), max(loud, key=lambda tb: tb[1])[0])
+        self.assertEqual(min(lumas, key=lumas.get), min(loud, key=lambda tb: tb[1])[0])
+        self.assertGreater(max(lumas.values()) - min(lumas.values()), 3.0)

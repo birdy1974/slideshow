@@ -14,7 +14,10 @@
 export type CollageLayout = 'stack' | 'grid' | 'scatter' | 'filmstrip' | 'fan' | 'masonry' | 'free' | 'template' | 'honeycomb' | 'zigzag' | 'arc' | 'photowall' | 'booth' | 'silhouette' | 'cube'
 export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush'
 export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle'
-export type CollageMotion = 'none' | 'drift' | 'float' | 'orbit' | 'shake' | 'sway'
+export type CollageMotion = 'none' | 'drift' | 'float' | 'orbit' | 'shake' | 'sway' | 'breathe' | 'pulse' | 'beat'
+/** An animated look: the photo's colour changes over time, on top of whatever
+ *  static filter it already has. */
+export type CollageLookAnim = 'none' | 'toBw' | 'toColor' | 'flicker'
 export type CollageCamera = 'none' | 'pan' | 'zoom' | 'telescope' | 'droste'
 export type CollageShape = '4:3' | 'square' | '3:4' | '16:9' | '9:16' | '3:2' | '2:3' | 'native'
 export type CollageBgFit = 'fill' | 'fit' | 'stretch' | 'tile' | 'center' | 'span'
@@ -28,25 +31,49 @@ export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip',
  *  the three-lane model the text layers use (enter / while / exit). These
  *  five only move and turn the photo, which a render can do per frame; the
  *  scaling ones are separate because FFmpeg can only hold discrete sizes. */
-export const COLLAGE_MOTIONS: CollageMotion[] = ['none', 'drift', 'float', 'orbit', 'shake', 'sway']
+/** Motions that only move and turn a photo: a render can follow them per
+ *  frame, so they cost nothing but two expression terms. */
+export const COLLAGE_MOTIONS: CollageMotion[] = ['none', 'drift', 'float', 'orbit', 'shake', 'sway', 'breathe', 'pulse', 'beat']
+/** Motions that change SIZE. FFmpeg's `scale` freezes its output dimensions at
+ *  init, so these ride the size ladder: the ladder samples the twin, quantises
+ *  the tail and holds each size for its window. Slower to render, which is why
+ *  they are a separate group in the picker. */
+export const COLLAGE_SCALE_MOTIONS: CollageMotion[] = ['breathe', 'pulse', 'beat']
+export const COLLAGE_LOOK_ANIMS: CollageLookAnim[] = ['none', 'toBw', 'toColor', 'flicker']
 /** Amplitudes of the per-photo motions: dx / dy in % of the frame, rot in
- *  degrees, speed in radians per second, decay in 1/s (0 = no decay). Both
- *  engines build their numbers from this table, so the MP4 and the preview
- *  cannot drift apart. */
+ *  degrees, speed in radians per second, decay in 1/s (0 = no decay) and scale
+ *  as a fraction of the resting size. Both engines build their numbers from
+ *  this table, so the MP4 and the preview cannot drift apart. */
 export const MOTION: Record<Exclude<CollageMotion, 'none'>, {
-  dx: number; dy: number; rot: number; speed: number; decay: number
+  dx: number; dy: number; rot: number; speed: number; decay: number; scale: number
 }> = {
-  drift: { dx: 9, dy: 3, rot: 0, speed: 0, decay: 0 },
-  float: { dx: 0.7, dy: 1.6, rot: 1.2, speed: 1.1, decay: 0 },
-  orbit: { dx: 1.8, dy: 1.3, rot: 0, speed: 0.9, decay: 0 },
-  shake: { dx: 2.2, dy: 1.4, rot: 1.8, speed: 34, decay: 2.2 },
-  sway: { dx: 0, dy: 0, rot: 1.5, speed: 2.15, decay: 0 },
+  drift: { dx: 9, dy: 3, rot: 0, speed: 0, decay: 0, scale: 0 },
+  float: { dx: 0.7, dy: 1.6, rot: 1.2, speed: 1.1, decay: 0, scale: 0 },
+  orbit: { dx: 1.8, dy: 1.3, rot: 0, speed: 0.9, decay: 0, scale: 0 },
+  shake: { dx: 2.2, dy: 1.4, rot: 1.8, speed: 34, decay: 2.2, scale: 0 },
+  sway: { dx: 0, dy: 0, rot: 1.5, speed: 2.15, decay: 0, scale: 0 },
+  breathe: { dx: 0, dy: 0, rot: 0, speed: 0, decay: 0, scale: 0.08 },
+  pulse: { dx: 0, dy: 0, rot: 0, speed: 2.4, decay: 0, scale: 0.035 },
+  beat: { dx: 0, dy: 0, rot: 0, speed: 0, decay: 7, scale: 0.09 },
 }
 /** The turn a motion reaches at full amplitude, in degrees — sprite-canvas
  *  headroom, exactly like an entrance spin. */
 export const MOTION_SPIN: Record<Exclude<CollageMotion, 'none'>, number> = {
-  drift: 0, float: 1.2, orbit: 0, shake: 1.8, sway: 1.5,
+  drift: 0, float: 1.2, orbit: 0, shake: 1.8, sway: 1.5, breathe: 0, pulse: 0, beat: 0,
 }
+/** Amplitudes of the animated looks: how far the colour travels (saturation
+ *  multiplier or brightness multiplier) and how fast it dies out. */
+export const LOOK_ANIM: Record<Exclude<CollageLookAnim, 'none'>, {
+  sat: number; bright: number; speed: number; decay: number
+}> = {
+  toBw: { sat: 1, bright: 0, speed: 0, decay: 0 },
+  toColor: { sat: 1, bright: 0, speed: 0, decay: 0 },
+  flicker: { sat: 0, bright: 0.16, speed: 41, decay: 1.8 },
+}
+/** Most beat punches one photo renders. A long slide of fast music would
+ *  otherwise put hundreds of terms into one expression; both engines thin the
+ *  list the same way, so they still agree. */
+export const BEAT_PUNCH_MAX = 24
 export const MOTION_AMOUNT_MIN = 0.25
 export const MOTION_AMOUNT_MAX = 2
 /** Seconds a motion takes to fade in once the photo has landed, so it starts
@@ -118,6 +145,9 @@ export interface CollagePhoto extends CollagePhotoLook {
   motion?: CollageMotion
   /** How strong that motion is, MOTION_AMOUNT_MIN…MAX (1 = MOTION's numbers). */
   motionAmount?: number
+  /** An animated look: this photo's colour changes over time, on top of the
+   *  static filter it already has. */
+  lookAnim?: CollageLookAnim
 }
 
 export interface CollageSpec {
@@ -1201,7 +1231,7 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   if (spec.sway === true && (t - t0) > ent * 0.7) {
     st.rot += 1.5 * Math.sin(t * 2.15 + i * 0.9)
   }
-  st = addMotion(spec, i, t, st, t0, ent)
+  st = addMotion(spec, i, t, st, t0, ent, leadIn)
   // Exit: after the hold (and every entrance) the photos leave the frame —
   // each one its own way when it has an override.
   const mode = exitMode(spec, i)
@@ -1330,12 +1360,12 @@ export function pinAnchor (spec: CollageSpec, i?: number): boolean {
  *  backend/app/collage.py) — which is why every motion has to be a closed-form
  *  function of t. Position and rotation can be evaluated per frame; scale
  *  cannot, so the scaling motions live in COLLAGE_SCALE_MOTIONS. */
-export function addMotion (spec: CollageSpec, i: number, t: number, st: PhotoState, t0?: number, ent?: number): PhotoState {
+export function addMotion (spec: CollageSpec, i: number, t: number, st: PhotoState, t0?: number, ent?: number, leadIn = 0): PhotoState {
   const id = photoMotion(spec, i).id
   if (id === 'none') return st
   const M = MOTION[id]
   const a = photoMotion(spec, i).amount
-  const start = t0 === undefined ? photoStart(spec, i, 0) : t0
+  const start = t0 === undefined ? photoStart(spec, i, leadIn) : t0
   const e0 = ent === undefined ? (ENTRANCE_LENGTH[photoAnim(spec, i)] ?? 0) : ent
   const u = Math.max(0, t - (start + e0))
   const g = clamp01(u / MOTION_RAMP)
@@ -1367,6 +1397,26 @@ export function addMotion (spec: CollageSpec, i: number, t: number, st: PhotoSta
     const w = u * M.speed + r3 * TAU
     out.dx += M.dx * a * Math.cos(w) * g
     out.dy += M.dy * a * Math.sin(w) * g
+  } else if (id === 'breathe') {
+    // Ken Burns' zoom for one photo: a slow ramp across the hold. A render can
+    // only hold discrete sizes, so this one rides the size ladder.
+    out.scale *= 1 + M.scale * a * clamp01(u / span)
+  } else if (id === 'pulse') {
+    // A rhythmic zoom around the resting size, eased in like the rest.
+    out.scale *= 1 + M.scale * a * Math.sin(u * M.speed + r2 * TAU) * g
+  } else if (id === 'beat') {
+    // A punch on every stored beat of the soundtrack: each one swells the
+    // photo and lets it fall back. Beat times live in the hold clock (0 = the
+    // hold starts), so the photo's own lead-in is taken back off t.
+    // Only beats that have already sounded count — a beat still ahead would
+    // otherwise swell the photo from the moment it lands — and the punch eases
+    // in with the rest of the motion so landing mid-beat cannot pop.
+    let punch = 0
+    for (const b of beatPunches(spec, start + e0 - leadIn, collageDuration(spec))) {
+      const since = t - leadIn - b
+      if (since >= 0) punch += Math.exp(-M.decay * since)
+    }
+    out.scale *= 1 + M.scale * a * punch * g
   } else {
     // float: a bob with a little lean, three unrelated slow frequencies.
     out.dx += M.dx * a * Math.sin(u * M.speed * 0.64 + r1 * TAU) * g
@@ -1374,6 +1424,57 @@ export function addMotion (spec: CollageSpec, i: number, t: number, st: PhotoSta
     out.rot += M.rot * a * Math.sin(u * M.speed * 0.73 + r2 * TAU) * g
   }
   return out
+}
+
+/** The beats a 'beat' motion punches on: the stored beat times inside this
+ *  photo's own window (from its landing to the end of the slide), thinned to
+ *  BEAT_PUNCH_MAX by taking every k-th one so a long, fast track cannot blow
+ *  up the expression a render has to carry. Both engines thin identically. */
+export function beatPunches (spec: CollageSpec, from: number, to: number): number[] {
+  const beats = (Array.isArray(spec.beats) ? spec.beats : []).filter(b => Number.isFinite(b) && b >= from && b <= to)
+  if (beats.length <= BEAT_PUNCH_MAX) return beats
+  const step = Math.ceil(beats.length / BEAT_PUNCH_MAX)
+  return beats.filter((_, k) => k % step === 0)
+}
+
+/** The animated look of photo i, sanitised ('none' when it has no own one). */
+export function photoLookAnim (spec: CollageSpec, i: number): CollageLookAnim {
+  const own = spec.photos?.[i]?.lookAnim as CollageLookAnim | undefined
+  return own && COLLAGE_LOOK_ANIMS.includes(own) ? own : 'none'
+}
+
+/** How the animated look tints photo i at time t: a saturation multiplier and
+ *  a brightness multiplier, 1 = untouched. The preview applies them as CSS
+ *  saturate() / brightness() on the mat; the render drives saturation with a
+ *  per-frame `hue=s='…'` expression (hue evaluates its expressions every
+ *  frame, eq evaluates them once at init — measured on the render binary) and
+ *  brightness with a sendcmd ladder into a second eq, the same machinery the
+ *  depth dim uses. Each look moves only ONE of the two, so the two engines
+ *  cannot disagree about how they compose. */
+export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn = 0): { sat: number; bright: number } {
+  const id = photoLookAnim(spec, i)
+  if (id === 'none') return { sat: 1, bright: 1 }
+  const L = LOOK_ANIM[id]
+  const t0 = photoStart(spec, i, leadIn)
+  const ent = ENTRANCE_LENGTH[photoAnim(spec, i)] ?? 0
+  const land = t0 + ent
+  if (id === 'toBw') {
+    // colour drains away across the hold, at Ken Burns' pace
+    return { sat: 1 - L.sat * clamp01((t - land) / Math.max(0.8, collageDuration(spec) * 0.7)), bright: 1 }
+  }
+  if (id === 'toColor') {
+    // it arrives in black & white and blooms into colour during the entrance
+    return { sat: clamp01((t - t0) / Math.max(0.45, ent)), bright: 1 }
+  }
+  // flicker: an old-projector brightness jitter that dies out after landing
+  const u = Math.max(0, t - land)
+  const seed = Math.trunc(Number(spec.seed)) || 1
+  const TAU = Math.PI * 2
+  const r1 = hash01(seed, i, 87)
+  const r2 = hash01(seed, i, 89)
+  const env = Math.exp(-L.decay * u)
+  const jitter = 0.6 * Math.sin(u * L.speed + r1 * TAU) + 0.4 * Math.sin(u * L.speed * 0.578 + r2 * TAU)
+  return { sat: 1, bright: 1 + L.bright * env * jitter }
 }
 
 /** The entrance a photo actually performs: its own override when it has one,
@@ -1466,6 +1567,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       ...((['none', 'sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(p.exit as CollageExit) ? { exit: p.exit as CollageExit } : {}),
       ...(COLLAGE_MOTIONS.includes(p.motion as CollageMotion) ? { motion: p.motion as CollageMotion } : {}),
       ...(num(p.motionAmount) !== undefined && num(p.motionAmount)! > 0 ? { motionAmount: Math.max(MOTION_AMOUNT_MIN, Math.min(MOTION_AMOUNT_MAX, num(p.motionAmount)!)) } : {}),
+      ...(COLLAGE_LOOK_ANIMS.includes(p.lookAnim as CollageLookAnim) ? { lookAnim: p.lookAnim as CollageLookAnim } : {}),
       ...look,
     })
     if (photos.length >= MAX_COLLAGE_PHOTOS) break

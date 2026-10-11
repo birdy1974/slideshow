@@ -242,6 +242,7 @@ inherits when it is not written, so an untouched project is untouched.
 | --- | --- | --- | --- |
 | enter | `photo.anim` | `photoAnim()` / `photo_anim()` | `spec.animation` |
 | while | `photo.motion` + `motionAmount` | `photoMotion()` / `photo_motion()` | nothing — the default is `none` |
+| look | `photo.lookAnim` | `photoLookAnim()` / `photo_look_anim()` | nothing — the default is `none` |
 | exit | `photo.exit` | `exitMode(spec, i)` / `exit_mode(spec, i)` | `spec.exit` |
 
 What follows from a per-photo lane:
@@ -288,27 +289,74 @@ does not slide as one block.
 | `orbit` | a slow ellipse around the resting spot |
 | `shake` | a jolt as it lands, dying away — picks one photo out of a group |
 | `sway` | the corkboard pendulum, for this photo alone, at its own strength |
+| `breathe` | a slow zoom of its own — Ken Burns for this photo, without the pan |
+| `pulse` | a rhythmic swell and settle around its resting size |
+| `beat` | a punch on every beat of the soundtrack, dying away between them |
 
-All five move and turn a photo only, which is exactly what FFmpeg can do per
-frame: the render adds the terms to the `overlay` x/y and to the `rotate` angle
-(`motion_terms()`), with the factors left in the same order as the twin so both
-round the same way. Nothing is emitted for a photo without a motion, so an
+The first five move and turn a photo only, which is exactly what FFmpeg can do
+per frame: the render adds the terms to the `overlay` x/y and to the `rotate`
+angle (`motion_terms()`), with the factors left in the same order as the twin so
+both round the same way. Nothing is emitted for a photo without a motion, so an
 untouched graph is unchanged. `MOTION_SPIN` feeds the sprite-canvas headroom
 through `choreography_spin()`, which is why a shaking photo keeps its corners.
 
-Motions that change *size* (breathe, pulse, a beat-locked punch) are deliberately
-not in this list yet: `scale` cannot be animated per frame, so they have to ride
-the size ladder below.
+The last three change *size*, and `scale` is the one thing FFmpeg will not
+animate per frame — `scale` freezes its output dimensions at init even with
+`eval=frame`. So they write to `out.scale` in the twin and ride the **size
+ladder**: `size_levels()` treats a scale motion the way it treats Ken Burns
+(`varies` and `tail` both come out true) and the sprite is re-scaled once per
+quantisation level, each level carrying the `enable` window it is true for.
+Nothing else in the graph has to know.
+
+- `breathe` ramps its zoom across the slide at Ken Burns' pace, so a lone photo
+  can breathe without the whole collage panning.
+- `pulse` swells on a slow sine of its own phase, seeded per photo.
+- `beat` reads the beats the Beat sync section stored in `spec.beats` — they live
+  in the slide's own hold clock, so the twin compares against `t - leadIn` — and
+  sums a decaying punch for every beat that has already sounded. A beat still
+  ahead contributes nothing, and the punch eases in with `MOTION_RAMP` so a photo
+  that lands mid-beat cannot pop. `beatPunches()` / `beat_punches()` thin a long
+  list to at most `BEAT_PUNCH_MAX` (24) evenly spaced beats, because each one adds
+  two `enable` windows per ladder level to the graph.
+
+### The look lane
+
+A look changes the photo's *colour* while it is on screen, and it is its own lane
+because it is not part of `PhotoState`: adding a field there would mean fourteen
+literal edits per engine in the twin comparator, so `photoLookState(spec, i, t,
+leadIn)` returns its own `{sat, bright}` where 1 means "untouched".
+
+| look | what it does | how it reaches the MP4 |
+| --- | --- | --- |
+| `toColor` | arrives in black & white, blooms into colour as it lands | `hue=s='…'` |
+| `toBw` | the colour drains away across the slide | `hue=s='…'` |
+| `flicker` | an old-projector brightness jitter as it lands, dying away | `sendcmd` + `eq@fx{i}` |
+
+The split is FFmpeg's, not ours. `hue` re-evaluates its expressions on **every
+frame**, so a saturation ramp is one exact expression; `eq` evaluates them once at
+init (both measured on the render binary), so brightness needs the same quantised
+`sendcmd` staircase the depth dim uses — into its *own* `eq@fx{i}` instance,
+because the dim's `eq@dim{i}` is already using contrast, saturation and
+brightness together to stay multiplicative. `eq` with `contrast=B` and
+`brightness=128*(B-1)/255` is multiplicative to within half a unit, which is what
+CSS `brightness(B)` does.
+
+Both sit exactly where the dim sits — after the mat is padded, before
+`format=rgba` and the shape mask — so the frame border and a `native` letterbox
+react the way the CSS filter on the preview's mat does, and no alpha is lost. The
+preview builds the same string in the same order (`matFilterCss`):
+`brightness(1 - dim) saturate(sat) brightness(bright)`.
 
 ### Where it is in the editor
 
 Selecting a photo — on the preview or on its chip — opens the per-photo panel
-under the stage: size and tilt, and a second row with **entrance / motion /
-exit**. Each select's first entry is the collage's own setting ("Drop ·
+under the stage: size and tilt, and a second row with **entrance / motion / look
+/ exit**. Each select's first entry is the collage's own setting ("Drop ·
 collage"), which is also what picking it again does: the override is removed, so
 the photo follows later changes to the collage-wide choreography. A motion brings
-a strength slider (25–200 %), and an **Inherit** button drops all three lanes at
-once. A chip whose photo has any lane of its own carries a lime dot on its
+a strength slider (25–200 %), and an **Inherit** button drops all the lanes at
+once. The motion select groups the three size-changing motions under their own
+heading, because they are the ones that make the render build a ladder. A chip whose photo has any lane of its own carries a lime dot on its
 number. Changing a lane never restarts the preview — the clock keeps running and
 only clamps when the slide's derived duration changes.
 
@@ -316,15 +364,20 @@ only clamps when the slide's derived duration changes.
 
 - `backend/tests/test_collage_twin.py` — the case list spans layouts ×
   entrances × shapes × photo counts × aspects × timings, plus dedicated cases
-  for exits, cameras, per-photo shapes, beat snapping and the three per-photo
+  for exits, cameras, per-photo shapes, beat snapping and the four per-photo
   lanes. Every case compares placements (incl. Free `rot`), per-photo motion,
   camera, duration, `free_from_displayed`, normalization, the lane accessors
-  (`photoAnim` / `photoMotion` / `exitMode(i)` / `exitOffset` / `exitFlyLength(i)`
-  / `exitTotal` / `baseDuration` / `pinAnchor(i)`) and the generated filtergraph
+  (`photoAnim` / `photoMotion` / `photoLookAnim` / `exitMode(i)` / `exitOffset`
+  / `exitFlyLength(i)` / `exitTotal` / `baseDuration` / `pinAnchor(i)`) and the
+  generated filtergraph
   (the flip expression must contain the resting tilt; `_n()` writes 4 decimals,
   so command comparisons use 1e-4). `test_the_size_ladder_follows_the_twin_past_
   the_entrance` parses the ladder's sizes and enable windows back out of the
-  graph and checks them against `photoState()`.
+  graph and checks them against `photoState()`. The lane cases include the scale
+  motions (`breathe` / `pulse` / `beat`, with a stored beat list), a beat list
+  long enough that both engines have to thin it to the same subset, every look
+  animation sampled across the slide, and a junk look / junk motion that both
+  sides must drop the same way.
 - `backend/tests/test_collage_animation_ffmpeg.py` — real FFmpeg renders, pixels
   measured. `CollageFreeTiltRenderTest` renders one red photo on a grey bed at
   0°, ±45°, ±90°, 135°, 180° and checks the bounding box turns the right way and
@@ -338,6 +391,14 @@ only clamps when the slide's derived duration changes.
   whose exit is `none` has to still be on screen at the end while the others have
   swept out, and a per-photo swing has to hang from a canvas built symmetrically
   about its pin and swing while its neighbour holds still.
+  `CollagePhotoLooksRenderTest` measures the lanes that change size and colour: a
+  photo with `toBw` has to end grey while its neighbour keeps its colour and a
+  `toColor` photo has to start grey (found by luma band rather than by colour,
+  since a drained photo has none), `breathe` has to grow the bounding box by the
+  factor the twin predicts through the ladder, a `beat` punch has to be widest
+  just after a beat and back to its resting size after the last one, and
+  `flicker` has to jitter the brightness while it lands and be quiet by the end —
+  with the loudest rendered frame being the twin's loudest ask.
 - `backend/tests/test_collage_tilt_handles.py` — the turn-a-photo controls,
   which are pointer maths with no render counterpart: Python writes the cases
   and an independent computation, Node evaluates the TypeScript helpers

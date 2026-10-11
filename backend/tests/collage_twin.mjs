@@ -31,6 +31,11 @@ for (const c of input.cases) {
       anim: pls.map((_, i) => core.photoAnim(spec, i)),
       pin: pls.map((_, i) => core.pinAnchor(spec, i)),
       motion: pls.map((_, i) => core.photoMotion(spec, i)),
+      look: pls.map((_, i) => core.photoLookAnim(spec, i)),
+      // The animated look at every sampled time, and which beats a 'beat'
+      // motion would punch on (both engines thin a long list the same way).
+      lookState: c.times.map(t => pls.map((_, i) => core.photoLookState(spec, i, t, c.leadIn))),
+      punches: c.punchWindow ? core.beatPunches(spec, c.punchWindow[0], c.punchWindow[1]) : null,
       exit: pls.map((_, i) => core.exitMode(spec, i)),
       schedule: core.exitScheduleMode(spec),
       exitOffset: pls.map((_, i) => core.exitOffset(spec, i)),
