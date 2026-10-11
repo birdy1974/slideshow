@@ -13,11 +13,11 @@
 
 export type CollageLayout = 'stack' | 'grid' | 'scatter' | 'filmstrip' | 'fan' | 'masonry' | 'free' | 'template' | 'honeycomb' | 'zigzag' | 'arc' | 'photowall' | 'booth' | 'silhouette' | 'cube'
 export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush'
-export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle'
-export type CollageMotion = 'none' | 'drift' | 'float' | 'orbit' | 'shake' | 'sway' | 'breathe' | 'pulse' | 'beat'
+export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle' | 'fade'
+export type CollageMotion = 'none' | 'drift' | 'float' | 'orbit' | 'shake' | 'sway' | 'breathe' | 'pulse' | 'beat' | 'move' | 'turn' | 'spin'
 /** An animated look: the photo's colour changes over time, on top of whatever
  *  static filter it already has. */
-export type CollageLookAnim = 'none' | 'toBw' | 'toColor' | 'flicker'
+export type CollageLookAnim = 'none' | 'toBw' | 'toColor' | 'flicker' | 'invert' | 'hueFlip'
 export type CollageCamera = 'none' | 'pan' | 'zoom' | 'telescope' | 'droste'
 export type CollageShape = '4:3' | 'square' | '3:4' | '16:9' | '9:16' | '3:2' | '2:3' | 'native'
 export type CollageBgFit = 'fill' | 'fit' | 'stretch' | 'tile' | 'center' | 'span'
@@ -33,13 +33,20 @@ export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip',
  *  scaling ones are separate because FFmpeg can only hold discrete sizes. */
 /** Motions that only move and turn a photo: a render can follow them per
  *  frame, so they cost nothing but two expression terms. */
-export const COLLAGE_MOTIONS: CollageMotion[] = ['none', 'drift', 'float', 'orbit', 'shake', 'sway', 'breathe', 'pulse', 'beat']
+export const COLLAGE_MOTIONS: CollageMotion[] = ['none', 'drift', 'float', 'orbit', 'shake', 'sway', 'breathe', 'pulse', 'beat', 'move', 'turn', 'spin']
 /** Motions that change SIZE. FFmpeg's `scale` freezes its output dimensions at
  *  init, so these ride the size ladder: the ladder samples the twin, quantises
  *  the tail and holds each size for its window. Slower to render, which is why
  *  they are a separate group in the picker. */
 export const COLLAGE_SCALE_MOTIONS: CollageMotion[] = ['breathe', 'pulse', 'beat']
-export const COLLAGE_LOOK_ANIMS: CollageLookAnim[] = ['none', 'toBw', 'toColor', 'flicker']
+export const COLLAGE_LOOK_ANIMS: CollageLookAnim[] = ['none', 'toBw', 'toColor', 'flicker', 'invert', 'hueFlip']
+/** Motions that travel to an end state and hold it, rather than looping. With
+ *  a `motionDuration` they finish at that moment; looping motions settle back
+ *  to rest instead, because freezing mid-bob looks broken. */
+export const COLLAGE_ONESHOT_MOTIONS: CollageMotion[] = ['move', 'turn', 'spin', 'drift', 'breathe']
+/** Motions whose end state the user picks rather than the strength slider: the
+ *  editor offers a target handle instead of an amplitude. */
+export const COLLAGE_TARGET_MOTIONS: CollageMotion[] = ['move', 'turn']
 /** Amplitudes of the per-photo motions: dx / dy in % of the frame, rot in
  *  degrees, speed in radians per second, decay in 1/s (0 = no decay) and scale
  *  as a fraction of the resting size. Both engines build their numbers from
@@ -55,20 +62,30 @@ export const MOTION: Record<Exclude<CollageMotion, 'none'>, {
   breathe: { dx: 0, dy: 0, rot: 0, speed: 0, decay: 0, scale: 0.08 },
   pulse: { dx: 0, dy: 0, rot: 0, speed: 2.4, decay: 0, scale: 0.035 },
   beat: { dx: 0, dy: 0, rot: 0, speed: 0, decay: 7, scale: 0.09 },
+  // move and turn take their amplitude from the photo's own target (moveX /
+  // moveY / turnTo), so their row is all zeros; spin's rot is degrees/second.
+  move: { dx: 0, dy: 0, rot: 0, speed: 0, decay: 0, scale: 0 },
+  turn: { dx: 0, dy: 0, rot: 0, speed: 0, decay: 0, scale: 0 },
+  spin: { dx: 0, dy: 0, rot: 45, speed: 0, decay: 0, scale: 0 },
 }
 /** The turn a motion reaches at full amplitude, in degrees — sprite-canvas
  *  headroom, exactly like an entrance spin. */
 export const MOTION_SPIN: Record<Exclude<CollageMotion, 'none'>, number> = {
   drift: 0, float: 1.2, orbit: 0, shake: 1.8, sway: 1.5, breathe: 0, pulse: 0, beat: 0,
+  move: 0, turn: 180, spin: 180,
 }
 /** Amplitudes of the animated looks: how far the colour travels (saturation
  *  multiplier or brightness multiplier) and how fast it dies out. */
 export const LOOK_ANIM: Record<Exclude<CollageLookAnim, 'none'>, {
-  sat: number; bright: number; speed: number; decay: number
+  sat: number; bright: number; speed: number; decay: number; hue: number
 }> = {
-  toBw: { sat: 1, bright: 0, speed: 0, decay: 0 },
-  toColor: { sat: 1, bright: 0, speed: 0, decay: 0 },
-  flicker: { sat: 0, bright: 0.16, speed: 41, decay: 1.8 },
+  toBw: { sat: 1, bright: 0, speed: 0, decay: 0, hue: 0 },
+  toColor: { sat: 1, bright: 0, speed: 0, decay: 0, hue: 0 },
+  flicker: { sat: 0, bright: 0.16, speed: 41, decay: 1.8, hue: 0 },
+  // invert is a hard flip — FFmpeg's `negate` is on or off, it has no amount —
+  // and hueFlip turns the colour wheel half way round.
+  invert: { sat: 0, bright: 0, speed: 0, decay: 0, hue: 0 },
+  hueFlip: { sat: 0, bright: 0, speed: 0, decay: 0, hue: 180 },
 }
 /** Most beat punches one photo renders. A long slide of fast music would
  *  otherwise put hundreds of terms into one expression; both engines thin the
@@ -76,6 +93,16 @@ export const LOOK_ANIM: Record<Exclude<CollageLookAnim, 'none'>, {
 export const BEAT_PUNCH_MAX = 24
 export const MOTION_AMOUNT_MIN = 0.25
 export const MOTION_AMOUNT_MAX = 2
+/** Bounds of a motion's own duration, in seconds (0 = the rest of the slide). */
+export const MOTION_DURATION_MIN = 0.3
+export const MOTION_DURATION_MAX = 12
+/** How far a `move` target may travel, in % of the frame, and how far a `turn`
+ *  target may rotate, in degrees. Both clamp, neither fold. */
+export const MOVE_RANGE = 60
+export const TURN_RANGE = 180
+/** Seconds of negative an `invert` look lasts on a photo that has no entrance
+ *  to arrive in, so the flip is always visible. */
+export const INVERT_MIN = 0.45
 /** Seconds a motion takes to fade in once the photo has landed, so it starts
  *  from exactly the resting pose instead of jumping. */
 export const MOTION_RAMP = 0.35
@@ -143,8 +170,22 @@ export interface CollagePhoto extends CollagePhotoLook {
   exit?: CollageExit
   /** While lane: motion this photo keeps doing once it has landed. */
   motion?: CollageMotion
-  /** How strong that motion is, MOTION_AMOUNT_MIN…MAX (1 = MOTION's numbers). */
+  /** How strong that motion is, MOTION_AMOUNT_MIN…MAX (1 = MOTION's numbers).
+   *  `move` and `turn` ignore it: their strength IS the target you picked. */
   motionAmount?: number
+  /** How long the motion plays, in seconds from the photo's landing. Missing
+   *  or 0 = the rest of the slide. A one-shot motion (move, turn, spin, drift,
+   *  breathe) travels across it and holds the end state; a looping one plays
+   *  for it and settles back to rest, so it cannot freeze mid-bob. */
+  motionDuration?: number
+  /** End position of the `move` motion: how far the photo travels from where
+   *  it rests, in % of the frame width / height — the units `photoState`'s
+   *  dx / dy use, so the render needs no new machinery. */
+  moveX?: number
+  moveY?: number
+  /** End angle of the `turn` motion, in degrees clockwise from the photo's
+   *  resting tilt. */
+  turnTo?: number
   /** An animated look: this photo's colour changes over time, on top of the
    *  static filter it already has. */
   lookAnim?: CollageLookAnim
@@ -238,6 +279,9 @@ export function hash01 (...values: number[]): number {
 }
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
+/** Ease in and out of a 0…1 progress: no jolt at either end, which is what a
+ *  photo travelling to a picked position or angle needs. */
+const smoothstep = (v: number) => v * v * (3 - 2 * v)
 
 export const COLLAGE_SHAPES: CollageShape[] = ['native', '4:3', '16:9', '3:2', 'square', '2:3', '3:4', '9:16']
 
@@ -1033,9 +1077,12 @@ export const ENTRANCE_LENGTH: Record<CollageAnim, number> = {
 // ---------------------------------------------------------------------------
 
 /** How long one photo's exit fly takes. */
-export const EXIT_LENGTH: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.45, deal: 0.32, shuffle: 0.4 }
+export const EXIT_LENGTH: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.45, deal: 0.32, shuffle: 0.4, fade: 0.5 }
 /** Delay between consecutive photos leaving. */
-export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.05, deal: 0.22, shuffle: 0.1 }
+export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.05, deal: 0.22, shuffle: 0.1, fade: 0.08 }
+
+/** Every exit mode, 'none' (stay until the transition) first. */
+export const COLLAGE_EXITS: CollageExit[] = ['none', 'sweep', 'deal', 'shuffle', 'fade']
 
 /** Bounds of the exit speed multiplier (the editor slider uses the same range). */
 export const EXIT_SPEED_MIN = 0.05
@@ -1060,9 +1107,9 @@ export function exitFlyLength (spec: CollageSpec, i?: number): number {
 export function exitMode (spec: CollageSpec, i?: number): CollageExit {
   if (i !== undefined) {
     const own = spec.photos?.[i]?.exit as CollageExit | undefined
-    if (own && (['none', 'sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(own)) return own
+    if (own && COLLAGE_EXITS.includes(own)) return own
   }
-  return (['sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(spec.exit as CollageExit) ? spec.exit as CollageExit : 'none'
+  return (COLLAGE_EXITS.filter(e => e !== 'none') as readonly CollageExit[]).includes(spec.exit as CollageExit) ? spec.exit as CollageExit : 'none'
 }
 
 /** The mode that sets the ORDER of the exit: the collage's own exit when it
@@ -1241,7 +1288,11 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
     const qe = clamp01((t - te0) / exitFlyLength(spec, i))
     if (qe > 0) {
       const ease = qe * qe                       // accelerating fly
-      if (mode === 'sweep') {
+      if (mode === 'fade') {
+        // It leaves by fading where it stands: no travel, no turn, and the
+        // whole fly is the fade — the movers fade over their last quarter.
+        // Linear, because that is what the render's `fade=t=out` does.
+      } else if (mode === 'sweep') {
         // Outward through the photo's own anchor direction.
         const pl = placements(spec, aspect, ratios)[i]
         const vx = (pl?.cx ?? 50) - 50
@@ -1264,7 +1315,7 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
         st.dy += 55 * Math.sin(a) * ease
         st.rot += (hash01(seed, i, 75) - 0.5) * 40 * qe
       }
-      st.alpha *= 1 - clamp01((qe - 0.75) / 0.25)
+      st.alpha *= mode === 'fade' ? 1 - qe : 1 - clamp01((qe - 0.75) / 0.25)
     }
   }
   return st
@@ -1364,12 +1415,21 @@ export function addMotion (spec: CollageSpec, i: number, t: number, st: PhotoSta
   const id = photoMotion(spec, i).id
   if (id === 'none') return st
   const M = MOTION[id]
-  const a = photoMotion(spec, i).amount
+  // A motion whose end state the user picked (move, turn) takes its strength
+  // from that target, not from the slider.
+  const a = COLLAGE_TARGET_MOTIONS.includes(id) ? 1 : photoMotion(spec, i).amount
   const start = t0 === undefined ? photoStart(spec, i, leadIn) : t0
   const e0 = ent === undefined ? (ENTRANCE_LENGTH[photoAnim(spec, i)] ?? 0) : ent
   const u = Math.max(0, t - (start + e0))
   const g = clamp01(u / MOTION_RAMP)
-  const span = Math.max(0.8, collageDuration(spec) * 0.7)
+  const dur = photoMotionDuration(spec, i)
+  const span = dur > 0 ? dur : Math.max(0.8, collageDuration(spec) * 0.7)
+  // A motion with a duration of its own stops being interesting when that time
+  // is up. One-shot motions hold the end state they travelled to; looping ones
+  // settle back to rest over the last part of their window, because freezing
+  // mid-bob (or mid-orbit, off-centre) looks broken.
+  const settle = dur > 0 && !COLLAGE_ONESHOT_MOTIONS.includes(id) ? Math.min(0.4, dur * 0.3) : 0
+  const w = settle > 0 ? 1 - clamp01((u - (dur - settle)) / settle) : 1
   const seed = Math.trunc(Number(spec.seed)) || 1
   const TAU = Math.PI * 2
   const r1 = hash01(seed, i, 81)
@@ -1380,30 +1440,30 @@ export function addMotion (spec: CollageSpec, i: number, t: number, st: PhotoSta
     // One-way pan that ramps in across the hold; the seeded direction keeps a
     // grid of photos from sliding as one block.
     const e = clamp01(u / span)
-    out.dx += (r1 - 0.5) * 2 * M.dx * a * e
-    out.dy += (r2 - 0.5) * 2 * M.dy * a * e
+    out.dx += (r1 - 0.5) * 2 * M.dx * a * e * w
+    out.dy += (r2 - 0.5) * 2 * M.dy * a * e * w
   } else if (id === 'shake') {
     // A jolt as it lands, dying away — attention without fidgeting.
     const e = Math.exp(-M.decay * u) * g
-    out.dx += M.dx * a * Math.sin(u * M.speed + r1 * TAU) * e
-    out.dy += M.dy * a * Math.sin(u * M.speed * 0.91 + r2 * TAU) * e
-    out.rot += M.rot * a * Math.sin(u * M.speed * 0.85 + r3 * TAU) * e
+    out.dx += M.dx * a * Math.sin(u * M.speed + r1 * TAU) * e * w
+    out.dy += M.dy * a * Math.sin(u * M.speed * 0.91 + r2 * TAU) * e * w
+    out.rot += M.rot * a * Math.sin(u * M.speed * 0.85 + r3 * TAU) * e * w
   } else if (id === 'sway') {
     // The collage-wide pendulum, but for one photo at its own strength.
     // Absolute clock, so photos that share it stay in step (i * 0.9 = phase).
-    out.rot += M.rot * a * Math.sin(t * M.speed + i * 0.9) * g
+    out.rot += M.rot * a * Math.sin(t * M.speed + i * 0.9) * g * w
   } else if (id === 'orbit') {
     // A slow ellipse around the resting spot.
-    const w = u * M.speed + r3 * TAU
-    out.dx += M.dx * a * Math.cos(w) * g
-    out.dy += M.dy * a * Math.sin(w) * g
+    const wo = u * M.speed + r3 * TAU
+    out.dx += M.dx * a * Math.cos(wo) * g * w
+    out.dy += M.dy * a * Math.sin(wo) * g * w
   } else if (id === 'breathe') {
     // Ken Burns' zoom for one photo: a slow ramp across the hold. A render can
     // only hold discrete sizes, so this one rides the size ladder.
     out.scale *= 1 + M.scale * a * clamp01(u / span)
   } else if (id === 'pulse') {
     // A rhythmic zoom around the resting size, eased in like the rest.
-    out.scale *= 1 + M.scale * a * Math.sin(u * M.speed + r2 * TAU) * g
+    out.scale *= 1 + M.scale * a * Math.sin(u * M.speed + r2 * TAU) * g * w
   } else if (id === 'beat') {
     // A punch on every stored beat of the soundtrack: each one swells the
     // photo and lets it fall back. Beat times live in the hold clock (0 = the
@@ -1416,12 +1476,26 @@ export function addMotion (spec: CollageSpec, i: number, t: number, st: PhotoSta
       const since = t - leadIn - b
       if (since >= 0) punch += Math.exp(-M.decay * since)
     }
-    out.scale *= 1 + M.scale * a * punch * g
+    out.scale *= 1 + M.scale * a * punch * g * w
+  } else if (id === 'move') {
+    // Travels to the end position the user picked and holds it there. Eased,
+    // because a linear slide across the frame looks mechanical.
+    const e = smoothstep(clamp01(u / span))
+    out.dx += photoMove(spec, i).x * e
+    out.dy += photoMove(spec, i).y * e
+  } else if (id === 'turn') {
+    // Turns to the end angle the user picked, from the photo's resting tilt.
+    out.rot += photoTurnTo(spec, i) * smoothstep(clamp01(u / span))
+  } else if (id === 'spin') {
+    // Continuous rotation: it turns for `span` seconds and keeps the angle it
+    // reached, which is what "spin for three seconds" means. M.rot is degrees
+    // per second here, not an amplitude.
+    out.rot += M.rot * a * Math.min(u, span) * g
   } else {
     // float: a bob with a little lean, three unrelated slow frequencies.
-    out.dx += M.dx * a * Math.sin(u * M.speed * 0.64 + r1 * TAU) * g
-    out.dy += M.dy * a * Math.sin(u * M.speed + r3 * TAU) * g
-    out.rot += M.rot * a * Math.sin(u * M.speed * 0.73 + r2 * TAU) * g
+    out.dx += M.dx * a * Math.sin(u * M.speed * 0.64 + r1 * TAU) * g * w
+    out.dy += M.dy * a * Math.sin(u * M.speed + r3 * TAU) * g * w
+    out.rot += M.rot * a * Math.sin(u * M.speed * 0.73 + r2 * TAU) * g * w
   }
   return out
 }
@@ -1451,20 +1525,33 @@ export function photoLookAnim (spec: CollageSpec, i: number): CollageLookAnim {
  *  brightness with a sendcmd ladder into a second eq, the same machinery the
  *  depth dim uses. Each look moves only ONE of the two, so the two engines
  *  cannot disagree about how they compose. */
-export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn = 0): { sat: number; bright: number } {
+export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn = 0): { sat: number; bright: number; inv: number; hue: number } {
   const id = photoLookAnim(spec, i)
-  if (id === 'none') return { sat: 1, bright: 1 }
+  if (id === 'none') return { sat: 1, bright: 1, inv: 0, hue: 0 }
   const L = LOOK_ANIM[id]
   const t0 = photoStart(spec, i, leadIn)
   const ent = ENTRANCE_LENGTH[photoAnim(spec, i)] ?? 0
   const land = t0 + ent
+  const plain = { sat: 1, bright: 1, inv: 0, hue: 0 }
   if (id === 'toBw') {
     // colour drains away across the hold, at Ken Burns' pace
-    return { sat: 1 - L.sat * clamp01((t - land) / Math.max(0.8, collageDuration(spec) * 0.7)), bright: 1 }
+    return { ...plain, sat: 1 - L.sat * clamp01((t - land) / Math.max(0.8, collageDuration(spec) * 0.7)) }
   }
   if (id === 'toColor') {
     // it arrives in black & white and blooms into colour during the entrance
-    return { sat: clamp01((t - t0) / Math.max(0.45, ent)), bright: 1 }
+    return { ...plain, sat: clamp01((t - t0) / Math.max(0.45, ent)) }
+  }
+  if (id === 'invert') {
+    // It arrives as a negative and flips to its real colours once it has
+    // landed. The flip is a hard cut because FFmpeg's `negate` is on or off —
+    // there is no per-frame amount — and a photo with no entrance of its own
+    // still gets INVERT_MIN seconds of negative to develop out of.
+    return { ...plain, inv: t < t0 + Math.max(ent, INVERT_MIN) ? 1 : 0 }
+  }
+  if (id === 'hueFlip') {
+    // The colour wheel turns half way round across the slide, so the photo
+    // ends in its opposite colours. `hue=H='…'` re-evaluates per frame.
+    return { ...plain, hue: L.hue * clamp01((t - t0) / Math.max(0.8, collageDuration(spec) * 0.7)) }
   }
   // flicker: an old-projector brightness jitter that dies out after landing
   const u = Math.max(0, t - land)
@@ -1474,7 +1561,7 @@ export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn 
   const r2 = hash01(seed, i, 89)
   const env = Math.exp(-L.decay * u)
   const jitter = 0.6 * Math.sin(u * L.speed + r1 * TAU) + 0.4 * Math.sin(u * L.speed * 0.578 + r2 * TAU)
-  return { sat: 1, bright: 1 + L.bright * env * jitter }
+  return { ...plain, bright: 1 + L.bright * env * jitter }
 }
 
 /** The entrance a photo actually performs: its own override when it has one,
@@ -1482,6 +1569,42 @@ export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn 
 export function photoAnim (spec: CollageSpec, i: number): CollageAnim {
   const own = spec.photos?.[i]?.anim as CollageAnim | undefined
   return own && COLLAGE_ANIMS_ALL.includes(own) ? own : (spec.animation ?? 'drop')
+}
+
+/** How long photo i's motion plays, in seconds from its landing; 0 means
+ *  "the rest of the slide", which is what every existing project does. */
+export function photoMotionDuration (spec: CollageSpec, i: number): number {
+  const v = num(spec.photos?.[i]?.motionDuration)
+  if (v === undefined || v <= 0) return 0
+  return Math.max(MOTION_DURATION_MIN, Math.min(MOTION_DURATION_MAX, v))
+}
+
+/** Where photo i's `move` motion travels to, in % of the frame from its
+ *  resting spot (the units photoState's dx / dy use). */
+export function photoMove (spec: CollageSpec, i: number): { x: number; y: number } {
+  const photo = spec.photos?.[i]
+  const x = num(photo?.moveX) ?? 0
+  const y = num(photo?.moveY) ?? 0
+  return {
+    x: Math.max(-MOVE_RANGE, Math.min(MOVE_RANGE, x)),
+    y: Math.max(-MOVE_RANGE, Math.min(MOVE_RANGE, y)),
+  }
+}
+
+/** The angle photo i's `turn` motion rotates to, in degrees clockwise from its
+ *  resting tilt. */
+export function photoTurnTo (spec: CollageSpec, i: number): number {
+  const v = num(spec.photos?.[i]?.turnTo) ?? 0
+  return Math.max(-TURN_RANGE, Math.min(TURN_RANGE, v))
+}
+
+/** Degrees of sprite-canvas headroom photo i's motion needs — the turn a
+ *  motion reaches at full amplitude, or for `turn` the photo's own target. */
+export function motionSpin (spec: CollageSpec, i: number): number {
+  const { id, amount } = photoMotion(spec, i)
+  if (id === 'none') return 0
+  if (id === 'turn') return Math.min(Math.abs(photoTurnTo(spec, i)), MOTION_SPIN.turn)
+  return MOTION_SPIN[id] * amount
 }
 
 /** The motion a photo keeps doing while it is on screen, and how strongly. */
@@ -1564,10 +1687,14 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       frame: frameFields(p.frame),
       shape: COLLAGE_SHAPES_ALL.includes(p.shape as CollageShape) ? p.shape as CollageShape : undefined,
       ...(COLLAGE_ANIMS_ALL.includes(p.anim as CollageAnim) ? { anim: p.anim as CollageAnim } : {}),
-      ...((['none', 'sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(p.exit as CollageExit) ? { exit: p.exit as CollageExit } : {}),
+      ...(COLLAGE_EXITS.includes(p.exit as CollageExit) ? { exit: p.exit as CollageExit } : {}),
       ...(COLLAGE_MOTIONS.includes(p.motion as CollageMotion) ? { motion: p.motion as CollageMotion } : {}),
       ...(num(p.motionAmount) !== undefined && num(p.motionAmount)! > 0 ? { motionAmount: Math.max(MOTION_AMOUNT_MIN, Math.min(MOTION_AMOUNT_MAX, num(p.motionAmount)!)) } : {}),
       ...(COLLAGE_LOOK_ANIMS.includes(p.lookAnim as CollageLookAnim) ? { lookAnim: p.lookAnim as CollageLookAnim } : {}),
+      ...(num(p.motionDuration) !== undefined && num(p.motionDuration)! > 0 ? { motionDuration: Math.max(MOTION_DURATION_MIN, Math.min(MOTION_DURATION_MAX, num(p.motionDuration)!)) } : {}),
+      ...(num(p.moveX) !== undefined && num(p.moveX) !== 0 ? { moveX: Math.max(-MOVE_RANGE, Math.min(MOVE_RANGE, num(p.moveX)!)) } : {}),
+      ...(num(p.moveY) !== undefined && num(p.moveY) !== 0 ? { moveY: Math.max(-MOVE_RANGE, Math.min(MOVE_RANGE, num(p.moveY)!)) } : {}),
+      ...(num(p.turnTo) !== undefined && num(p.turnTo) !== 0 ? { turnTo: Math.max(-TURN_RANGE, Math.min(TURN_RANGE, num(p.turnTo)!)) } : {}),
       ...look,
     })
     if (photos.length >= MAX_COLLAGE_PHOTOS) break

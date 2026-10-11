@@ -1624,6 +1624,24 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-lane-amount{display:flex;align-items:center;gap:5px}
 .collage-lane-amount input{width:76px;accent-color:#718f46}
 .collage-lane-amount b{font-variant-numeric:tabular-nums;font-size:9px;min-width:27px}
+
+.collage-lane-num{display:flex;align-items:center;gap:4px}
+
+.collage-lane-num>span{font-size:8px;color:#8b907f;white-space:nowrap;text-transform:uppercase;letter-spacing:.05em}
+
+.collage-lane-num input{width:54px;font:inherit;font-size:10px;background:#fff;color:#2f352c;border:1px solid #c7cabf;border-radius:5px;padding:2px 4px}
+
+.collage-lane-num input:focus-visible{outline:2px solid #718f46;outline-offset:1px}
+
+.collage-lane-num b{font-size:9px;color:#8b907f;min-width:9px}
+
+.collage-move-ghost{position:absolute;z-index:7;box-sizing:border-box;pointer-events:none;border:2px dashed var(--lime);opacity:.92}
+
+.collage-move-handle{position:absolute;z-index:9;display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px solid #a4ca6c;border-radius:50%;background:#1b1f18e8;color:#d1ef9d;box-shadow:0 2px 8px #0009;cursor:grab;pointer-events:auto;touch-action:none}
+
+.collage-move-handle:hover{background:#26301a;border-color:#c9ec92}
+
+.collage-move-handle:active{cursor:grabbing;background:#31401d}
 .collage-lanes-hint{display:flex;align-items:center;gap:4px;flex:1 1 100%;margin:1px 0 0;color:#92978e;font-size:9px}
 /* A chip whose photo dances to its own tune: a lime dot on its number. */
 .chip-lane-dot{position:absolute;top:-2px;right:-3px;width:5px;height:5px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 1px #0007}

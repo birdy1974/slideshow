@@ -33,6 +33,10 @@ from app.collage import (
     photo_look_anim,
     photo_look_state,
     photo_motion,
+    photo_motion_duration,
+    photo_move,
+    photo_turn_to,
+    motion_spin,
     beat_punches,
     free_from_displayed,
     bg_blur_radius,
@@ -439,6 +443,86 @@ def _cases() -> list[dict]:
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.6, 1.2, 2.0],
         "hashArgs": [6, 2, 87], "matW": 30,
     })
+    # A motion with a target the user picked: where it travels to, what angle
+    # it turns to, and how long each of them takes.
+    targeted = _spec("free", "fade", "4:3", 4, 23, delays=[0.2, 0.25, 0.3, 0.35], hold=3)
+    targeted["photos"][0].update({"motion": "move", "moveX": 18, "moveY": -9, "motionDuration": 1.4})
+    targeted["photos"][1].update({"motion": "turn", "turnTo": -40, "motionDuration": 1})
+    targeted["photos"][2].update({"motion": "spin", "motionAmount": 1.5})
+    targeted["photos"][3].update({"motion": "move", "moveX": 900, "moveY": -900,
+                                  "turnTo": 720, "motionDuration": 99})
+    cases.append({
+        "id": "lanes-target-motions",
+        "spec": targeted,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 0.9, 1.5, 2.2, 3.1, 4.4, 5.9],
+        "hashArgs": [23, 4, 81], "matW": 28,
+    })
+    # A duration on a LOOPING motion: it plays for that long and settles back to
+    # rest, so it cannot freeze mid-bob.
+    timed = _spec("scatter", "pop", "16:9", 3, 31, delays=[0.2, 0.2, 0.2], hold=4)
+    timed["photos"][0].update({"motion": "float", "motionDuration": 1.2})
+    timed["photos"][1].update({"motion": "pulse", "motionDuration": 0.8, "motionAmount": 2})
+    timed["photos"][2].update({"motion": "orbit", "motionDuration": 6})
+    timed["beats"] = [0.4, 0.9, 1.4, 1.9, 2.4, 2.9, 3.4, 3.9]
+    cases.append({
+        "id": "lanes-motion-duration",
+        "spec": timed,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, 0.7, 1.3, 1.9, 2.6, 3.4, 4.9, 6.2],
+        "hashArgs": [31, 3, 83], "matW": 24,
+        "punchWindow": [0.5, 6.0],
+    })
+    # The colour-flipping looks: a hard negative that develops out, and a slow
+    # turn of the colour wheel.
+    flipped = _spec("grid", "swing", "square", 3, 37, delays=[0.2, 0.3, 0.4], hold=2)
+    flipped["photos"][0]["lookAnim"] = "invert"
+    flipped["photos"][1]["lookAnim"] = "hueFlip"
+    flipped["photos"][2].update({"lookAnim": "invert", "anim": "none"})
+    cases.append({
+        "id": "lanes-flip-looks",
+        "spec": flipped,
+        "aspect": 1, "leadIn": 0.0,
+        "times": [0.0, 0.3, 0.9, 1.5, 2.4, 3.6, 5.0],
+        "hashArgs": [37, 3, 87], "matW": 30,
+    })
+    # A fade-out exit: it spends its whole fly fading where it stands, while its
+    # neighbours sweep out and one stays to the end.
+    fading = _spec("stack", "drop", "3:4", 3, 43, delays=[0.25, 0.25, 0.25], hold=2)
+    fading["photos"][0]["exit"] = "fade"
+    fading["photos"][1]["exit"] = "sweep"
+    fading["photos"][2]["exit"] = "none"
+    cases.append({
+        "id": "lanes-exit-fade",
+        "spec": fading,
+        "aspect": 16 / 9, "leadIn": 0.5,
+        "times": [0.0, 1.2, 2.6, 3.2, 3.7, 4.3, 5.1],
+        "hashArgs": [43, 3, 71], "matW": 26,
+    })
+    # A whole collage that fades out, at half speed and in reverse order.
+    fading_all = _spec("masonry", "fade", "4:3", 4, 51, delays=[0.2, 0.2, 0.2, 0.2], hold=1.5)
+    fading_all["exit"] = "fade"
+    fading_all["exitSpeed"] = 0.5
+    fading_all["exitReverse"] = True
+    cases.append({
+        "id": "lanes-exit-fade-all",
+        "spec": fading_all,
+        "aspect": 4 / 3, "leadIn": 0.0,
+        "times": [0.0, 0.8, 1.6, 2.2, 2.9, 3.6],
+        "hashArgs": [51, 4, 73], "matW": 22,
+    })
+    # Junk in the new fields has to be dropped or clamped the same way.
+    junk_target = _spec("grid", "pop", "4:3", 2, 8, delays=[0.2, 0.2], hold=1.5)
+    junk_target["photos"][0].update({"motion": "move", "moveX": "far", "moveY": None,
+                                     "motionDuration": -3, "turnTo": True})
+    junk_target["photos"][1].update({"motion": "teleport", "turnTo": "45",
+                                     "motionDuration": "2", "lookAnim": "negative"})
+    cases.append({
+        "id": "lanes-target-junk",
+        "spec": junk_target,
+        "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.5, 1.1, 2.0],
+        "hashArgs": [8, 2, 81], "matW": 30,
+    })
     # virtual cameras over the composed scene
     for camera in ("pan", "zoom", "telescope", "droste"):
         cases.append({
@@ -606,15 +690,27 @@ class CollageTwinTest(unittest.TestCase):
             for a, (mid, amt) in zip(lanes["motion"], py_motion):
                 assert a["id"] == mid, f"{where} motion: {a} != {(mid, amt)}"
                 assert abs(a["amount"] - amt) < TOL, f"{where} motion amount: {a} != {(mid, amt)}"
+            # A motion's own duration and target, and the headroom they imply.
+            for i in range(n_photos):
+                assert abs(lanes["motionDuration"][i] - photo_motion_duration(spec, i)) < TOL, (
+                    f"{where} photo {i} motion duration")
+                ts_move = lanes["move"][i]
+                py_move = photo_move(spec, i)
+                assert abs(ts_move["x"] - py_move[0]) < TOL, f"{where} photo {i} moveX"
+                assert abs(ts_move["y"] - py_move[1]) < TOL, f"{where} photo {i} moveY"
+                assert abs(lanes["turnTo"][i] - photo_turn_to(spec, i)) < TOL, (
+                    f"{where} photo {i} turn target")
+                assert abs(lanes["motionSpin"][i] - motion_spin(spec, i)) < TOL, (
+                    f"{where} photo {i} motion headroom")
             # Animated look: which one, and what it does to the colour at
             # every sampled time (the preview's CSS filter and the render's
-            # hue/eq chain are both driven by these two numbers).
+            # hue/eq/negate chain are all driven by these numbers).
             assert lanes["look"] == [photo_look_anim(spec, i) for i in range(n_photos)], where
             for ti, t in enumerate(case["times"]):
                 for i in range(n_photos):
                     py_look = photo_look_state(spec, i, t, lead_in)
                     ts_look = lanes["lookState"][ti][i]
-                    for key in ("sat", "bright"):
+                    for key in ("sat", "bright", "inv", "hue"):
                         assert abs(ts_look[key] - py_look[key]) < TOL, (
                             f"{where} t={t} photo {i} look {key}: "
                             f"{ts_look[key]} != {py_look[key]}")

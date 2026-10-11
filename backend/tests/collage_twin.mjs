@@ -31,6 +31,12 @@ for (const c of input.cases) {
       anim: pls.map((_, i) => core.photoAnim(spec, i)),
       pin: pls.map((_, i) => core.pinAnchor(spec, i)),
       motion: pls.map((_, i) => core.photoMotion(spec, i)),
+      // A motion's own duration and target: where `move` travels to, what
+      // angle `turn` reaches, and the sprite headroom that implies.
+      motionDuration: pls.map((_, i) => core.photoMotionDuration(spec, i)),
+      move: pls.map((_, i) => core.photoMove(spec, i)),
+      turnTo: pls.map((_, i) => core.photoTurnTo(spec, i)),
+      motionSpin: pls.map((_, i) => core.motionSpin(spec, i)),
       look: pls.map((_, i) => core.photoLookAnim(spec, i)),
       // The animated look at every sampled time, and which beats a 'beat'
       // motion would punch on (both engines thin a long list the same way).

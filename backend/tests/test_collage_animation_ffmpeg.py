@@ -16,9 +16,12 @@ import unittest
 from app.collage import (
     ENTRANCE_LENGTH,
     MOTION_RAMP,
+    base_duration,
     beat_punches,
     collage_duration,
     collage_graph,
+    exit_fly_length,
+    exit_offset,
     normalize_collage,
     photo_anim,
     photo_look_state,
@@ -383,6 +386,35 @@ def _render_lanes(ffmpeg: str, item: dict) -> tuple[list[bytes], object, float]:
     return frames, spec, duration
 
 
+# The complement of a lane's colour: what an inverted (or hue-turned) photo of
+# that colour looks like. Red goes to cyan, lime to magenta, blue to yellow.
+_LANE_NEGATIVE = {
+    "red": lambda r, g, b: r < 100 and g > 150 and b > 150,
+    "lime": lambda r, g, b: g < 100 and r > 150 and b > 150,
+    "blue": lambda r, g, b: b < 100 and r > 150 and g > 150,
+}
+
+
+def _lane_negative_count(frame: bytes, lane: str) -> int:
+    """How many pixels of a frame hold the COMPLEMENT of this lane's colour."""
+    owns = _LANE_NEGATIVE[lane]
+    total = 0
+    for y in range(H):
+        row = y * W * 3
+        for x in range(W):
+            o = row + x * 3
+            if owns(frame[o], frame[o + 1], frame[o + 2]):
+                total += 1
+    return total
+
+
+def _alpha_at(frame: bytes, x: float, y: float) -> float:
+    """The opacity of the red lane at one pixel, read back out of its blend with
+    the bed: 1 = the flat primary, 0 = the bed showing through."""
+    o = (int(round(y)) * W + int(round(x))) * 3
+    return (frame[o] - _BED[0]) / (253 - _BED[0])
+
+
 def _lane_stats(frame: bytes, lane: str, gray: bool = False) -> dict:
     """One photo's footprint in a frame: how many pixels it owns, where its
     centre is, its bounding box, and the mean saturation and luma of those
@@ -660,3 +692,159 @@ class CollagePhotoLooksRenderTest(unittest.TestCase):
         self.assertEqual(max(lumas, key=lumas.get), max(loud, key=lambda tb: tb[1])[0])
         self.assertEqual(min(lumas, key=lumas.get), min(loud, key=lambda tb: tb[1])[0])
         self.assertGreater(max(lumas.values()) - min(lumas.values()), 3.0)
+    def test_the_flipping_looks_reach_the_mp4(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 30, "cy": 50, "w": 24, "lookAnim": "invert"},
+            1: {"cx": 72, "cy": 50, "w": 24, "lookAnim": "hueFlip"},
+        }, animation="none", hold=3)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
+        # a negative is a hard flip on a timeline expression, a colour turn is
+        # one per-frame hue expression
+        self.assertIn("negate=enable='lt(t,", graph)
+        # hue=H takes RADIANS, so a half turn of the colour wheel is pi
+        self.assertIn("hue=H='3.1416*", graph)
+        early, late = frames[0], frames[-1]
+        # photo 0 arrives as a negative and develops into its real colour
+        self.assertEqual(photo_look_state(spec, 0, 0, 0)["inv"], 1.0)
+        self.assertEqual(photo_look_state(spec, 0, duration - 1 / FPS, 0)["inv"], 0.0)
+        self.assertGreater(_lane_negative_count(early, "red"), 1500)
+        self.assertLess(_lane_box(early, "red")[0], 25)
+        self.assertGreater(_lane_box(late, "red")[0], 1500)
+        self.assertLess(_lane_negative_count(late, "red"), 25)
+        # photo 1 keeps its colour at the start and ends in its opposite
+        self.assertEqual(photo_look_state(spec, 1, 0, 0)["hue"], 0.0)
+        self.assertGreater(photo_look_state(spec, 1, duration - 1 / FPS, 0)["hue"], 179.0)
+        self.assertGreater(_lane_box(early, "lime")[0], 1500)
+        self.assertLess(_lane_box(late, "lime")[0], 25)
+        self.assertGreater(_lane_negative_count(late, "lime"), 1500)
+        # and part way through the turn it is neither the colour it started as
+        # nor the one it ends in: the wheel is turning, not switching
+        mid_t = duration * 0.3
+        mid = frames[int(mid_t * FPS)]
+        self.assertLess(_lane_box(mid, "lime")[0], 1500, "it is no longer plain lime")
+        self.assertLess(_lane_negative_count(mid, "lime"), 1500, "and not yet its opposite")
+        self.assertLess(_lane_box(mid, "lime")[0], 200, "the strict lime is really gone")
+        self.assertTrue(20 < photo_look_state(spec, 1, mid_t, 0)["hue"] < 160,
+                        "the twin should be mid-turn here")
+
+# --- a motion that goes somewhere you picked --------------------------------
+@unittest.skipIf(_ffmpeg_bin() is None, "no FFmpeg binary available")
+class CollageMotionTargetRenderTest(unittest.TestCase):
+    """Move / turn / spin and a motion's own duration, measured in the MP4.
+
+    None of them needs new render machinery: they write dx, dy and rot in the
+    twin, which the render already turns into overlay positions and rotate
+    angles. What they add is an END — a place, an angle, or a moment the motion
+    stops — and that end has to be where the user put it.
+    """
+
+    def test_a_move_motion_travels_to_the_picked_end_position(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 30, "cy": 50, "w": 24, "motion": "move",
+                "moveX": 22, "moveY": -14, "motionDuration": 1.0},
+        }, animation="none", hold=2.4)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        rest = _lane_box(frames[0], "red")
+        done = _lane_box(frames[int(1.4 * FPS)], "red")
+        self.assertEqual(photo_state(spec, 0, 1.4, 0, W / H)["dx"], 22.0)
+        self.assertAlmostEqual(done[1] - rest[1], 0.22 * W, delta=3.0)
+        self.assertAlmostEqual(done[2] - rest[2], -0.14 * H, delta=3.0)
+        # it arrives and stays: the end position is a destination, not a drift
+        held = _lane_box(frames[-2], "red")
+        self.assertAlmostEqual(held[1], done[1], delta=0.6)
+        self.assertAlmostEqual(held[2], done[2], delta=0.6)
+        # and half way there it is half way there (eased, but monotonic)
+        half = _lane_box(frames[int(0.5 * FPS)], "red")
+        self.assertGreater(half[1] - rest[1], 0.2 * 0.22 * W)
+        self.assertLess(half[1] - rest[1], done[1] - rest[1])
+
+    def test_a_turn_motion_reaches_the_picked_angle(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 50, "cy": 50, "w": 30, "motion": "turn",
+                "turnTo": -90, "motionDuration": 0.8},
+        }, animation="none", hold=2)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        early = _lane_stats(frames[0], "red")
+        late = _lane_stats(frames[int(1.2 * FPS)], "red")
+        self.assertAlmostEqual(photo_state(spec, 0, 1.2, 0, W / H)["rot"], -90.0, delta=1e-6)
+        self.assertGreater(early["w"], early["h"], "a 4:3 mat starts wider than tall")
+        self.assertGreater(late["h"], late["w"], "and ends standing up")
+        self.assertAlmostEqual(late["h"], early["w"], delta=3)
+        self.assertAlmostEqual(late["w"], early["h"], delta=3)
+        # a turned mat loses no pixels to the sprite canvas: the headroom a
+        # turn needs is the photo's own target angle, not a table amplitude
+        self.assertAlmostEqual(late["count"], early["count"], delta=early["count"] * 0.09)
+        self.assertAlmostEqual(late["cx"], early["cx"], delta=2.5)
+        self.assertAlmostEqual(late["cy"], early["cy"], delta=2.5)
+
+    def test_a_spin_holds_the_angle_it_reached_when_its_time_is_up(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 50, "cy": 50, "w": 30, "motion": "spin", "motionDuration": 1.0},
+        }, animation="none", hold=2.4)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        mid = _lane_stats(frames[int(0.5 * FPS)], "red")
+        held_a = _lane_stats(frames[int(1.4 * FPS)], "red")
+        held_b = _lane_stats(frames[-2], "red")
+        self.assertAlmostEqual(photo_state(spec, 0, 1.4, 0, W / H)["rot"], 45.0, delta=1e-6)
+        self.assertNotEqual((mid["w"], mid["h"]), (held_a["w"], held_a["h"]),
+                            "it should still be turning half way through")
+        self.assertEqual((held_a["w"], held_a["h"]), (held_b["w"], held_b["h"]),
+                         "after its duration it holds the angle it reached")
+
+    def test_a_looping_motion_settles_back_when_its_time_is_up(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 50, "cy": 50, "w": 26, "motion": "float", "motionDuration": 1.0},
+        }, animation="none", hold=3)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        rest = _lane_box(frames[0], "red")
+        # it bobs while its duration runs ...
+        widest = 0.0
+        for k in range(int(0.2 * FPS), int(1.0 * FPS)):
+            box = _lane_box(frames[k], "red")
+            widest = max(widest, abs(box[2] - rest[2]), abs(box[1] - rest[1]))
+        self.assertGreater(widest, 1.2, f"the float barely moved: {widest:.2f}px")
+        # ... and is back where it started by the end, not frozen mid-bob
+        end = _lane_box(frames[-2], "red")
+        self.assertAlmostEqual(end[1], rest[1], delta=0.4)
+        self.assertAlmostEqual(end[2], rest[2], delta=0.4)
+        self.assertEqual(photo_state(spec, 0, duration - 2 / FPS, 0, W / H)["dx"], 0.0)
+
+    def test_a_fade_exit_leaves_the_photo_where_it_stands(self):
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 30, "cy": 50, "w": 24, "exit": "fade"},
+            1: {"cx": 72, "cy": 50, "w": 24, "exit": "none"},
+        }, animation="none", hold=1.6)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
+        fly = exit_fly_length(spec, 0)
+        te0 = base_duration(spec) + exit_offset(spec, 0)
+        # the whole fly is the fade, not the last quarter of a move
+        faded = re.search(r"fade=t=out:st=([\d.]+):d=([\d.]+):alpha=1", graph)
+        self.assertIsNotNone(faded, graph[:400])
+        self.assertAlmostEqual(float(faded.group(1)), te0, delta=1e-3)
+        self.assertAlmostEqual(float(faded.group(2)), fly, delta=1e-3)
+        before = _lane_box(frames[int((te0 - 0.08) * FPS)], "red")
+        self.assertGreater(before[0], 1500, "it is on screen before its exit")
+        self.assertLess(_lane_box(frames[-1], "red")[0], 25, "and gone by the end")
+        self.assertGreater(_lane_box(frames[-1], "lime")[0], 1500,
+                           "the photo whose exit is 'none' stays to the end")
+        # the opacity at three moments is the twin's own alpha ramp, and the
+        # photo never moves: a fade is not a fly
+        for probe in (0.2, 0.5, 0.8):
+            t = te0 + probe * fly
+            k = min(len(frames) - 1, int(t * FPS))
+            want = photo_state(spec, 0, k / FPS, 0, W / H)["alpha"]
+            got = _alpha_at(frames[k], before[1], before[2])
+            self.assertAlmostEqual(got, want, delta=0.09,
+                                   msg=f"alpha at t={k / FPS:.2f}: rendered {got:.2f}, twin {want:.2f}")
+            box = _lane_box(frames[k], "red")
+            if box[0] > 200:
+                self.assertAlmostEqual(box[1], before[1], delta=0.6)
+                self.assertAlmostEqual(box[2], before[2], delta=0.6)

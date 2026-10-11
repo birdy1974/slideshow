@@ -32,6 +32,10 @@ Per photo (`spec.photos[i]`):
 | `rot` | Free arrangement only: its resting tilt in degrees, clockwise, −180…180 |
 | `anim` | its own entrance, overriding `spec.animation` (missing = inherit) |
 | `motion`, `motionAmount` | what it keeps doing once it has landed, and how strongly (0.25–2) |
+| `motionDuration` | seconds the motion plays, from the photo's landing; missing/0 = the rest of the slide |
+| `moveX`, `moveY` | where a `move` motion travels to, in % of the frame from its resting spot (±60) |
+| `turnTo` | the angle a `turn` motion reaches, degrees clockwise from its resting tilt (±180) |
+| `lookAnim` | an animated look: its colour changes over time (`toColor`, `toBw`, `flicker`, `invert`, `hueFlip`) |
 | `exit` | how it leaves, overriding `spec.exit`; `none` keeps it on screen |
 
 `rot` is written only when it is not zero (`setPhotoRot` drops it at 0°), and the
@@ -266,6 +270,12 @@ What follows from a per-photo lane:
   `max_i(exitOffset(i) + exitFlyLength(i))`, which is the old
   "fly + longest offset" for a uniform exit. `photo.exit = 'none'` is a real
   choice: that photo stays on screen while the others sweep out.
+- **`fade` is an exit too.** It travels nowhere and turns nothing: the photo fades
+  out where it stands. The movers spend their last quarter fading on the way out
+  (`alpha *= 1 - clamp01((qe - 0.75) / 0.25)`), while a fade spends its *whole*
+  fly fading (`alpha *= 1 - qe`, linear, because that is what the render's
+  `fade=t=out:st=…:d=…:alpha=1` does). It staggers like any other exit (0.08 s
+  between photos) and can be set per photo or for the whole collage.
 - **Depth push-back stays collage-wide.** Whether the push is on at all follows
   `spec.animation` (drop / pop / flip), because it is a property of the pile;
   but each push follows the *arriving* photo's own entrance length, so a photo
@@ -292,6 +302,9 @@ does not slide as one block.
 | `breathe` | a slow zoom of its own — Ken Burns for this photo, without the pan |
 | `pulse` | a rhythmic swell and settle around its resting size |
 | `beat` | a punch on every beat of the soundtrack, dying away between them |
+| `move` | travels to an end position you pick, and stays there |
+| `turn` | turns to an end angle you pick, from its resting tilt, and stays there |
+| `spin` | keeps turning at a steady rate (MOTION's `rot` is degrees per second here) |
 
 The first five move and turn a photo only, which is exactly what FFmpeg can do
 per frame: the render adds the terms to the `overlay` x/y and to the `rotate`
@@ -319,6 +332,39 @@ Nothing else in the graph has to know.
   list to at most `BEAT_PUNCH_MAX` (24) evenly spaced beats, because each one adds
   two `enable` windows per ladder level to the graph.
 
+`move`, `turn` and `spin` write dx / dy / rot like the first five, so they need no
+new render machinery at all — only headroom: `motionSpin()` returns a `turn`'s own
+target angle (not a table amplitude) and 180° for a `spin`, which
+`choreography_spin()` caps at the mat's diagonal as it already did.
+
+#### Targets and durations
+
+Two of the motions have an **end state you pick** rather than an amplitude, so a
+strength slider would only scale a target you chose explicitly:
+`COLLAGE_TARGET_MOTIONS` (`move`, `turn`) ignore `motionAmount`, and the editor
+hides the slider and shows the target instead. On the preview the target is a
+dashed ghost of the photo at its end place — drag its handle (Shift snaps to 5 %
+of the frame, arrows step 1 %) and the same numbers land in `moveX` / `moveY`; a
+`turn` shows the ghost turned to `turnTo`. The ghost is drawn from the photo's
+*resting* geometry, never from the playhead, because the end state does not depend
+on when you look.
+
+`motionDuration` says how long a motion plays, counted from the photo's landing
+(0 or missing = the rest of the slide, which is what every existing project does,
+so those graphs are unchanged). What happens when that time is up depends on the
+motion, and `COLLAGE_ONESHOT_MOTIONS` is the list:
+
+| kind | motions | when its time is up |
+| --- | --- | --- |
+| one-shot | `move`, `turn`, `spin`, `drift`, `breathe` | it holds the end state it travelled to |
+| looping | `float`, `orbit`, `shake`, `sway`, `pulse`, `beat` | it settles back to rest over the last `min(0.4, D·0.3)` s |
+
+A loop that simply stopped would freeze mid-bob — or mid-orbit, off-centre — which
+looks broken, so the settle envelope multiplies its amplitude back to zero. A
+one-shot's `span` *is* the duration (`move` and `turn` ease with a smoothstep, so
+neither end jolts); a `spin`'s angle is `rate · min(u, D)`, which is why it holds
+the angle it reached instead of unwinding.
+
 ### The look lane
 
 A look changes the photo's *colour* while it is on screen, and it is its own lane
@@ -331,6 +377,8 @@ leadIn)` returns its own `{sat, bright}` where 1 means "untouched".
 | `toColor` | arrives in black & white, blooms into colour as it lands | `hue=s='…'` |
 | `toBw` | the colour drains away across the slide | `hue=s='…'` |
 | `flicker` | an old-projector brightness jitter as it lands, dying away | `sendcmd` + `eq@fx{i}` |
+| `invert` | arrives as a negative, flips to its real colours once it has landed | `negate=enable='lt(t,…)'` |
+| `hueFlip` | the colour wheel turns half way round, ending in opposite colours | `hue=H='…'` |
 
 The split is FFmpeg's, not ours. `hue` re-evaluates its expressions on **every
 frame**, so a saturation ramp is one exact expression; `eq` evaluates them once at
@@ -341,22 +389,42 @@ brightness together to stay multiplicative. `eq` with `contrast=B` and
 `brightness=128*(B-1)/255` is multiplicative to within half a unit, which is what
 CSS `brightness(B)` does.
 
-Both sit exactly where the dim sits — after the mat is padded, before
+All of them sit exactly where the dim sits — after the mat is padded, before
 `format=rgba` and the shape mask — so the frame border and a `native` letterbox
 react the way the CSS filter on the preview's mat does, and no alpha is lost. The
 preview builds the same string in the same order (`matFilterCss`):
-`brightness(1 - dim) saturate(sat) brightness(bright)`.
+`brightness(1 - dim) hue-rotate(hue) saturate(sat) brightness(bright) invert(inv)`.
+`photoLookState()` returns all four numbers, and 1 / 0 means "untouched".
+
+Two traps, both measured on the render binary:
+
+- **`hue=H=` takes radians.** The filter multiplies the expression by 180/π
+  itself, so a half turn of the colour wheel is `H='3.1416*…'`, not `H='180*…'`.
+  The twin's `hue` stays in degrees because that is what CSS `hue-rotate()` wants;
+  the render converts once, in `look_segment()`.
+- **`negate` has no amount.** It is on or off, so `invert` is a hard flip at the
+  moment the photo has landed (`t0 + max(entrance, INVERT_MIN)`, so a photo with
+  no entrance of its own still gets 0.45 s of negative to develop out of). CSS
+  `invert(1)` is the same hard flip, which is why this look matches exactly while
+  `hueFlip` only matches approximately: CSS `hue-rotate()` is a matrix
+  approximation of a real rotation, so on a saturated primary the preview can read
+  a shade lighter than the MP4. On photographs the two are indistinguishable.
 
 ### Where it is in the editor
 
 Selecting a photo — on the preview or on its chip — opens the per-photo panel
 under the stage: size and tilt, and a second row with **entrance / motion / look
-/ exit**. Each select's first entry is the collage's own setting ("Drop ·
+/ exit**, plus — when the motion has one — its **duration** and its **target**. Each select's first entry is the collage's own setting ("Drop ·
 collage"), which is also what picking it again does: the override is removed, so
 the photo follows later changes to the collage-wide choreography. A motion brings
-a strength slider (25–200 %), and an **Inherit** button drops all the lanes at
-once. The motion select groups the three size-changing motions under their own
-heading, because they are the ones that make the render build a ladder. A chip whose photo has any lane of its own carries a lime dot on its
+a strength slider (25–200 %, hidden for `move` and `turn`, whose strength is the
+target you picked), an **over …s** duration field, `end x` / `end y` for a move
+and `end angle` for a turn, and an **Inherit** button drops every lane at once.
+The motion select is grouped by what a motion needs: *keeps moving*, *goes
+somewhere — you pick the end*, and *changes its size — a little slower to render*,
+because the last group is the one that makes the render build a ladder. Picking a
+different motion drops the targets that no longer belong to it, so a `moveX` never
+survives a switch to `turn`. A chip whose photo has any lane of its own carries a lime dot on its
 number. Changing a lane never restarts the preview — the clock keeps running and
 only clamps when the slide's derived duration changes.
 
@@ -398,7 +466,17 @@ only clamps when the slide's derived duration changes.
   factor the twin predicts through the ladder, a `beat` punch has to be widest
   just after a beat and back to its resting size after the last one, and
   `flicker` has to jitter the brightness while it lands and be quiet by the end —
-  with the loudest rendered frame being the twin's loudest ask.
+  with the loudest rendered frame being the twin's loudest ask — and the two
+  flipping looks have to arrive as a negative / in their own colour and end in
+  their opposite, with a part-way frame that is neither.
+  `CollageMotionTargetRenderTest` measures the motions that go somewhere: a
+  `move` has to travel exactly the picked % of the frame and stay there, a `turn`
+  has to end standing up with the same amount of photo inside (its headroom comes
+  from the target angle), a `spin` has to hold the angle it reached when its time
+  is up, a looping `float` with a duration has to be back at its resting pixel by
+  the end rather than frozen mid-bob, and a `fade` exit has to leave the photo
+  exactly where it stood while its opacity follows the twin's ramp at three
+  moments.
 - `backend/tests/test_collage_tilt_handles.py` — the turn-a-photo controls,
   which are pointer maths with no render counterpart: Python writes the cases
   and an independent computation, Node evaluates the TypeScript helpers
