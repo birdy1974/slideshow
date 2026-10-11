@@ -18,6 +18,7 @@ from pathlib import Path
 
 from app.collage import (
     COLLAGE_TEMPLATES,
+    ENTRANCE_LENGTH,
     MAX_COLLAGE_PHOTOS,
     base_duration,
     camera_filter,
@@ -32,6 +33,7 @@ from app.collage import (
     collage_graph,
     collage_template,
     hash01,
+    ladder_buckets,
     mat_height,
     mat_line,
     normalize_collage,
@@ -1171,6 +1173,106 @@ class CollageTwinTest(unittest.TestCase):
         plain["photos"][0]["rot"] = 0
         pgraph = "".join(collage_graph({"collage": plain}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")[0])
         assert "rotate=" not in pgraph
+
+
+    def test_the_size_ladder_follows_the_twin_past_the_entrance(self):
+        """`scale` cannot be animated, so a photo that keeps growing after it
+        lands (Ken Burns, and any per-photo motion that scales) is rendered as a
+        ladder of held sizes. Two things have to be true: the ladder must reach
+        the END of the photo's time on screen — sampling only the entrance left
+        the last level open-ended and froze the zoom at the size the photo had
+        when it landed, so the preview zoomed 8 % and the MP4 never moved — and
+        every held size must stay within one quantisation bucket of the twin.
+        """
+        def levels_of(graph: str, i: int) -> list[tuple[int, int, list[tuple[float, float | None]]]]:
+            """(W, H, windows) per level, in graph order."""
+            single = re.search(rf"\[sp{i}f\]scale=(\d+):(\d+)", graph)
+            if single and f"[b{i}_0]" not in graph:
+                return [(int(single.group(1)), int(single.group(2)), [(0.0, None)])]
+            out = []
+            for m in re.finditer(rf"\[b{i}_(\d+)\]scale=(\d+):(\d+)", graph):
+                k, w, h = m.group(1), int(m.group(2)), int(m.group(3))
+                ov = re.search(rf"\[lv{i}_{k}\]overlay=x='[^']*':y='[^']*'(?::enable='([^']*)')?", graph)
+                windows: list[tuple[float, float | None]] = []
+                for part in (ov.group(1) or "").split("+"):
+                    b = re.match(r"between\(t,([\d.-]+),([\d.-]+)\)", part)
+                    g = re.match(r"gte\(t,([\d.-]+)\)", part)
+                    if b:
+                        windows.append((float(b.group(1)), float(b.group(2))))
+                    elif g:
+                        windows.append((float(g.group(1)), None))
+                out.append((w, h, windows or [(0.0, None)]))
+            return out
+
+        def held_at(levels, t: float) -> tuple[int, int]:
+            for w, h, windows in levels:
+                for a, b in windows:
+                    if t >= a and (b is None or t <= b):
+                        return w, h
+            raise AssertionError(f"no level covers t={t}")
+
+        for anim in ("none", "fade", "pop"):
+            for exit_mode in (None, "sweep"):
+                spec = _spec("grid", anim, "4:3", 3, 5, hold=3, exit=exit_mode)
+                spec["kenBurns"] = True
+                item = {"collage": spec}
+                norm = normalize_collage(item)
+                dur = collage_duration(norm)
+                lead = 0.5
+                graph = "".join(collage_graph(item, 1280, 720, 25.0, dur, lead, 1, "cb")[0])
+                levels = levels_of(graph, 0)
+                # the twin's scale at the first and the last frame the photo
+                # shows — with an exit the ladder stops when the photo is gone,
+                # which is before the slide ends
+                ends = [b for _w, _h, ws in levels for _a, b in ws]
+                cover = lead + dur if any(b is None for b in ends) else max(ends)
+                t_first, t_last = lead + 1 / 25, min(lead + dur, cover) - 1 / 25
+                s_first = photo_state(norm, 0, t_first, lead, 16 / 9)["scale"]
+                s_last = photo_state(norm, 0, t_last, lead, 16 / 9)["scale"]
+                w_first, h_first = held_at(levels, t_first)
+                w_last, h_last = held_at(levels, t_last)
+                if s_last > s_first + 0.02:
+                    # the render must have grown by what the twin says it grows
+                    self.assertAlmostEqual(w_last / w_first, s_last / s_first, delta=0.03,
+                                           msg=(anim, exit_mode, levels))
+                    self.assertAlmostEqual(h_last / h_first, s_last / s_first, delta=0.03,
+                                           msg=(anim, exit_mode, levels))
+                # every held size implies the same resting canvas, within a
+                # bucket — measured at the moment a level TAKES OVER, since a
+                # level holds the size the twin had when its window opened
+                implied_w, implied_h = [], []
+                for w, h, windows in levels:
+                    for a, _b in windows:
+                        t = min(max(a, t_first), t_last)
+                        st = photo_state(norm, 0, t, lead, 16 / 9)
+                        implied_w.append(w / (st["scale"] * st["scaleX"]))
+                        implied_h.append(h / st["scale"])
+                buckets = ladder_buckets(round(sum(implied_w) / len(implied_w)),
+                                         round(sum(implied_h) / len(implied_h)))
+                for implied in (implied_w, implied_h):
+                    spread = (max(implied) - min(implied)) / min(implied)
+                    self.assertLess(spread, 1.5 / buckets + 0.005,
+                                    msg=(anim, exit_mode, spread, buckets, levels))
+                # the entrance keeps its per-frame sizes (a spring crosses many
+                # distinct ones), but the slow tail must stay coarse: that is the
+                # whole point of quantising it
+                entrance_end = photo_start(norm, 0, lead) + ENTRANCE_LENGTH[norm["animation"]]
+                tail_levels = sum(1 for _w, _h, ws in levels if ws[0][0] >= entrance_end - 1e-9)
+                self.assertLessEqual(tail_levels, 10, msg=(anim, exit_mode, levels))
+                self.assertLessEqual(len(levels), 26, msg=(anim, exit_mode, levels))
+
+        # without Ken Burns the ladder is the entrance's, exactly as before: the
+        # size it settles on is the resting canvas and stays there
+        plain = _spec("grid", "pop", "4:3", 3, 5, hold=3)
+        graph = "".join(collage_graph({"collage": plain}, 1280, 720, 25.0,
+                                     collage_duration(normalize_collage({"collage": plain})),
+                                     0.5, 1, "cb")[0])
+        levels = levels_of(graph, 0)
+        w, h, windows = levels[-1]
+        self.assertIsNone(windows[-1][1], "the settled level runs to the end")
+        norm = normalize_collage({"collage": plain})
+        rest = photo_state(norm, 0, collage_duration(norm), 0.5, 16 / 9)
+        self.assertAlmostEqual(rest["scale"], 1.0, delta=1e-9)
 
 
     def test_graph_ladder_handles_repeated_settle_size(self):

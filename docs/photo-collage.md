@@ -192,6 +192,41 @@ rotate='(-12.5-4*(1-q_flip))*PI/180':c=black@0.0
 and both twins clamp `rot` to ±180°, so a knob dragged past a full turn lands on
 the same angle the renderer will use.
 
+## The size ladder (anything that keeps scaling after it lands)
+
+FFmpeg's `scale` freezes its output dimensions at init — even with `eval=frame`,
+verified on the render binary — so a photo whose size changes over time cannot
+be scaled per frame. It is rendered as a **ladder**: one static `scale=W:H` per
+distinct size, each `overlay` enabled only for the frame windows where that size
+is on screen (`enable='between(t,…)+…'`). The sizes are sampled from the twin's
+`photoState()`, so the MP4 shows what the preview shows.
+
+The ladder samples in two phases, because they have very different needs:
+
+- **The entrance and the depth push** are fast and cross many distinct sizes (a
+  spring overshoots), so they are sampled at frame resolution and left exact.
+- **The tail** — everything after the photo has landed — is slow by nature: Ken
+  Burns ramps the scale to 1.08 over most of the slide, and a per-photo motion
+  can breathe or pulse it. Sampled per frame that would be one level per frame,
+  i.e. hundreds of `scale`+`overlay` chains for one photo, so the tail is
+  **quantised**: `ladder_buckets(cw, ch)` (8…64, coarse for a small sprite, fine
+  for a big one) steps of the resting scale, and the scale is rounded to a step
+  before it is turned into pixels. 1.0 is a fixed point of that rounding, so a
+  photo that does not scale after its entrance emits exactly the sizes it always
+  did — the ladder stays byte-identical for every project without Ken Burns or a
+  scaling motion (verified over 1792 generated graphs against the previous
+  output).
+
+Sampling the tail at all is the fix for a real divergence: the ladder used to
+stop at the entrance and leave the last level open-ended, which held the size the
+photo had when it landed for the rest of the slide. The Ken Burns checkbox
+therefore zoomed in the preview and **not at all in the MP4** (only its drift
+survived, since position rides the overlay expression). `test_the_size_ladder_
+follows_the_twin_past_the_entrance` pins both halves down — the ladder must
+reach the end of the photo's time on screen, and every held size must stay
+within one bucket of the twin — and `CollageKenBurnsRenderTest` measures real
+pixels: the rendered photo has to grow by the factor the twin says it grows by.
+
 ## Tests
 
 - `backend/tests/test_collage_twin.py` — 37 twin cases: placements (incl. Free

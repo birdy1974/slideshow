@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import unittest
 
-from app.collage import collage_duration, collage_graph, normalize_collage
+from app.collage import collage_duration, collage_graph, normalize_collage, photo_state
 
 W, H, FPS = 320, 180, 25
 
@@ -225,3 +225,72 @@ class CollageFreeTiltRenderTest(unittest.TestCase):
             if tilt in (180,):
                 self.assertAlmostEqual(hx1 - hx0, 96, delta=3)
                 self.assertAlmostEqual(hy1 - hy0, 72, delta=3)
+
+
+def _render_ken_burns(ffmpeg: str) -> tuple[tuple[int, int], tuple[int, int], dict, float]:
+    """Render one borderless photo with Ken Burns on and measure the red mask's
+    bounding box on an early frame and on the last one.
+
+    Ken Burns keeps scaling the sprite long after the entrance has settled, and
+    FFmpeg's `scale` cannot be animated — so the render has to hold a ladder of
+    sizes across the whole slide. A ladder that stops sampling at the entrance
+    freezes the photo at the size it landed on: the preview zooms 8 % and the
+    MP4 never moves. This measures the pixels both ways.
+    """
+    item = {"collage": {
+        "layout": "free",
+        "animation": "none",
+        "shape": "4:3",
+        "seed": 1,
+        "hold": 3,
+        "kenBurns": True,
+        "frame": {"shape": "none", "shadow": False},
+        "photos": [{"path": "/photos/kb.jpg", "cx": 50, "cy": 50, "w": 30}],
+    }}
+    spec = normalize_collage(item)
+    assert spec is not None
+    duration = collage_duration(spec)
+    lines, last = collage_graph(item, W, H, FPS, duration, 0, 1, "cb")
+    redness = "clip(r(X,Y)-max(g(X,Y),b(X,Y)),0,255)"
+    graph = (
+        f"[0:v]null[cb];{''.join(lines)}"
+        f"[{last}]format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[comp];"
+        f"[comp]geq=r='{redness}':g='{redness}':b='{redness}',format=gray[v]"
+    )
+    frame_count = int(round(duration * FPS))
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-f", "lavfi", "-i", f"color=c=0x606060:s={W}x{H}:r={FPS}:d={duration}",
+        "-f", "lavfi", "-i", f"color=c=red:s=180x120:r={FPS}:d={duration}",
+        "-filter_complex", graph, "-map", "[v]", "-frames:v", str(frame_count),
+        "-f", "rawvideo", "-pix_fmt", "gray", "-",
+    ]
+    result = subprocess.run(command, capture_output=True, timeout=180)
+    if result.returncode:
+        raise AssertionError(f"ffmpeg failed:\n{result.stderr.decode(errors='replace')[-3000:]}\n{graph}")
+
+    def box(n: int) -> tuple[int, int]:
+        frame = result.stdout[n * W * H:(n + 1) * W * H]
+        xs = [x for y in range(H) for x in range(W) if frame[y * W + x] > 12]
+        ys = [y for y in range(H) for x in range(W) if frame[y * W + x] > 12]
+        if not xs:
+            raise AssertionError(f"the photo is missing from frame {n}")
+        return max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+
+    return box(1), box(frame_count - 1), spec, duration
+
+
+@unittest.skipIf(_ffmpeg_bin() is None, "no FFmpeg binary available")
+class CollageKenBurnsRenderTest(unittest.TestCase):
+    def test_ken_burns_keeps_zooming_in_the_rendered_video(self):
+        ffmpeg = str(_ffmpeg_bin())
+        (early_w, early_h), (late_w, late_h), spec, duration = _render_ken_burns(ffmpeg)
+        # what the twin says the photo's scale is at those two moments
+        s_early = photo_state(spec, 0, 1 / FPS, 0, W / H)["scale"]
+        s_late = photo_state(spec, 0, duration - 1 / FPS, 0, W / H)["scale"]
+        self.assertGreater(s_late, s_early + 0.05, "the slide should still be zooming at the end")
+        # the rendered photo grows by the same factor (one quantisation bucket
+        # and a pixel of rounding either way)
+        self.assertAlmostEqual(late_w / early_w, s_late / s_early, delta=0.04)
+        self.assertAlmostEqual(late_h / early_h, s_late / s_early, delta=0.04)
+        self.assertGreater(late_w, early_w + 3, "the MP4 must zoom, not hold the landed size")

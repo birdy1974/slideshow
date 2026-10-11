@@ -1160,6 +1160,19 @@ BASE_SPIN = 7.0
 MIN_TILT_HEADROOM = 0.18      # radians
 
 
+def ladder_buckets(cw: int, ch: int) -> int:
+    """How many steps the size ladder may quantise a photo's scale into.
+
+    A slow ramp (Ken Burns, a per-photo breathe) would otherwise emit one level
+    per frame — hundreds of `scale`+`overlay` chains for one photo. The step is
+    a fraction of the *resting* scale with 1.0 as a fixed point, so a photo that
+    never scales after its entrance quantises to exactly the size it had, and
+    the ladder stays byte-identical to the unquantised one. Coarse for a small
+    sprite (a few pixels either way is invisible there), fine for a big one.
+    """
+    return max(8, min(64, int(round(min(cw, ch) / 6))))
+
+
 def choreography_spin(anim: str, ex_mode: str, sway: bool) -> float:
     """Degrees the choreography can add to a photo's resting tilt."""
     spin = max(ENTRANCE_SPIN.get(anim, 0.0), EXIT_SPIN.get(ex_mode, 0.0), BASE_SPIN)
@@ -2028,12 +2041,34 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 for j in range(i + 1, len(pls)):
                     tj = photo_start(spec, j, lead_in)
                     last_var = max(last_var, tj + DEPTH["delay"] * e + DEPTH["span"])
-            n_frames = max(1, math.ceil(last_var * fps))
+            # Ken Burns keeps scaling the sprite long after the entrance has
+            # settled, so the ladder has to cover the tail as well: sampling
+            # only to `last_var` left the last level open-ended, which held the
+            # size the photo had when it landed for the rest of the slide — the
+            # preview zoomed to 1.08 and the MP4 never moved. The tail is
+            # quantised (LADDER_BUCKETS steps of the resting scale, 1.0 being a
+            # fixed point) so a slow ramp costs a handful of levels instead of
+            # one per frame, and a photo that does not scale after its entrance
+            # emits exactly the sizes it always did.
+            tail = spec.get("kenBurns") is True
+            end_var = last_var
+            if tail:
+                end_var = max(last_var, t_end if t_end is not None else lead_in + duration)
+            buckets = ladder_buckets(cw, ch)
+            n_frames = max(1, math.ceil(end_var * fps))
             runs: list[list] = []           # [start_frame, end_frame, W, H]
             for k in range(n_frames + 1):
-                st = photo_state(spec, i, k / fps, lead_in, aspect, ratios)
-                w_ = max(2, int(round(cw * st["scale"] * st["scaleX"])))
-                h_ = max(2, int(round(ch * st["scale"])))
+                t = k / fps
+                st = photo_state(spec, i, t, lead_in, aspect, ratios)
+                if tail and t > last_var:
+                    s_h = round(st["scale"] * buckets) / buckets
+                    s_w = round(st["scale"] * st["scaleX"] * buckets) / buckets
+                    w_ = max(2, int(round(cw * s_w)))
+                    h_ = max(2, int(round(ch * s_h)))
+                else:
+                    # the entrance window, sampled exactly as before
+                    w_ = max(2, int(round(cw * st["scale"] * st["scaleX"])))
+                    h_ = max(2, int(round(ch * st["scale"])))
                 if runs and runs[-1][2] == w_ and runs[-1][3] == h_:
                     runs[-1][1] = k
                 else:
