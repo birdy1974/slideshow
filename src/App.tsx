@@ -3308,6 +3308,14 @@ function FrameMotionPreview({ item, defaults, playing = true, className = '' }: 
 /** Screen-space gap (px) between a mat's top edge and its rotate knob. */
 const ROTATE_KNOB_GAP = 18
 
+/** Screen-space thickness and gap (px) of the selected photo's dotted ring.
+ *  The ring is drawn inside the 1920×1080 layer, which the stage scales down to
+ *  a quarter of that or less, so a border written in layer units arrives on
+ *  screen a quarter as thick — invisible. Both are divided by the scale every
+ *  frame, which keeps the ring the same weight at any popup width and zoom. */
+const SELECT_RING_LINE = 3.5
+const SELECT_RING_GAP = 6
+
 /** A mat's corner radius from its frame shape — the selection ring copies it so
  *  a rounded or circular frame is ringed in its own shape. */
 function matRadiusCss (fr: { shape: string; radius?: number }): string {
@@ -3472,22 +3480,36 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, selectedIndex,
       }
       // The selected photo's dotted ring. A mat cannot draw its own marker on
       // top of the photos stacked over it, so this is a sibling after all the
-      // mats with the selected mat's exact box and transform.
+      // mats, following the selected mat's box and transform — grown by a gap
+      // that stays the same size on screen whatever the stage width.
       const ring = ringRef.current
       if (ring && selectIndex !== null) {
         const g = geo[selectIndex]
         const st = photoState(spec, selectIndex, t, 0, aspect, ratios)
-        ring.style.left = `${g.ax + st.dx / 100 * FRAME_W}px`
-        ring.style.top = `${g.ay + st.dy / 100 * FRAME_H}px`
-        ring.style.width = `${g.wPx.toFixed(2)}px`
-        ring.style.height = `${g.matH.toFixed(2)}px`
+        // Everything the layer does to the photo — the stage's scale-down, the
+        // camera zoom, the entrance's own scale — also shrinks a border drawn
+        // around it, so the line and its gap are compensated back to screen px.
+        const k = Math.max(0.05, layerScaleRef.current * cs.z * st.scale)
+        // Capped so a tiny photo mid-entrance cannot get a border wider than
+        // itself (box-sizing is border-box: it would collapse into a blob).
+        const line = Math.min(SELECT_RING_LINE / k, Math.max(2, Math.min(g.wPx, g.matH) / 3))
+        const gap = SELECT_RING_GAP / k
+        ring.style.left = `${(g.ax + st.dx / 100 * FRAME_W).toFixed(2)}px`
+        // A pin-hung mat starts at its anchor instead of being centred on it,
+        // so the grown box moves up by the gap and turns around the pin itself.
+        ring.style.top = `${(g.ay + st.dy / 100 * FRAME_H - (pin ? gap : 0)).toFixed(2)}px`
+        ring.style.width = `${(g.wPx + 2 * gap).toFixed(2)}px`
+        ring.style.height = `${(g.matH + 2 * gap).toFixed(2)}px`
+        ring.style.borderWidth = `${line.toFixed(2)}px`
         ring.style.borderRadius = matRadiusCss(g.fr)
-        ring.style.transformOrigin = pin ? '50% 0' : '50% 50%'
+        ring.style.transformOrigin = pin ? `50% ${gap.toFixed(2)}px` : '50% 50%'
         ring.style.transform = `translate(-50%, ${pin ? '0' : '-50%'}) rotate(${(g.rot + st.rot).toFixed(3)}deg) scale(${st.scale}) scaleX(${st.scaleX})`
+        // A dark halo, also in screen px, so the lime reads on a white photo.
+        ring.style.filter = `drop-shadow(0 0 ${(3 / k).toFixed(2)}px #000e)`
         // It follows the photo's fade, but never all the way out: a photo
         // selected from the strip before it has landed still shows where it
         // will appear.
-        ring.style.opacity = String(Math.max(0.45, st.alpha))
+        ring.style.opacity = String(Math.max(0.5, st.alpha))
       }
       // The rotate knob sits on the selected mat's top edge and turns with it.
       // It is a sibling of the mats (never inside one) so a shaped clip-path

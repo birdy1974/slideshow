@@ -86,10 +86,22 @@ order, so the photos stacked on top of the selected one would cover it — which
 why the marker used to disappear in exactly the arrangements where photos
 overlap. `.collage-select-ring` is a sibling *after* all the mats,
 `pointer-events: none` (it must never steal a drag), and the preview hands it the
-selected mat's exact box, corner radius and transform every frame: it turns,
-scales, fades and flies out with the photo. Its opacity never drops below 0.45,
-so a photo picked from the strip before it has landed still shows where it will
-appear. The chip's dotted outline is a pseudo element for the same reason — its
+selected mat's box, corner radius and transform every frame: it turns, scales,
+fades and flies out with the photo. Its opacity never drops below 0.5, so a
+photo picked from the strip before it has landed still shows where it will
+appear.
+
+The line itself is **screen-constant**, which is the part that is easy to get
+wrong: the ring lives in the 1920×1080 layer that the stage scales down to a
+quarter of that or less, and the camera zoom and the entrance's own scale shrink
+it further, so a border written in layer units arrives on screen a quarter as
+thick — a 2px outline measured under half a pixel and was simply invisible. Like
+the rotate knob, the ring divides its line width, its gap and its dark halo by
+`layerScale × cameraZoom × photoScale` every frame (`SELECT_RING_LINE`,
+`SELECT_RING_GAP`), so it is 3.5 px of dotted lime at any popup width, with the
+border capped at a third of the mat so a tiny photo mid-entrance cannot collapse
+into a blob. A pin-hung mat grows the box upwards instead of both ways and turns
+around the pin itself (`transform-origin: 50% <gap>`). The chip's dotted outline is a pseudo element for the same reason — its
 hover actions bar and its *pos* badge are positioned children and would paint
 over an outline on the chip itself.
 

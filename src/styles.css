@@ -1516,8 +1516,8 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-chip.lifted{opacity:.45}
 /* Drawn by a pseudo element, not by the chip's own outline: the hover actions
    bar and the pos badge are positioned children and would paint over it. */
-.collage-chip.selected{border-color:#a4ca6c}
-.collage-chip.selected:after{content:"";position:absolute;inset:0;z-index:5;border-radius:5px;outline:2px dotted #a4ca6c;outline-offset:-4px;pointer-events:none}
+.collage-chip.selected{border-color:var(--lime)}
+.collage-chip.selected:after{content:"";position:absolute;inset:0;z-index:5;border-radius:5px;outline:3px dotted var(--lime);outline-offset:-5px;pointer-events:none}
 /* Dropping a chip on the preview: the canvas lights up as a target, a ghost
    of the mat (its real size and tilt) follows the pointer at the drop point. */
 /* The photo-collage preview draws no dotted guides: the 7% safe-area box is
@@ -1600,7 +1600,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
    photos stacked on top of it, so the ring is a sibling after all the mats and
    is painted with the selected mat's exact box and transform by the preview.
    Dotted, like the chip's outline below: one look for "this one is selected". */
-.collage-select-ring{position:absolute;z-index:8;box-sizing:border-box;pointer-events:none;outline:2px dotted #a4ca6c;outline-offset:5px;border-radius:2px;filter:drop-shadow(0 0 2px #000b)}
+.collage-select-ring{position:absolute;z-index:8;box-sizing:border-box;pointer-events:none;border:4px dotted var(--lime);border-radius:2px}
 /* The Free arrangement's rotate knob. A sibling of the mats — never a child —
    so a shaped frame's clip-path cannot cut it off and a photo stacked on top
    cannot cover it. The preview positions it on the selected mat's top edge and
