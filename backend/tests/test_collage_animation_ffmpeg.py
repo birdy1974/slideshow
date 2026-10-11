@@ -148,3 +148,80 @@ class CollageOddNativeHeightRenderTest(unittest.TestCase):
         stderr = result.stderr.decode(errors="replace")
         self.assertEqual(result.returncode, 0, f"collage graph failed to render:\n{stderr[-2000:]}")
         self.assertNotIn("cannot be smaller than input dimensions", stderr)
+
+
+def _render_free_tilt(ffmpeg: str, tilt: float) -> tuple[int, int, int, int, int]:
+    """Render one borderless 4:3 photo on a gray bed at a Free tilt and return
+    the red mask's bounding box plus its pixel count.
+
+    The photo is 30 % of the 320 px frame wide (96 px) and 72 px tall, so a
+    quarter turn has to come back as a 72 x 96 box carrying the same number of
+    pixels: the sprite canvas is padded before ffmpeg rotates it, and a canvas
+    sized only for the small tilts clips the turned mat's corners (or fails the
+    pad outright once the canvas is narrower than the mat).
+    """
+    item = {"collage": {
+        "layout": "free",
+        "animation": "none",
+        "shape": "4:3",
+        "seed": 1,
+        "hold": 1,
+        "frame": {"shape": "none", "shadow": False},
+        "photos": [{"path": "/photos/tilt.jpg", "cx": 50, "cy": 50, "w": 30, "rot": tilt}],
+    }}
+    spec = normalize_collage(item)
+    assert spec is not None
+    duration = collage_duration(spec)
+    lines, last = collage_graph(item, W, H, FPS, duration, 0, 1, "cb")
+    redness = "clip(r(X,Y)-max(g(X,Y),b(X,Y)),0,255)"
+    graph = (
+        f"[0:v]null[cb];{''.join(lines)}"
+        f"[{last}]format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[comp];"
+        f"[comp]geq=r='{redness}':g='{redness}':b='{redness}',format=gray[v]"
+    )
+    frame_count = int(round(duration * FPS))
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-f", "lavfi", "-i", f"color=c=0x606060:s={W}x{H}:r={FPS}:d={duration}",
+        "-f", "lavfi", "-i", f"color=c=red:s=180x120:r={FPS}:d={duration}",
+        "-filter_complex", graph, "-map", "[v]", "-frames:v", str(frame_count),
+        "-f", "rawvideo", "-pix_fmt", "gray", "-",
+    ]
+    result = subprocess.run(command, capture_output=True, timeout=180)
+    if result.returncode:
+        raise AssertionError(f"ffmpeg failed:\n{result.stderr.decode(errors='replace')[-3000:]}\n{graph}")
+    frame = result.stdout[-W * H:]              # the last frame: fully landed
+    xs = [x for y in range(H) for x in range(W) if frame[y * W + x] > 12]
+    ys = [y for y in range(H) for x in range(W) if frame[y * W + x] > 12]
+    if not xs:
+        raise AssertionError("the turned photo is missing from the rendered frame")
+    return min(xs), min(ys), max(xs), max(ys), len(xs)
+
+
+@unittest.skipIf(_ffmpeg_bin() is None, "no FFmpeg binary available")
+class CollageFreeTiltRenderTest(unittest.TestCase):
+    def test_a_hand_turned_free_photo_renders_turned_and_whole(self):
+        ffmpeg = str(_ffmpeg_bin())
+        x0, y0, x1, y1, area = _render_free_tilt(ffmpeg, 0)
+        self.assertGreater(x1 - x0, y1 - y0, "the straight photo is landscape")
+        self.assertAlmostEqual(x1 - x0, 96, delta=3)
+        self.assertAlmostEqual(y1 - y0, 72, delta=3)
+
+        # a quarter turn: the same mat, standing on its short edge
+        tx0, ty0, tx1, ty1, turned = _render_free_tilt(ffmpeg, 90)
+        self.assertGreater(ty1 - ty0, tx1 - tx0, "the render must turn the photo with the preview")
+        self.assertAlmostEqual(tx1 - tx0, 72, delta=3)
+        self.assertAlmostEqual(ty1 - ty0, 96, delta=3)
+        # nothing clipped away by the sprite canvas
+        self.assertAlmostEqual(turned, area, delta=0.06 * area)
+
+        # half and three-quarter turns keep the whole photo too
+        for tilt in (-90, 180, 135, 45):
+            hx0, hy0, hx1, hy1, whole = _render_free_tilt(ffmpeg, tilt)
+            self.assertGreater(hx1 - hx0, 0)
+            self.assertGreater(hy1 - hy0, 0)
+            self.assertAlmostEqual(whole, area, delta=0.09 * area,
+                                   msg=f"tilt {tilt} lost pixels: {whole} vs {area}")
+            if tilt in (180,):
+                self.assertAlmostEqual(hx1 - hx0, 96, delta=3)
+                self.assertAlmostEqual(hy1 - hy0, 72, delta=3)

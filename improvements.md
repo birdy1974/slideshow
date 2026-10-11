@@ -10,6 +10,9 @@
 
 
 ---= DONE =---
+2026-10-11
+- photo collage preview: changing a parameter no longer restarts the preview — size, tilt, arrangement, waits, frame, camera, background, everything repaints at the running playhead (a paused preview stays paused where it was, a playing one keeps playing). The clock only clamps the playhead when the slide got shorter, it never rewinds on an edit; the new Replay button in the preview's transport row is how you watch an entrance from the first photo again (as are Stop and the timeline bar, which already rewound on purpose).
+- photo collage: turn the pictures of a Free arrangement on the preview — a knob above the selected photo (drag it around the photo, Shift snaps to 15°, ← → nudge 1°), and the same angle as a tilt slider under the preview with ⟲90° / ⟳90° / 0°. The turn is stored on the photo (`rot`, now ±180° instead of ±45°) and the rendered MP4 comes out turned exactly the same way: the preview now draws each arrangement's resting tilt it used to ignore, the flip entrance keeps the tilt instead of straightening it, and the sprite canvas is sized for the widest moment of the turn so a turned photo never loses its corners — past ~45° the old formula made the canvas *narrower* than the mat, which is why a 90° turn was impossible. Checked with real FFmpeg renders at 0°, ±45°, ±90°, 135° and 180°. Details in docs/photo-collage.md.
 2026-10-10
 - text frame: blur the background picture (Blur slider, same as the photo collage background)
 - photo collage: exit speed slider (0.2x to 3x) scales the fly-out and the gap between photos; the slide length follows

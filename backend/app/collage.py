@@ -1147,6 +1147,24 @@ FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart"
 EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4}
 EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1}
 
+# Widest angle (degrees) each entrance / exit / idle sway turns a photo beyond
+# its resting tilt. The sprite canvas is sized for the widest moment, so a
+# turned photo (a Free arrangement the user arranged by hand) never loses its
+# corners to the canvas edge in the MP4 while the preview shows them whole.
+ENTRANCE_SPIN = {"drop": 7.0, "flip": 4.0, "swing": 16.0, "tumble": 28.0, "glitch": 4.0}
+EXIT_SPIN = {"sweep": 10.0, "deal": 25.0, "shuffle": 20.0}
+SWAY_SPIN = 1.5
+# The historic baseline headroom (drop's settle): animations that never turn a
+# photo keep exactly the canvas they have always had.
+BASE_SPIN = 7.0
+MIN_TILT_HEADROOM = 0.18      # radians
+
+
+def choreography_spin(anim: str, ex_mode: str, sway: bool) -> float:
+    """Degrees the choreography can add to a photo's resting tilt."""
+    spin = max(ENTRANCE_SPIN.get(anim, 0.0), EXIT_SPIN.get(ex_mode, 0.0), BASE_SPIN)
+    return spin + (SWAY_SPIN if sway else 0.0)
+
 
 EXIT_SPEED_MIN, EXIT_SPEED_MAX = 0.05, 2.0
 
@@ -1528,7 +1546,7 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             size = None
         if size is not None and math.isfinite(size):
             entry["size"] = max(0.5, min(3.0, size))
-        for key, lo, hi, fallback in (("cx", 0.0, 100.0, None), ("cy", 0.0, 100.0, None), ("rot", -45.0, 45.0, None)):
+        for key, lo, hi, fallback in (("cx", 0.0, 100.0, None), ("cy", 0.0, 100.0, None), ("rot", -180.0, 180.0, None)):
             try:
                 v = float(p.get(key)) if p.get(key) is not None and not isinstance(p.get(key), bool) else None
             except (TypeError, ValueError):
@@ -1841,16 +1859,25 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         pad_color = "white" if hex_c.lower() == "ffffff" else "0x" + hex_c
 
         # Rotation headroom: the sprite canvas must fit the mat (plus shadow
-        # margin) at the largest angle the animation reaches. The canvas size
-        # is constant, so the overlay positions stay simple expressions.
+        # margin) at the largest angle the animation reaches — the resting tilt
+        # (a Free photo turned by hand, a seeded scatter tilt) plus everything
+        # the entrance, the exit and the idle sway add. The canvas size is
+        # constant, so the overlay positions stay simple expressions.
+        # It must also fit the UNROTATED mat: ffmpeg pads the mat into the
+        # canvas before it rotates, and a canvas narrower than the mat clips
+        # it (a wide mat turned 90° is a tall box).
         rest = math.radians(pl["rot"])
-        if anim == "swing":
-            max_ang = abs(rest) + math.radians(16)
-        else:
-            max_ang = max(abs(rest) + math.radians(7), 0.18)
+        reach = max(abs(rest)
+                    + math.radians(choreography_spin(anim, ex_mode, spec.get("sway") is True)),
+                    MIN_TILT_HEADROOM)
         sm = border + 4                       # shadow margin around the mat
-        sin_a, cos_a = math.sin(max_ang), math.cos(max_ang)
-        cw = math.ceil(mat_w * cos_a + mat_h * sin_a) + 2 * sm
+        # The turned mat's bounding box, w*|cos a| + h*|sin a|, grows until
+        # a = atan2(h, w) and falls back after it, so the widest box the range
+        # reaches is the one at min(reach, atan2(h, w)) — the same value the
+        # old single-angle formula gave while the tilt stayed small.
+        wide_a = min(reach, math.atan2(mat_h, mat_w))
+        tall_a = min(reach, math.atan2(mat_w, mat_h))
+        cw = max(mat_w, math.ceil(mat_w * math.cos(wide_a) + mat_h * math.sin(wide_a))) + 2 * sm
         if pin:
             # Swing hangs the mat from a pin at its top-centre edge, and
             # ffmpeg's rotate turns the sprite about its CENTRE. So the
@@ -1860,12 +1887,14 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # the canvas centre. The canvas centre lands on the pin
             # (ay_px below = cy - mat_h / 2), exactly where photoState()'s
             # pinned mat (transform-origin 50% 0) is drawn in the preview.
-            half = max(math.ceil(mat_w / 2 * sin_a) + sm,
-                       math.ceil(mat_h * cos_a + mat_w / 2 * sin_a) + sm)
+            hang_a = min(reach, math.atan2(mat_h, mat_w / 2))
+            half = max(math.ceil(mat_w / 2 * math.sin(min(reach, math.pi / 2))) + sm,
+                       math.ceil(mat_w / 2 * math.sin(hang_a) + mat_h * math.cos(hang_a)) + sm,
+                       mat_h)
             ch = 2 * half
             above = half
         else:
-            ch = math.ceil(mat_w * sin_a + mat_h * cos_a) + 2 * sm
+            ch = max(mat_h, math.ceil(mat_w * math.sin(tall_a) + mat_h * math.cos(tall_a))) + 2 * sm
             above = (ch - mat_h) // 2
         mat_x = (cw - mat_w) // 2
         mat_y = above
@@ -1946,7 +1975,11 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         if anim == "drop":
             ang = f"({_n(pl['rot'])}-7*pow(1-{q_drop},3){ex_r}{extra_r}{sway_r})*PI/180"
         elif anim == "flip":
-            ang = f"(-4*(1-{q_flip}){ex_r}{extra_r}{sway_r})*PI/180"
+            # The resting tilt rides along: the preview draws the photo turned
+            # by its placement rot from the first frame (a Free photo turned by
+            # hand, a seeded scatter tilt), so the flip has to open around that
+            # same angle instead of straightening it.
+            ang = f"({_n(pl['rot'])}-4*(1-{q_flip}){ex_r}{extra_r}{sway_r})*PI/180"
         elif anim == "swing":
             tau = f"max(t-{_n(t0)},0)"
             # Keep every component in degrees until the final conversion.

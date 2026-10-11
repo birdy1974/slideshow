@@ -1092,10 +1092,19 @@ class CollageTwinTest(unittest.TestCase):
         ngraph = "".join(nlines)
         assert ngraph.count("between(t,0,") == 3
         # flip: width follows the outBack curve, height only the depth shrink
-        flip = {"collage": _spec("grid", "flip", "4:3", 2, 3, depth=True)}
-        flines, _ = collage_graph(flip, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
+        flip_spec = _spec("grid", "flip", "4:3", 2, 3, depth=True)
+        flines, _ = collage_graph({"collage": flip_spec}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
         fgraph = "".join(flines)
-        assert "rotate='(-4*(1-" in fgraph
+        # ... and it opens around each photo's resting tilt (grid's seeded rot),
+        # the angle the preview draws from the first frame on
+        flip_rots = [pl["rot"] for pl in placements(flip_spec, 1280 / 720)]
+        flip_angles = re.findall(r"rotate='([^']*)':c=black", fgraph)
+        assert flip_angles and all(abs(r) > 0.01 for r in flip_rots)
+        for ang in flip_angles:          # one rotate per size level, per photo
+            assert "-4*(1-" in ang
+            head = float(ang.split("-4*(1-")[0].lstrip("("))
+            # _n() writes 4 decimals, so compare with the same rounding
+            assert any(abs(head - rot) < 1e-4 for rot in flip_rots), (ang, flip_rots)
         # flip + depth: the twin's pushDepth covers flip too, so the render
         # must dim it like drop/pop do (the sizes already come from photoState)
         assert "sendcmd=commands=" in fgraph and "eq@dim0" in fgraph
@@ -1136,6 +1145,32 @@ class CollageTwinTest(unittest.TestCase):
         # no camera → the composed photos label is the result, no zoompan
         gglines, gglast = collage_graph(plain, 1280, 720, 25.0, 6.0, 0.5, 1, "cb")
         assert gglast == "o3" and "zoompan" not in "".join(gglines)
+
+
+    def test_free_tilt_turns_the_photo_in_the_render(self):
+        """A photo turned by hand on the preview (Free's per-photo `rot`) has to
+        come back turned from the MP4: the placement carries the stored angle
+        and every entrance writes it into its rotate expression — flip used to
+        straighten hand-turned photos by leaving the resting tilt out."""
+        for anim in ("none", "fade", "pop", "drop", "swing", "flip", "tumble"):
+            spec = _spec("free", anim, "4:3", 2, 5, delays=[0.2, 0.2], hold=1)
+            spec["photos"][0]["rot"] = -12.5
+            spec["photos"][1]["rot"] = 90
+            pls = placements(spec, 16 / 9)
+            assert abs(pls[0]["rot"] + 12.5) < 1e-9 and abs(pls[1]["rot"] - 90) < 1e-9
+            graph = "".join(collage_graph({"collage": spec}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")[0])
+            angles = re.findall(r"rotate='([^']*)':c=black", graph)
+            assert angles, anim
+            for ang in angles:           # one rotate per size level, per photo
+                assert ang.startswith("(-12.5") or ang.startswith("(90"), (anim, ang)
+            assert any(a.startswith("(-12.5") for a in angles), (anim, angles)
+            assert any(a.startswith("(90") for a in angles), (anim, angles)
+        # a straightened photo stores nothing, and with no tilt of its own the
+        # render emits no rotate filter at all (untouched projects stay identical)
+        plain = _spec("free", "fade", "4:3", 1, 5, hold=1)
+        plain["photos"][0]["rot"] = 0
+        pgraph = "".join(collage_graph({"collage": plain}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")[0])
+        assert "rotate=" not in pgraph
 
 
     def test_graph_ladder_handles_repeated_settle_size(self):

@@ -69,7 +69,8 @@ export interface CollagePhoto extends CollagePhotoLook {
   w?: number
   /** Per-photo frame override (shape / colour / thickness). Missing = the spec default. */
   frame?: CollageFrame
-  /** Free-layout resting tilt in degrees. Missing = 0. */
+  /** Free-layout resting tilt in degrees, clockwise (the rotate handle on the
+   *  preview or the tilt slider write it). Missing = 0 (straight). */
   rot?: number
   /** Arrangement position: which slot of the layout this photo occupies
    *  (0 = the first slot). Missing = its own index in the list. The appear
@@ -773,6 +774,55 @@ export function freeDragCenter (cx: number, cy: number, dx: number, dy: number, 
   }
 }
 
+/** A tilt in degrees folded into (-180, 180] and rounded, so a dragged turn
+ *  stores one tidy number that CSS and FFmpeg's rotate both read the same way
+ *  (clockwise, y growing downwards). */
+export function normalizeTilt (degrees: number, decimals = 1): number {
+  const raw = Number(degrees)
+  if (!Number.isFinite(raw)) return 0
+  let d = ((raw + 180) % 360 + 360) % 360 - 180
+  if (d <= -180) d = 180
+  const f = Math.pow(10, Math.max(0, Math.min(6, Math.trunc(decimals))))
+  const out = Math.round(d * f) / f
+  return out === -180 ? 180 : out
+}
+
+/** A photo's stored Free tilt in degrees (0 when it has none, or junk). */
+export function photoTilt (photo: CollagePhoto | null | undefined): number {
+  const raw = photo?.rot as number | string | boolean | undefined | null
+  if (raw === undefined || raw === null || typeof raw === 'boolean') return 0
+  if (typeof raw === 'string' && raw.trim() === '') return 0
+  return normalizeTilt(Number(raw))
+}
+
+/** Turn one photo in a Free arrangement (degrees, clockwise). 0 straightens it
+ *  and drops the stored value, so an untouched photo keeps its original spec. */
+export function setPhotoRot (photos: CollagePhoto[], index: number, degrees: number): CollagePhoto[] {
+  const value = normalizeTilt(degrees)
+  return photos.map((photo, i) => {
+    if (i !== index) return photo
+    const { rot, ...rest } = photo
+    void rot
+    return value === 0 ? rest : { ...rest, rot: value }
+  })
+}
+
+/** Angle (degrees) of a pointer at (px, py) around a pivot (ox, oy) in client
+ *  coordinates — the maths behind the preview's rotate handle. Screen y grows
+ *  downwards, so a clockwise turn on screen is a positive angle, matching CSS. */
+export function pointerAngle (ox: number, oy: number, px: number, py: number): number {
+  return Math.atan2(py - oy, px - ox) * 180 / Math.PI
+}
+
+/** Tilt reached by a rotate drag: the tilt at grab time plus the angle the
+ *  pointer travelled around the mat's pivot. A positive `snap` (Shift) rounds
+ *  the result to whole steps of that many degrees. */
+export function rotateDragTilt (startTilt: number, startAngle: number, angle: number, snap = 0): number {
+  const step = Number.isFinite(Number(snap)) && Number(snap) > 0 ? Number(snap) : 0
+  const next = startTilt + (angle - startAngle)
+  return normalizeTilt(step ? Math.round(next / step) * step : next)
+}
+
 /** Photos of a Free arrangement seeded from what another arrangement shows:
  *  each photo keeps its displayed centre, tilt and mat size (the size is
  *  stored as the photo's own width before its size multiplier, so the
@@ -1211,7 +1261,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       size: size !== undefined ? Math.max(0.5, Math.min(3, size)) : undefined,
       cx: cx !== undefined ? Math.max(0, Math.min(100, cx)) : undefined,
       cy: cy !== undefined ? Math.max(0, Math.min(100, cy)) : undefined,
-      rot: rot !== undefined ? Math.max(-45, Math.min(45, rot)) : undefined,
+      rot: rot !== undefined ? Math.max(-180, Math.min(180, rot)) : undefined,
       w: w !== undefined && w > 0 ? Math.max(FREE_MIN_W, Math.min(FREE_MAX_W, w)) : undefined,
       slot: slot !== undefined && Number.isInteger(slot) && slot >= 0 ? Math.min(MAX_COLLAGE_PHOTOS - 1, slot) : undefined,
       frame: frameFields(p.frame),

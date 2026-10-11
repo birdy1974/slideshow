@@ -1590,9 +1590,29 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-timeline-bar input{flex:1;min-width:0;accent-color:#a4ca6c}
 .collage-timeline-bar span{font:700 9px Manrope,sans-serif;white-space:nowrap;font-variant-numeric:tabular-nums}
 .collage-mat.selected{outline:2px solid #a4ca6c;outline-offset:5px}
-.collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445}
+/* The Free arrangement's rotate knob. A sibling of the mats — never a child —
+   so a shaped frame's clip-path cannot cut it off and a photo stacked on top
+   cannot cover it. The preview positions it on the selected mat's top edge and
+   counter-scales it, so it is the same size on screen at any stage width. */
+.collage-rotate-handle{position:absolute;z-index:9;display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px solid #a4ca6c;border-radius:50%;background:#1b1f18e8;color:#d1ef9d;box-shadow:0 2px 8px #0009;cursor:grab;pointer-events:auto;touch-action:none}
+.collage-rotate-handle:hover{background:#26301a;border-color:#c9ec92}
+.collage-rotate-handle:active{cursor:grabbing;background:#31401d}
+.collage-rotate-handle:focus-visible{outline:2px solid #d1ef9d;outline-offset:2px}
+.collage-rotate-handle svg{pointer-events:none}
+.collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445;flex-wrap:wrap}
 .collage-selected-size input{flex:1;min-width:120px;accent-color:#718f46}
 .collage-selected-size b{font-variant-numeric:tabular-nums}
+/* Tilt of the selected photo: its own line under the size slider, with quarter
+   turns and a straighten button. Free arrangements only. */
+.collage-tilt-ctl{display:flex;align-items:center;gap:7px;flex:1 1 100%;min-width:0;padding-top:7px;margin-top:2px;border-top:1px dashed #d3d6cc}
+.collage-tilt-ctl>span:first-child{flex:none;color:#6e7466}
+.collage-tilt-ctl input{flex:1;min-width:90px;accent-color:#718f46}
+.collage-tilt-ctl>b{min-width:32px;text-align:right;font:700 10px Manrope,sans-serif;color:#3d4a2c}
+.collage-tilt-buttons{display:flex;gap:3px;flex:none}
+.collage-tilt-buttons button{display:grid;place-items:center;min-width:23px;height:22px;padding:0 4px;border:1px solid #cfd3c8;border-radius:5px;background:#fff;color:#4c5445;font:700 9px Manrope,sans-serif;cursor:pointer}
+.collage-tilt-buttons button:hover:not(:disabled){border-color:#718f46;color:#3d4a2c;background:#f2f6ea}
+.collage-tilt-buttons button:disabled{opacity:.42;cursor:not-allowed}
+.collage-tilt-locked{display:flex;align-items:center;gap:4px;margin-left:auto;color:#92978e;font:600 9px Manrope,sans-serif;font-style:normal;white-space:nowrap;cursor:help}
 .collage-select-hint{display:flex;align-items:center;gap:5px;margin:6px 0 2px;color:#92978e;font-size:9px}
 .collage-arrange-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 2px;font-size:9px;color:#6e7466}
 .collage-arrange-tools b{color:#4c5445}
