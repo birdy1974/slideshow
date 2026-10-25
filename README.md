@@ -5,6 +5,7 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
 ## Features
 
 - Safe server-side browsing inside read-only `/photos`, `/videos`, and `/music` mounts
+- A media picker that stays usable on a huge folder: thumbnails load per viewport through a shared four-slot queue, so selecting a file never waits for a picture, and the popup can switch to a names-only **List** view that requests no pictures at all — see [docs/media-browser-view-modes.md](docs/media-browser-view-modes.md)
 - Mixed photos, videos, generated text frames, drag ordering, multi-selection, and multi-line timelines
 - Multi-photo collage slides: a photo slide that holds a photo set — generated arrangements (grid, scatter, fan, masonry, honeycomb, photowall, cube…) plus magazine and polaroid-wall template pages, per-photo size/crop/filter/frame shape and wait, entrance and exit choreography, camera moves, beat sync to your music, stickers, and a background. The editor preview runs the same maths as the FFmpeg render (`src/collageCore.ts` ↔ `backend/app/collage.py`, compared value for value by the twin tests), editing a setting repaints the preview in place instead of restarting it, and Free-arrangement photos are dragged, resized and turned (±180°) on the preview and come out of the MP4 exactly that way — see [docs/photo-collage.md](docs/photo-collage.md)
 - Movie trimming: open a movie from the storyline and drag IN/OUT handles to use only the section you want — the clip on the timeline becomes exactly that long, and the movie's own audio follows the same cut
