@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 from app.collage_reveal import REVEALS, REVEAL_LENGTH  # noqa: E402
-from app.collage import GEOM  # noqa: E402
+from app.collage import GEOM, base_duration, exit_fly_length  # noqa: E402
 from app.collage import (
     COLLAGE_TEMPLATES,
     ENTRANCE_LENGTH,
@@ -613,6 +613,27 @@ def _cases() -> list[dict]:
         cases.append({"id": f"speed{mult}-per-photo", "spec": {**mixed, "animSpeed": 1.5},
                       "aspect": 16 / 9, "leadIn": 0.0,
                       "times": [0.0, 0.15, 0.3, 0.55, 0.9, 1.4, 2.2, 3.1], "hashArgs": [4, 2, 6], "matW": 30})
+    # mirrored exits: every arrival gets a departure by playing its own curves
+    # backwards, so the states across the exit window are the ones to compare —
+    # including the mask progress, which closes instead of fading, and a photo
+    # that reverses while its neighbours sweep out.
+    for kind in ("drop", "pop", "fade", "none", "wipeUp", "mosaicOut", "cube", "unfold", "spiral", "swing"):
+        base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1.5, exit="reverse")
+        te0 = base_duration(base)
+        fly = exit_fly_length(base, 0)
+        times = [0.0, te0 - 0.2, te0] + [round(te0 + fly * f, 3) for f in (0.2, 0.45, 0.7, 0.95)] + [te0 + fly, te0 + fly + 0.2]
+        cases.append({"id": f"exit-reverse-{kind}", "spec": base, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [3, 7, 2], "matW": 30})
+    mixed = _spec("stack", "drop", "4:3", 4, 8, delays=[0.0, 0.25, 0.5, 0.75], hold=1.5, exit="sweep")
+    mixed["photos"][1]["exit"] = "reverse"
+    mixed["photos"][1]["anim"] = "clock"
+    mixed["photos"][3]["exit"] = "reverse"
+    mixed["photos"][3]["anim"] = "book"
+    te0m = base_duration(mixed)
+    cases.append({"id": "exit-reverse-mixed", "spec": mixed, "aspect": 16 / 9, "leadIn": 0.0,
+                  "times": [0.0, te0m - 0.1, te0m, round(te0m + 0.15, 3), round(te0m + 0.3, 3),
+                            round(te0m + 0.45, 3), round(te0m + 0.6, 3), te0m + 0.75],
+                  "hashArgs": [5, 5, 5], "matW": 30})
     # the paper family: twelve geometry entrances, compared at the moments a
     # hinge, a bow and an overshoot actually differ — the first frame (a size of
     # zero would show up here), the middle of the sweep, the settle, and at rest.

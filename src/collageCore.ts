@@ -391,7 +391,7 @@ export type CollageGeomAnim = 'cube' | 'book' | 'door' | 'unfold' | 'rollover' |
   | 'swish' | 'glide' | 'peek' | 'boomerang' | 'sling' | 'thread'
 /** Every entrance id, reveals included: what the pickers list and what
  *  `normalizeCollage` accepts. */
-export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle' | 'fade'
+export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle' | 'fade' | 'reverse'
 export type CollageMotion = 'none' | 'drift' | 'float' | 'orbit' | 'shake' | 'sway' | 'breathe' | 'pulse' | 'beat' | 'move' | 'turn' | 'spin'
 /** An animated look: the photo's colour changes over time, on top of whatever
  *  static filter it already has. */
@@ -1530,12 +1530,12 @@ export function entranceFade (spec: CollageSpec, i: number): number {
 // ---------------------------------------------------------------------------
 
 /** How long one photo's exit fly takes. */
-export const EXIT_LENGTH: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.45, deal: 0.32, shuffle: 0.4, fade: 0.5 }
+export const EXIT_LENGTH: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.45, deal: 0.32, shuffle: 0.4, fade: 0.5, reverse: 0.5 }
 /** Delay between consecutive photos leaving. */
-export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.05, deal: 0.22, shuffle: 0.1, fade: 0.08 }
+export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.05, deal: 0.22, shuffle: 0.1, fade: 0.08, reverse: 0.08 }
 
 /** Every exit mode, 'none' (stay until the transition) first. */
-export const COLLAGE_EXITS: CollageExit[] = ['none', 'sweep', 'deal', 'shuffle', 'fade']
+export const COLLAGE_EXITS: CollageExit[] = ['none', 'sweep', 'deal', 'shuffle', 'fade', 'reverse']
 /** The modes that actually leave: everything but 'none'. One list on purpose —
  *  `exitMode` and `normalizeCollage` used to keep their own, and when 'fade'
  *  was added to the chips and to `exitMode` but not to the one inside
@@ -1678,21 +1678,29 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   const spd = animSpeed(spec, i)
   const ent = (ENTRANCE_LENGTH[anim] ?? 0) / spd
   const fade = (ENTRANCE_FADE[anim] ?? 0) / spd
+  // A 'reverse' exit re-runs this photo's own entrance backwards over its exit
+  // window, so leaving is arriving read in reverse — the same curves, the same
+  // mask, and nothing to keep in sync for each of the 41 ids. One number does it:
+  // the time the entrance curves are sampled at.
+  const exMode = exitMode(spec, i)
+  const exStart = leadIn + baseDuration(spec) + exitOffset(spec, i)
+  const exQ = exMode === 'none' ? 0 : clamp01((t - exStart) / exitFlyLength(spec, i))
+  const ti = exMode === 'reverse' && exQ > 0 ? t0 + ent * (1 - exQ) : t
   let st: PhotoState
   if (anim === 'drop') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const settle = Math.pow(1 - q, 3)          // 1 → 0, outCubic
-    st = { dx: 0, dy: -26 * settle, rot: -7 * settle, scale: 1 - DEPTH.scale * push, scaleX: 1, alpha: clamp01((t - t0) / fade), dim: DEPTH.dim * push }
+    st = { dx: 0, dy: -26 * settle, rot: -7 * settle, scale: 1 - DEPTH.scale * push, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
   } else if (anim === 'pop') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: 0, scale: (0.55 + 0.45 * back) * (1 - DEPTH.scale * push), scaleX: 1, alpha: clamp01((t - t0) / fade), dim: DEPTH.dim * push }
+    st = { dx: 0, dy: 0, rot: 0, scale: (0.55 + 0.45 * back) * (1 - DEPTH.scale * push), scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
   } else if (anim === 'flip') {
     // A card flipping open around its vertical axis: edge-on (4 % width)
     // with an outBack overshoot, straightening as it settles.
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: -4 * (1 - q), scale: 1 - DEPTH.scale * push, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((t - t0) / fade), dim: DEPTH.dim * push }
+    st = { dx: 0, dy: 0, rot: -4 * (1 - q), scale: 1 - DEPTH.scale * push, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
   } else if (anim === 'swing') {
     // The pendulum is the one entrance measured in raw seconds — its decay and
     // period are physical, not a curve over a window — so speed compresses the
@@ -1703,59 +1711,59 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
     const rot = 14 * Math.exp(-1.3 * tau) * Math.cos(2 * Math.PI * tau / 1.6)
     st = { dx: 0, dy: 0, rot, scale: 1, scaleX: 1, alpha: clamp01(tau / 0.15), dim: 0 }
   } else if (anim === 'fade') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: q * q * (3 - 2 * q), dim: 0 }
   } else if (anim === 'slide') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const settle = Math.pow(1 - q, 3)
-    st = { dx: -28 * settle, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((t - t0) / fade), dim: 0 }
+    st = { dx: -28 * settle, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
   } else if (anim === 'rise') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const settle = Math.pow(1 - q, 3)
-    st = { dx: 0, dy: 22 * settle, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((t - t0) / fade), dim: 0 }
+    st = { dx: 0, dy: 22 * settle, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
   } else if (anim === 'tumble') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const settle = Math.pow(1 - q, 3)
-    st = { dx: 10 * settle, dy: -18 * settle, rot: 28 * settle, scale: 1 - 0.15 * settle, scaleX: 1, alpha: clamp01((t - t0) / fade), dim: 0 }
+    st = { dx: 10 * settle, dy: -18 * settle, rot: 28 * settle, scale: 1 - 0.15 * settle, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
   } else if (anim === 'zoom') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: 0, scale: 0.2 + 0.8 * back, scaleX: 1, alpha: clamp01((t - t0) / fade), dim: 0 }
+    st = { dx: 0, dy: 0, rot: 0, scale: 0.2 + 0.8 * back, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
   } else if (anim === 'fold') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((t - t0) / fade), dim: 0 }
+    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((ti - t0) / fade), dim: 0 }
   } else if (anim === 'glitch') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const j = (1 - q) * (1 - q)
     const seed = Math.trunc(Number(spec.seed)) || 1
-    st = { dx: (hash01(seed, i, 61) - 0.5) * 10 * j, dy: (hash01(seed, i, 63) - 0.5) * 6 * j, rot: (hash01(seed, i, 65) - 0.5) * 8 * j, scale: 1, scaleX: 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, alpha: clamp01((t - t0) / fade), dim: 0.15 * j }
+    st = { dx: (hash01(seed, i, 61) - 0.5) * 10 * j, dy: (hash01(seed, i, 63) - 0.5) * 6 * j, rot: (hash01(seed, i, 65) - 0.5) * 8 * j, scale: 1, scaleX: 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, alpha: clamp01((ti - t0) / fade), dim: 0.15 * j }
   } else if (anim === 'ink') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const blob = q * q * (3 - 2 * q)
     st = { dx: 0, dy: 0, rot: 0, scale: 0.35 + 0.65 * blob, scaleX: 1, alpha: blob, dim: 0 }
   } else if (anim === 'brush') {
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const settle = Math.pow(1 - q, 3)
-    st = { dx: -36 * settle, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.12, 1 - 0.55 * settle), alpha: clamp01((t - t0) / fade), dim: 0 }
+    st = { dx: -36 * settle, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.12, 1 - 0.55 * settle), alpha: clamp01((ti - t0) / fade), dim: 0 }
   } else if (isGeomAnim(anim)) {
     // The paper family, evaluated from one row of `COLLAGE_GEOM` rather than a
     // branch each: the render's twin turns the SAME row into FFmpeg expressions,
     // so a curve cannot mean one motion here and another one in the MP4.
-    const q = clamp01((t - t0) / ent)
+    const q = clamp01((ti - t0) / ent)
     const row = COLLAGE_GEOM[anim]
     const v = (c: GeomCurve | undefined, base: number) => geomCurve(c, q, base)
     st = {
       dx: v(row.dx, 0), dy: v(row.dy, 0), rot: v(row.rot, 0),
       scale: v(row.scale, 1) * (1 - DEPTH.scale * push),
       scaleX: v(row.scaleX, 1),
-      alpha: clamp01((t - t0) / fade), dim: v(row.dim, 0),
+      alpha: clamp01((ti - t0) / fade), dim: v(row.dim, 0),
     }
   } else if (isCollageReveal(anim)) {
     // A mask reveal: the photo sits exactly where it will stay and is
     // *uncovered*. Everything about the shape lives in collageReveal.ts, which
     // the render reads too — this branch only says how far the sweep has got.
-    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: 1, dim: 0, revealKind: anim, revealP: revealProgress(anim, clamp01((t - t0) / ent)), revealDir: photoRevealDir(spec, i) }
+    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: 1, dim: 0, revealKind: anim, revealP: revealProgress(anim, clamp01((ti - t0) / ent)), revealDir: photoRevealDir(spec, i) }
   } else {
     // none: the photos are simply part of the slide from the first frame,
     // incoming transition included.
@@ -1775,14 +1783,21 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   st = addMotion(spec, i, t, st, t0, ent, leadIn)
   // Exit: after the hold (and every entrance) the photos leave the frame —
   // each one its own way when it has an override.
-  const mode = exitMode(spec, i)
+  const mode = exMode
   if (mode !== 'none') {
     const seed = Math.trunc(Number(spec.seed)) || 1
-    const te0 = leadIn + baseDuration(spec) + exitOffset(spec, i)
-    const qe = clamp01((t - te0) / exitFlyLength(spec, i))
+    const te0 = exStart
+    const qe = exQ
     if (qe > 0) {
       const ease = qe * qe                       // accelerating fly
-      if (mode === 'fade') {
+      if (mode === 'reverse') {
+        // Nothing to add — the mirror above is the departure. Only an entrance
+        // that never touched its alpha needs help leaving: a mask reveal closes
+        // instead of fading, and 'none' has no curve at all, so a photo whose
+        // arrival was instant would otherwise simply stop on the last frame.
+        // Linear, because `fade=t=out` in the render is linear.
+        if (!isCollageReveal(anim) && st.alpha > 0.999) st.alpha = 1 - qe
+      } else if (mode === 'fade') {
         // It leaves by fading where it stands: no travel, no turn, and the
         // whole fly is the fade — the movers fade over their last quarter.
         // Linear, because that is what the render's `fade=t=out` does.

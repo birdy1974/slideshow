@@ -11,10 +11,16 @@ import re
 import unittest
 
 from app.collage import (
+    ANIMS,
     ENTRANCE_FADE,
     ENTRANCE_LENGTH,
     ENTRANCE_SPEED_MAX,
     ENTRANCE_SPEED_MIN,
+    base_duration,
+    collage_duration,
+    exit_fly_length,
+    exit_offset,
+    photo_state,
     anim_speed,
     collage_duration,
     collage_graph,
@@ -22,6 +28,11 @@ from app.collage import (
     entrance_length,
     normalize_collage,
 )
+
+
+def _fmt(v: float) -> str:
+    """`_n` as the graph writes it: trimmed, so the test compares the same text."""
+    return ("%.3f" % v).rstrip("0").rstrip(".")
 
 
 def _spec(**extra) -> dict:
@@ -147,6 +158,114 @@ class SpeedInGraphTest(unittest.TestCase):
         self.assertGreater(slow, 0, "no size ladder to measure at all")
         self.assertGreater(slow, fast)
         self.assertLess(fast / slow, 0.85)
+
+class ScaleLadderCoverageTest(unittest.TestCase):
+    def test_every_anim_that_changes_size_is_listed_for_the_ladder(self) -> None:
+        # The list a hand-written entrance has to join. Sampling each anim's own
+        # state is the only way to notice one that was forgotten: a size the
+        # ladder does not sample is a size the MP4 never shows, and no type or
+        # table check would say so.
+        from app.collage import GEOM_SCALES, SCALE_ANIMS
+        for anim in ANIMS:
+            if anim == "none":
+                continue
+            spec = normalize_collage({"collage": {
+                "layout": "grid", "animation": anim, "shape": "4:3", "seed": 1, "hold": 1,
+                "photos": [{"path": "/a.jpg"}]}})
+            assert spec is not None
+            length = entrance_length(spec, 0) or 0.001
+            varies = False
+            for k in range(0, int(length * 25) + 1):
+                st = photo_state(spec, 0, k / 25, 0.0, 320 / 180)
+                if abs(st["scale"] - 1) > 1e-6 or abs(st["scaleX"] - 1) > 1e-6:
+                    varies = True
+                    break
+            with self.subTest(anim=anim):
+                self.assertEqual(
+                    varies, anim in SCALE_ANIMS or anim in GEOM_SCALES,
+                    f"{anim} changes size but is not listed for the size ladder" if varies
+                    else f"{anim} is listed for the ladder but never changes size")
+
+
+class ReverseExitGraphTest(unittest.TestCase):
+    def _graph_for(self, anim: str, exit_mode: str) -> tuple[str, float, float]:
+        item = {"collage": {
+            "layout": "grid", "animation": anim, "shape": "4:3", "seed": 1, "hold": 1.5,
+            "exit": exit_mode, "frame": {"shape": "none", "shadow": False},
+            "photos": [{"path": "/a.jpg"}]}}
+        spec = normalize_collage(item)
+        assert spec is not None
+        te0 = base_duration(spec) + exit_offset(spec, 0)
+        fly = exit_fly_length(spec, 0)
+        lines, _last = collage_graph(item, 640, 360, 25, collage_duration(spec), 0, 1, "cb")
+        return "".join(lines), te0, fly
+
+    def _levels(self, graph: str) -> list[dict]:
+        """One entry per sprite the ladder built for photo 0: the mask step it
+        carries (None = unmasked) and the time windows it is switched on for.
+        Read off the graph, because the graph is what the render runs."""
+        out = []
+        for m in re.finditer(r"\[(b0_(\d+)|sp0f)\].*?\[lv0_(\d+)\];", graph):
+            idx = m.group(3)
+            line = m.group(0)
+            p = None
+            # the threshold is the last number in the comparison, right before
+            # the closing paren of the mask test
+            am = re.search(r"a='alpha\(X,Y\).*?([0-9]+\.[0-9]+)\)'", line)
+            if am:
+                p = float(am.group(1))
+            ov = re.search(r"\[lv0_" + idx + r"\]overlay=[^\[]*enable='([^']*)'", graph)
+            windows = re.findall(r"(?:between\(t,([-0-9.]+),([-0-9.]+)\)|gte\(t,([-0-9.]+)\))",
+                                 ov.group(1)) if ov else []
+            out.append({"i": idx, "p": p,
+                        "windows": [(float(a), float(b) if b else None) for a, b, c in windows
+                                    for a, b in [(a or c, b)]]})
+        return out
+
+    def test_a_mirrored_reveal_closes_as_it_opened(self) -> None:
+        graph, te0, fly = self._graph_for("wipeUp", "reverse")
+        levels = self._levels(graph)
+        self.assertGreater(len(levels), 4, "the sweep did not step at all")
+        # The closing sweep does not bake new sprites: a step of the mask is a
+        # still, and the same still serves the moment it opens and the moment it
+        # closes, so those levels simply carry a second window.
+        reused = [l for l in levels if l["p"] is not None and len(l["windows"]) > 1]
+        self.assertGreaterEqual(len(reused), 3,
+                                f"nothing was reused across the exit: {[l['p'] for l in levels]}")
+        late = [w for l in reused for w in l["windows"] if w[0] >= te0 - 0.05]
+        self.assertTrue(late, "no masked level has a window in the exit")
+
+        def on_at(t: float) -> list[dict]:
+            return [l for l in levels
+                    if any(a - 0.01 <= t <= (b if b is not None else t + 1) + 0.01 for a, b in l["windows"])]
+        # Before the fly it is fully uncovered — and stays so, no mask on the
+        # resting level — and at the very end the photo has to be *covered*
+        # again: an open-ended unmasked level would bring it back for the cut.
+        self.assertTrue(all(l["p"] is None for l in on_at(te0 - 0.1)),
+                        "a mask is still applied while the photo is at rest")
+        at_end = on_at(te0 + fly - 0.02)
+        self.assertTrue(at_end, "nothing is on screen at the end of the fly")
+        self.assertTrue(all(l["p"] is not None and l["p"] < 0.1 for l in at_end),
+                        f"the photo does not end covered: {[l['p'] for l in at_end]}")
+
+    def test_the_alpha_out_is_the_alpha_in_reversed(self) -> None:
+        graph, te0, fly = self._graph_for("pop", "reverse")
+        spec = normalize_collage({"collage": {"layout": "grid", "animation": "pop", "hold": 1.5,
+                                             "exit": "reverse", "photos": [{"path": "/a.jpg"}]}})
+        assert spec is not None
+        ratio = entrance_fade(spec, 0) / entrance_length(spec, 0)
+        want_d = fly * ratio
+        self.assertIn(f"fade=t=out:st={_fmt(te0 + fly - want_d)}:d={_fmt(want_d)}:alpha=1", graph,
+                      "the fly's fade is not the entrance's ramp, read backwards")
+
+    def test_a_mirrored_exit_does_not_fly_anywhere(self) -> None:
+        # 'sweep' adds a travel term to the overlay's x; a mirrored exit must not,
+        # because its motion comes from the entrance curves themselves.
+        rev, _t, _f = self._graph_for("drop", "reverse")
+        sweep, _t2, _f2 = self._graph_for("drop", "sweep")
+        fly_term = re.compile(r"overlay=x='[^']*pow\(min\(max\(\(t-")
+        self.assertTrue(fly_term.search(sweep), "the control case has no travel term to compare")
+        self.assertIsNone(fly_term.search(rev), "a mirrored exit is adding its own travel")
 
 
 if __name__ == "__main__":

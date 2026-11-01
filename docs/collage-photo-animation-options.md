@@ -324,3 +324,37 @@ take a `speed`, the geometry rows do not, and the older entrances still repeat
 their length as a literal (`0.55`‑style) instead of reading `ENTRANCE_LENGTH` —
 the Browse‑all picker, which is now also where the per‑photo `animDir` override
 gets its control, and the 🎲 shuffle.
+
+## Mirrored exits (shipped)
+
+A new exit mode — **"Back the way it came"** (`exit: 'reverse'`, and per photo
+`photos[].exit`) — is not a 42nd motion but the photo's *own entrance played
+backwards* over its exit window. Both engines do it by choosing the time the
+entrance curves are sampled at:
+
+```ts
+ti = mode === 'reverse' && qe > 0 ? t0 + ent * (1 - qe) : t
+```
+
+so every field — offsets, rotation, the two scales, the alpha ramp, the pendulum's
+clock and the mask's `revealP` — returns along the path it came. In the graph the
+same idea is one expression: the entrance progress becomes
+`min(clamp((t-t0)/ent), 1-clamp((t-te0)/fly))`, the smaller of "how arrived" and
+"how leaving", which is the arrival before the fly and the mirror after it.
+
+Two consequences worth knowing:
+
+* **A mask reveal closes instead of fading.** Its `revealP` mirrors, and the
+  closing sweep reuses the *same* baked sprites as the opening — a step of a mask
+  is a still — so those ladder levels simply carry a second `enable` window. The
+  level that holds the end of the slide is therefore a *masked* one: the photo
+  ends covered rather than reappearing for the cut.
+* **The alpha out is the alpha in, reversed.** A photo that spent the first 0.16 s
+  of a 0.6 s arrival becoming visible spends the last 27 % of its fly
+  disappearing, via `fade=t=out:st=…:d=…` sized from the same `ENTRANCE_FADE`
+  table. An entrance that never touched its alpha (`none`) leaves over the whole
+  fly, because an instant arrival has nothing to reverse.
+
+`Entrance speed` now sits under the entrance chips as the twin of `Exit speed`:
+one multiplier (0.05–2×) for the whole arrival — the sweep, its fade, a swing's
+clock and the export's mask ladder together — on the collage or on one photo.

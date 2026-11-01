@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, COLLAGE_GEOM_CHOICES, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, animSpeed, COLLAGE_GEOM_CHOICES, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -4505,6 +4505,10 @@ const COLLAGE_EXITS: { id: NonNullable<CollageSpec['exit']>; label: string; hint
   { id: 'deal', label: 'Deal off', hint: 'The pile is dealt away one card at a time — top card first, off to the right' },
   { id: 'shuffle', label: 'Scatter off', hint: 'The photos scatter off in seeded random directions' },
   { id: 'fade', label: 'Fade out', hint: 'The photos fade away where they stand — no travel, no turn, the whole exit is the fade' },
+  // Not a new motion but the photo's own entrance played backwards, so every
+  // animation in the catalogue — all 41 — has a departure without anyone writing
+  // one, and a wipe that opened the way it closes.
+  { id: 'reverse', label: 'Back the way it came', hint: 'Each photo re-runs its own entrance in reverse: a wipe wipes shut, a pop shrinks back, an iris closes' },
 ]
 /** The per-photo "while" lane: what one photo keeps doing once it has
  *  landed. They are grouped by what the motion needs from you and from the
@@ -5122,6 +5126,11 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         <div className={`collage-choices-group${closedSections['photo-animation'] ? ' closed' : ''}`}><CollageGroupHead id="photo-animation" open={!closedSections['photo-animation']} onToggle={toggleSection}>Photo animation</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
           <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
+          <label className={`collage-exit-speed${anyEntrance ? '' : ' disabled'}`} title="How fast the photos arrive: one multiplier for the whole entrance — the sweep, the fade-in, a pendulum's swing and the export's step-by-step masks together. The slide length follows.">
+            <span>Entrance speed</span>
+            <input type="range" min={0.05} max={2} step={0.05} disabled={!anyEntrance} value={animSpeed(spec)} aria-label="Photo entrance speed" onChange={e => { const v = Math.round(Number(e.target.value) * 20) / 20; setSpec({ animSpeed: v === 1 ? undefined : v }) }} />
+            <b>{animSpeed(spec).toFixed(2)}×</b>
+          </label>
           {isCollageReveal(spec.animation) && COLLAGE_REVEAL_GEOM[spec.animation].mirror !== 'none' &&
             <label className="collage-check">
               {/* Only kinds with an axis to mirror get the choice. An iris or a
