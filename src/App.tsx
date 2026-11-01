@@ -57,6 +57,7 @@ import { uploadFile, isUploadableFile, type UploadItem, type UploadsStatus } fro
 import { THUMB_STALL_MS, isThumbnailFile, reserveThumbnailSlot, watchViewportOnce } from './mediaThumbs'
 import { PopupBackdrop, useEscapeToClose, useLayer } from './layers'
 import { CollageArrangementThumb } from './CollageArrangementThumb'
+import { CollageTimingLanes } from './CollageTimingLanes'
 
 type MediaRoot = 'photos' | 'videos' | 'music' | 'uploads'
 type PreviewMode = 'fast' | 'standard'
@@ -4712,7 +4713,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   /** One photo's enter / while / exit lane. An empty value means "inherit the
    *  collage's setting" and removes the override again, so a photo follows
    *  later changes to the collage-wide animation. */
-  const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim', value: string) => {
+  const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim' | 'at' | 'until', value: string) => {
     setSpec({
       photos: photos.map((p, i) => {
         if (i !== index) return p
@@ -4726,6 +4727,14 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           else delete next.animSpeed
         }
         else if (lane === 'animLock') { if (value === '1') next.animLock = true; else delete next.animLock }
+        // The window's two edges, in seconds from the start of the collage. A blank
+        // value is not 0: it means "the schedule owns this one again", which is the
+        // only way a pinned photo goes back to being auto-staggered by hand.
+        else if (lane === 'at' || lane === 'until') {
+          const v = value === '' ? NaN : Number(value)
+          if (Number.isFinite(v) && v >= 0) next[lane] = Math.round(Math.min(600, v) * 1000) / 1000
+          else delete next[lane]
+        }
         else if (lane === 'exit') { if (value === '') delete next.exit; else next.exit = value as CollageExit }
         else if (lane === 'lookAnim') { if (value === 'none') delete next.lookAnim; else next.lookAnim = value as CollageLookAnim }
         else if (value === 'none') {
@@ -5401,6 +5410,26 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             </div>)}
             {photos.length === 0 && <small className="collage-timing-empty">Pick photos to set their size and when each appears.</small>}
           </div>
+          {photos.length > 0 && <>
+            {/* One line per photo, and the block on it is that photo's real visible
+                window: `photoStart` → `exitStart` + fly, the same two functions the
+                render clips its overlays to, so a lane can only show what the MP4
+                will do. Drag the middle to move the window, an edge to set one of
+                its ends, Shift/Ctrl-click a spot to pin the start or the stop there,
+                double-click the row to hand the photo back to the schedule. A row
+                nobody touches writes nothing at all. */}
+            <div className="collage-window-head">
+              <span>When each photo is on screen</span>
+              <small>Drag a block to move it, its edges to set appear / disappear · snapped to the render's 25 fps frames</small>
+            </div>
+            <CollageTimingLanes
+              spec={spec}
+              duration={Math.max(total, Number(item.duration) || 0)}
+              selected={selectedPhoto}
+              onSelect={setSelectedPhoto}
+              onChange={(i, lane, value) => setPhotoLane(i, lane, value)}
+            />
+          </>}
           <div className="collage-timing-total">
             {anyEntrance && <>
               <span title="Set every photo's wait to the same value">All waits</span>

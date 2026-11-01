@@ -604,3 +604,54 @@ is the name of an arrival, and the departure is that arrival read backwards.**
   computed from the same helpers, and `test_collage_animation_ffmpeg.py` measures real
   frames: a `rise` departure sinks, an `iris` departure shrinks in place, and both are
   gone by the last frame.
+
+
+## Per-photo start and stop (shipped)
+
+"Add a line so the user can change when individual photos appear and disappear" is
+a different request from the catalogue work above: it asks for *time* to become
+editable per photo, which the sequence model had deliberately kept derived. Three
+shapes were on the table.
+
+* **A: two absolute seconds fields, `at` and `until`, per photo** — what the model
+  is. A lane on a shared ruler, one row per photo, block = the real visible window.
+* **B: a per-photo *hold* length** (`delay` + `hold`, relative to the neighbour).
+  Rejected: the pile's `delay` is already a running sum, so a per-photo hold would be
+  a second way to express the same number, and the right edge of a block on a ruler
+  is not a duration — it is an *instant*. Asking the user to convert one to the other
+  is the bug, not the layout.
+* **C: exit-offset nudges only** (the existing `exitOffset` per photo, plus
+  `delay` for the arrival). Rejected on facts, not taste: `exitOffset` is relative to
+  `baseDuration`, so dragging a departure earlier shortens the *slide* and moves
+  every other photo's end with it — you cannot set "gone by 4 s" without arithmetic,
+  and there is no way at all to say "arrive at 4 s" other than by editing the delays
+  of every photo before it.
+
+A was also the only option whose preview half already existed: `photoStart` and
+`exitStart` are the two numbers `photoState` needs, so the lane draws the model
+rather than a parallel description of it. The restriction recorded earlier under
+*Decisions taken* — exits are the entrance's own curve read backwards, with no
+authored per-photo departure — is superseded for the *when*, not the *how*: the
+departure is still the chosen curve, but it now starts where the lane says
+(`exit_start` reads `until` back over the fly), and a photo that is authored to
+stop while its exit is `none` is cut and its overlay window closed at that second.
+
+The mouse map (drag middle = move, drag edge = that field, Shift/Ctrl-click = pin
+start/stop, double-click or `auto` = back to the schedule, 1/25 s snap, 0.12 s
+floor) is Aegisub's and Subtitle Edit's, because that is what a person holding a
+mouse does to a timing strip: they grab the block, and they pin an end where the
+waveform says so. The numeric alternative — two `NumberStepper`s per photo, as the
+group already uses for size and wait — was dropped in favour of the lane for the
+same reason the caption editors do not use steppers for word times: with six to
+twelve photos the numbers are a list, and the shape of the pile is the point. It
+still prints the numbers — `from→to`, with the photo's own wait in the tooltip —
+in the column to the right of the lane, and every gesture on the lane ends in the
+same `setPhotoLane(i, 'at' | 'until', seconds)` the size and wait rows use, so the
+popup has exactly one way to write a timing and it is the one that clamps.
+
+`backend/tests/test_collage_photo_window.py` holds the semantics, the twin gained a
+`lanes-authored-window` case (four photos, authored arrival beating a snapped one,
+a cut, and a window too short to hold its own fly), and `test_collage_normalize.py`
+drives the real TypeScript gate with both fields so a saved project and a preview
+round-trip the same milliseconds. See *When each photo is on screen* in
+`docs/photo-collage.md`.

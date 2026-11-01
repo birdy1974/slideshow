@@ -840,6 +840,17 @@ export interface CollagePhoto extends CollagePhotoLook {
    *  visible hold starts). Missing = the auto stagger default. The slide's
    *  duration follows from these: total = Σ delays + entrance + hold. */
   delay?: number
+  /** The photo's OWN arrival, seconds from the start of the collage's content
+   *  (after the lead-in). Written by the timing lane's left edge; missing = the
+   *  stagger schedule (`delay` summed over the pile) still owns it. An authored
+   *  time is exact — it is never snapped to a beat, because a number someone
+   *  typed is not a guess that needs rescuing. */
+  at?: number
+  /** The instant this photo is fully gone, same clock. Written by the lane's
+   *  right edge, so it is the END of the departure, not its start: what the edge
+   *  of a block means to the hand dragging it. With no exit chosen it is a cut
+   *  (the photo stops being composited); with one, the fly is read back from it. */
+  until?: number
   /** Mat size multiplier for this photo (1 = the layout's default width,
    *  0.5 = half, 3 = 300%). Missing = 1. */
   size?: number
@@ -1790,6 +1801,9 @@ export function nextBeat (beats: number[], t: number): number | null {
  *  nominal time rolls forward to the next stored beat — several photos may
  *  share a beat (the "pile lands on the drop" reveal). */
 export function photoStart (spec: CollageSpec, i: number, leadIn = 0): number {
+  const authored = photoAt(spec, i)
+  // An authored arrival wins outright, beats included: see photoAt().
+  if (authored !== undefined) return leadIn + authored
   let hold = 0
   for (let k = 0; k <= i; k++) hold += photoDelay(spec, k)
   if (spec.beatSync === true) {
@@ -2103,6 +2117,42 @@ export function exitOffset (spec: CollageSpec, i: number): number {
   return EXIT_STAGGER[mode] / speed * (rev ? Math.max(0, n - 1 - i) : i)
 }
 
+/** Photo i's authored arrival, or undefined when the stagger schedule owns it.
+ *  `at`/`until` are the only per-photo times a person can write, and they exist
+ *  because the pile's model is a *sequence*: photo i starts at the sum of the
+ *  delays before it and then lingers until the end of the hold, leaving on its
+ *  exit offset. Good default, bad way to say "this one only during the second
+ *  line". A photo with neither is the old behaviour to the millisecond, which is
+ *  what the twin tests below insist on. Mirrors `photo_at()` in collage.py. */
+export function photoAt (spec: CollageSpec, i: number): number | undefined {
+  const value = spec.photos?.[i]?.at
+  const v = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(v) && v >= 0 ? v : undefined
+}
+
+/** Photo i's authored departure — the instant it is fully gone, not the instant
+ *  it starts leaving, because that is what a lane's right edge is. */
+export function photoUntil (spec: CollageSpec, i: number): number | undefined {
+  const value = spec.photos?.[i]?.until
+  const v = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(v) && v > 0 ? v : undefined
+}
+
+/** When photo i starts leaving — the single place that answer is kept, in both
+ *  engines. Normally the end of the hold moved by the photo's own exit offset;
+ *  an authored `until` wins, read back over the fly so the number in the lane and
+ *  the number in the graph describe the same event from the same end, and never
+ *  in front of the photo's own arrival (that would ask the curves to run
+ *  backwards). */
+export function exitStart (spec: CollageSpec, i: number, leadIn = 0): number {
+  const until = photoUntil(spec, i)
+  if (until !== undefined) {
+    const floor = photoStart(spec, i, leadIn) + entranceLength(spec, i)
+    return Math.max(floor, leadIn + until - exitFlyLength(spec, i))
+  }
+  return leadIn + baseDuration(spec) + exitOffset(spec, i)
+}
+
 /** Total seconds the exit adds to the slide: when the last photo to leave is
  *  gone — its own offset plus its own fly. */
 export function exitTotal (spec: CollageSpec): number {
@@ -2137,8 +2187,17 @@ export function baseDuration (spec: CollageSpec): number {
     if (anim !== 'none') animated = true
     last = Math.max(last, photoStart(spec, i, 0) + entranceLength(spec, i))
   }
-  if (!animated) return round2(hold)
-  return round2(last + hold)
+  let base = animated ? last + hold : hold
+  // …and a photo authored to *leave* later than the pile drags the slide with it,
+  // or its own stop would be cut off by the end of the frame. Only authored
+  // departures are consulted, so this cannot recurse: exitStart() reads
+  // baseDuration() only for a photo that has no `until` of its own.
+  for (let i = 0; i < photos.length; i++) {
+    if (photoUntil(spec, i) !== undefined) {
+      base = Math.max(base, exitStart(spec, i, 0) + exitFlyLength(spec, i))
+    }
+  }
+  return round2(base)
 }
 
 /** The slide duration implied by the photo timings: entrances + hold + the
@@ -2273,7 +2332,7 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   // mask, and nothing to keep in sync for each animation. One number does it: the
   // time the entrance curves are sampled at.
   const exMode = exitMode(spec, i)
-  const exStart = leadIn + baseDuration(spec) + exitOffset(spec, i)
+  const exStart = exitStart(spec, i, leadIn)
   const exQ = exMode === 'none' ? 0 : clamp01((t - exStart) / exitFlyLength(spec, i))
   const ti = exMode === 'reverse' && exQ > 0 ? t0 + ent * (1 - exQ) : t
   let st = entranceState(spec, i, anim, t0, ent, fade, spd, ti, push)
@@ -2370,6 +2429,11 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   // so this is the preview catching up with the MP4, twin for twin.
   if (t < t0) st.alpha = 0
   else if (exMode !== 'none' && t >= exStart + exitFlyLength(spec, i)) st.alpha = 0
+  else if (exMode === 'none' && photoUntil(spec, i) !== undefined && t >= exStart) st.alpha = 0
+  // An authored stop is a stop even when nothing was picked to leave with: the
+  // photo is simply not composited after it. A cut, not a fade — 'none' plus a
+  // dragged lane edge is the lane saying *gone*, and inventing a look nobody asked
+  // for is how a preview ends up disagreeing with the MP4 it is the twin of.
   return st
 }
 
@@ -2776,6 +2840,11 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     if (seen.has(p.path)) continue
     seen.add(p.path)
     const delay = num(p.delay)
+    const at = num(p.at)
+    const rawUntil = num(p.until)
+    // A stop that is not after its start is not a stop, and both are kept to the
+    // millisecond so a saved project and the preview never round separately.
+    const until = rawUntil !== undefined && !(at !== undefined && rawUntil <= at) ? rawUntil : undefined
     const size = num(p.size)
     const cx = num(p.cx)
     const cy = num(p.cy)
@@ -2787,6 +2856,8 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       path: p.path,
       name: typeof p.name === 'string' ? p.name : undefined,
       delay: delay !== undefined ? Math.max(0, Math.min(30, delay)) : undefined,
+      at: at !== undefined ? Math.round(Math.max(0, Math.min(600, at)) * 1000) / 1000 : undefined,
+      until: until !== undefined ? Math.round(Math.max(0, Math.min(600, until)) * 1000) / 1000 : undefined,
       size: size !== undefined ? Math.max(0.5, Math.min(3, size)) : undefined,
       cx: cx !== undefined ? Math.max(0, Math.min(100, cx)) : undefined,
       cy: cy !== undefined ? Math.max(0, Math.min(100, cy)) : undefined,

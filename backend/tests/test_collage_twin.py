@@ -55,6 +55,9 @@ from app.collage import (
     photo_delay,
     photo_size,
     photo_start,
+    photo_at,
+    photo_until,
+    exit_start,
     push_depth,
     arrangement_slots,
     exit_fly_length,
@@ -797,6 +800,36 @@ def _cases() -> list[dict]:
         "sizeActions": {"index": 1, "value": 2.75, "target": 1.8},
         "freeDrag": {"cx": 50, "cy": 40, "dx": 20, "dy": -10, "width": 400, "height": 200},
         "includeFrameClips": True,
+    })
+    # Per-photo windows written by the timing lane: `at` and `until` are the only
+    # per-photo times a person can author, and both engines have to agree on what
+    # they mean — an exact arrival that beat-snapping must not move, a departure
+    # read back over the exit fly, a photo with `until` but no exit that simply
+    # stops being composited, and a neighbour with neither field that is not
+    # affected by any of it. The times bracket the authored edges, computed from
+    # the same helpers, so they cannot drift out of the window.
+    windowed = _spec("grid", "drop", "4:3", 4, 17, delays=[0.4, 0.4, 0.4, 0.4], hold=1.5, exit="sweep")
+    windowed["photos"][1]["at"] = 1.75
+    windowed["photos"][1]["until"] = 3.9
+    windowed["photos"][2]["at"] = 0.0
+    windowed["photos"][2]["exit"] = "none"
+    windowed["photos"][2]["until"] = 2.25
+    windowed["photos"][3]["at"] = 3.0
+    windowed["photos"][3]["until"] = 3.05   # shorter than its own entrance + fly
+    windowed["beatSync"] = True
+    windowed["beats"] = [1.8, 2.4, 3.1, 4.0, 4.8]
+    w_spec = normalize_collage({"collage": windowed})
+    w_from, w_to = photo_start(w_spec, 1, 0.0), exit_start(w_spec, 1, 0.0) + exit_fly_length(w_spec, 1)
+    w_cut = exit_start(w_spec, 2, 0.0)
+    w_tiny = exit_start(w_spec, 3, 0.0) + exit_fly_length(w_spec, 3)
+    cases.append({
+        "id": "lanes-authored-window",
+        "spec": windowed,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, round(w_from - 0.04, 3), w_from, round((w_from + w_to) / 2, 3),
+                  round(w_to - 0.04, 3), w_to, w_cut, round(w_cut + 0.04, 3),
+                  round(w_tiny - 0.04, 3), w_tiny, round(w_tiny + 0.04, 3)],
+        "hashArgs": [17, 4, 61], "matW": 30,
     })
     return cases
 

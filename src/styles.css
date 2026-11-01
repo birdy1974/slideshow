@@ -1587,6 +1587,43 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-timing-row .number-stepper input{flex:none;width:34px;font-size:10px;padding:0}
 .collage-timing-row .number-stepper .step-suffix{display:none}
 .collage-timing-actions{margin-left:auto;display:flex;gap:6px}
+/* The per-photo window lane: one line per photo, block = photoStart → exitStart+fly.
+   It is drawn from the same two functions the export clips its overlays to, so a
+   lane cannot show a window the MP4 will not do. */
+.collage-window-head{display:flex;align-items:baseline;gap:8px;margin:11px 0 3px;flex-wrap:wrap}
+.collage-window-head>span{font:800 8px Manrope;letter-spacing:1.1px;color:#9b9f95;text-transform:uppercase}
+.collage-window-head small{font-size:8px;color:#8f948b}
+.collage-window{display:flex;flex-direction:column;gap:3px;border:1px solid #3d423a;border-radius:6px;background:#1d2019;padding:6px 7px 7px;user-select:none;touch-action:none}
+.collage-window-ruler,.collage-window-row{display:grid;grid-template-columns:minmax(0,128px) minmax(0,1fr) 96px;gap:7px;align-items:center}
+.collage-window-ruler{height:13px}
+.collage-window-ruler .collage-window-key,.collage-window-ruler .collage-window-values{font:800 7px Manrope;letter-spacing:.8px;color:#7f857a}
+.collage-window-ruler .collage-window-values{text-align:right}
+.collage-window-track{position:relative;min-width:0;height:22px}
+.collage-window-ruler .collage-window-track{height:13px;border-bottom:1px solid #31352c}
+.collage-window-ruler b{position:absolute;top:0;bottom:0;width:1px;background:#3d423a}
+.collage-window-ruler b s{position:absolute;left:2px;top:0;font:700 7px Manrope;color:#7f857a;text-decoration:none}
+.collage-window-row{height:22px;border-radius:4px;cursor:grab}
+.collage-window-row:hover{background:#23261f}
+.collage-window-row.active{background:#272c20}
+.collage-window-row.pinned{box-shadow:inset 2px 0 0 #d9b35d}
+.collage-window-key{display:flex;align-items:center;gap:5px;min-width:0;font-size:8px;color:#b8bcb2}
+.collage-window-key i{flex:0 0 auto;width:14px;height:14px;border-radius:3px;background:#3a4035;color:#dfe2da;font:800 8px Manrope;display:grid;place-items:center;font-style:normal}
+.collage-window-row.pinned .collage-window-key i{background:#d9b35d;color:#231c07}
+.collage-window-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.collage-window-row .collage-window-track{background:repeating-linear-gradient(90deg,#23261f,#23261f 1px,#282c23 1px,#282c23 3px);border-radius:4px}
+.collage-window-block{position:absolute;top:3px;bottom:3px;min-width:8px;display:flex;align-items:center;border-radius:4px;background:#55643f;border:1px solid #7fa04a;cursor:grab;touch-action:none;box-shadow:0 1px 0 #0006}
+.collage-window-row.pinned .collage-window-block{background:#78a13e;border-color:#a3cd63}
+.collage-window-arrive{position:absolute;left:0;top:0;bottom:0;border-right:1px dashed #ffffff55;background:linear-gradient(90deg,#ffffff2e,#ffffff00);border-radius:3px 0 0 3px;pointer-events:none}
+.collage-window-ghost{position:absolute;top:7px;bottom:7px;border:1px dashed #6c7660;border-radius:4px;pointer-events:none;opacity:.75}
+.collage-window-edge{position:absolute;top:-2px;bottom:-2px;width:9px;border:0;padding:0;border-radius:4px;background:#a3cd63;box-shadow:0 0 0 1px #141a0c88;cursor:ew-resize;touch-action:none}
+.collage-window-edge.in{left:-5px}
+.collage-window-edge.out{right:-5px}
+.collage-window-edge:hover{background:#c8f08a}
+.collage-window-values{display:flex;justify-content:flex-end;align-items:center;gap:4px}
+.collage-window-values em{font:700 8px Manrope;color:#a7ada0;font-style:normal;white-space:nowrap}
+.collage-window-auto{border:1px solid #4a4f45;background:#23261f;color:#c9cdc4;font:800 8px Manrope;border-radius:4px;padding:0 4px;height:14px;cursor:pointer}
+.collage-window-auto:hover{border-color:#78a13e;color:#fff}
+@media (max-width:1240px){.collage-window-ruler,.collage-window-row{grid-template-columns:minmax(0,88px) minmax(0,1fr) 82px}}
 .collage-preview-controls{position:absolute;top:8px;right:8px;z-index:8;display:flex;align-items:center;gap:2px;padding:3px;border:1px solid #ffffff30;border-radius:7px;background:#111d;color:#f4f6f0;box-shadow:0 2px 8px #0005;backdrop-filter:blur(6px)}
 .collage-preview-controls button{height:25px;display:flex;align-items:center;justify-content:center;gap:4px;padding:0 6px;border:1px solid transparent;border-radius:4px;background:transparent;color:inherit;font:700 8px Manrope,sans-serif;cursor:pointer;transition:background .12s,border-color .12s,color .12s}
 .collage-preview-controls button:hover:not(:disabled){background:#ffffff18;border-color:#ffffff26}

@@ -37,10 +37,12 @@ Per photo (`spec.photos[i]`):
 | `turnTo` | the angle a `turn` motion reaches, degrees clockwise from its resting tilt (±180) |
 | `lookAnim` | an animated look: its colour changes over time (`toColor`, `toBw`, `flicker`, `invert`, `hueFlip`) |
 | `exit` | how it leaves, overriding `spec.exit`: one of the five departures, or **any entrance id** — which then plays backwards as its departure. `none` keeps it on screen |
+| `at`, `until` | the timing lane: when this photo's entrance begins, and the instant it is *fully gone*, in seconds from the start of the collage's own content (after the lead-in). Written only by the lane; absent means the schedule's numbers |
 
-`rot` is written only when it is not zero (`setPhotoRot` drops it at 0°), and the
-three lanes only when they differ from the collage's, so a project nobody ever
-touched stays byte-identical through a save.
+`rot` is written only when it is not zero (`setPhotoRot` drops it at 0°), the
+three lanes only when they differ from the collage's, and `at` / `until` only when
+a lane was actually dragged, so a project nobody ever touched stays byte-identical
+through a save.
 
 ## The two engines
 
@@ -492,6 +494,64 @@ survives a switch to `turn`. A chip whose photo has any lane of its own carries 
 number. Changing a lane never restarts the preview — the clock keeps running and
 only clamps when the slide's derived duration changes.
 
+## When each photo is on screen
+
+The pile is a *sequence*: photo i starts after the delays of photos 0..i, everybody
+lingers until the end of the hold, and each photo leaves on its exit offset. That is
+a good default and a bad way to say "this one only during the second line", so the
+bottom of the **Photo size & timing** group carries one lane per photo over a shared
+ruler (`src/CollageTimingLanes.tsx`), and the spec carries two optional seconds
+fields per photo.
+
+- **What is stored.** `photo.at` is where that photo's entrance begins; `photo.until`
+  is the instant it is *fully gone* — the end of its exit fly, not the start, because
+  that is what the right edge of a block means to someone dragging it. Both are
+  seconds from the start of the collage's content, so the popup's number and the
+  render's `between(t,…)` differ by the lead-in handle and nothing else. `photoAt` /
+  `photo_at` and `photoUntil` / `photo_until` accept a finite number (`at >= 0`,
+  `until > 0`) and report `None` for anything else, including a `True` — `bool` is an
+  `int` in Python and a number in JS, and `at: 0` is frame one, not an absence, so
+  neither side may test truthiness.
+- **One authority for the departure.** `exitStart(spec, i, leadIn)` /
+  `exit_start(spec, i, lead_in)` is the only place the answer is kept: an authored
+  `until` read back over `exitFlyLength`, floored at the photo's own arrival plus its
+  entrance; otherwise `lead_in + baseDuration + exitOffset(i)`, which is the formula
+  the render and the preview each used to write out longhand. `photoState`,
+  `photo_state` and the graph's `te0` all call it, so a block's right edge and the
+  frame where the photo disappears cannot be two different events.
+- **The slide follows the last stop, never the earliest.** `baseDuration` takes its
+  legacy value and then `max`s in `exitStart(i) + exitFlyLength(i)` *for the photos
+  that have a `until`* — consulting only authored ends is what keeps
+  `exitStart → baseDuration → exitStart` from being a loop. `collageDuration` is
+  still `baseDuration + exitTotal`, so the popup's `slide Ns`, the storyline's
+  automatic length and the export's `-t` all move with the lane on their own.
+- **`at` bypasses beat snapping, on purpose.** Snapping exists to rescue a schedule
+  nobody looked at; `photoStart` returns `lead_in + at` before the Σ-delay loop and
+  never reaches `next_beat`. A drag that lands on a beat is kept, because the lane
+  snaps to the render's 25 fps grid and the beats were found on that same clock.
+- **A stop on a photo with no exit is a cut.** `exit: none` means "stays to the end"
+  and has no fly to end, so the authored `until` is honoured by the visibility
+  envelope (`alpha = 0` from `exitStart` on) *and* by the graph, which closes that
+  photo's overlay window at `t_end = lead_in + until`. Without the second half the
+  last baked level of the size ladder would keep painting it for the rest of the
+  slide.
+- **The mouse map** is the one subtitle editors converged on: drag the middle of a
+  block to move the window (both fields, width preserved), drag either edge to set
+  one of them, **Shift-click** the track to pin the start at the pointer,
+  **Ctrl/⌘-click** to pin the stop, double-click the row (or press its `auto`) to
+  hand the photo back to the schedule. A lighter band across the left of a block,
+  dashed where it stops, is the entrance's own length — the photo is not *landed*
+  until the band ends — and a dashed ghost shows what the schedule would have done,
+  so an authored time stays legible as an edit rather than a mystery. A pinned row's
+  block is bright lime where the schedule's is dim olive. Times snap to 1/25 s and a window is
+  never allowed below 0.12 s, because two frames is the shortest thing a curve can
+  be seen doing.
+
+Everything the lane does not touch is exactly what it was: a photo with neither field
+takes the Σ-delay start, the shared hold and its own exit offset, and the graph it
+generates is byte-identical — `normalize_collage` drops an empty or nonsense field
+rather than writing a `0`, so even "cleared" is no change to the file.
+
 ## Preview and MP4: what makes them agree
 
 The two engines are written to say the same thing, and three kinds of test hold
@@ -558,6 +618,19 @@ measured rather than assumed:
   sides must drop the same way. The lane cases also compare the **CSS filter
   string** each engine paints at each sampled moment (`matFilterCss`, emitted by
   the driver as `filters`): same parts, same order, same values.
+- `backend/tests/test_collage_photo_window.py` — the timing lane's two fields on
+  their own: the accessors refuse junk but honour `at: 0`; an authored arrival is
+  exact while the same photo unauthored is still snapped; a photo carrying only empty
+  timing fields generates the identical filtergraph; `until` is the instant the photo
+  is *gone* (`exitStart + fly == lead_in + until`) and never earlier than its own
+  landing; a stop past the hold lengthens the slide without shortening anybody
+  else's; and for both a cut and a faded departure the window parsed back out of the
+  graph ends at the authored second, one frame of grace at most. Its last class is a
+  source check, in this repo's idiom for "the user can actually see it": the lane
+  reads `photoStart` / `exitStart` / `exitFlyLength` from `collageCore` instead of
+  re-deriving them, snaps with `Math.round(v * 25) / 25`, and is mounted under the
+  head that explains it, inside the timing group, with `onChange` wired to
+  `setPhotoLane`.
 - `backend/tests/test_collage_animation_ffmpeg.py` — real FFmpeg renders, pixels
   measured. `CollageFreeTiltRenderTest` renders one red photo on a grey bed at
   0°, ±45°, ±90°, 135°, 180° and checks the bounding box turns the right way and
