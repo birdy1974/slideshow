@@ -45,7 +45,7 @@ import { TextEffectBrowser, type BrowserCaption } from './TextEffectBrowser'
 import { MotionStage, useMotionClock } from './TextMotionStage'
 import { KaraokeStage, useKaraokeClockTime } from './KaraokeStage'
 import { KaraokeEditor } from './KaraokeEditor'
-import { karaokeTextStyleTouched, sanitizeKaraoke, tokenize } from './karaokeCore'
+import { karaokeTextStyleTouched, sanitizeKaraoke, tokenize, type KaraokeData } from './karaokeCore'
 import { FRAME_H, FRAME_W, type Prepared, type SceneInput } from './textMotionScene'
 import type { BgChange } from './textMotionCore'
 import { FontPicker } from './FontPicker'
@@ -3347,25 +3347,43 @@ function sceneInputFor(item: MediaItem, defaults?: Partial<CaptionDefaults> | nu
   }
 }
 
+/** The caption of a slide, in a stage: karaoke when the words carry a clock, the
+ *  effect stack otherwise. Every preview goes through this branch — the storyboard
+ *  frame, the preview modal, the "Edit picture text" and text-frame canvases, the
+ *  collage caption — because the swap used to live in `FrameMotionPreview` alone,
+ *  which is how a saved timing could be visible on the storyboard and missing from
+ *  the popup that made it.
+ *
+ *  With karaoke on, the children (motion-path overlay, effect-flag preview) are
+ *  dropped on purpose: the render hands the caption to the `.ass` and skips the
+ *  effect stack, so the karaoke branch of a preview must not show either. A caller
+ *  that needs a drag handle paints it beside the stage instead. */
+function CaptionStage({ input, clock, karaoke, className = '', ...rest }: Omit<React.ComponentProps<typeof MotionStage>, 'at'> & { karaoke?: KaraokeData }) {
+  const at = useKaraokeClockTime(karaoke && input ? clock ?? null : null)
+  if (karaoke && input && (input.text || '').trim()) {
+    const scene = input
+    return <KaraokeStage
+      className={`stage-fill ${className}`} text={scene.text} karaoke={karaoke} at={at}
+      from={scene.start} to={scene.end} family={scene.family} bold={scene.bold} italic={scene.italic}
+      underline={scene.underline} colour={scene.colour} fontSize={scene.fontSize} x={scene.x} y={scene.y}
+      align={scene.align} outline={scene.outline}
+    />
+  }
+  return <MotionStage className={`stage-fill ${className}`} input={input} clock={clock} {...rest}/>
+}
+
 /** A text frame (or caption) playing with its effects: lightbox and preview. */
 function FrameMotionPreview({ item, defaults, playing = true, className = '' }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; className?: string }) {
   const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
-  // Karaoke replaces the caption rather than sitting next to it: the words are
-  // the same, only timed, and `sceneInputFor` is what resolves the font, size,
-  // colour, position and outline for both — so a karaoke slide keeps the look
-  // the caption settings give it. backend/app/karaoke.py reads the same plan.
+  // The words are the caption's own, only timed, and `sceneInputFor` is what
+  // resolves the font, size, colour, position and outline for both — so a karaoke
+  // slide keeps the look the caption settings give it (and `karaoke.text` can
+  // override part of it, in the stage). backend/app/karaoke.py reads the same plan.
   const karaoke = sanitizeKaraoke(item.karaoke, tokenize(item.text || '').length)
-  const at = useKaraokeClockTime(karaoke ? clock : null)
-  if (karaoke && (item.text || '').trim()) {
-    return <KaraokeStage
-      className={`stage-fill ${className}`} text={item.text || ''} karaoke={karaoke} at={at}
-      from={input.start} to={input.end} family={input.family} bold={input.bold} italic={input.italic}
-      underline={input.underline} colour={input.colour} fontSize={input.fontSize} x={input.x} y={input.y}
-      align={input.align} outline={input.outline}
-    />
-  }
-  return <MotionStage className={`stage-fill ${className}`} input={input} clock={clock} background={item.type === 'title' ? item.frameBackground : undefined} bg={item.type === 'title' ? bgChangeFor(item) : null} />
+  return <CaptionStage input={input} clock={clock} karaoke={karaoke} className={className}
+    background={item.type === 'title' ? item.frameBackground : undefined}
+    bg={item.type === 'title' ? bgChangeFor(item) : null}/>
 }
 
 // ---------------------------------------------------------------------------
@@ -3988,7 +4006,8 @@ function CollageSlideStage({ item, defaults, playing = true, showPlaybackControl
   }
   return <>
     <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} onRotatePhoto={onRotatePhoto} onMoveTarget={onMoveTarget} onTurnTarget={onTurnTarget} showMotionTarget={showMotionTarget} selectedIndex={selectedIndex} onSelectPhoto={onSelectPhoto} />
-    <MotionStage className={`stage-fill${onMovePhoto ? ' collage-caption-stage' : ''}`} input={input} clock={clock} />
+    <CaptionStage className={onMovePhoto ? 'collage-caption-stage' : ''} input={input} clock={clock}
+      karaoke={sanitizeKaraoke(item.karaoke, tokenize(item.text || '').length)}/>
     {showPlaybackControls && <div className="collage-preview-controls" role="group" aria-label="Photo animation preview controls">
       <button type="button" title="Replay from the first photo — changing a setting keeps the playhead where it is" aria-label="Replay animation" disabled={!hasPhotos} onClick={replay}><RotateCcw size={13}/><span>Replay</span></button>
       <button type="button" title="Play the animation in reverse at 2× speed" aria-label="Reverse animation at double speed" aria-pressed={editorRate < 0 && editorPlaying} className={editorRate < 0 && editorPlaying ? 'active' : ''} disabled={!hasPhotos} onClick={() => playAtRate(-2)}><Rewind size={13}/><span>Rev</span></button>
@@ -4099,6 +4118,31 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
     setDraft(current => ({ ...current, ...change }))
     if (isFrame) livePatch?.(change)
   }
+  // A popup stacked on top of this one writes straight to the item: the karaoke
+  // editor commits the caption text it edited, its word times and the caption
+  // window, because the render must see them the moment they are saved. Two things
+  // follow, and both used to go wrong here — the preview kept painting the
+  // snapshot this popup opened with (so a saved timing looked like it had done
+  // nothing), and Save wrote that snapshot back over the item, which is how "save,
+  // close, reopen" lost the text *and* the timing. So the fields the karaoke popup
+  // owns are adopted as they arrive: `karaoke` always, since nothing in this
+  // editor touches it, and the text and window only while this editor holds no
+  // unsaved edit of its own — typing is never replaced underneath the user.
+  const seenItem = useRef(item)
+  useEffect(() => {
+    const before = seenItem.current
+    seenItem.current = item
+    if (before === item) return
+    setDraft(draft => {
+      const next: Partial<MediaItem> = {}
+      if (draft.karaoke !== item.karaoke) next.karaoke = item.karaoke
+      for (const key of ['text', 'textStart', 'textEnd'] as const) {
+        const dirty = draft[key] !== before[key]
+        if (!dirty && draft[key] !== item[key]) (next as Record<string, unknown>)[key] = item[key]
+      }
+      return Object.keys(next).length ? { ...draft, ...next } : draft
+    })
+  }, [item])
   useEffect(() => {
     if (!isFrame) return
     setDraft(d => (d.frameBackgroundImage === item.frameBackgroundImage && d.frameBackgroundFit === item.frameBackgroundFit) ? d : { ...d, frameBackgroundImage: item.frameBackgroundImage, frameBackgroundFit: item.frameBackgroundFit })
@@ -4138,6 +4182,10 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   const [stackPrep, setStackPrep] = useState<Prepared | null>(null)
   const sceneDefaults = isFrame ? null : dd
   const input = useMemo(() => sceneInputFor(draft, sceneDefaults, candidate ? candidate.stack : stack), [draft, candidate, stack])
+  // Sanitized the way every other preview sanitizes it: a block whose words are
+  // not timed is no karaoke, so the popup never paints a half-timed caption as a
+  // sweep the render will not produce.
+  const captionKaraoke = useMemo(() => sanitizeKaraoke(draft.karaoke, tokenize(draft.text || '').length), [draft.karaoke, draft.text])
   const browserCaption: BrowserCaption = {
     text: draft.text || 'Text', family, bold, italic, colour: color, isFrame, background: isFrame ? draft.frameBackground : undefined,
     bgChange: bg ? { colourB: bg.colourB, transition: bg.transition } : null,
@@ -4219,13 +4267,19 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
           }} />}
           {!isFrame && src && <div className="stage-blur" style={{ backgroundImage: `url(${canvasPhoto.src})`, filter: `blur(${backdropBlurPx(frameScale).toFixed(1)}px) brightness(0.88) saturate(1.2)` }} />}
           {!isFrame && src && (item.type === 'video' ? <video src={src} muted playsInline autoPlay loop /> : <img src={canvasPhoto.src} alt="" draggable={false} />)}
-          <MotionStage className="stage-fill" input={input} clock={clock} background={isFrame && !draft.frameBackgroundImage ? draft.frameBackground : undefined} bg={isFrame && !draft.frameBackgroundImage ? bg : null} flag={candidate?.flag}
+          <CaptionStage input={input} clock={clock} karaoke={captionKaraoke} background={isFrame && !draft.frameBackgroundImage ? draft.frameBackground : undefined} bg={isFrame && !draft.frameBackgroundImage ? bg : null} flag={candidate?.flag}
             onPrepared={p => { setPrep(p); if (!candidate) setStackPrep(p) }}>
             {motionEnabled && motion.points.length > 1 && <svg className="frame-motion-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"><path d={motion.points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt[0]} ${pt[1]}`).join(' ')} fill="none" stroke="rgba(145,169,107,0.85)" strokeWidth="0.6" strokeDasharray={(draft.textMovePathType === 'straight' || !draft.textMovePathType) ? '1.2 1.2' : undefined} /></svg>}
             {motionEnabled && <><span className="motion-handle from small frame-handle" style={{ left: `${motion.fromX}%`, top: `${motion.fromY}%` }}><b>S</b></span><span className="motion-handle to small frame-handle" style={{ left: `${motion.toX}%`, top: `${motion.toY}%` }}><b>E</b></span></>}
             <div className="motion-drag" title="Drag to position the text" style={handleStyle}
               onPointerDown={e => dragOnStage(e, (x, y) => apply({ textX: x, textY: y, ...(motionEnabled ? { textMoveFromX: x, textMoveFromY: y } : {}) }))}><Move size={14}/></div>
-          </MotionStage>
+          </CaptionStage>
+          {/* With karaoke the stage paints timed words instead of the animated
+              layer, so the drag handle comes back as a sibling: the caption still
+              sits where it is put, and the sung text follows it (unless
+              `karaoke.text` gave itself another position). */}
+          {captionKaraoke ? <div className="motion-drag" title="Drag to position the text" style={handleStyle}
+            onPointerDown={e => dragOnStage(e, (x, y) => apply({ textX: x, textY: y }))}><Move size={14}/></div> : null}
           {!isFrame && draft.textEnabled === false && <span className="picture-text-disabled-badge"><EyeOff size={12}/> Hidden</span>}
         </div>
         <TextMotionTimeline stack={stack} onChange={setStack} clock={clock} duration={clipDuration} start={timing.textStart} end={timing.textEnd}

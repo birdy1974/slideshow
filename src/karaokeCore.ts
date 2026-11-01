@@ -626,6 +626,24 @@ export function planOf (text: string, data: KaraokeData, opts: { from?: number; 
  * Preview state (the DOM twin of the ASS the render writes)
  * ------------------------------------------------------------------ */
 
+/** Which sentence the panel and the strip should be on while the playhead moves.
+ *
+ *  The rule subtitle editors use (Aegisub's cursor, Subtitle Edit's follow): the
+ *  line that is showing, and during a gap the *next* one to come, so the line you
+ *  are about to hear is already selected and ready to nudge. Past the end it stays
+ *  on the last. -1 = nothing to follow.
+ *
+ *  It lives here rather than in the popup because the popup is not the only thing
+ *  that has to agree about it, and `follow_sentence` in backend/app/karaoke.py is
+ *  its twin, pinned by the karaoke twin test.
+ */
+export function followSentence (plan: KaraokePlan, t: number): number {
+  const lines = plan.sentences
+  if (!lines.length) return -1
+  for (let i = 0; i < lines.length; i++) if (t < lines[i].end) return i
+  return lines.length - 1
+}
+
 export function karaokeAt (plan: KaraokePlan, t: number, style: KaraokeStyle = 'sweep'): KaraokeFrame {
   const empty: KaraokeFrame = { s: -1, k: -1, u: 0, done: -1, fade: 1 }
   for (let si = 0; si < plan.sentences.length; si++) {

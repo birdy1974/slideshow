@@ -29,8 +29,8 @@ import type { MediaItem } from './mediaItem'
 import { KaraokeStage } from './KaraokeStage'
 import { FontPicker } from './FontPicker'
 import {
-  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, autoTime, karaokePaintStyle,
-  karaokeTextStyleTouched, makeContinuous, parseAssKaraoke, parseLrc,
+  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, autoTime, followSentence,
+  karaokePaintStyle, karaokeTextStyleTouched, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
   timeFromImport, tokenize, wordsPerSecond,
   type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
@@ -92,6 +92,8 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const [data, setData] = useState<KaraokeData>(seeded.current.data)
 
   const [selected, setSelected] = useState(0)
+  /** Whether the panel is following the playhead or the user put it somewhere. */
+  const [follow, setFollow] = useState(true)
   const [playing, setPlaying] = useState(false)
   const [position, setPosition] = useState(windowStart)
   const [rate, setRate] = useState(1)
@@ -117,6 +119,25 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const span = Math.max(1, clipSeconds)
   const plan = useMemo(() => planOf(draftText, data, { from: windowStart, to: windowEnd }), [draftText, data, windowStart, windowEnd])
   const groups = useMemo(() => sentenceGroups(tokens, data.words, data.maxWords), [tokens, data.words, data.maxWords])
+  // What the subtitle editors do: while the movie plays, the panel and the strip
+  // ride the playhead, so "Selected sentence 3 of 15" is the line you are hearing
+  // (and the next one during a gap, ready to nudge). Paused, or while a block is
+  // under the pointer, the selection is wherever the user left it — following is
+  // turned off by clicking a line and back on by playing again.
+  useEffect(() => {
+    if (!playing || !follow || dragRef.current) return
+    const index = followSentence(plan, position)
+    if (index >= 0) setSelected(current => (current === index ? current : index))
+  }, [playing, follow, position, plan])
+  useEffect(() => {
+    if (playing) setFollow(true)
+  }, [playing])
+  /** A deliberate selection stops the follow, so the panel stays on the line the
+   *  user aimed at; pressing play picks the cursor back up. */
+  const selectLine = (value: number | ((index: number) => number)) => {
+    setFollow(false)
+    setSelected(value)
+  }
   const current = plan.sentences[Math.min(selected, Math.max(0, plan.sentences.length - 1))]
   const perSecond = wordsPerSecond(plan)
 
@@ -382,7 +403,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
         case 'Enter':
           event.preventDefault()
           if (line) seek(Math.min(span, line.end + 0.12))
-          setSelected(i => Math.min(Math.max(0, plan.sentences.length - 1), i + 1))
+          selectLine(i => Math.min(Math.max(0, plan.sentences.length - 1), i + 1))
           return
         case 'Backspace':
           if (tapArmed) {
@@ -402,15 +423,15 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
           return
         case 'ArrowUp':
           event.preventDefault()
-          setSelected(i => Math.max(0, i - 1))
+          selectLine(i => Math.max(0, i - 1))
           return
         case 'ArrowDown':
           event.preventDefault()
-          setSelected(i => Math.min(Math.max(0, plan.sentences.length - 1), i + 1))
+          selectLine(i => Math.min(Math.max(0, plan.sentences.length - 1), i + 1))
           return
         case 'Tab':
           event.preventDefault()
-          setSelected(i => (i + (event.shiftKey ? -1 : 1) + plan.sentences.length) % Math.max(1, plan.sentences.length))
+          selectLine(i => (i + (event.shiftKey ? -1 : 1) + plan.sentences.length) % Math.max(1, plan.sentences.length))
           return
         case 'Delete':
           dropBreak()
@@ -480,7 +501,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
       return
     }
     dragRef.current = { kind, index, t0: t, snapshot: data.words.map(w => ({ ...w })) }
-    setSelected(index)
+    selectLine(index)
     ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
     if (kind === 'block' && (event.shiftKey || event.ctrlKey || event.metaKey)) {
       // Modifier-click on a block: set that edge and ripple from there — the

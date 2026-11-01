@@ -533,6 +533,44 @@ class TextStyleTest(unittest.TestCase):
         self.has(editor, "KARAOKE_TEXT_FIELDS.filter(field => field.kind === 'flag')",
                  "the controls are built from the table the engines read")
 
+    def test_every_preview_paints_the_karaoke(self) -> None:
+        # The popup that *makes* the timing used to be the one preview that did not
+        # show it: the swap lived in `FrameMotionPreview` alone, so a saved timing
+        # was visible on the storyboard and invisible in "Edit picture text". One
+        # component owns the branch now, so a caller cannot forget it.
+        app = self.source("src/App.tsx")
+        self.has(app, "function CaptionStage(", "one component owns the karaoke swap")
+        self.assertGreaterEqual(app.count("<CaptionStage"), 3, "storyboard frame, text popups and the collage caption")
+        popup = app[app.index("function TextEditor("):]
+        self.has(popup, "<CaptionStage input={input} clock={clock} karaoke={captionKaraoke}", "the popup canvas goes through it")
+        self.assertNotIn('<MotionStage className="stage-fill" input={input} clock={clock}', popup,
+                        "no bare MotionStage left in the popup: that is the karaoke-less branch")
+        self.has(popup, "sanitizeKaraoke(draft.karaoke, tokenize(draft.text || '').length)",
+                 "the popup sanitizes the block the way every other preview does")
+
+    def test_the_popup_adopts_what_the_karaoke_popup_saves(self) -> None:
+        # The merge that ate the work: the text popup opened with a snapshot of the
+        # item, and Save wrote that snapshot back — reverting the caption text and
+        # the window the karaoke popup had just committed, which is how a saved
+        # timing "disappeared". The popup has to adopt what the popup above wrote.
+        app = self.source("src/App.tsx")
+        self.has(app, "if (draft.karaoke !== item.karaoke) next.karaoke = item.karaoke", "the saved block reaches the popup")
+        start = app.index("const seenItem = useRef(item)")
+        block = app[start:app.index("const save = () =>", start)]
+        self.assertIn("['text', 'textStart', 'textEnd']", block, "the fields the karaoke popup owns are adopted")
+        self.assertIn("draft[key] !== before[key]", block, "an unsaved edit in this popup is never replaced")
+        self.assertIn("if (before === item) return", block, "the adoption is a no-op unless the item actually changed")
+
+    def test_the_panel_follows_the_playhead(self) -> None:
+        # "Selected sentence 1 of 15" while playing meant the label never moved:
+        # the selection only followed clicks. It rides the clock now, and a
+        # deliberate click pins it again until play resumes.
+        editor = self.source("src/KaraokeEditor.tsx")
+        self.has(editor, "followSentence(plan, position)", "the selection rides the same clock the strip paints")
+        self.has(editor, "if (!playing || !follow || dragRef.current) return", "paused or dragging: the selection stays put")
+        self.has(editor, "const selectLine =", "a deliberate selection pins the line")
+        self.has(editor, "setFollow(false)", "and following resumes with play")
+
     def test_the_field_is_persisted_and_loaded(self) -> None:
         # Media items are stored as free-form dicts, so nothing has to be taught
         # about `karaoke` — but the TypeScript model must declare it, or the
