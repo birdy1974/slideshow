@@ -546,6 +546,59 @@ class CollagePhotoLanesRenderTest(unittest.TestCase):
         self.assertGreater(_lane_box(last, "lime")[0], 200,
                            "the photo whose own exit is 'none' must still be there at the end")
 
+    def test_an_exit_that_names_an_animation_leaves_the_way_it_arrives(self):
+        """The MP4, not just the preview: rise comes up from below, so a photo whose
+        *exit* is 'rise' has to sink back down on its way out and be gone at the end.
+
+        Nothing about this is asserted about the preview — `photo_state()` is sampled by
+        the editor, and the point of the test is that the generated expressions carry the
+        same curve: the measured centre moves the way the model says, and the last frame
+        holds no photo at all.
+        """
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({0: {"cx": 50, "cy": 50, "w": 24}}, animation="fade", hold=1.0,
+                          exit="rise")
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        base = base_duration(spec)
+        fly = exit_fly_length(spec, 0)
+        self.assertAlmostEqual(fly, ENTRANCE_LENGTH["rise"], places=5,
+                               msg="a mirrored exit runs as long as the arrival it mirrors")
+        graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
+        # the added term, not the arrival's own: `pow(1-<mirrored progress>,3)` with the
+        # exit window inside it is what distinguishes "rise as an exit" from "reverse"
+        self.assertRegex(graph, r"pow\(1-1-min\(max\(\(t-[\d.]+\)/[\d.]+,0\),1\),3\)")
+        rest = _lane_box(frames[int((base - 0.05) * FPS)], "red")
+        self.assertGreater(rest[0], 200, "the photo is on screen and at rest before it leaves")
+        mid = _lane_box(frames[int((base + fly * 0.55) * FPS)], "red")
+        self.assertGreater(mid[2], rest[2] + 1.0,
+                           f"rise leaves downwards: {rest[2]:.1f} → {mid[2]:.1f}")
+        self.assertLess(_lane_box(frames[-1], "red")[0], 25, "and it is gone by the last frame")
+        # …while the same animation as an *arrival* leaves nothing of its own behind:
+        # 'reverse' mirrors the fade-in it already had, so no second term is added.
+        plain = _lane_item({0: {"cx": 50, "cy": 50, "w": 24}}, animation="fade", hold=1.0,
+                           exit="reverse")
+        graph2 = "".join(collage_graph(plain, W, H, FPS, collage_duration(normalize_collage(plain)),
+                                      0, 1, "cb")[0])
+        self.assertNotIn("pow(1-1-min(max((", graph2,
+                         "a photo mirroring its own arrival must not get the exit twice")
+
+    def test_a_reveal_exit_closes_instead_of_fading(self):
+        """An iris used as a departure is the mask shutting: the photo does not move, it
+        stops being uncovered — so the visible area falls while the centre holds."""
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({0: {"cx": 50, "cy": 50, "w": 24}}, animation="fade", hold=1.0,
+                          exit="iris")
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        base = base_duration(spec)
+        fly = exit_fly_length(spec, 0)
+        rest = _lane_box(frames[int((base - 0.05) * FPS)], "red")
+        mid = _lane_box(frames[int((base + fly * 0.6) * FPS)], "red")
+        self.assertGreater(rest[0], 200, "open before the exit starts")
+        self.assertLess(mid[0], rest[0] - 20, "the iris has closed a visible amount")
+        self.assertAlmostEqual(mid[1], rest[1], delta=2.5, msg="a reveal does not travel")
+        self.assertAlmostEqual(mid[2], rest[2], delta=2.5, msg="a reveal does not travel")
+        self.assertLess(_lane_box(frames[-1], "red")[0], 25, "closed at the end")
+
     def test_a_per_photo_swing_hangs_from_its_own_pin(self):
         ffmpeg = str(_ffmpeg_bin())
         item = _lane_item({

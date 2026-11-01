@@ -1926,7 +1926,18 @@ html.modal-open,html.modal-open body{overflow:hidden}
     linear-gradient(105deg,transparent 40%,#ffffff38 41% 55%,transparent 56%)}
 /* entrance pickers in the collage panel: the wide row and the per-photo lane */
 .collage-anim-pick{display:flex;align-items:center;gap:8px;margin-top:8px}
-.collage-anim-pick .transition-chip{max-width:280px}
+.collage-anim-pick .transition-chip{max-width:280px;min-width:0}
+/* …and the name inside it has to be the thing that gives: the chip is a flex row
+   whose label is one nowrap line (`.transition-chip .chip-name`), so a long name
+   like "Slanted Push — diagonal wipe with a tilt" ran straight out of the chip and
+   painted over the Random button beside it. `min-width:0` above lets the chip shrink
+   and the ellipsis below ends the line inside its own box; the full name plus the
+   animation's hint stay reachable on the chip's tooltip and in the browser. */
+.collage-anim-pick .chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
+/* the exit chip says so: the same name means the opposite direction there, and a
+   reader who misses the group heading above should not have to guess which one this is */
+.chip-phase{flex:none;font:700 7.5px Manrope;letter-spacing:.6px;text-transform:uppercase;
+  color:#7a6a2f;background:#fdf3d2;border-radius:999px;padding:1px 5px}
 .collage-shuffle-scope{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:6px 0 0;font-size:10px;color:#5f635b}
 .collage-shuffle-scope>.scope-lead{font:700 8px Manrope;letter-spacing:.8px;text-transform:uppercase;color:#8b8e86}
 .check-label.tiny{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#5f635b;cursor:pointer}
@@ -1935,3 +1946,25 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .collage-lane-anim-opts{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:10px;color:#5f635b}
 .collage-lane-anim-opts .collage-lane-amount{margin:0}
 .collage-selected-lanes .anim-chip{width:100%;max-width:230px;height:28px}
+.collage-selected-lanes .anim-chip .chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* The two speed sliders under the animation groups. The class says "exit" because
+   the row was first built for the fly-out, and the entrance row borrowed it — which
+   it could only do as long as the rules lived on `.field .set`/`.field .row`, the
+   wide flex row other popups use. Inside a collage group there is no `.field`
+   ancestor, so nothing styled it: the label stayed an inline `<label>`, the native
+   range kept its browser box, and the hint line under it (`.collage-choices-group
+   small`, which pulls itself up 4 px to sit close to what it describes) landed on
+   top of the slider. `margin:0` on the input is the same fix the transition
+   browser's tiny sliders needed for the identical reason. */
+.collage-exit-speed{display:flex;align-items:center;gap:8px;min-height:22px;
+  margin:7px 0 0;font-size:10px;line-height:1.2;color:#5f635b}
+.collage-exit-speed>span{flex:none;min-width:74px;font:700 8.5px Manrope;letter-spacing:.7px;
+  text-transform:uppercase;color:#8b8e86}
+.collage-exit-speed>input[type=range]{flex:1 1 80px;min-width:56px;max-width:180px;height:18px;margin:0}
+.collage-exit-speed>b{flex:none;min-width:32px;text-align:right;color:#3e5224;
+  font-variant-numeric:tabular-nums}
+.collage-exit-speed.disabled{opacity:.55}
+/* the hint line under a picker: it belongs to the control above it, so it is laid
+   out as its own block with room of its own instead of riding up into the slider */
+.collage-anim-hint{display:block;line-height:1.45;font-size:10px;color:#8b8e86;margin:5px 0 0;
+  overflow-wrap:anywhere}

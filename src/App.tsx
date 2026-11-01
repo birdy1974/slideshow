@@ -15,7 +15,7 @@ import {
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { animHasDirection, animLabelOf, animSpeed, ANIM_FAMILIES, COLLAGE_GEOM_CHOICES,
-  COLLAGE_LOOK_ENTRANCE_CHOICES, collageAnimRows, collageShuffle, entranceLength, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageAnimFamily, type CollageAnimation,
+  COLLAGE_LOOK_ENTRANCE_CHOICES, collageAnimRows, collageShuffle, COLLAGE_EXIT_ROWS, animHintOf, exitChoice, entranceLength, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageAnimFamily, type CollageAnimation,
   type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
@@ -4517,9 +4517,10 @@ const ANIM_FAMILY_LABEL: Record<CollageAnimFamily, string> = {
   classic: 'classic', paper: 'paper', colour: 'colour', mask: 'reveals', ffmpeg: 'FFmpeg',
 }
 
-/** The entrance as a label, for the hints that name the collage's own choice. */
-const animLabel = (id: string | undefined): string =>
-  COLLAGE_ANIMS.find(a => a.id === id)?.label ?? 'Drop'
+/** The entrance as a label, for the hints that name the collage's own choice — read
+ *  through the core's own catalogue, so a bridged `slideleft` or a mask reveal shows
+ *  the name it was picked under instead of falling back to "Drop". */
+const animLabel = (id: string | undefined): string => animLabelOf(id)
 const COLLAGE_FRAMES: { id: CollageFrameShape; label: string; hint: string }[] = [
   { id: 'polaroid', label: 'Polaroid', hint: 'Classic white mat with a caption strip' },
   { id: 'none', label: 'None', hint: 'No border — the photo is the cell' },
@@ -4543,17 +4544,26 @@ const COLLAGE_STICKERS: { id: CollageStickers | 'none'; label: string; hint: str
   { id: 'pin', label: 'Pin', hint: 'A push-pin at the top' },
   { id: 'mix', label: 'Mix', hint: 'Tape and a pin' },
 ]
-const COLLAGE_EXITS: { id: NonNullable<CollageSpec['exit']>; label: string; hint: string }[] = [
-  { id: 'none', label: 'Stay on', hint: 'The photos stay on screen until the next slide takes over' },
-  { id: 'sweep', label: 'Sweep out', hint: 'After the hold, every photo sweeps outward through its own position, fading as it goes' },
-  { id: 'deal', label: 'Deal off', hint: 'The pile is dealt away one card at a time — top card first, off to the right' },
-  { id: 'shuffle', label: 'Scatter off', hint: 'The photos scatter off in seeded random directions' },
-  { id: 'fade', label: 'Fade out', hint: 'The photos fade away where they stand — no travel, no turn, the whole exit is the fade' },
-  // Not a new motion but the photo's own entrance played backwards, so every
-  // animation in the catalogue — all 41 — has a departure without anyone writing
-  // one, and a wipe that opened the way it closes.
-  { id: 'reverse', label: 'Back the way it came', hint: 'Each photo re-runs its own entrance in reverse: a wipe wipes shut, a pop shrinks back, an iris closes' },
-]
+// The five departures that are not an arrival, straight from the core: the chips, the
+// exit browser's own bottom group and this group's note all read the same list, so a
+// mode's name and its description cannot disagree with each other.
+const COLLAGE_EXITS = COLLAGE_EXIT_ROWS
+
+
+/** What a stored animation is called, and what it does — from the browser's own
+ *  rows, so a bridged FFmpeg name and a mask reveal get their real description
+ *  instead of the empty hint `COLLAGE_ANIMS.find` used to hand back for anything
+ *  outside the classic list. */
+const animHint = (id: string | undefined, backwards: boolean): string => {
+  if (!id || id === 'none') return backwards ? 'The photos stay on screen until the next slide takes over' : 'The photos are simply part of the slide'
+  const hint = animHintOf(id) ?? COLLAGE_EXITS.find(x => x.id === id)?.hint ?? ''
+  if (!hint) return ''
+  return backwards ? `Leaves the way it would arrive, read backwards — ${hint}` : hint
+}
+
+/** What to show for a stored exit: a mode's own label, or the arrival it replays. */
+const exitLabel = (id: string): string =>
+  COLLAGE_EXITS.find(x => x.id === id)?.label ?? (id === 'none' ? 'Stay on' : animLabel(id))
 /** The per-photo "while" lane: what one photo keeps doing once it has
  *  landed. They are grouped by what the motion needs from you and from the
  *  render: loops just run, targets are places you pick, and the scaling ones
@@ -4656,6 +4666,11 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const setSpec = (change: Partial<CollageSpec>) => livePatch({ collage: { ...spec, ...change } })
   const defFr = photoFrame(spec, null)
   const setFrame = (change: Partial<NonNullable<CollageSpec['frame']>>) => setSpec({ frame: { ...defFr, ...change } })
+  // What the exit group is showing: the stored name, whether that is one of the five
+  // modes or an arrival to replay backwards, and whether anything leaves at all (a
+  // photo can own an exit while the collage has none, and then the speed still counts).
+  const exitChosen = exitChoice(spec)
+  const hasExit = exitChosen !== 'none' || photos.some(p => p.exit && p.exit !== 'none')
   // The random entrance roll. `collageShuffle` returns concrete ids, so the spec
   // that goes to the render carries no "random" marker and nothing has to agree
   // about a random number generator across the two engines; `fresh` decides
@@ -4670,6 +4685,22 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     setSpec({
       animSeed: res.seed,
       photos: photos.map((photo, i) => ({ ...photo, anim: res.anims[i] ?? photo.anim })),
+    })
+  }
+  // …and the same roll for the departure lane: same pool, same families, same per-photo
+  // lock, because an exit is an arrival. `lane: 'exit'` is the only difference, so the
+  // two rolls cannot drift apart and one seed replays both.
+  const shuffleExits = (fresh: boolean) => {
+    if (!photos.length) return
+    const res = collageShuffle(spec, photos.length, {
+      families: spec.animFamilies ?? ANIM_FAMILIES as unknown as CollageAnimFamily[],
+      oneOfEach: spec.animOneOfEach,
+      seed: fresh ? undefined : spec.animSeed,
+      lane: 'exit',
+    })
+    setSpec({
+      animSeed: res.seed,
+      photos: photos.map((photo, i) => ({ ...photo, exit: res.anims[i] ?? photo.exit })),
     })
   }
   const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => {
@@ -5152,12 +5183,19 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 onChange={e => setPhotoMotionField(selectedPhoto, 'turnTo', e.target.value === '' ? 0 : Number(e.target.value))} />
               <b>°</b>
             </label>}
-            <label title="How this photo leaves. 'Stay on' keeps it in place while the others go; the slide ends when the last photo is gone.">
+            <label title="How this photo leaves. Anything in the browser is an arrival played backwards; the Departs tab holds the five departures of its own, and 'Stay on' keeps this photo on screen while the others go — the slide ends when the last photo is gone.">
               <span>exit</span>
-              <select value={photos[selectedPhoto].exit ?? ''} aria-label={`Exit of photo ${selectedPhoto + 1}`} onChange={e => setPhotoLane(selectedPhoto, 'exit', e.target.value)}>
-                <option value="">{COLLAGE_EXITS.find(x => x.id === (spec.exit ?? 'none'))?.label ?? 'Stay on'} · collage</option>
-                {COLLAGE_EXITS.map(x => <option key={x.id} value={x.id} title={x.hint}>{x.label}</option>)}
-              </select>
+              <AnimPicker
+                value={photos[selectedPhoto].exit as CollageAnimation | undefined}
+                phase="out"
+                ariaLabel={`Exit of photo ${selectedPhoto + 1}`}
+                inherit={{
+                  label: `${exitLabel(exitChosen)} · the collage's choice`,
+                  pick: () => setPhotoLane(selectedPhoto, 'exit', ''),
+                }}
+                onChange={() => undefined}
+                onChangeExit={a => setPhotoLane(selectedPhoto, 'exit', a)}
+              />
             </label>
             {hasPhotoLanes(photos[selectedPhoto]) && <button type="button" className="btn ghost small" title="Drop this photo's own entrance, motion and exit — it follows the collage's choreography again" onClick={() => clearPhotoLanes(selectedPhoto)}>Inherit</button>}
             <small className="collage-lanes-hint"><Sparkles size={11}/> Only photo {selectedPhoto + 1} — the rest keep the collage's {COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label.toLowerCase() ?? 'drop'}. Motion and look are stored on the photo, so the rendered MP4 does the same.</small>
@@ -5235,7 +5273,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           </div>}
         </div>
         <div className={`collage-choices-group${closedSections['photo-animation'] ? ' closed' : ''}`}><CollageGroupHead id="photo-animation" open={!closedSections['photo-animation']} onToggle={toggleSection}
-              note={`${animLabel(spec.animation)} · ${COLLAGE_ANIMS.length} entrances to browse`}>Photo animation</CollageGroupHead>
+              note={`${animLabel(spec.animation)} · ${collageAnimRows().length} entrances to browse`}>Photo animation</CollageGroupHead>
           <div className="collage-anim-pick">
             <AnimPicker value={spec.animation} ariaLabel="Photo entrance"
               onChange={a => setSpec({ animation: a })} />
@@ -5243,7 +5281,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
               title="Give every unlocked photo its own entrance, picked at random from the families ticked below. The names are written onto the photos, so what you see is what the MP4 renders — and a photo you locked keeps its own."
               onClick={() => shuffleAnims(true)}><Shuffle size={12} /> Random</button>
           </div>
-          <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
+          <small className="collage-anim-hint">{animHint(spec.animation, false)}</small>
           <div className="collage-shuffle-scope">
             <span className="scope-lead">Random picks from</span>
             {ANIM_FAMILIES.map(f => {
@@ -5297,20 +5335,39 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <span>Idle sway — a gentle corkboard wobble once photos have landed</span>
           </label></div>
         <div className={`collage-choices-group${closedSections['photo-exit'] ? ' closed' : ''}`}><CollageGroupHead id="photo-exit" open={!closedSections['photo-exit']} onToggle={toggleSection}
-              note={COLLAGE_EXITS.find(x => x.id === (spec.exit ?? 'none'))?.label ?? 'Stay on'}>Photo exit</CollageGroupHead>
-          <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
-          <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small>
-          {(spec.exit ?? 'none') !== 'none' && <label className="collage-exit-speed" title="How fast the photos leave: scales the fly-out of each photo and the gap between photos. The slide length follows.">
+              note={`${exitLabel(exitChosen)} · ${collageAnimRows().length} exits to browse`}>Photo exit</CollageGroupHead>
+          {/* Two halves of one answer: the chips are the departures that are their own
+              motion, the browser is every arrival in the catalogue usable backwards —
+              which is why an exit can never lag behind an entrance. */}
+          <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={exitChosen === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
+          <div className="collage-anim-pick">
+            {/* the chip names whatever is stored — a mode's own label as well as the
+                arrival being mirrored — because the browser it opens holds both. */}
+            <AnimPicker value={exitChosen === 'none' ? undefined : exitChosen as CollageAnimation}
+              phase="out" ariaLabel="Photo exit"
+              onChange={() => undefined} onChangeExit={a => setSpec({ exit: a === 'none' ? undefined : a })} />
+            <button type="button" className="btn ghost small" disabled={!photos.length}
+              title="Give every unlocked photo its own departure, picked at random from the same families ticked under Photo animation: an exit is an arrival, so the pool and the seed are shared. The names are written onto the photos, so what you see is what the MP4 renders, and a photo you locked keeps its own."
+              onClick={() => shuffleExits(true)}><Shuffle size={12} /> Random</button>
+          </div>
+          <small className="collage-anim-hint">{animHint(exitChosen, true)}</small>
+          {hasExit && spec.animSeed !== undefined && <div className="collage-shuffle-scope">
+            <span className="scope-lead">Random picks</span>
+            <button type="button" className="btn ghost tiny"
+              title={`The roll that made these names used seed ${spec.animSeed}. Replay repeats exactly that one — entrances and exits together, since one roll answers for both lanes. Random picks a new seed.`}
+              onClick={() => { shuffleAnims(false); shuffleExits(false) }}>seed {spec.animSeed} · replay both lanes</button>
+          </div>}
+          {hasExit && <label className="collage-exit-speed" title="How fast the photos leave: scales each photo's fly — and the arrival a chosen exit replays — together with the gap between photos. The slide length follows.">
             <span>Exit speed</span>
-            <input type="range" min={0.05} max={2} step={0.05} value={exitSpeed(spec)} aria-label="Photo exit speed" onChange={e => setSpec({ exitSpeed: Math.round(Number(e.target.value) * 20) / 20 === 1 ? undefined : Math.round(Number(e.target.value) * 20) / 20 })} />
+            <input type="range" min={0.05} max={2} step={0.05} value={exitSpeed(spec)} aria-label="Photo exit speed" onChange={e => { const v = Math.round(Number(e.target.value) * 20) / 20; setSpec({ exitSpeed: v === 1 ? undefined : v }) }} />
             <b>{exitSpeed(spec).toFixed(2)}×</b>
           </label>}
-          {(spec.exit ?? 'none') !== 'none' && <label className="collage-check" title="Flip the order the photos leave: the last (top) photo disappears first instead of the first one.">
+          {hasExit && <label className="collage-check" title="Flip the order the photos leave: the last (top) photo disappears first instead of the first one.">
             <input type="checkbox" checked={spec.exitReverse === true} onChange={e => setSpec({ exitReverse: e.target.checked || undefined })} />
             <span>Reverse order — the last (top) photo leaves first</span>
           </label>}
         </div>
-        <div className={`collage-choices-group${closedSections['photo-size-timing'] ? ' closed' : ''}`}><CollageGroupHead id="photo-size-timing" open={!closedSections['photo-size-timing']} onToggle={toggleSection}>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></CollageGroupHead>
+                <div className={`collage-choices-group${closedSections['photo-size-timing'] ? ' closed' : ''}`}><CollageGroupHead id="photo-size-timing" open={!closedSections['photo-size-timing']} onToggle={toggleSection}>Photo size &amp; timing <em className="collage-total">{total > 0 ? `slide ${total}s` : ''}</em></CollageGroupHead>
           {!anyEntrance && <small>With no entrance animation all photos appear immediately. Photo size, frame and random-size controls still work; only the waits are unused. Give one photo its own entrance below the preview and its wait counts again.</small>}
           <div className="collage-timing">
             {photos.map((photo, i) => <div className="collage-timing-row" key={`${photo.path}-${i}`}>

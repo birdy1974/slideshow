@@ -315,6 +315,28 @@ def _cases() -> list[dict]:
         "times": [0.0, 1.0, 3.0, 3.9, 4.2, 4.5, 4.9, 5.4],
         "hashArgs": [9, 4, 71], "matW": 34,
     })
+    # A departure that *names* an arrival: the mirrored curve, its alpha ramp and its
+    # mask have to be the same number in the editor's engine as in the render's, for
+    # every kind of animation that can leave — a mask reveal, a mover, a bridged name
+    # and the photo's own entrance. The times below are computed from the same two
+    # helpers so they cannot drift out of the exit window when the lengths change.
+    mirror_out = _spec("grid", "drop", "4:3", 4, 31, delays=[0.2, 0.3, 0.3, 0.3], hold=1.2,
+                       exit="iris")
+    mirror_out["photos"][1]["exit"] = "rise"
+    mirror_out["photos"][2]["exit"] = "slideleft"
+    mirror_out["photos"][3]["exit"] = "reverse"
+    mirror_out["photos"][2]["animSpeed"] = 1.5      # the mirrored exit ignores it; the arrival does not
+    m_spec = normalize_collage({"collage": mirror_out})
+    m_base, m_dur = base_duration(m_spec), collage_duration(m_spec)
+    m_span = m_dur - m_base
+    cases.append({
+        "id": "lanes-mirror-exit",
+        "spec": mirror_out,
+        "aspect": 16 / 9, "leadIn": 0.25,
+        "times": [0.0, m_base - 0.05, m_base + 0.001, m_base + m_span * 0.25,
+                  m_base + m_span * 0.5, m_base + m_span * 0.75, m_base + m_span * 0.99, m_dur],
+        "hashArgs": [31, 4, 61], "matW": 30,
+    })
     # No collage exit at all, but one photo leaves on its own: the schedule
     # falls back to that photo's mode so the stagger is still defined.
     solo_out = _spec("scatter", "pop", "square", 3, 5, delays=[0.25, 0.3, 0.3], hold=1.75)

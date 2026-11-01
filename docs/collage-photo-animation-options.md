@@ -11,15 +11,24 @@ interface/GUI for the user. Also provide a random option."*
 
 ## Where it stands today (verified)
 
-- **Entrances**: 13 + `none` — Drop, Pop, Swing, Flip, Fade, Slide, Rise, Tumble,
-  Zoom, Origami, Glitch, Ink, Brush (`COLLAGE_ANIMS_ALL`, `src/collageCore.ts:29`;
-  labels/hints at `src/App.tsx:4402`). Each has a **fixed** length
-  (`ENTRANCE_LENGTH`) — no speed control.
-- **Exits**: 4 + *Stay on* (`none`) — **Sweep out, Deal off, Scatter off
-  (`shuffle`), Fade out** (`COLLAGE_EXITS`, `src/collageCore.ts:1085`; labels and
-  hints `src/App.tsx:4442`), with `EXIT_LENGTH`, `EXIT_STAGGER` and a **speed
-  slider (0.05–2×, `EXIT_SPEED_MIN/MAX` = `:1088`). The `none` choice is stored
-  by *deleting* the key (`src/App.tsx:5077` writes `exit: undefined`).
+*Numbers below are the current catalogue, re-derived from the tables rather than
+copied: 14 classics including `none`, 16 paper, 8 colour, 16 mask reveals = **54 of
+our own**, plus 38 bridged names (28 aliases and 10 real xfade transitions) = **92
+ids**, every one of them legal as an entrance *and* as an exit. The line references
+this survey used to carry have rotted, so it names functions instead.*
+
+- **Entrances**: the 92 above, one row per animation in `COLLAGE_ANIMS` /
+  `collageAnimRows()`, each with a fixed `ENTRANCE_LENGTH` and `ENTRANCE_FADE`, both
+  divided by `animSpeed` (0.05–2×) so a faster arrival is a shorter fade, a tighter
+  pendulum and a coarser mask ladder in the MP4 too.
+- **Exits**: the five departures in `COLLAGE_EXIT_ROWS` — *Stay on* (`none`), **Sweep
+  out, Deal off, Scatter off (`shuffle`), Fade out, Back the way it came (`reverse`)**
+  — with `EXIT_LENGTH`, `EXIT_STAGGER` and a **speed slider** (`EXIT_SPEED_MIN/MAX`),
+  **plus any entrance id**, which is that arrival played backwards (`exitChoice` /
+  `exit_animation`; see the section at the end). The `none` choice is stored by
+  *deleting* the key (`setSpec({ exit: undefined })`), while a *photo's* own `none` is
+  written as the literal string, because there it means "this one stays" instead of
+  "nothing was chosen".
 - Model: three lanes per photo (enter / while-motion / exit) + a look animation;
   collage-wide default with a **per-photo override** that inherits
   ("*Drop · collage*" in the per-photo select, `src/App.tsx:4919`, `4982`).
@@ -121,13 +130,14 @@ exposed as photo animations by *name*, so "the photo wipes in like
 is the "use the existing transitions" answer: as soon as P1 exists, P4 is
 mostly a mapping, not new maths — one mask evaluator, two sources.
 
-**Exits**: every P1–P3 entrance gets the mirrored exit for free if the exit
-path is redefined as "the same function played backwards" (alpha/geometry
-inverted), which also removes today's asymmetry (4 exits vs 13 entrances).
-Optional extras that cost almost nothing and fix real gripes:
-**Entrance speed (0.05–2×) like `exitSpeed`**, per-photo **anim length**, and an
-**"in and out of the same family"** switch so a photo that wipes in also wipes
-out unless you override it.
+**Exits**: *shipped* — the exit path was redefined as "the same function played
+backwards", so every entrance in the catalogue is also a departure and the asymmetry
+(4 exits vs 13 entrances at the time of writing) is gone. Optional extras that cost
+almost nothing and fix real gripes: **Entrance speed (0.05–2×) like `exitSpeed`**
+(also shipped), per-photo **anim length** (shipped as `photo.animSpeed`), and an
+**"in and out of the same family"** switch — not built as a per-photo pairing rule;
+what exists instead is that Random rolls *both* lanes from the same ticked families,
+which is the same intent with one less control.
 
 That is **36 new (P1+P2+P3)** or **~70 with P4** — both too many for the current
 chip row (14 already fills it), which is what the rest of this document is about.
@@ -404,13 +414,13 @@ The twin grew 9 cases (all eight, plus one photo carrying `flicker`, `toColor` a
 `invert` *while* an entrance develops, where composition is the whole point); the
 graph tests pin which filter carries which channel. 125 collage tests pass.
 
-## P4 — the transition bridge (shipped, 41 names)
+## P4 — the transition bridge (shipped, 38 names: 28 aliases + 10 real)
 
 The user asked whether the existing *slide transition* set could be reused per
 photo. It can, mostly by aliasing: 31 of FFmpeg's `xfade` names are already
 something the collage builds more cheaply than a mask, because a wipe is the mask
 the `geq` ladder bakes, a slide is a translate and `fadewhite` is a brightness
-ramp. So the catalogue grew 41 rows — `COLLAGE_BRIDGE` in TypeScript, `BRIDGE` in
+ramp. So the catalogue grew 38 rows — `COLLAGE_BRIDGE` in TypeScript, `BRIDGE` in
 Python — where the *id is FFmpeg's own name* (`wiperight`, `circleopen`,
 `slideup`, `fadegrays`, `zoomin`, …), which is both what a viewer searches for and
 what a hand-written spec would write.
@@ -452,12 +462,12 @@ Two smaller consequences:
   to agree about a brightness curve reaching 1.0 exactly at the landing. They now
   do — the twin found a real `geomCurve` base bug on the way (see P3).
 
-41 names × six sampled times are compared in the twin, which is what a per-photo
+38 names × six sampled times are compared in the twin, which is what a per-photo
 transition catalogue needs to be worth anything. 133 collage tests pass.
 
 ## B5 — the entrance browser (shipped)
 
-90 entrance ids do not fit a row of chips, so the picker took the shape the
+92 entrance ids do not fit a row of chips, so the picker took the shape the
 transition browser already uses: a chip that opens a portalled popover with a
 search box, a family rail (★ favourites, Recent, All, Classic, Paper, Colour,
 Reveals, FFmpeg), and a tile grid with a star on each tile. New CSS only where the
@@ -471,7 +481,7 @@ the same three functions the stage and the export sample — for the transform, 
 filter and the mask at the hovered time. A tile therefore cannot promise a move the
 render will not make, which is the failure mode every catalogue this size grows
 into. The animation runs while a tile is hovered (one entrance, a beat of hold,
-repeat), and rests at its end state otherwise, so opening the browser is not 90
+repeat), and rests at its end state otherwise, so opening the browser is not 92
 `requestAnimationFrame` loops.
 
 One catalogue feeds it: `collageAnimRows()` builds the rows from the four choice
@@ -509,3 +519,78 @@ Not built: beat-snapped entrance *times*. The collage has no beat clock of its
 own — `spec.beats` drives motion, not arrivals — so snapping a shuffle to the
 music would mean reusing the karaoke feature's onset data, which is a separate
 piece of work.
+
+## Exits got the same catalogue (shipped)
+
+The brief was "the same animations for photo exit". Writing 92 departures would have
+produced a second list to keep in step, so the storage model changed instead: **an exit
+is the name of an arrival, and the departure is that arrival read backwards.**
+
+* **What is stored.** `spec.exit` and `photo.exit` accept the five departure modes or
+  any id in the entrance catalogue, bridged names included — `exit: 'wipeUp'` means
+  "un-wipe upward", `exit: 'iris'` means "iris shut". `exitChoice()` (TS) /
+  `exit_choice()` (Python) is the name; `exitMode()` flattens it to *how it behaves*,
+  and a mirrored departure behaves exactly like `reverse`. Every existing consumer of
+  that answer — the stagger, the size ladder's windows, the pin anchor for a swing, the
+  fade window, the `exitScheduleMode` fallback — therefore already knew what to do,
+  which is the main reason this is a small diff and not a new subsystem.
+  `exitAnimation()` says *which* curve to mirror: the photo's own arrival for
+  `reverse`, the chosen id otherwise, `''` for the four travel modes.
+* **Where the curve comes from.** The entrance chain was lifted out of `photoState()` /
+  `photo_state()` into `entranceState()` / `_entrance_state()`, and the exit step calls
+  it a second time with the exit's window and `q = 1 - progress`. `reverse` was already
+  doing this by mirroring the *sampled time*; that path is untouched, so no existing
+  slide moves. In the render the mirrored arrival's own terms are *added* to the
+  arrival's (`arrival_terms()` feeds both), which is exact rather than an approximation
+  because each curve is at rest outside its own window. Choosing the arrival a photo
+  already performs is byte-identical to `reverse` — asserted, since a term added on top
+  of the mirror would be the same departure twice.
+* **Lengths and speed.** A mirrored exit runs for that entrance's `ENTRANCE_LENGTH`
+  divided by `exitSpeed` (the departure's own slider, not the entrance's), and its
+  alpha ramp is the arrival's at the same ratio, so the MP4's `fade=t=out` covers the
+  same fraction of the fly that `fade=t=in` covered of the arrival. `reverse` keeps its
+  0.5 s and the four travel modes keep theirs: a project saved before this change
+  renders and measures exactly as it did.
+* **Two deliberate non-features.** A *mask reveal* leaving is the mask shutting, so it
+  fades nothing — the last-quarter dim the travel modes use is skipped for it in the
+  preview, which is what the render already did, and the level key now carries the
+  reveal **kind** as well as its step so a photo can arrive as an iris and leave as a
+  wipe. A *look* entrance used as an exit drains its opacity but keeps its colour where
+  it landed, because the colour lanes read the arrival's progress in both engines
+  (`reverse` never turned them either).
+* **The GUI.** The Photo exit group keeps its five chips and gained the entrance
+  browser itself, in exit phase: search, family tabs, ★ favourites, recents, and a
+  sixth tab, **Departs**, holding the five modes so one control answers the question
+  completely. Its tiles are not illustrations — `TILE_SPEC` builds a one-photo collage
+  whose arrival is `none` and whose exit is the candidate, then samples the same
+  `photoState()` the stage and the render use, offset past the hold so the tile is the
+  leaving. A photo's own lane swapped its six-option `<select>` for that same picker
+  (with an "Inherit · the collage's choice" row). **Random** exists on both lanes and
+  shares one pool, one "no repeats" rule, one per-photo lock and one seed, because an
+  exit is an arrival — `collageShuffle({lane: 'exit'})` writes the names onto the
+  photos, so the MP4 renders the set you previewed rather than a new roll.
+* **Layout.** Both speed rows in the group sit on `.collage-exit-speed`, a class that
+  was only ever styled inside `.field`'s wide row — so in this popup the slider was an
+  unstyled inline `<label>` whose 21 px native box the hint line (`.collage-choices-group
+  small`, which pulls itself up 4 px to hug the control it describes) painted over. It
+  has its own row rule now, along with an ellipsis for a long chip label (the name is
+  one nowrap line inside `min-width: 0`, so "Slanted Push — diagonal wipe with a tilt"
+  used to run into the Random button) and a hint lookup that reads the browser's rows
+  instead of `COLLAGE_ANIMS` alone — before that, a bridged or reveal pick had *no*
+  description at all.
+* **Persistence.** The domain is one predicate per engine (`isExitChoice` /
+  `is_exit_choice`) and both `normalizeCollage` and `normalize_collage` validate the
+  collage's and the photo's exit with it. This is the exact place `'fade'` was once
+  dropped on reload — a name refused by the gate loses the setting *and* the seconds it
+  added to the slide — so `backend/tests/test_collage_normalize.py` now drives one legal
+  name of every kind (a reveal, a mover, an alias, a real xfade name) through the real
+  TypeScript gate and compares the fly, the mode and the schedule with the Python
+  tables, and keeps a photo's explicit `'none'` a choice.
+* **Tests.** `backend/tests/test_collage_exit_anim.py` samples all 92 ids at twelve
+  progress points and asserts the departure at `q` equals the arrival at `1 - q`, value
+  for value, plus: monotone opacity, closing masks, the exact `fade=t=out` window, a
+  fly length for every id, and that no `fade=t=out` is applied to a reveal. The twin
+  (`lanes-mirror-exit`) compares the two engines across the exit window with times
+  computed from the same helpers, and `test_collage_animation_ffmpeg.py` measures real
+  frames: a `rise` departure sinks, an `iris` departure shrinks in place, and both are
+  gone by the last frame.
