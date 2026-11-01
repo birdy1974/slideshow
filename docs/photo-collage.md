@@ -36,7 +36,7 @@ Per photo (`spec.photos[i]`):
 | `moveX`, `moveY` | where a `move` motion travels to, in % of the frame from its resting spot (±60) |
 | `turnTo` | the angle a `turn` motion reaches, degrees clockwise from its resting tilt (±180) |
 | `lookAnim` | an animated look: its colour changes over time (`toColor`, `toBw`, `flicker`, `invert`, `hueFlip`) |
-| `exit` | how it leaves, overriding `spec.exit`; `none` keeps it on screen |
+| `exit` | how it leaves, overriding `spec.exit`: one of the five departures, or **any entrance id** — which then plays backwards as its departure. `none` keeps it on screen |
 
 `rot` is written only when it is not zero (`setPhotoRot` drops it at 0°), and the
 three lanes only when they differ from the collage's, so a project nobody ever
@@ -247,7 +247,7 @@ inherits when it is not written, so an untouched project is untouched.
 | enter | `photo.anim` | `photoAnim()` / `photo_anim()` | `spec.animation` |
 | while | `photo.motion` + `motionAmount` | `photoMotion()` / `photo_motion()` | nothing — the default is `none` |
 | look | `photo.lookAnim` | `photoLookAnim()` / `photo_look_anim()` | nothing — the default is `none` |
-| exit | `photo.exit` | `exitMode(spec, i)` / `exit_mode(spec, i)` | `spec.exit` |
+| exit | `photo.exit` | `exitChoice(spec, i)` (the name) → `exitMode(spec, i)` (the behaviour) | `spec.exit` |
 
 What follows from a per-photo lane:
 
@@ -276,6 +276,38 @@ What follows from a per-photo lane:
   fly fading (`alpha *= 1 - qe`, linear, because that is what the render's
   `fade=t=out:st=…:d=…:alpha=1` does). It staggers like any other exit (0.08 s
   between photos) and can be set per photo or for the whole collage.
+- **An exit is an arrival read backwards.** `photo.exit` and `spec.exit` no longer
+  hold a small vocabulary of their own: the stored name is either one of the five
+  departures (`sweep`, `deal`, `shuffle`, `fade`, `reverse`) or **any id in the
+  entrance catalogue**, and an id means "play that arrival in reverse over the exit
+  window". `exitChoice()` returns the name; `exitMode()` flattens it to what it *does*
+  — a mirrored departure behaves exactly like `reverse` (no fly of its own), which is
+  why one answer feeds the stagger, the size ladder, the pin anchor and the fade
+  window without any of them knowing the catalogue grew. `exitAnimation()` says which
+  curve to mirror: the photo's own arrival for `reverse`, the chosen one otherwise.
+  The implementation is one extra call to the same entrance chain in each engine, so
+  adding an entrance also adds an exit, and a departure cannot drift from its arrival
+  because there is only one curve between them. `test_collage_exit_anim.py` samples all
+  92 ids at 12 points and asserts the departure at progress `q` equals the arrival at
+  `1 - q`, value for value, in both engines.
+- **A mirrored exit runs on the exit's clock.** `exitFlyLength` for an entrance id is
+  that entrance's `ENTRANCE_LENGTH` divided by **`exitSpeed`** (not `animSpeed` — the
+  slider beside the row says how fast photos *leave*), and the arrival's own alpha ramp
+  is re-used at the same ratio, so a photo that spent the first 0.22 s of a 0.62 s
+  arrival becoming visible spends the last third of its fly disappearing. `reverse`
+  keeps its own 0.5 s and the four travel modes keep theirs, so no existing project
+  changes length when it reloads. A name that equals the photo's own arrival is *the
+  same graph* as `reverse`, character for character — checked, because an exit added on
+  top of the mirror would be the same departure twice.
+- **Two things a mirrored exit deliberately does not do.** A mask reveal leaving is the
+  mask *shutting*: the photo fades nothing, in the preview or the MP4 (the render's
+  `fade=t=out` is empty for it, and the last-quarter dim the travel modes use is
+  skipped for it — before that rule the preview greyed a frame the render did not). And
+  a *look* entrance used as a departure drains its opacity on the mirrored ramp but
+  leaves its colour where it landed: the colour lanes run off the arrival's own
+  progress in both engines, so `reverse` never turned them either. Naming the collision
+  out loud: `fade` is both an entrance id and an exit mode, and the **mode wins** —
+  which is harmless here, because both answers mean "fade out".
 - **Depth push-back stays collage-wide.** Whether the push is on at all follows
   `spec.animation` (drop / pop / flip), because it is a property of the pile;
   but each push follows the *arriving* photo's own entrance length, so a photo

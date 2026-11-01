@@ -235,8 +235,8 @@ export function isCollageBridge (anim: string | undefined): anim is CollageBridg
  *  consumer — the state, the length, the picker's hint, the render — resolves a
  *  name here, once, so a bridge cannot mean one thing to the preview and another
  *  to the MP4. */
-export function resolveAnim (anim: CollageAnimation | undefined): CollageAnim {
-  return isCollageBridge(anim) ? COLLAGE_BRIDGE[anim].target : (anim ?? 'drop')
+export function resolveAnim (anim: string | undefined): CollageAnim {
+  return isCollageBridge(anim) ? COLLAGE_BRIDGE[anim].target : ((anim as CollageAnim) ?? 'drop')
 }
 
 /** What a bridged name *runs*. The one place a name turns into an animation, so
@@ -332,10 +332,15 @@ export function collageAnimFamilyRows (family: CollageAnimFamily): CollageAnimRo
 
 /** Labels and hints by id, for the places that only need to *name* a stored
  *  animation (the per-photo row, the direction toggle's tooltip). */
-export function animLabelOf (anim: CollageAnimation | undefined): string {
+/** The name a stored animation is *called* — any name the picker can write, which is
+ *  why the parameter is a plain string: `COLLAGE_ANIMS` alone does not know the
+ *  bridged names or the reveals, and a label that falls back to "Drop" for a photo
+ *  that is doing something else is a lie in the group header. */
+export function animLabelOf (anim: string | undefined): string {
   return collageAnimRows().find(r => r.id === anim)?.label ?? 'Drop'
 }
-export function animHintOf (anim: CollageAnimation | undefined): string | undefined {
+/** …and what it does, from the same rows the browser shows. */
+export function animHintOf (anim: string | undefined): string | undefined {
   return collageAnimRows().find(r => r.id === anim)?.hint
 }
 
@@ -869,9 +874,11 @@ export interface CollagePhoto extends CollagePhotoLook {
    *  scales the whole arrival: sweep, alpha ramp, pendulum and the render's size
    *  ladder together. Clamped to [0.05, 2]; missing = the collage's. */
   animSpeed?: number
-  /** Exit lane: how this photo leaves, overriding `spec.exit`. 'none' is a
+  /** Exit lane: how this photo leaves, overriding `spec.exit` — one of the five
+   *  modes or any entrance id, which then plays backwards as the departure.
+   *  'none' is a
    *  real choice here — it keeps this one on screen while the others go. */
-  exit?: CollageExit
+  exit?: CollageExitChoice
   /** While lane: motion this photo keeps doing once it has landed. */
   motion?: CollageMotion
   /** How strong that motion is, MOTION_AMOUNT_MIN…MAX (1 = MOTION's numbers).
@@ -934,7 +941,7 @@ export interface CollageSpec {
   /** How the photos leave at the end of the slide (after the hold): sweep
    *  outward from the centre, deal off one-by-one, or scatter in seeded
    *  directions. Missing = they stay on until the transition takes over. */
-  exit?: CollageExit
+  exit?: CollageExitChoice
   /** Virtual camera over the composed collage: pan across, or zoom into
    *  the last photo (telescope = deep, droste = accelerating deep zoom). */
   camera?: CollageCamera
@@ -1872,6 +1879,10 @@ export interface CollageShuffleOptions {
   oneOfEach?: boolean
   /** the seed actually used, so the caller can store it next to the result */
   seed?: number
+  /** which lane to roll: the arrival, or the departure that replays an arrival
+   *  backwards. One roll per lane over the same pool and the same per-photo lock,
+   *  because the catalogue is shared and a photo's lock means "its choreography". */
+  lane?: 'anim' | 'exit'
 }
 
 /** Pick a random entrance per photo and hand back the concrete ids.
@@ -1886,13 +1897,14 @@ export function collageShuffle (spec: CollageSpec, count: number, opts: CollageS
   const rng = rngFrom(seed || 1)
   const wanted = opts.families?.length ? opts.families : null
   const pool = collageAnimRows().filter(r => r.id !== 'none' && (!wanted || wanted.includes(r.family)))
+  const lane = opts.lane ?? 'anim'
   const locked = new Set<number>()
-  spec.photos?.forEach((p, i) => { if (p?.animLock && p.anim) locked.add(i) })
+  spec.photos?.forEach((p, i) => { if (p?.animLock && (lane === 'exit' ? p.exit : p.anim)) locked.add(i) })
   const chosen: (CollageAnimation | undefined)[] = []
   const used = new Set<string>()
   let spare = pool.slice()
   for (let i = 0; i < count; i++) {
-    const own = spec.photos?.[i]?.anim as CollageAnimation | undefined
+    const own = (lane === 'exit' ? spec.photos?.[i]?.exit : spec.photos?.[i]?.anim) as CollageAnimation | undefined
     if (locked.has(i) && own) { chosen.push(own); continue }
     if (!pool.length) { chosen.push(own); continue }
     let pick: CollageAnimRow | undefined
@@ -1930,8 +1942,52 @@ export const EXIT_LENGTH: Record<Exclude<CollageExit, 'none'>, number> = { sweep
 /** Delay between consecutive photos leaving. */
 export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { sweep: 0.05, deal: 0.22, shuffle: 0.1, fade: 0.08, reverse: 0.08 }
 
-/** Every exit mode, 'none' (stay until the transition) first. */
+/** Every exit *mode* — the departures that are not an arrival read backwards.
+ *  'none' (stay until the transition) first. The picker offers these plus every
+ *  entrance animation, which is why this list is no longer the whole domain:
+ *  `isExitChoice` is. */
+/** The five departures that are not an arrival read backwards, with the words the
+ *  editor shows for them. One list on purpose: the chips in the collage panel and the
+ *  bottom of the exit browser are the same five buttons, and a hint that lives in two
+ *  files is a hint that quietly stops matching. */
+export const COLLAGE_EXIT_ROWS: { id: CollageExit, label: string, hint: string }[] = [
+  { id: 'none', label: 'Stay on', hint: 'The photos stay on screen until the next slide takes over' },
+  { id: 'sweep', label: 'Sweep out', hint: 'After the hold, every photo sweeps outward through its own position, fading as it goes' },
+  { id: 'deal', label: 'Deal off', hint: 'The pile is dealt away one card at a time — top card first, off to the right' },
+  { id: 'shuffle', label: 'Scatter off', hint: 'The photos scatter off in seeded random directions' },
+  { id: 'fade', label: 'Fade out', hint: 'The photos fade away where they stand — no travel, no turn, the whole exit is the fade' },
+  // Not a new motion but the photo's own entrance played backwards — the idea that
+  // turned the exit list into the *entrance* list, so every animation in the
+  // catalogue has a departure nobody had to write, and a wipe that opened the way it
+  // closes. Picking any name above this row is that mode with a chosen curve.
+  { id: 'reverse', label: 'Back the way it came', hint: 'Each photo re-runs its own entrance in reverse: a wipe wipes shut, a pop shrinks back, an iris closes' },
+]
+
+/** What `spec.exit` / `photo.exit` store: the five modes, or the id of the
+ *  entrance to play backwards. Deliberately a plain string — the domain is the
+ *  entrance catalogue, which grows — validated on read and on write by
+ *  `isExitChoice` rather than by the type. */
+export type CollageExitChoice = string
+
 export const COLLAGE_EXITS: CollageExit[] = ['none', 'sweep', 'deal', 'shuffle', 'fade', 'reverse']
+
+/** Can this name be stored as a photo's (or the collage's) exit? The four travel
+ *  modes, 'reverse', 'none', and — since the exit catalogue became the entrance
+ *  catalogue — any entrance id, stored name included: a bridged `slideleft` is a
+ *  legal exit for the same reason it is a legal entrance, and it stays itself so
+ *  the chip can still badge it. Mirrors the render's own validation. */
+export function isExitChoice (name: unknown): boolean {
+  if (typeof name !== 'string' || !name) return false
+  if (name === 'none' || (COLLAGE_EXIT_MODES as readonly string[]).includes(name)) return true
+  return collageEntranceIds().includes(resolveAnim(name))
+}
+
+/** The ids an animation may be: ours plus the bridged names, resolved. Built once
+ *  per call on purpose — `collageAnimRows()` is the same list the picker browses,
+ *  so an id that can be picked is an id that can be stored, in both directions. */
+export function collageEntranceIds (): string[] {
+  return collageAnimRows().map(r => resolveAnim(r.id))
+}
 /** The modes that actually leave: everything but 'none'. One list on purpose —
  *  `exitMode` and `normalizeCollage` used to keep their own, and when 'fade'
  *  was added to the chips and to `exitMode` but not to the one inside
@@ -1967,21 +2023,54 @@ export function exitSpeed (spec: CollageSpec): number {
 }
 
 /** One photo's fly-out length, in seconds, at the spec's exit speed. Pass i
- *  for a photo that leaves on its own; omit it for the collage's setting. */
+ *  for a photo that leaves on its own; omit it for the collage's setting. A
+ *  departure that names an entrance is as long as that entrance's own arrival
+ *  (the same number, scaled by *exit* speed rather than entrance speed, because
+ *  the slider next to it is the one that says how fast photos leave); 'reverse'
+ *  keeps its own length, so nothing about an existing slide changes. */
 export function exitFlyLength (spec: CollageSpec, i?: number): number {
-  const mode = i === undefined ? exitMode(spec) : exitMode(spec, i)
-  return mode === 'none' ? 0 : EXIT_LENGTH[mode] / exitSpeed(spec)
+  const raw = exitChoice(spec, i)
+  if (raw === 'none') return 0
+  const base = (EXIT_LENGTH as Record<string, number>)[raw]
+    ?? (ENTRANCE_LENGTH as Record<string, number>)[resolveAnim(raw)] ?? 0
+  return base / exitSpeed(spec)
+}
+
+/** The exit as it is stored: 'none' when the photo stays, otherwise one of the
+ *  five modes or the id of the entrance to play backwards. `exitMode` below is
+ *  what the *behaviour* is; this is what the *picker* shows, and the only thing
+ *  that knows which animation the departure mirrors. */
+export function exitChoice (spec: CollageSpec, i?: number): string {
+  if (i !== undefined) {
+    const own = spec.photos?.[i]?.exit
+    if (typeof own === 'string' && isExitChoice(own)) return own
+  }
+  const shared = spec.exit
+  return typeof shared === 'string' && isExitChoice(shared) && shared !== 'none' ? shared : 'none'
+}
+
+/** The animation a photo's departure reads backwards, '' when the exit is 'none'
+ *  or one of the four travel modes (those add their own terms instead). 'reverse'
+ *  is the same mechanism pointed at the photo's own arrival — which is all it
+ *  ever was, and why an exit costs no new curves per animation: the entrance
+ *  chain below is evaluated a second time with the exit's window and a mirrored
+ *  progress, in both engines. */
+export function exitAnimation (spec: CollageSpec, i: number): string {
+  const raw = exitChoice(spec, i)
+  if (raw === 'none' || (COLLAGE_EXIT_MODES as readonly string[]).includes(raw)) return ''
+  if (raw === 'reverse') return resolveAnim(photoAnim(spec, i))
+  return resolveAnim(raw)
 }
 
 /** The exit mode: the collage's setting, or photo i's own when i is given. A
  *  missing or unknown override inherits; 'none' has to be written explicitly
- *  to keep one photo on screen while the others leave. */
+ *  to keep one photo on screen while the others leave. Any entrance id reports
+ *  itself as 'reverse', because that is how it behaves: no fly of its own, the
+ *  arrival's curve running backwards. */
 export function exitMode (spec: CollageSpec, i?: number): CollageExit {
-  if (i !== undefined) {
-    const own = spec.photos?.[i]?.exit as CollageExit | undefined
-    if (own && COLLAGE_EXITS.includes(own)) return own
-  }
-  return COLLAGE_EXIT_MODES.includes(spec.exit as CollageExit) ? spec.exit as CollageExit : 'none'
+  const raw = exitChoice(spec, i)
+  if (raw === 'none') return 'none'
+  return (COLLAGE_EXIT_MODES as readonly string[]).includes(raw) ? raw as CollageExit : 'reverse'
 }
 
 /** The mode that sets the ORDER of the exit: the collage's own exit when it
@@ -2071,6 +2160,106 @@ export function bgBlurRadius (blur: number): number {
   return Math.max(1, Math.round(bgBlurCssPx(blur) / 2))
 }
 
+/** The entrance curve for animation `anim` sampled at `ti` — the whole arrival in
+ *  one place, so a *departure* can be the same code with another id and another
+ *  window (see `photoState`'s exit step). `t0` is when the curve starts, `ent` how
+ *  long it runs, `fade` its alpha ramp, `spd` the clock a pendulum compresses and
+ *  `push` the depth a landing photo has been shoved back by. */
+function entranceState (spec: CollageSpec, i: number, anim: string, t0: number, ent: number,
+                        fade: number, spd: number, ti: number, push: number): PhotoState {
+  let st: PhotoState
+    if (anim === 'drop') {
+      const q = clamp01((ti - t0) / ent)
+      const settle = Math.pow(1 - q, 3)          // 1 → 0, outCubic
+      st = { dx: 0, dy: -26 * settle, rot: -7 * settle, scale: 1 - DEPTH.scale * push, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
+    } else if (anim === 'pop') {
+      const q = clamp01((ti - t0) / ent)
+      const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
+      st = { dx: 0, dy: 0, rot: 0, scale: (0.55 + 0.45 * back) * (1 - DEPTH.scale * push), scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
+    } else if (anim === 'flip') {
+      // A card flipping open around its vertical axis: edge-on (4 % width)
+      // with an outBack overshoot, straightening as it settles.
+      const q = clamp01((ti - t0) / ent)
+      const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
+      st = { dx: 0, dy: 0, rot: -4 * (1 - q), scale: 1 - DEPTH.scale * push, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
+    } else if (anim === 'swing') {
+      // The pendulum is the one entrance measured in raw seconds — its decay and
+      // period are physical, not a curve over a window — so speed compresses the
+      // clock it runs on rather than a divisor.
+      const tau = Math.max(0, ti - t0) * spd
+      // Damped pendulum around the pin: 14° amplitude, ~1.6 s period, settles
+      // in a few swings (the "pinned photo gallery" motion).
+      const rot = 14 * Math.exp(-1.3 * tau) * Math.cos(2 * Math.PI * tau / 1.6)
+      st = { dx: 0, dy: 0, rot, scale: 1, scaleX: 1, alpha: clamp01(tau / 0.15), dim: 0 }
+    } else if (anim === 'fade') {
+      const q = clamp01((ti - t0) / ent)
+      st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: q * q * (3 - 2 * q), dim: 0 }
+    } else if (anim === 'slide') {
+      const q = clamp01((ti - t0) / ent)
+      const settle = Math.pow(1 - q, 3)
+      st = { dx: -28 * settle, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
+    } else if (anim === 'rise') {
+      const q = clamp01((ti - t0) / ent)
+      const settle = Math.pow(1 - q, 3)
+      st = { dx: 0, dy: 22 * settle, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
+    } else if (anim === 'tumble') {
+      const q = clamp01((ti - t0) / ent)
+      const settle = Math.pow(1 - q, 3)
+      st = { dx: 10 * settle, dy: -18 * settle, rot: 28 * settle, scale: 1 - 0.15 * settle, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
+    } else if (anim === 'zoom') {
+      const q = clamp01((ti - t0) / ent)
+      const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
+      st = { dx: 0, dy: 0, rot: 0, scale: 0.2 + 0.8 * back, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
+    } else if (anim === 'fold') {
+      const q = clamp01((ti - t0) / ent)
+      const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
+      st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((ti - t0) / fade), dim: 0 }
+    } else if (anim === 'glitch') {
+      const q = clamp01((ti - t0) / ent)
+      const j = (1 - q) * (1 - q)
+      const seed = Math.trunc(Number(spec.seed)) || 1
+      st = { dx: (hash01(seed, i, 61) - 0.5) * 10 * j, dy: (hash01(seed, i, 63) - 0.5) * 6 * j, rot: (hash01(seed, i, 65) - 0.5) * 8 * j, scale: 1, scaleX: 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, alpha: clamp01((ti - t0) / fade), dim: 0.15 * j }
+    } else if (anim === 'ink') {
+      const q = clamp01((ti - t0) / ent)
+      const blob = q * q * (3 - 2 * q)
+      st = { dx: 0, dy: 0, rot: 0, scale: 0.35 + 0.65 * blob, scaleX: 1, alpha: blob, dim: 0 }
+    } else if (anim === 'brush') {
+      const q = clamp01((ti - t0) / ent)
+      const settle = Math.pow(1 - q, 3)
+      st = { dx: -36 * settle, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.12, 1 - 0.55 * settle), alpha: clamp01((ti - t0) / fade), dim: 0 }
+    } else if (isCollageLookEntrance(anim)) {
+      // The photo does not move: its colour arrives. Every transform field is at
+      // rest and only the alpha ramp belongs here — sat, brightness, hue and the
+      // invert are composed into one set of channels by photoLookState, which is
+      // what the render's hue/eq/negate chain and the preview's CSS string both read.
+      st = { dx: 0, dy: 0, rot: 0, scale: 1 - DEPTH.scale * push, scaleX: 1,
+        alpha: clamp01((ti - t0) / fade), dim: 0 }
+    } else if (isGeomAnim(anim)) {
+      // The paper family, evaluated from one row of `COLLAGE_GEOM` rather than a
+      // branch each: the render's twin turns the SAME row into FFmpeg expressions,
+      // so a curve cannot mean one motion here and another one in the MP4.
+      const q = clamp01((ti - t0) / ent)
+      const row = COLLAGE_GEOM[anim]
+      const v = (c: GeomCurve | undefined, base: number) => geomCurve(c, q, base)
+      st = {
+        dx: v(row.dx, 0), dy: v(row.dy, 0), rot: v(row.rot, 0),
+        scale: v(row.scale, 1) * (1 - DEPTH.scale * push),
+        scaleX: v(row.scaleX, 1),
+        alpha: clamp01((ti - t0) / fade), dim: v(row.dim, 0),
+      }
+    } else if (isCollageReveal(anim)) {
+      // A mask reveal: the photo sits exactly where it will stay and is
+      // *uncovered*. Everything about the shape lives in collageReveal.ts, which
+      // the render reads too — this branch only says how far the sweep has got.
+      st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: 1, dim: 0, revealKind: anim, revealP: revealProgress(anim, clamp01((ti - t0) / ent)), revealDir: photoRevealDir(spec, i) }
+    } else {
+      // none: the photos are simply part of the slide from the first frame,
+      // incoming transition included.
+      st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: 1, dim: 0 }
+    }
+  return st
+}
+
 /** Animated state of photo i at segment time t. */
 export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0, aspect = 16 / 9, ratios?: ArrayLike<number | undefined>): PhotoState {
   const t0 = photoStart(spec, i, leadIn)
@@ -2081,101 +2270,26 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   const fade = (ENTRANCE_FADE[anim] ?? 0) / spd
   // A 'reverse' exit re-runs this photo's own entrance backwards over its exit
   // window, so leaving is arriving read in reverse — the same curves, the same
-  // mask, and nothing to keep in sync for each of the 41 ids. One number does it:
-  // the time the entrance curves are sampled at.
+  // mask, and nothing to keep in sync for each animation. One number does it: the
+  // time the entrance curves are sampled at.
   const exMode = exitMode(spec, i)
   const exStart = leadIn + baseDuration(spec) + exitOffset(spec, i)
   const exQ = exMode === 'none' ? 0 : clamp01((t - exStart) / exitFlyLength(spec, i))
   const ti = exMode === 'reverse' && exQ > 0 ? t0 + ent * (1 - exQ) : t
-  let st: PhotoState
-  if (anim === 'drop') {
-    const q = clamp01((ti - t0) / ent)
-    const settle = Math.pow(1 - q, 3)          // 1 → 0, outCubic
-    st = { dx: 0, dy: -26 * settle, rot: -7 * settle, scale: 1 - DEPTH.scale * push, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
-  } else if (anim === 'pop') {
-    const q = clamp01((ti - t0) / ent)
-    const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: 0, scale: (0.55 + 0.45 * back) * (1 - DEPTH.scale * push), scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
-  } else if (anim === 'flip') {
-    // A card flipping open around its vertical axis: edge-on (4 % width)
-    // with an outBack overshoot, straightening as it settles.
-    const q = clamp01((ti - t0) / ent)
-    const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: -4 * (1 - q), scale: 1 - DEPTH.scale * push, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((ti - t0) / fade), dim: DEPTH.dim * push }
-  } else if (anim === 'swing') {
-    // The pendulum is the one entrance measured in raw seconds — its decay and
-    // period are physical, not a curve over a window — so speed compresses the
-    // clock it runs on rather than a divisor.
-    const tau = Math.max(0, t - t0) * spd
-    // Damped pendulum around the pin: 14° amplitude, ~1.6 s period, settles
-    // in a few swings (the "pinned photo gallery" motion).
-    const rot = 14 * Math.exp(-1.3 * tau) * Math.cos(2 * Math.PI * tau / 1.6)
-    st = { dx: 0, dy: 0, rot, scale: 1, scaleX: 1, alpha: clamp01(tau / 0.15), dim: 0 }
-  } else if (anim === 'fade') {
-    const q = clamp01((ti - t0) / ent)
-    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: q * q * (3 - 2 * q), dim: 0 }
-  } else if (anim === 'slide') {
-    const q = clamp01((ti - t0) / ent)
-    const settle = Math.pow(1 - q, 3)
-    st = { dx: -28 * settle, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
-  } else if (anim === 'rise') {
-    const q = clamp01((ti - t0) / ent)
-    const settle = Math.pow(1 - q, 3)
-    st = { dx: 0, dy: 22 * settle, rot: 0, scale: 1, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
-  } else if (anim === 'tumble') {
-    const q = clamp01((ti - t0) / ent)
-    const settle = Math.pow(1 - q, 3)
-    st = { dx: 10 * settle, dy: -18 * settle, rot: 28 * settle, scale: 1 - 0.15 * settle, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
-  } else if (anim === 'zoom') {
-    const q = clamp01((ti - t0) / ent)
-    const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: 0, scale: 0.2 + 0.8 * back, scaleX: 1, alpha: clamp01((ti - t0) / fade), dim: 0 }
-  } else if (anim === 'fold') {
-    const q = clamp01((ti - t0) / ent)
-    const back = 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
-    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.04, 0.04 + 0.96 * back), alpha: clamp01((ti - t0) / fade), dim: 0 }
-  } else if (anim === 'glitch') {
-    const q = clamp01((ti - t0) / ent)
-    const j = (1 - q) * (1 - q)
-    const seed = Math.trunc(Number(spec.seed)) || 1
-    st = { dx: (hash01(seed, i, 61) - 0.5) * 10 * j, dy: (hash01(seed, i, 63) - 0.5) * 6 * j, rot: (hash01(seed, i, 65) - 0.5) * 8 * j, scale: 1, scaleX: 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, alpha: clamp01((ti - t0) / fade), dim: 0.15 * j }
-  } else if (anim === 'ink') {
-    const q = clamp01((ti - t0) / ent)
-    const blob = q * q * (3 - 2 * q)
-    st = { dx: 0, dy: 0, rot: 0, scale: 0.35 + 0.65 * blob, scaleX: 1, alpha: blob, dim: 0 }
-  } else if (anim === 'brush') {
-    const q = clamp01((ti - t0) / ent)
-    const settle = Math.pow(1 - q, 3)
-    st = { dx: -36 * settle, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.12, 1 - 0.55 * settle), alpha: clamp01((ti - t0) / fade), dim: 0 }
-  } else if (isCollageLookEntrance(anim)) {
-    // The photo does not move: its colour arrives. Every transform field is at
-    // rest and only the alpha ramp belongs here — sat, brightness, hue and the
-    // invert are composed into one set of channels by photoLookState, which is
-    // what the render's hue/eq/negate chain and the preview's CSS string both read.
-    st = { dx: 0, dy: 0, rot: 0, scale: 1 - DEPTH.scale * push, scaleX: 1,
-      alpha: clamp01((ti - t0) / fade), dim: 0 }
-  } else if (isGeomAnim(anim)) {
-    // The paper family, evaluated from one row of `COLLAGE_GEOM` rather than a
-    // branch each: the render's twin turns the SAME row into FFmpeg expressions,
-    // so a curve cannot mean one motion here and another one in the MP4.
-    const q = clamp01((ti - t0) / ent)
-    const row = COLLAGE_GEOM[anim]
-    const v = (c: GeomCurve | undefined, base: number) => geomCurve(c, q, base)
-    st = {
-      dx: v(row.dx, 0), dy: v(row.dy, 0), rot: v(row.rot, 0),
-      scale: v(row.scale, 1) * (1 - DEPTH.scale * push),
-      scaleX: v(row.scaleX, 1),
-      alpha: clamp01((ti - t0) / fade), dim: v(row.dim, 0),
-    }
-  } else if (isCollageReveal(anim)) {
-    // A mask reveal: the photo sits exactly where it will stay and is
-    // *uncovered*. Everything about the shape lives in collageReveal.ts, which
-    // the render reads too — this branch only says how far the sweep has got.
-    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: 1, dim: 0, revealKind: anim, revealP: revealProgress(anim, clamp01((ti - t0) / ent)), revealDir: photoRevealDir(spec, i) }
-  } else {
-    // none: the photos are simply part of the slide from the first frame,
-    // incoming transition included.
-    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: 1, dim: 0 }
+  let st = entranceState(spec, i, anim, t0, ent, fade, spd, ti, push)
+  // …and an exit may name any arrival at all. Then the departure is *that* entrance
+  // read backwards over the exit window rather than the photo's own, which is one
+  // extra call to the same chain — no exit is authored per animation, in this engine
+  // or the render, so the exit catalogue can never fall behind the entrance one.
+  // Replacing the arrival's contribution costs nothing: by the moment a photo leaves
+  // it has long since settled, and every curve below is at rest at q = 1.
+  const exAnim = exitAnimation(spec, i)
+  if (exQ > 0 && exAnim && exAnim !== anim) {
+    const exEnt = exitFlyLength(spec, i)
+    const exSpd = exitSpeed(spec)
+    st = entranceState(spec, i, exAnim, exStart, exEnt,
+                       ((ENTRANCE_FADE as Record<string, number>)[exAnim] ?? 0) / exSpd, exSpd,
+                       exStart + exEnt * (1 - exQ), push)
   }
   if (spec.kenBurns === true) {
     const land = t0 + ent
@@ -2192,6 +2306,10 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   // Exit: after the hold (and every entrance) the photos leave the frame —
   // each one its own way when it has an override.
   const mode = exMode
+  // Which animation the departure mirrors: the photo's own for 'reverse', the chosen
+  // one otherwise, and '' for the four travel modes. Two lines below it says whether
+  // the leaving is a closing mask, which must not also be dimmed.
+  const exA = exAnim || anim
   if (mode !== 'none') {
     const seed = Math.trunc(Number(spec.seed)) || 1
     const te0 = exStart
@@ -2199,12 +2317,16 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
     if (qe > 0) {
       const ease = qe * qe                       // accelerating fly
       if (mode === 'reverse') {
-        // Nothing to add — the mirror above is the departure. Only an entrance
-        // that never touched its alpha needs help leaving: a mask reveal closes
-        // instead of fading, and 'none' has no curve at all, so a photo whose
-        // arrival was instant would otherwise simply stop on the last frame.
-        // Linear, because `fade=t=out` in the render is linear.
-        if (!isCollageReveal(anim) && st.alpha > 0.999) st.alpha = 1 - qe
+        // Nothing to add — the mirrored curve above IS the departure, and an arrival
+        // with an alpha ramp of its own leaves on that ramp backwards. Only an
+        // entrance that never touched its alpha needs help going: those fade over the
+        // fly, linearly, because `fade=t=out` in the render is. Testing the animation
+        // instead of the sampled opacity is the fix for a photo that used to *brighten*
+        // halfway out — a drop-style arrival sits at full opacity for most of its fly
+        // and only dims at the end, so the instant check switched the linear fade on and
+        // off, while the MP4 (whose `fade=t=out` window is that same ramp) never
+        // flickered. Preview and render now agree on exactly the curve.
+        if (!isCollageReveal(exA) && ((ENTRANCE_FADE as Record<string, number>)[exA] ?? 0) <= 0) st.alpha = 1 - qe
       } else if (mode === 'fade') {
         // It leaves by fading where it stands: no travel, no turn, and the
         // whole fly is the fade — the movers fade over their last quarter.
@@ -2232,7 +2354,11 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
         st.dy += 55 * Math.sin(a) * ease
         st.rot += (hash01(seed, i, 75) - 0.5) * 40 * qe
       }
-      st.alpha *= mode === 'fade' ? 1 - qe : 1 - clamp01((qe - 0.75) / 0.25)
+      if (mode === 'fade') st.alpha *= 1 - qe
+      else if (mode === 'reverse' && isCollageReveal(exA)) {
+        // the mask IS the departure, and the render fades nothing for it, so the
+        // last-quarter dim the travel modes need would grey out a frame the MP4 has
+      } else st.alpha *= 1 - clamp01((qe - 0.75) / 0.25)
     }
   }
   return st
@@ -2665,7 +2791,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       // it has to survive the save or the lock silently unlocks on reopen — in
       // both engines, which is why python's validator keeps the same key
       ...(p.animLock === true ? { animLock: true } : {}),
-      ...(COLLAGE_EXITS.includes(p.exit as CollageExit) ? { exit: p.exit as CollageExit } : {}),
+      ...(isExitChoice(p.exit) ? { exit: p.exit as CollageExitChoice } : {}),
       ...(p.animDir === 1 ? { animDir: 1 as const } : p.animDir === 0 ? { animDir: 0 as const } : {}),
       ...(Number.isFinite(Number(p.animSpeed)) && Number(p.animSpeed) > 0
         ? { animSpeed: Math.max(ENTRANCE_SPEED_MIN, Math.min(ENTRANCE_SPEED_MAX, Number(p.animSpeed))) } : {}),
@@ -2701,7 +2827,10 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     layout: COLLAGE_LAYOUTS_ALL.includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
     animation: COLLAGE_ANIM_IDS_ALL.includes(c.animation as CollageAnimation)
       ? c.animation as CollageAnimation : 'drop',
-    exit: COLLAGE_EXIT_MODES.includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
+    // …and any entrance id, since a departure is an arrival read backwards. One
+    // predicate (`isExitChoice`) is the whole domain, here and in the render, so a
+    // name the picker can offer is a name that survives a save.
+    exit: isExitChoice(c.exit) && c.exit !== 'none' ? c.exit as CollageExitChoice : undefined,
     animDir: c.animDir === 1 ? 1 : undefined,
     // the same 31-bit fold python's validator applies (`& 0x7FFFFFFF`): a seed one
     // engine clamps and the other does not is a roll that replays differently

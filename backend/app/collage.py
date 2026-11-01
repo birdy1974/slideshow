@@ -1375,10 +1375,15 @@ FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart"
 # Exits - how the photos leave after the hold. Twin of collageCore.ts.
 EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4, "fade": 0.5, "reverse": 0.5}
 EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1, "fade": 0.08, "reverse": 0.08}
-# Every exit mode, "none" (stay until the transition) first.
-# …and "reverse", which is not a new motion but the photo's own entrance played
-# backwards over the exit window: 41 arrivals and 41 departures from one table.
+# The four modes that fly somewhere, plus "none" (stay until the transition) and
+# "reverse", which is not a new motion at all but the photo's own entrance played
+# backwards over the exit window.
 EXITS = ("none", "sweep", "deal", "shuffle", "fade", "reverse")
+# …and that last idea turned into the whole exit catalogue: *any* entrance id may be
+# stored as an exit, and the departure is that arrival read backwards. So this is
+# not a second list of names — it is ANIM_IDS, and one table serves both directions
+# (see exit_choice()). An exit therefore never lags an entrance: adding an arrival is
+# also adding a departure, in the editor and in the render at the same time.
 
 # Motion one photo keeps doing while it is on screen — the "while" lane of the
 # three-lane model the text layers use (enter / while / exit). Twin of MOTION
@@ -1500,24 +1505,127 @@ def exit_speed(spec: dict[str, Any]) -> float:
     return max(EXIT_SPEED_MIN, min(EXIT_SPEED_MAX, v))
 
 
+def is_exit_choice(name: Any) -> bool:
+    """Can this name be stored as an exit? The five modes, "none", and any
+    entrance id — including a bridged FFmpeg name, for the same reason it is a
+    legal entrance (twin of isExitChoice())."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name == "none" or name in EXITS:
+        return True
+    return name in ANIM_IDS or resolve_anim(name) in ANIMS
+
+
+def exit_choice(spec: dict[str, Any], i: int | None = None) -> str:
+    """The exit as it is stored: "none" when the photo stays, otherwise one of the
+    five modes or the id of the entrance to play backwards (twin of exitChoice()).
+    This is the only reader that knows *which* animation a departure mirrors;
+    exit_mode() below flattens the answer to how it behaves."""
+    if i is not None:
+        photos = spec.get("photos") or []
+        if i < len(photos) and isinstance(photos[i], dict):
+            # 'none' counts here and means the opposite of what it means on the
+            # collage: an explicit 'none' on a photo is how you keep it on screen
+            # while everything else leaves, so it is a chosen value, not an absence.
+            own = photos[i].get("exit")
+            if is_exit_choice(own):
+                return str(own)
+    shared = spec.get("exit")
+    return str(shared) if is_exit_choice(shared) and shared != "none" else "none"
+
+
+def exit_animation(spec: dict[str, Any], i: int) -> str:
+    """The animation photo i's departure reads backwards, "" when the exit is "none"
+    or one of the four travel modes (those add their own terms instead). "reverse"
+    is the same mechanism pointed at the photo's own arrival (twin of
+    exitAnimation())."""
+    raw = exit_choice(spec, i)
+    if raw == "none" or (raw in EXITS and raw != "reverse"):
+        return ""
+    if raw == "reverse":
+        # …and "reverse" is the photo's own arrival, named: the mirror below is
+        # guarded on "a *different* curve", so answering with the real id here is
+        # what keeps every reader of this function honest about what runs backwards
+        # (the TS twin has always answered this way; python used to say "").
+        return photo_anim(spec, i)
+    return resolve_anim(raw)
+
+
+# The arrivals whose curves are hand-written rather than a GEOM row, as FFmpeg
+# expression terms: (x as a fraction of width, y of height, rotation in degrees) and
+# the ease they share. One table, two users — a photo's own arrival, and a departure
+# that mirrors somebody else's arrival — because an exit is an entrance read
+# backwards (see exit_animation()). The scale-only ids (pop, zoom, ink, fold, flip's
+# width) are deliberately absent: the render draws a changing size as a sampled
+# ladder of static scales from photo_state(), which already mirrors the exit, so
+# there is nothing for the graph to add.
+_ARRIVAL_EASE = {"settle3": "pow(1-{q},3)", "lin1": "(1-{q})", "settle2": "pow(1-{q},2)"}
+_ARRIVAL = {
+    "drop": (0.0, -0.26, -7.0, "settle3"),
+    "flip": (0.0, 0.0, -4.0, "lin1"),
+    "slide": (-0.28, 0.0, 0.0, "settle3"),
+    "rise": (0.0, 0.22, 0.0, "settle3"),
+    "tumble": (0.10, -0.18, 28.0, "settle3"),
+    "brush": (-0.36, 0.0, 0.0, "settle3"),
+}
+
+
+def arrival_terms(anim: str, q: str, width: int, height: int, seed: int, i: int,
+                  tau: str | None = None) -> tuple[str, str, str]:
+    """This animation's (x, y, rotation) terms at progress `q` — the expressions the
+    photo's position and angle are built from, for the *editor's* hand-written
+    entrances, the `paper` family and the bridged names (whose rows carry the curve
+    data), plus glitch's seeded jitter and a pendulum's `tau`. Twin-side of
+    _entrance_state(): same numbers, one place each. Returns '' for a channel the
+    animation does not touch, so callers splice empty strings freely.
+
+    `tau` is only read by 'swing', whose clock is raw seconds scaled by speed rather
+    than a window: the caller passes the mirrored one to make a swing leave the way
+    it arrived."""
+    row = _ARRIVAL.get(anim)
+    if row is not None:
+        ease = _ARRIVAL_EASE[row[3]].replace("{q}", q)
+        x = fly_term(row[0] * width, ease) if row[0] else ""
+        y = fly_term(row[1] * height, ease) if row[1] else ""
+        r = fly_term(row[2], ease) if row[2] else ""
+        return (x, y, r)
+    if anim == "swing" and tau is not None:
+        return ("", "", f"+14*exp(-1.3*{tau})*cos(2*PI*{tau}/1.6)")
+    if anim == "glitch":
+        jg = f"pow(1-{q},2)"
+        return (fly_term((hash01(seed, i, 61) - 0.5) * 0.10 * width, jg),
+                fly_term((hash01(seed, i, 63) - 0.5) * 0.06 * height, jg),
+                fly_term((hash01(seed, i, 65) - 0.5) * 8, jg))
+    if anim in GEOM:
+        grow = GEOM[anim]
+        return (_geom_expr(grow.get("dx"), q, width), _geom_expr(grow.get("dy"), q, height),
+                _geom_expr(grow.get("rot"), q, 1.0))
+    return ("", "", "")
+
+
+
 def exit_fly_length(spec: dict[str, Any], i: int | None = None) -> float:
     """A photo's fly-out length in seconds at the spec's exit speed (twin of
-    exitFlyLength()). Pass i for a photo that leaves on its own."""
-    mode = exit_mode(spec) if i is None else exit_mode(spec, i)
-    return 0.0 if mode == "none" else EXIT_LENGTH[mode] / exit_speed(spec)
+    exitFlyLength()). Pass i for a photo that leaves on its own. A departure that
+    names an entrance is as long as that entrance's own arrival, scaled by *exit*
+    speed; "reverse" keeps its own number, so no existing slide changes."""
+    raw = exit_choice(spec) if i is None else exit_choice(spec, i)
+    if raw == "none":
+        return 0.0
+    base = EXIT_LENGTH.get(raw, ENTRANCE_LENGTH.get(resolve_anim(raw), 0.0))
+    return base / exit_speed(spec)
 
 
 def exit_mode(spec: dict[str, Any], i: int | None = None) -> str:
     """The exit mode: the collage's setting, or photo i's own when i is given.
     A missing or unknown override inherits; "none" has to be written explicitly
-    to keep one photo on screen while the others leave."""
-    if i is not None:
-        photos = spec.get("photos") or []
-        if i < len(photos) and isinstance(photos[i], dict):
-            own = photos[i].get("exit")
-            if own in EXITS:
-                return own
-    return spec.get("exit") if spec.get("exit") in EXITS[1:] else "none"
+    to keep one photo on screen while the others leave. Any entrance id reports
+    itself as "reverse", because that is how it behaves: no fly of its own, the
+    arrival's curve running backwards (twin of exitMode())."""
+    raw = exit_choice(spec) if i is None else exit_choice(spec, i)
+    if raw == "none":
+        return "none"
+    return raw if raw in EXITS[1:] else "reverse"
 
 
 def exit_schedule_mode(spec: dict[str, Any]) -> str:
@@ -1758,22 +1866,18 @@ def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lea
     )
 
 
-def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, Any]:
-    """Animated offsets of photo i at segment time t — twin of photoState()."""
-    t0 = photo_start(spec, i, lead_in)
-    push = push_depth(spec, i, t, lead_in)
-    anim = photo_anim(spec, i)
-    spd = anim_speed(spec, i)
-    ent = ENTRANCE_LENGTH.get(anim, 0.0) / spd
-    fade = ENTRANCE_FADE.get(anim, 0.0) / spd
-    # A 'reverse' exit re-runs the entrance backwards over the exit window, so the
-    # time the curves below are sampled at is the arrival's, read in reverse.
-    # Mirroring the sample rather than writing an exit for each animation is what
-    # keeps 41 ids and 41 departures from being 82 things to keep in step.
-    ex_mode = exit_mode(spec, i)
-    ex_start = lead_in + base_duration(spec) + exit_offset(spec, i)
-    ex_q = 0.0 if ex_mode == "none" else _clamp01((t - ex_start) / (exit_fly_length(spec, i) or 0.001))
-    ti = t0 + ent * (1 - ex_q) if ex_mode == "reverse" and ex_q > 0 else t
+def _entrance_state(spec: dict[str, Any], i: int, anim: str, t0: float, ent: float,
+                fade: float, spd: float, ti: float, push: float) -> dict[str, Any]:
+    """The entrance curve for `anim`, sampled at `ti` — the whole arrival in one
+    place so that a *departure* can be the same code with another id and another
+    window: photo_state() calls it a second time for the animation the exit names.
+    `t0` is when the curve starts, `ent` how long it runs, `fade` its alpha ramp,
+    `spd` the clock a pendulum compresses and `push` how far back a landed photo
+    has been shoved by the ones arriving after it. Twin of entranceState() in
+    collageCore.ts — including reading the pendulum at `ti` rather than on the raw
+    clock, which is what lets a mirrored exit un-swing a photo in the preview the
+    same way the render already did.
+    """
     if anim == "drop":
         q = _clamp01((ti - t0) / ent)
         settle = (1 - q) ** 3
@@ -1791,7 +1895,7 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     elif anim == "swing":
         # The pendulum is the one entrance measured in raw seconds, so speed
         # compresses the clock it runs on rather than a divisor.
-        tau = max(0.0, t - t0) * spd
+        tau = max(0.0, ti - t0) * spd
         rot = 14 * math.exp(-1.3 * tau) * math.cos(2 * math.pi * tau / 1.6)
         st = {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01(tau / 0.15), "dim": 0.0}
     elif anim == "fade":
@@ -1857,6 +1961,39 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
               "revealDir": float(photo_reveal_dir(spec, i))}
     else:
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0}
+    return st
+
+
+def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, Any]:
+    """Animated offsets of photo i at segment time t — twin of photoState()."""
+    t0 = photo_start(spec, i, lead_in)
+    push = push_depth(spec, i, t, lead_in)
+    anim = photo_anim(spec, i)
+    spd = anim_speed(spec, i)
+    ent = ENTRANCE_LENGTH.get(anim, 0.0) / spd
+    fade = ENTRANCE_FADE.get(anim, 0.0) / spd
+    # A 'reverse' exit re-runs the entrance backwards over the exit window, so the
+    # time the curves below are sampled at is the arrival's, read in reverse.
+    # Mirroring the sample rather than writing an exit for each animation is what
+    # keeps 41 ids and 41 departures from being 82 things to keep in step.
+    ex_mode = exit_mode(spec, i)
+    ex_start = lead_in + base_duration(spec) + exit_offset(spec, i)
+    ex_q = 0.0 if ex_mode == "none" else _clamp01((t - ex_start) / (exit_fly_length(spec, i) or 0.001))
+    ti = t0 + ent * (1 - ex_q) if ex_mode == "reverse" and ex_q > 0 else t
+    st = _entrance_state(spec, i, anim, t0, ent, fade, spd, ti, push)
+    # …and an exit may name any arrival at all. Then the departure is *that* entrance
+    # read backwards over the exit window instead of the photo's own, which is one
+    # extra call to the same chain: no exit is authored per animation, here or in the
+    # render, so the exit catalogue can never fall behind the entrance one. Replacing
+    # the arrival's contribution costs nothing — by the moment a photo leaves it has
+    # long since settled, and every curve in the chain is at rest at q = 1.
+    ex_anim = exit_animation(spec, i)
+    if ex_q > 0 and ex_anim and ex_anim != anim:
+        ex_ent = exit_fly_length(spec, i)
+        ex_spd = exit_speed(spec)
+        st = _entrance_state(spec, i, ex_anim, ex_start, ex_ent,
+                             ENTRANCE_FADE.get(ex_anim, 0.0) / ex_spd, ex_spd,
+                             ex_start + ex_ent * (1 - ex_q), push)
     if spec.get("kenBurns") is True:
         land = t0 + ent
         dur = collage_duration(spec)
@@ -1871,6 +2008,10 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     # Exit: after the hold (and every entrance) the photos leave the frame —
     # each one its own way when it has an override.
     mode = ex_mode
+    # Which animation the departure mirrors: the photo's own for 'reverse', the chosen
+    # one otherwise, and '' for the four travel modes. Used below to tell a closing
+    # mask (which must not also be dimmed) from a mover that has to fade out.
+    ex_a = ex_anim or anim
     if mode != "none":
         seed = int(spec.get("seed") or 1)
         te0 = ex_start
@@ -1878,10 +2019,17 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         if qe > 0:
             ease = qe * qe
             if mode == "reverse":
-                # Nothing to add: the mirror above is the departure. An entrance
-                # that never touched its alpha still has to leave somehow, so
-                # those fade over the fly — linearly, because `fade=t=out` is.
-                if not is_reveal(anim) and st["alpha"] > 0.999:
+                # Nothing to add: the mirrored curve above IS the departure, and an
+                # arrival with an alpha ramp of its own leaves on that ramp backwards.
+                # Only an entrance that never touched its alpha needs help going —
+                # those fade over the fly, linearly, because `fade=t=out` is. Testing
+                # the animation rather than the sampled opacity is the fix for a photo
+                # that used to *brighten* halfway out: a drop-style arrival sits at
+                # full opacity for most of its fly and only dims at the end, so the
+                # instant-by-instant check kept switching the linear fade on and off,
+                # while the render (whose `fade=t=out` window is the same ramp) never
+                # flickered. Preview and MP4 now agree on exactly the curve.
+                if not is_reveal(ex_a) and ENTRANCE_FADE.get(ex_a, 0.0) <= 0.0:
                     st["alpha"] = 1 - qe
             elif mode == "fade":
                 # It leaves by fading where it stands: no travel, no turn, and
@@ -1907,7 +2055,15 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
                 st["dx"] += 75 * math.cos(a) * ease
                 st["dy"] += 55 * math.sin(a) * ease
                 st["rot"] += (hash01(seed, i, 75) - 0.5) * 40 * qe
-            st["alpha"] *= 1 - qe if mode == "fade" else 1 - _clamp01((qe - 0.75) / 0.25)
+            if mode == "fade":
+                st["alpha"] *= 1 - qe
+            elif mode == "reverse" and is_reveal(ex_a):
+                # The mask IS the departure, and the render fades nothing for it
+                # (`fade=t=out` is empty for a closing reveal) — dimming here too would
+                # grey out the frame the preview shows and the MP4 does not.
+                pass
+            else:
+                st["alpha"] *= 1 - _clamp01((qe - 0.75) / 0.25)
     return st
 
 
@@ -2408,7 +2564,11 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             # "this photo's entrance survives the shuffle" — editor state, kept by
             # both engines so it does not vanish on save
             entry["animLock"] = True
-        if p.get("exit") in EXITS:
+        # …and, as for the collage's own exit below, any entrance id: a departure is
+        # an arrival read backwards, so the domain of a stored exit is the whole
+        # catalogue and not just the five modes (a name dropped here silently loses
+        # the seconds the exit adds to the slide — the trap "fade" once fell into).
+        if is_exit_choice(p.get("exit")):
             entry["exit"] = p["exit"]
         if p.get("motion") in MOTIONS:
             entry["motion"] = p["motion"]
@@ -2448,7 +2608,7 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     animation = raw.get("animation") if raw.get("animation") in ANIM_IDS else "drop"
     anim_dir = 1 if raw.get("animDir") in (1, True) else 0
     anim_speed = _speed_val(raw.get("animSpeed"))
-    exit_ = raw.get("exit") if raw.get("exit") in EXITS[1:] else None
+    exit_ = raw.get("exit") if is_exit_choice(raw.get("exit")) and raw.get("exit") != "none" else None
     try:
         speed_in = float(raw.get("exitSpeed")) if raw.get("exitSpeed") is not None and not isinstance(raw.get("exitSpeed"), bool) else None
     except (TypeError, ValueError):
@@ -2578,6 +2738,12 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 # FFmpeg composite graph
 # ---------------------------------------------------------------------------
+
+def fly_term(value: float, expr: str) -> str:
+    """Sign-aware term so generated expressions never contain '+-'. Module level
+    because arrival_terms() below needs it as much as the graph builder did."""
+    return (f"-{_n(abs(value))}" if value < 0 else f"+{_n(value)}") + f"*{expr}"
+
 
 def _n(v: float) -> str:
     """Format a number for an FFmpeg expression (no exponent notation)."""
@@ -3038,14 +3204,27 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # editor. The per-animation literals this replaces (0.55, 0.45, …) were
         # each the table's own number, so nothing about an unchanged slide moves.
         q_ent = f"min(max((t-{_n(t0)})/{_n(ent or 0.001)},0),1)"
+        # Which arrival the departure reads backwards ("" for the four travel modes).
+        ex_anim = exit_animation(spec, i)
+        q_x = ""
         if ex_mode == "reverse":
-            # …and read backwards from the moment it leaves. Taking the *minimum*
-            # of the two is what makes one expression serve both directions:
-            # before the exit the mirrored term is 1 and the arrival's own value
-            # wins, after it the arrival has settled at 1 and the mirror wins.
-            # `gt`, not `gte`, because that is the comparison photo_state() uses.
+            # …and read backwards from the moment it leaves.
             q_rev = f"1-min(max((t-{_n(te0)})/{_n(fly or 0.001)},0),1)"
-            q_ent = f"min({q_ent},{q_rev})"
+            if ex_anim and ex_anim != anim:
+                # An exit that names a *different* animation needs that animation's
+                # own terms, so they are added to the arrival's below rather than
+                # folded into its progress. Summing is exact, not an approximation:
+                # each curve is at rest outside its own window — the arrival has
+                # settled at q=1 by the time the photo leaves, and the mirror is 1
+                # (also at rest) until the fly starts.
+                q_x = q_rev
+            else:
+                # 'reverse' mirrors the photo's own curve, so one expression can serve
+                # both directions: before the exit the mirrored term is 1 and the
+                # arrival's own value wins, after it the arrival has settled at 1 and
+                # the mirror wins. `gt`, not `gte`, because that is the comparison
+                # photo_state() uses.
+                q_ent = f"min({q_ent},{q_rev})"
         q_drop = q_flip = q_slide = q_tumble = q_brush = q_glitch = q_ent
         extra_x = extra_y = extra_r = ""
         if anim == "slide":
@@ -3072,6 +3251,19 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             extra_x = fly_term((hash01(seed, i, 61) - 0.5) * 0.10 * width, jg)
             extra_y = fly_term((hash01(seed, i, 63) - 0.5) * 0.06 * height, jg)
             extra_r = fly_term((hash01(seed, i, 65) - 0.5) * 8, jg)
+        if q_x:
+            # the departure's curve, from the same table the arrival is drawn from
+            tau_x = None
+            if ex_anim == "swing":
+                # a pendulum's clock is raw seconds, so the mirror is the settled
+                # span counting down — the exit's own length, since that window is
+                # what its fly is made of (and speed cancels, as it does on arrival)
+                tau_x = (f"{_n(ENTRANCE_LENGTH.get(ex_anim, 0.0))}"
+                         f"*(1-min(max((t-{_n(te0)})/{_n(fly or 0.001)},0),1))")
+            ex2_x, ex2_y, ex2_r = arrival_terms(ex_anim, q_x, width, height, seed, i, tau=tau_x)
+            extra_x = (extra_x or "") + ex2_x
+            extra_y = (extra_y or "") + ex2_y
+            extra_r = (extra_r or "") + ex2_r
         if spec.get("kenBurns") is True:
             land = t0 + ent
             span = max(0.8, collage_duration(spec) * 0.7)
@@ -3123,11 +3315,22 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # 0.16/0.6 of its fly disappearing, and sits invisible after that.
             # A mask reveal needs none of it — its mask is closing — and an
             # entrance that never faded ('none') leaves over the whole fly.
-            fd = entrance_fade(spec, i)
-            if is_reveal(anim):
+            # …and for an exit that names another animation, the ramp is *that*
+            # one's: the same ratio, taken from the mirrored curve's own tables and
+            # scaled by exit speed, so `fade=t=out` covers the same fraction of the
+            # fly that `fade=t=in` covered of the arrival.
+            ex_a = ex_anim or anim
+            if ex_anim and ex_anim != anim:
+                spd_x = exit_speed(spec)
+                fd = ENTRANCE_FADE.get(ex_a, 0.0) / spd_x
+                ent_r = ENTRANCE_LENGTH.get(ex_a, 0.0) / spd_x or fly
+            else:
+                fd = entrance_fade(spec, i)
+                ent_r = ent
+            if is_reveal(ex_a):
                 fade_out = ""
-            elif fd and fd < ent:
-                d_out = fly * (fd / ent)
+            elif fd and fd < ent_r:
+                d_out = fly * (fd / ent_r)
                 fade_out = f",fade=t=out:st={_n(te0 + fly - d_out)}:d={_n(d_out)}:alpha=1"
             else:
                 fade_out = f",fade=t=out:st={_n(te0)}:d={_n(fly)}:alpha=1"
@@ -3141,7 +3344,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         fall = f"-{_n(0.26 * height)}*pow(1-{q_drop},3)" if anim == "drop" else ""
 
         # --- size ladder ---------------------------------------------------
-        def size_levels() -> list[tuple[int, int, float | None, list[list[float]]]]:
+        def size_levels() -> list[tuple[int, int, float | None, str | None, list[list[float]]]]:
             """Distinct (W, H, mask step) sprite variants photo i shows, each with
             the [start, end) frame windows it is on screen. The last window is
             open-ended (end=None).
@@ -3151,14 +3354,22 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             whole clip per pixel per frame, while here each step of the sweep is
             ONE baked still that is held for its window — which is why a NAS can
             render a mosaic in about what a wipe costs."""
-            reveal = is_reveal(anim)
+            # A closing mask is as much a reveal as an opening one: when the exit
+            # mirrors a reveal id, its steps have to be baked per level too.
+            reveal = is_reveal(anim) or (ex_mode == "reverse" and is_reveal(ex_anim))
             varies = (anim in SCALE_ANIMS or anim in GEOM_SCALES
                       or depth_on or spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS or reveal
                       # a mirrored exit re-runs the same size changes, so the
                       # levels have to be sampled across the fly as well
-                      or (ex_mode == "reverse" and (reveal or anim in SCALE_ANIMS or anim in GEOM_SCALES)))
+                      or (ex_mode == "reverse" and (reveal or anim in SCALE_ANIMS or anim in GEOM_SCALES
+                                                    # …and a departure mirroring a *different* animation scales
+                                                    # and unmasks on that curve, so its levels have to be
+                                                    # sampled across the fly too (photo_state() has them).
+                                                    or is_reveal(exit_animation(spec, i))
+                                                    or exit_animation(spec, i) in SCALE_ANIMS
+                                                    or exit_animation(spec, i) in GEOM_SCALES)))
             if not varies:
-                return [(cw, ch, None, [[0.0, None]])]
+                return [(cw, ch, None, None, [[0.0, None]])]
             # the timeline only moves during the entrance and the depth push
             # windows — sample the twin at frame resolution up to there
             last_var = t0 + ent
@@ -3186,7 +3397,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 end_var = max(end_var, ex_win[1])
             buckets = ladder_buckets(cw, ch)
             n_frames = max(1, math.ceil(end_var * fps))
-            runs: list[list] = []           # [start_frame, end_frame, W, H, mask step]
+            runs: list[list] = []           # [start_frame, end_frame, W, H, mask step, kind]
             for k in range(n_frames + 1):
                 t = k / fps
                 st = photo_state(spec, i, t, lead_in, aspect, ratios)
@@ -3205,17 +3416,26 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 # preview's mask cache uses, so frame k shows the same shape here
                 # as it does on screen. 1.0 means "no mask left to apply".
                 mp: float | None = None
+                kind: str | None = None
                 if reveal:
                     rp = st.get("revealP")
+                    # …and WHICH reveal: a photo can arrive as an iris and leave as a
+                    # wipe, and the step alone does not say what shape to cut. The
+                    # sampled state knows, because it is the state that chose to have
+                    # a mask at all — so the kind joins the level key instead of being
+                    # read back off the photo's arrival, which is where a shared
+                    # `anim` used to paint the exit with the entrance's shape.
+                    kind = st.get("revealKind")
                     mp = 1.0 if rp is None or rp >= 1.0 else reveal_quantise(REVEAL_STEPS, float(rp))
-                if runs and runs[-1][2] == w_ and runs[-1][3] == h_ and runs[-1][4] == mp:
+                if (runs and runs[-1][2] == w_ and runs[-1][3] == h_
+                        and runs[-1][4] == mp and runs[-1][5] == kind):
                     runs[-1][1] = k
                 else:
-                    runs.append([k, k, w_, h_, mp])
-            levels: dict[tuple[int, int, float | None], list[list[float]]] = {}
-            order: list[tuple[int, int, float | None]] = []
-            for k0, k1, w_, h_, mp in runs:
-                key = (w_, h_, mp)
+                    runs.append([k, k, w_, h_, mp, kind])
+            levels: dict[tuple[int, int, float | None, str | None], list[list[float]]] = {}
+            order: list[tuple[int, int, float | None, str | None]] = []
+            for k0, k1, w_, h_, mp, kind in runs:
+                key = (w_, h_, mp, kind)
                 if key not in levels:
                     levels[key] = []
                     order.append(key)
@@ -3227,7 +3447,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 a = max(0.0, k0 / fps - 0.003)
                 b = None if k1 == n_frames else k1 / fps + 0.5 / fps + 0.003
                 levels[key].append([a, b])
-            return [(w_, h_, mp, levels[(w_, h_, mp)]) for w_, h_, mp in order]
+            return [(w_, h_, mp, kind, levels[(w_, h_, mp, kind)]) for w_, h_, mp, kind in order]
 
         def select_expr(windows: list[list[float]]) -> str:
             """The same windows as `enable_expr`, as a bare `select` condition.
@@ -3331,7 +3551,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # only for its frame windows. Later levels overlay earlier ones, and
         # the windows partition time, so exactly one size per photo is ever
         # on screen.
-        for k, (W, H, mp, windows) in enumerate(levels):
+        for k, (W, H, mp, kind, windows) in enumerate(levels):
             is_last = k == len(levels) - 1
             src = f"sp{i}f" if len(levels) == 1 else f"b{i}_{k}"
             # the final level closes photo i's chain, so its output keeps the
@@ -3344,7 +3564,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # rides on the sprite's own box — the same box the preview masks —
             # which is why the two agree without any coordinate translation, and
             # before the rotate, because a CSS mask turns with the element.
-            a_expr = geq_alpha(anim, mp, int(st_dir(spec, i))) if (
+            a_expr = geq_alpha(kind or anim, mp, int(st_dir(spec, i))) if (
                 mp is not None and mp < 1.0) else ""
             if a_expr:
                 # `select` first: a step is a still image, so the frames outside

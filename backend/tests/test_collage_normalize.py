@@ -92,13 +92,49 @@ class CollageNormalizeExitTest(unittest.TestCase):
         self.assertAlmostEqual(got[2]["exitTotal"], EXIT_STAGGER["fade"] * 2 / EXIT_SPEED_MAX + EXIT_LENGTH["fade"] / EXIT_SPEED_MAX, places=5)
 
     def test_none_and_junk_mean_no_exit(self) -> None:
-        got = self._run([spec("none"), spec("iris"), spec(1), spec(None)])
+        got = self._run([spec("none"), spec("notAnAnimation"), spec(1), spec(None)])
         for one in got:
-            self.assertIsNone(one["exit"], "only a real mode may be kept")
+            self.assertIsNone(one["exit"], "only a name from the catalogue may be kept")
             self.assertEqual(one["exitMode"], "none")
             self.assertEqual(one["schedule"], "none")
             self.assertEqual(one["exitTotal"], 0)
             self.assertEqual(one["offsets"], [0, 0, 0], "a photo that never leaves has no schedule")
+
+    def test_an_arrival_is_a_legal_departure(self) -> None:
+        """The exit catalogue IS the entrance catalogue. A stored `exit` may name any
+        animation the picker can offer, and the render has to see the same seconds for
+        it that the preview does — the fly is that arrival's own length, the schedule is
+        'reverse'\'s, because a mirrored exit travels nowhere of its own.
+        """
+        from app.collage import ENTRANCE_LENGTH as PY_ENTRANCE_LENGTH
+        from app.collage import resolve_anim
+        # a mask reveal, a mover, a bridged alias and a real FFmpeg transition — the
+        # four kinds of name the entrance browser can write, all of them exits now
+        ids = ["iris", "rise", "slideleft", "fadeblack"]
+        got = self._run([spec(i) for i in ids])
+        self.assertEqual([one["exit"] for one in got], ids,
+                         "a name the browser offers must survive the load — dropping it loses the exit *and* its seconds")
+        for name, one in zip(ids, got):
+            self.assertEqual(one["exitMode"], "reverse", name)
+            self.assertEqual(one["schedule"], "reverse", name)
+            self.assertAlmostEqual(one["flies"][0], PY_ENTRANCE_LENGTH[resolve_anim(name)], places=5,
+                                   msg=f"{name}'s fly is that entrance's own length")
+        # the slide really does grow by those seconds, on both sides of the bridge
+        self.assertGreater(got[0]["exitTotal"], 0)
+        self.assertAlmostEqual(got[0]["exitTotal"], EXIT_STAGGER["reverse"] * 2 + PY_ENTRANCE_LENGTH["iris"], places=5,
+                               msg="two staggered gaps plus the iris's own length")
+
+    def test_a_photos_own_none_stays_a_choice(self) -> None:
+        """An explicit 'none' on a photo is not an absence: it is how you keep one photo
+        on the board while the others leave. The collage-level 'none' means the same as
+        nothing at all, so it is the *photo* row that has to preserve it.
+        """
+        photos = [{"path": "a.jpg", "exit": "none"}, {"path": "b.jpg", "exit": "iris"}]
+        got = self._run([spec("sweep", photos=photos)])
+        self.assertEqual(got[0]["photoExits"], ["none", "iris"])
+        self.assertEqual(got[0]["exitModeFirst"], "none", "the photo that stays reports no mode at all")
+        self.assertEqual(got[0]["exitModeLast"], "reverse", "the mirrored one behaves like 'reverse'")
+        self.assertEqual(got[0]["flies"][0], 0, "and it has no fly to schedule")
 
     def test_per_photo_exits_are_validated_against_the_same_list(self) -> None:
         photos = [{"path": "a.jpg", "exit": "fade"}, {"path": "b.jpg", "exit": "none"},
