@@ -2361,6 +2361,15 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
       } else st.alpha *= 1 - clamp01((qe - 0.75) / 0.25)
     }
   }
+  // The visibility envelope, both ends: the photo does not exist before its
+  // arrival starts, and does not exist after its departure ends. Every curve above
+  // is at rest at q = 0, which hides a photo whose entrance ramps its own alpha but
+  // not one that does not — 'none', a colour lane, a 12-frame snap — and those used
+  // to sit on the canvas at full opacity until their delay was up. The render
+  // enforces the same bounds by clipping its overlay windows (size_levels → clip),
+  // so this is the preview catching up with the MP4, twin for twin.
+  if (t < t0) st.alpha = 0
+  else if (exMode !== 'none' && t >= exStart + exitFlyLength(spec, i)) st.alpha = 0
   return st
 }
 

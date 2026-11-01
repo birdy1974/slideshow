@@ -1036,3 +1036,43 @@ class CollagePreviewParityRenderTest(unittest.TestCase):
                 self.assertLess(abs(moved["cy"] - before["cy"]), 0.8)
         self.assertLess(_lane_stats(late, "blue", gray=True)["count"], 25, "gone by the end")
         self.assertGreater(_lane_box(late, "lime")[0], 1500, "and the others stay")
+
+    def test_a_photo_is_absent_before_it_arrives_and_after_it_leaves(self):
+        """The envelope, measured on real frames.
+
+        A photo with a delay must not be on the canvas for the frames before its
+        arrival: FFmpeg's `fade=t=in` starts AT that time and passes everything
+        before it through untouched, at full opacity, which is how a staggered photo
+        used to sit there fully visible for its own delay. Symmetrically, a photo
+        whose departure is over stays off for the rest of the slide.
+
+        Red arrives at 0.5 s and never leaves. Lime fades out at the start of the
+        exit, blue mirrors a long arrival, so the slide outlives lime's departure and
+        there is a tail to measure at all — the last photo's fly always ends with the
+        slide, which leaves nothing after it to look at.
+        """
+        ffmpeg = str(_ffmpeg_bin())
+        item = _lane_item({
+            0: {"cx": 22, "cy": 50, "w": 24, "delay": 0.5},
+            1: {"cx": 50, "cy": 50, "w": 24, "delay": 0.5, "exit": "fade"},
+            2: {"cx": 78, "cy": 50, "w": 24, "delay": 0.5, "exit": "boomerang"},
+        }, animation="none", hold=1.0)
+        frames, spec, duration = _render_lanes(ffmpeg, item)
+        red, lime, blue = _LANES
+        t0 = photo_start(spec, 0, 0)
+        self.assertGreater(t0, 1 / FPS, "the photos have to arrive after the first frame")
+        for k in range(0, int((t0 - 1 / FPS) * FPS) + 1):
+            for lane in (red, lime, blue):
+                self.assertLess(_lane_box(frames[k], lane)[0], 25,
+                                f"frame {k} (t={k / FPS:.2f}) already shows {lane}")
+        # …and they are solidly there once their turn came, or the loop above would be
+        # satisfied by a render that drew nothing at all
+        shown = min(len(frames) - 1, int((t0 + 0.3) * FPS))
+        for lane in (red, lime, blue):
+            self.assertGreater(_lane_box(frames[shown], lane)[0], 1500, f"{lane} at the start")
+        gone_at = base_duration(spec) + exit_offset(spec, 1) + exit_fly_length(spec, 1)
+        self.assertLess(gone_at, duration - 2 / FPS, "lime's exit has to end before the slide")
+        for k in range(int(gone_at * FPS) + 1, len(frames)):
+            self.assertLess(_lane_box(frames[k], lime)[0], 25,
+                            f"frame {k} (t={k / FPS:.2f}) shows a photo that had left")
+            self.assertGreater(_lane_box(frames[k], red)[0], 1500, f"red stays, frame {k}")

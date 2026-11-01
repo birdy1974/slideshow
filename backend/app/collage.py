@@ -2064,6 +2064,18 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
                 pass
             else:
                 st["alpha"] *= 1 - _clamp01((qe - 0.75) / 0.25)
+    # The visibility envelope, which is the one rule the render enforces by hand
+    # (it never composites the frame at all: see the window clip in size_levels)
+    # and that every curve below therefore quietly used to violate. Each entrance
+    # is at rest at q = 0, so an animation with an alpha ramp of its own hides the
+    # photo before it arrives — but 'none', a colour lane, or a 12-frame snap does
+    # not, and a delayed photo sat on the canvas at full opacity until its turn,
+    # and could sit back there after it had left. Twin of photoState() in
+    # collageCore.ts, and the same two bounds the MP4 clips its overlay to.
+    if t < t0:
+        st["alpha"] = 0.0
+    elif ex_mode != "none" and t >= ex_start + exit_fly_length(spec, i):
+        st["alpha"] = 0.0
     return st
 
 
@@ -2100,7 +2112,7 @@ def photo_reveal_dir(spec: dict[str, Any], i: int | None = None) -> int:
 # The transition bridge — FFmpeg's own names, as per-photo reveals
 # ---------------------------------------------------------------------------
 
-# The same 41 rows as `COLLAGE_BRIDGE` in src/collageCore.ts. Most of FFmpeg's
+# The same 38 rows as `COLLAGE_BRIDGE` in src/collageCore.ts. Most of FFmpeg's
 # `xfade` names are something the collage can build more cheaply than a mask, so
 # the row says which animation the name *runs*: the name is what the spec stores
 # and what the picker lists, and the animation is what both engines evaluate.
@@ -3354,6 +3366,33 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             whole clip per pixel per frame, while here each step of the sweep is
             ONE baked still that is held for its window — which is why a NAS can
             render a mosaic in about what a wipe costs."""
+            def clip(ws: list) -> list:
+                """Bound photo i's composited windows to the time it is on screen.
+
+                Before `t0` the entrance has not begun and after the exit's fly the
+                photo is gone, and neither end can be left to the fades to hide:
+                `fade=t=in:st=t0` passes the frames *before* st through untouched, at
+                full opacity, so a staggered or delayed photo used to sit on the
+                canvas until its turn came — visible from the first frame for every
+                animation that does not ramp its own alpha (none, a colour lane, a
+                snap). The pad is the same 3 ms the window boundaries already use, and
+                it is free: the frames it lets in are inside the fade's first
+                milliseconds, where the photo is transparent anyway.
+                """
+                out: list = []
+                lo_pad, hi_pad = 0.003, 0.003
+                for a, b in ws:
+                    lo = max(float(a), t0 - lo_pad)
+                    if b is None:
+                        hi = None if t_end is None else float(t_end) + hi_pad
+                    else:
+                        hi = min(float(b), (float(t_end) if t_end is not None else float(b)) + hi_pad)
+                    if hi is None:
+                        out.append([lo, None])
+                    elif hi > lo + 1e-4:
+                        out.append([lo, hi])
+                return out
+
             # A closing mask is as much a reveal as an opening one: when the exit
             # mirrors a reveal id, its steps have to be baked per level too.
             reveal = is_reveal(anim) or (ex_mode == "reverse" and is_reveal(ex_anim))
@@ -3369,7 +3408,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                                                     or exit_animation(spec, i) in SCALE_ANIMS
                                                     or exit_animation(spec, i) in GEOM_SCALES)))
             if not varies:
-                return [(cw, ch, None, None, [[0.0, None]])]
+                return [(cw, ch, None, None, clip([[0.0, None]]))]
             # the timeline only moves during the entrance and the depth push
             # windows — sample the twin at frame resolution up to there
             last_var = t0 + ent
@@ -3447,7 +3486,15 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 a = max(0.0, k0 / fps - 0.003)
                 b = None if k1 == n_frames else k1 / fps + 0.5 / fps + 0.003
                 levels[key].append([a, b])
-            return [(w_, h_, mp, kind, levels[(w_, h_, mp, kind)]) for w_, h_, mp, kind in order]
+            out = []
+            for w_, h_, mp, kind in order:
+                # a level whose every window fell outside the photo's own span is a
+                # sprite nothing will ever show: it is dropped, so no `enable` is
+                # emitted for a time the photo does not exist in
+                ws = clip(levels[(w_, h_, mp, kind)])
+                if ws:
+                    out.append((w_, h_, mp, kind, ws))
+            return out
 
         def select_expr(windows: list[list[float]]) -> str:
             """The same windows as `enable_expr`, as a bare `select` condition.
@@ -3489,6 +3536,14 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             return ":" + "enable='" + "+".join(parts) + "'" if parts else ""
 
         levels = size_levels()
+        if not levels:
+            # Nothing of this photo is on screen inside its own span — an entrance
+            # that starts and ends between two frames, with a departure already over.
+            # The sprite chain still has to be *consumed* (FFmpeg refuses a filter
+            # output nobody reads), and an enable nothing satisfies composites it
+            # never, which is exactly the answer: the canvas, unchanged.
+            lines.append(f"[{prev}][sp{i}f]overlay=x=0:y=0:enable='lt(t,0)'[o{i}];")
+            prev = f"o{i}"
 
         m, t_, sh = f"m{i}", f"t{i}", f"s{i}"
         # Depth push-back dims the mat itself (the shadow silhouette is black

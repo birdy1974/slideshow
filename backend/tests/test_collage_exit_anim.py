@@ -237,10 +237,15 @@ class MirroredCurveTest(unittest.TestCase):
                 self.assertLessEqual(b, a + 1e-9, (name, a, b))
             self.assertGreater(progress[0], 0.9, name)
             self.assertLess(progress[-1], 0.1, name)
-            # the mask IS the opacity here: nothing else may move
-            for st in states:
+            # the mask IS the opacity here: nothing else may move …
+            for st in states[:-1]:
                 self.assertAlmostEqual(st["dx"], 0.0, places=9, msg=name)
                 self.assertAlmostEqual(st["alpha"], 1.0, places=9, msg=name)
+            # …and once the fly is over the photo is gone for good, which the model
+            # now says out loud because the render enforces it by never compositing
+            # the frame at all (see test_collage_visibility_envelope.py)
+            self.assertEqual(states[-1]["alpha"], 0.0, name)
+            self.assertLessEqual(states[-1]["revealP"], 1e-9, name)
 
 
 class GraphTest(unittest.TestCase):
