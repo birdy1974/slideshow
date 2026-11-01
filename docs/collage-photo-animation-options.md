@@ -297,8 +297,30 @@ resting level. The 33 reveal specs are in the animation twin too, so
 `revealP`/`revealDir`/`revealKind` are compared at every sampled time of every
 entrance.
 
+## P2 — the twelve geometry/paper entrances (shipped)
+
+`cube` `book` `door` `unfold` `rollover` `spiral` `swish` `glide` `peek`
+`boomerang` `sling` `thread`, one row each in `COLLAGE_GEOM` (TypeScript) and
+`GEOM` (Python). Every row is a set of *curves* — `settle3`, `settle2`,
+`smooth`, `one‑smooth`, `one‑back`, `bow`, plus the two hinge shapes `hinge` and
+`recip` — and a value is `base + amp × curve(q)`. `photoState` evaluates the row
+to numbers; `photo_state` evaluates the same row, and the filter graph builds its
+`overlay` x/y and `rotate` terms out of the same names as FFmpeg text. Which rows
+need the size ladder is *derived* from whether they touch a scale, and the
+render's `fade=t=in:` duration is the row's `fade`, so nothing about a new
+entrance has to be remembered in a second place.
+
+They stay inside `dx, dy, rot, scale, scaleX, alpha, dim` on purpose: FFmpeg's
+collage graph has `scale`, `rotate` and `pad`, no perspective warp, and
+`unfold`'s height‑only squash is reachable as scale *k* with `scaleX` *1/k*
+because width is scale × scaleX. A `rotateX` cube would preview beautifully and
+render as a still, which is the failure mode this family was designed around.
+
 ## Still open
 
-P2 (geometry/paper), P3 (looks), P4 (the xfade/GL bridge), the mirrored exits
-for these ids, entrance *speed* as a parameter, and the Browse‑all picker —
-which is also where the per‑photo `animDir` override gets its control.
+P3 (the eight look‑based entrances), P4 (the xfade/GL bridge), mirrored exits
+for the 28 new ids, entrance *speed* as a parameter — the reveal lengths already
+take a `speed`, the geometry rows do not, and the older entrances still repeat
+their length as a literal (`0.55`‑style) instead of reading `ENTRANCE_LENGTH` —
+the Browse‑all picker, which is now also where the per‑photo `animDir` override
+gets its control, and the 🎲 shuffle.
