@@ -587,6 +587,40 @@ def media_beats(root: str = Query(pattern="^(music|videos|photos)$"), path: str 
     return {"beats": beats, "count": len(beats)}
 
 
+# The waveform lane of the karaoke editor decodes the same audio over and over
+# while the user drags, so it is cached exactly like the beat data is.
+_waveform_cache: dict[tuple[str, int, int, int, float, float], dict[str, Any]] = {}
+
+
+@app.get("/api/media/waveform")
+def media_waveform(root: str = Query(pattern="^(music|videos|photos)$"), path: str = "",
+                   buckets: int = Query(default=800, ge=8, le=4000),
+                   start: float = Query(default=0.0, ge=0.0), length: float = Query(default=0.0, ge=0.0)) -> dict[str, Any]:
+    """Peak envelope of a media file's own audio, for a waveform timing lane.
+
+    `start`/`length` limit the analysis to the kept part of a clip, which is
+    what the karaoke editor asks for: a two-hour movie is not worth decoding at
+    8 kHz to time forty sentences inside a 90-second cut. Returns empty peaks
+    for a file with no audio track, so the editor keeps the strip without the
+    lane instead of failing.
+    """
+    try: target = safe_path(settings.media_roots[root], path)
+    except (UnsafePath, KeyError) as exc: raise HTTPException(400, f"Invalid media path: {exc}") from exc
+    if not target.is_file(): raise HTTPException(404, "Media file not found")
+    if target.suffix.lower() not in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS: raise HTTPException(415, "File has no supported audio")
+    if target.stat().st_size == 0: raise HTTPException(422, "File is empty (0 bytes)")
+    stat = target.stat()
+    key = (str(target), stat.st_mtime_ns, stat.st_size, buckets, round(start, 2), round(length, 2))
+    cached = _waveform_cache.get(key)
+    if cached is not None:
+        return cached
+    data = renderer.waveform(target, buckets, start, length)
+    if len(_waveform_cache) > 24:
+        _waveform_cache.clear()
+    _waveform_cache[key] = data
+    return data
+
+
 @app.get("/api/media/cropdetect")
 def media_cropdetect(
     root: str = Query(pattern="^(photos|videos|uploads)$"),

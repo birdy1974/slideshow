@@ -1781,3 +1781,105 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .row-select.on{background:#22251f;border-color:#22251f;color:#fff}
 .row-select:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:760px){.file-toolbar{gap:7px}.file-view-toggle button{padding:0 9px}.file-row-tag{display:none}.file-row-player .audio-seek{width:96px}}
+// Karaoke timing (docs/karaoke-timing-editor.md): the caption's words with a
+// clock. Dark editor like the movie trim popup, and the strip reuses the
+// ruler / playhead / handle vocabulary of .editor-strip so a user who has cut
+// a movie already knows how to drag this.
+.karaoke-editor{width:min(1420px,97vw);max-height:calc(100vh - 20px);background:#1e211d;color:#fff;border:1px solid #41443c;border-radius:13px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 30px 80px #0009}
+.karaoke-editor .modal-head{height:auto;min-height:64px;padding:10px 16px;border-bottom-color:#3a3e36;gap:14px;align-items:center}
+.karaoke-editor .modal-head h2{font-size:16px}
+.karaoke-editor .eyebrow{color:#93988d}
+.kara-modes{display:flex;gap:4px;margin-left:auto;background:#161813;border:1px solid #3a3e36;border-radius:8px;padding:3px}
+.kara-modes button{border:0;background:transparent;color:#b8bcb2;font:700 9px Manrope;padding:6px 9px;border-radius:5px;white-space:nowrap}
+.kara-modes button:hover{background:#272b23;color:#fff}
+.kara-modes button.active{background:#78a13e;color:#141a0c}
+.karaoke-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(520px,1fr) 400px;overflow:hidden;align-items:stretch;border-bottom:1px solid #3a3e36}
+.kara-left{display:flex;flex-direction:column;gap:9px;padding:13px 15px 11px;min-width:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
+.kara-side{background:#292c27;border-left:1px solid #3a3e36;padding:14px 16px;display:flex;flex-direction:column;gap:13px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
+.kara-stage-wrap{position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;flex:0 0 auto}
+.kara-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.kara-overlay{position:absolute;inset:0;pointer-events:none}
+.kara-stage-host{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.kara-stage{position:absolute;left:0;top:0;transform-origin:0 0}
+.kara-block{position:absolute;transform-origin:50% 50%;margin:0;padding:0;pointer-events:none;transition:opacity .12s linear}
+.kara-word{display:inline-block;white-space:pre-wrap;background-clip:text;-webkit-background-clip:text}
+.kara-tap-cue{position:absolute;left:50%;bottom:11px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:2px;background:#0f110cd9;border:1px solid #78a13e88;border-radius:8px;padding:6px 14px;pointer-events:none}
+.kara-tap-cue b{font:800 17px Manrope;color:#d9efb0}
+.kara-tap-cue span{font:700 8px Manrope;color:#a6ac9c;letter-spacing:.5px}
+.kara-transport{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:9px;color:#a4a89e}
+.kara-transport .icon-button{border:1px solid #41453e;background:#22251f;color:#e6e8e2;border-radius:6px;width:28px;height:26px}
+.kara-transport .transport-clock{font:700 11px Manrope;color:#dfe2da;letter-spacing:.4px}
+.kara-transport .btn.ghost{height:26px;font-size:9px;padding:0 9px;border-color:#41453e;background:#22251f;color:#d7dad2}
+.kara-transport .btn.ghost.on{background:#78a13e;border-color:#78a13e;color:#141a0c;font-weight:800}
+.kara-rate{display:flex;align-items:center;gap:5px;font-size:8px;color:#9b9f95;letter-spacing:.6px;font-weight:700}
+.kara-rate select{height:26px;background:#22251f;border:1px solid #41453e;color:#e6e8e2;border-radius:6px;font-size:10px}
+.kara-scope{display:flex;gap:2px;background:#161813;border:1px solid #3a3e36;border-radius:6px;padding:2px}
+.kara-scope button{border:0;background:transparent;color:#a4a89e;font:700 8px Manrope;padding:4px 8px;border-radius:4px}
+.kara-scope button.active{background:#3a4035;color:#fff}
+.kara-strip{position:relative;flex:0 0 auto;background:#111310;border:1px solid #3a3e36;border-radius:8px;padding:22px 0 8px;cursor:crosshair;touch-action:none;user-select:none;min-height:104px}
+.kara-strip.wave{padding-top:8px}
+.kara-wave{position:relative;height:44px;margin:0 0 4px;opacity:.85;pointer-events:none}
+.kara-wave svg{position:absolute;inset:0;width:100%;height:100%}
+.kara-wave path{fill:#4c5c3c}
+.kara-wave i{position:absolute;top:0;bottom:0;width:1px;background:#d9b35d55}
+.kara-wave-empty,.kara-wave-note{position:absolute;left:8px;top:14px;font:700 8px Manrope;color:#7f857a;letter-spacing:.5px}
+.kara-ruler{position:relative;height:15px;margin:0 0 3px;border-bottom:1px solid #2c3028}
+.kara-ruler b{position:absolute;top:0;bottom:0;width:1px;background:#3a3e36}
+.kara-ruler b s{position:absolute;left:3px;top:0;font:700 7px Manrope;color:#8d928a;text-decoration:none}
+.kara-lane{position:relative;height:34px;margin-bottom:3px}
+.kara-block{position:absolute;top:0;height:34px;display:flex;align-items:center;gap:4px;padding:0 9px;border-radius:5px;background:#2f3a26;border:1px solid #55643f;color:#dfe7d3;font:700 9px Manrope;overflow:hidden;cursor:grab;touch-action:none;box-shadow:0 1px 0 #0006}
+.kara-block span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
+.kara-block:hover{background:#3a4730}
+.kara-block.active{background:#78a13e;border-color:#a3cd63;color:#111a06;font-weight:800}
+.kara-block.clipped{border-style:dashed;border-color:#d9b35d}
+.kara-handle{position:absolute;top:-3px;bottom:-3px;width:9px;border-radius:4px;background:#a3cd63;cursor:ew-resize;box-shadow:0 0 0 1px #141a0c88;padding:0}
+.kara-handle.in{left:-4px}.kara-handle.out{right:-4px}
+.kara-handle:hover{background:#c8f08a}
+.kara-wordrow{position:relative;height:26px;margin-top:2px}
+.kara-slot{position:absolute;top:0;height:26px;display:flex;align-items:center;gap:0}
+.kara-slot b{font:700 9px Manrope;color:#7f857a;white-space:nowrap;padding-right:12px}
+.kara-slot b.sung{color:#d9efb0}
+.kara-slot b.now{color:#ffd166;font-weight:800}
+.kara-div{position:absolute;left:-3px;top:-1px;width:7px;height:24px;border-radius:3px;background:#5c6b4a;cursor:ew-resize;touch-action:none}
+.kara-div:hover{background:#a3cd63}
+.kara-div.last{background:#d9b35d}
+.kara-slot.end b{display:none}
+.kara-playhead{position:absolute;top:6px;bottom:4px;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 5px #000;pointer-events:none;border-radius:2px}
+.kara-chips{display:flex;flex-wrap:wrap;gap:2px 3px;background:#161813;border:1px solid #3a3e36;border-radius:8px;padding:9px 10px;max-height:150px;overflow-y:auto}
+.kara-chip{display:inline-flex;align-items:center;gap:1px}
+.kara-chip button{border:1px solid transparent;background:transparent;color:#c3c8bd;font:600 11px Manrope;padding:2px 4px;border-radius:4px;cursor:pointer}
+.kara-chip button:hover{border-color:#5c6b4a;background:#242a20;color:#fff}
+.kara-chip button.sel{background:#2f3a26;color:#d9efb0;border-color:#55643f}
+.kara-chip.head button{font-weight:800;color:#e9efe0}
+.kara-chip em{color:#78a13e;font-style:normal;font-weight:800;padding:0 2px}
+.kara-glue{border:0;background:transparent;color:#57604e;font:800 10px Manrope;padding:0 3px;cursor:pointer;opacity:.45}
+.kara-glue:hover{opacity:1;color:#a3cd63}
+.kara-side .field-label,.kara-side>div>span.field-label{font:800 8px Manrope;letter-spacing:1.1px;color:#9b9f95;display:block;margin-bottom:5px}
+.kara-side textarea{width:100%;resize:vertical;border:1px solid #494e45;background:#20231f;color:#fff;border-radius:6px;padding:8px;font:600 11px/1.45 Manrope}
+.kara-side small{display:block;font-size:8px;color:#92978e;line-height:1.5;margin-top:5px}
+.kara-side small kbd,.kara-keys kbd,.kara-import kbd{background:#14171000;border:1px solid #4a4f45;border-bottom-width:2px;border-radius:3px;padding:0 3px;font:800 8px Manrope;color:#d7dad2}
+.kara-styles,.kara-actions{display:flex;flex-wrap:wrap;gap:4px}
+.kara-styles button{border:1px solid #41453e;background:#22251f;color:#c9cdc4;font:700 9px Manrope;padding:5px 8px;border-radius:5px}
+.kara-styles button:hover{border-color:#78a13e;color:#fff}
+.kara-styles button.active{background:#78a13e;border-color:#78a13e;color:#141a0c;font-weight:800}
+.kara-side .kara-actions .btn{height:26px;font-size:9px;padding:0 9px;border-color:#41453e;background:#22251f;color:#d7dad2;gap:5px}
+.kara-side .kara-actions .btn:hover{border-color:#78a13e;background:#2b3128}
+.kara-fill{display:flex;align-items:flex-start;gap:8px;font-size:8px;color:#92978e;line-height:1.45;margin-top:7px}
+.kara-fill input[type=color]{width:28px;height:22px;border:1px solid #41453e;border-radius:4px;background:none;padding:0;flex:0 0 auto}
+.kara-import{margin-top:7px;display:flex;flex-direction:column;gap:5px}
+.kara-import input[type=file]{font-size:9px;color:#b8bcb2}
+.kara-import input[type=file]::file-selector-button{background:#78a13e;border:0;color:#141a0c;font:800 9px Manrope;border-radius:4px;padding:5px 8px;margin-right:8px}
+.kara-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.kara-grid label{display:flex;align-items:center;gap:6px;background:#20231f;border:1px solid #41453e;border-radius:6px;padding:4px 7px}
+.kara-grid label span{font:700 8px Manrope;color:#9b9f95;letter-spacing:.5px;white-space:nowrap}
+.kara-grid input{width:100%;border:0;background:transparent;color:#fff;font:700 10px Manrope;text-align:right}
+.kara-quote{margin:0;font:600 11px/1.5 Manrope;color:#d9e0d0;background:#20231f;border-left:2px solid #78a13e;border-radius:0 5px 5px 0;padding:6px 9px}
+.kara-notice{margin:0;font-size:9px;line-height:1.5;color:#c4cabd;background:#242b20;border:1px solid #45543c;border-radius:6px;padding:7px 9px}
+.kara-notice.warn{color:#f0d9b0;background:#2d2818;border-color:#6a5a34}
+.kara-notice kbd{margin:0 1px}
+.karaoke-editor .modal-foot{border-top-color:#3a3e36;height:58px}
+.karaoke-editor .modal-foot>span{color:#92978e;font-size:9px}
+.text-field-with-karaoke{display:flex;flex-direction:column;gap:6px}
+.karaoke-open{align-self:flex-start;height:26px;font-size:9px;gap:5px}
+.karaoke-open svg{color:#78a13e}
+@media(max-width:1180px){.karaoke-body{grid-template-columns:1fr}.kara-side{border-left:0;border-top:1px solid #3a3e36}}

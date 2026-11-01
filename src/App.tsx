@@ -40,6 +40,9 @@ import {
 import { TextMotionEditor, TextMotionTimeline, presetForRandom } from './TextMotionEditor'
 import { TextEffectBrowser, type BrowserCaption } from './TextEffectBrowser'
 import { MotionStage, useMotionClock } from './TextMotionStage'
+import { KaraokeStage, useKaraokeClockTime } from './KaraokeStage'
+import { KaraokeEditor } from './KaraokeEditor'
+import { sanitizeKaraoke, tokenize } from './karaokeCore'
 import { FRAME_H, FRAME_W, type Prepared, type SceneInput } from './textMotionScene'
 import type { BgChange } from './textMotionCore'
 import { FontPicker } from './FontPicker'
@@ -1539,6 +1542,10 @@ function App() {
   const [storyPreviewId, setStoryPreviewId] = useState<number | null>(null)
   // Movie cut/crop editor, stacked on top of the media lightbox.
   const [editingMovieId, setEditingMovieId] = useState<number | null>(null)
+  // Karaoke timing has its own popup: the strip needs the playing clip and a
+  // keyboard, and the caption editor stays open underneath it (same stacked
+  // layer pattern as the transition gallery).
+  const [karaokeItemId, setKaraokeItemId] = useState<number | null>(null)
   // Which clip's "Edit picture" (filters) popup is open, if any.
   const [lookItemId, setLookItemId] = useState<number | null>(null)
   // The "Edit picture" popup has two tabs; the lightbox button you pressed
@@ -2853,10 +2860,13 @@ function App() {
       }} onClose={() => setCollageLook(null)} />
     })()}
     {editingPictureText != null && (() => { const target = media.find(x => x.id === editingPictureText); return target && target.type !== 'title'
-      ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} />
+      ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} onOpenKaraoke={() => setKaraokeItemId(target.id)} />
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} defaultStack={defaultStack} setDefaultStack={setDefaultStack} onClose={()=>setShowTextStyles(false)}/>} 
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)} onPickBackground={()=>setTextBgPickerFor(editingTextFrame)}/>}
+    {karaokeItemId !== null && (() => { const target = media.find(x => x.id === karaokeItemId); return target ? <KaraokeEditor
+      item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, outline: textOutline }}
+      onChange={change => patch(target.id, change)} onClose={() => setKaraokeItemId(null)}/> : null })()}
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)} onPickBackground={()=>setTextBgPickerFor(editingTextFrame)} onOpenKaraoke={() => setKaraokeItemId(editingTextFrame)}/>}
     {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onEditPhoto={index => setCollageLook({ id: editingCollageFrame, index, tab: 'filters' })} onEditBackground={() => setCollageLook({ id: editingCollageFrame, index: 'bg', tab: 'filters' })} onOpenCaption={() => {
       // Switching to the caption editor is not a cancel: a brand-new collage
       // must survive the handover (closeCollageEditor(false) deletes pending
@@ -3338,6 +3348,20 @@ function sceneInputFor(item: MediaItem, defaults?: Partial<CaptionDefaults> | nu
 function FrameMotionPreview({ item, defaults, playing = true, className = '' }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; className?: string }) {
   const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
+  // Karaoke replaces the caption rather than sitting next to it: the words are
+  // the same, only timed, and `sceneInputFor` is what resolves the font, size,
+  // colour, position and outline for both — so a karaoke slide keeps the look
+  // the caption settings give it. backend/app/karaoke.py reads the same plan.
+  const karaoke = sanitizeKaraoke(item.karaoke, tokenize(item.text || '').length)
+  const at = useKaraokeClockTime(karaoke ? clock : null)
+  if (karaoke && (item.text || '').trim()) {
+    return <KaraokeStage
+      className={`stage-fill ${className}`} text={item.text || ''} karaoke={karaoke} at={at}
+      from={input.start} to={input.end} family={input.family} bold={input.bold} italic={input.italic}
+      underline={input.underline} colour={input.colour} fontSize={input.fontSize} x={input.x} y={input.y}
+      align={input.align} outline={input.outline}
+    />
+  }
   return <MotionStage className={`stage-fill ${className}`} input={input} clock={clock} background={item.type === 'title' ? item.frameBackground : undefined} bg={item.type === 'title' ? bgChangeFor(item) : null} />
 }
 
@@ -3984,7 +4008,7 @@ function TitleClipFace({ item }: { item: MediaItem }) {
 // Picture mode keeps a local draft and writes on "Save"; frame mode patches the
 // storyline item live (so a stacked lightbox behind the editor updates as you
 // type) and "Cancel" reverts to the original.
-function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery, onPickBackground }: {
+function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery, onPickBackground, onOpenKaraoke }: {
   mode: 'picture' | 'frame'
   item: MediaItem
   defaults?: CaptionDefaults
@@ -3996,6 +4020,8 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   onClose: () => void
   onOpenGallery?: () => void
   onPickBackground?: () => void
+  /** Open the karaoke timing popup for this slide's caption. */
+  onOpenKaraoke?: () => void
 }) {
   const isFrame = mode === 'frame'
   const dd: CaptionDefaults = defaults ?? { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFx: defaultTextFx() }
@@ -4179,7 +4205,7 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
       </div>
       <aside>
         <div className="below-grid">
-          <div><FieldLabel>{isFrame ? 'Frame text' : 'Caption'}</FieldLabel><textarea value={draft.text} placeholder={isFrame ? 'Add title text…' : 'Add a caption…'} onChange={e => apply({ text: e.target.value })}/></div>
+          <div className="text-field-with-karaoke"><FieldLabel>{isFrame ? 'Frame text' : 'Caption'}</FieldLabel><textarea value={draft.text} placeholder={isFrame ? 'Add title text…' : 'Add a caption…'} onChange={e => apply({ text: e.target.value })}/>{onOpenKaraoke && <button type="button" className="btn ghost karaoke-open" onClick={onOpenKaraoke} title="Time the sentences and the words: which line shows when, and which word is sung under it"><Music2 size={13}/> Karaoke timing{item.karaoke ? ' · timed' : '…'}</button>}</div>
           {isFrame && <label className="check-label" title="Centre the whole text block on its position and centre every line on the others — at position 50 / 50 the text sits in the middle of the frame"><input type="checkbox" checked={centeredText} onChange={e => apply({ textCentered: e.target.checked } as any)}/><span><Check size={11}/></span> Centre text in frame <small style={{ marginLeft: 6, opacity: .7 }}>lines &amp; block centre on the position</small></label>}
           {!isFrame && <label className="check-label picture-text-enabled"><input type="checkbox" checked={draft.textEnabled !== false} onChange={e => apply({ textEnabled: e.target.checked })}/><span>{draft.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</span>Show text on this picture</label>}
           <TypeControls fontFamily={family} setFontFamily={v => apply({ fontFamily: v })} fontSize={size} setFontSize={v => apply({ fontSize: v })} fontColor={color} setFontColor={v => apply({ fontColor: v })} bold={bold} setBold={v => apply({ textBold: v })} italic={italic} setItalic={v => apply({ textItalic: v })} underline={underline} setUnderline={v => apply({ textUnderline: v })} sample={isFrame ? draft.text.split('\n')[0] : (draft.text || 'Caption sample')} />

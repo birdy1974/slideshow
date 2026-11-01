@@ -81,8 +81,13 @@ _NL_RE = re.compile(r"^[ \t]*\r?\n")
 
 def ms_round(value: float) -> float:
     """Milliseconds — the resolution both engines agree on, so a save → load →
-    render cycle cannot drift by a frame."""
-    return round(float(value) * 1000) / 1000
+    render cycle cannot drift by a frame.
+
+    Deliberately ``floor(x + 0.5)`` and not ``round()``: Python rounds half to
+    *even*, JavaScript rounds half *up*, and a word boundary landing exactly on
+    half a millisecond would then differ between the preview and the MP4.
+    """
+    return math.floor(float(value) * 1000 + 0.5) / 1000
 
 
 def text_length(value: str) -> int:
@@ -159,11 +164,11 @@ def auto_break(tokens: list[dict[str, Any]], i: int, run_start: int, max_words: 
         return False
     cap = max(1, round(max_words))
     if i - run_start + 1 >= cap:
-        # The cap only *forces* a cut; a comma within the last three words is a
-        # much nicer place to cut than the middle of a clause.
-        for k in range(i - 1, max(run_start, i - 3) - 1, -1):
-            if 0 <= k < len(tokens) and _SOFT.search(tokens[k]["w"]):
-                return False
+        # The cap is a legibility promise, so when it fires the line ends there.
+        # *Where* it ends can still be nicer — `sentence_groups` steps back onto
+        # a comma one word earlier — but deferring the cut used to run the line
+        # on to the next full stop, which is how "4 words per line" produced an
+        # eight-word sentence and a one-word orphan.
         return True
     if not _STRONG.search(t["w"]):
         return False
@@ -180,6 +185,7 @@ def auto_break(tokens: list[dict[str, Any]], i: int, run_start: int, max_words: 
 def sentence_groups(tokens: list[dict[str, Any]], words: list[dict[str, Any]], max_words: float) -> list[tuple[int, int]]:
     """Word-index ranges of the sentences, honouring the forced ``br`` flags."""
     groups: list[tuple[int, int]] = []
+    cap = max(1, round(max_words))
     start = 0
     for i in range(len(tokens)):
         forced = (words[i] or {}).get("br") if i < len(words) else None
@@ -190,8 +196,25 @@ def sentence_groups(tokens: list[dict[str, Any]], words: list[dict[str, Any]], m
         else:
             cut = auto_break(tokens, i, start, max_words)
         if cut or i == len(tokens) - 1:
-            groups.append((start, i))
-            start = i + 1
+            end = i
+            if forced not in (1, -1) and cut and i - start + 1 >= cap:
+                # The cap, not a full stop, is what ended this line: if the word
+                # before it closes a clause, cut there instead. One word back is
+                # the limit, so the run never grows past the cap and a short
+                # line never becomes a one-word orphan.
+                prev = i - 1
+                if prev > start and _SOFT.search(tokens[prev]["w"]) and not _STRONG.search(tokens[i]["w"]) and not _SOFT.search(tokens[i]["w"]):
+                    end = prev
+                # …and a handful of words left over is folded back in rather than
+                # stranded as its own caption: two even lines beat a stub.
+                short = max(2, math.ceil(cap / 4))
+                remaining = len(tokens) - (end + 1)
+                if 0 < remaining < short:
+                    back = min(short - remaining, end + 1 - start - math.ceil(cap / 2))
+                    if back > 0:
+                        end -= back
+            groups.append((start, end))
+            start = end + 1
     return groups
 
 
@@ -207,7 +230,10 @@ def fill_sentence(
 
     Words that already have a time keep it, so a half-timed line only has its
     gaps filled."""
-    out = [dict(w or {}) for w in words]
+    # `words` may be shorter than the token list (a fresh caption, a project
+    # saved before the last sentence was typed): pad it instead of indexing
+    # past the end, which is what the JavaScript twin does by construction.
+    out = [dict(w or {}) for w in words] + [{} for _ in range(max(0, len(tokens) - len(words)))]
     if to < frm:
         return out
     weights = [word_weight(tokens[i]["w"]) for i in range(frm, to + 1)]
@@ -357,7 +383,14 @@ def plan_of(
         for k, w in enumerate(items):
             nxt = items[k + 1] if k + 1 < len(items) else None
             if nxt is not None:
-                w["t1"] = ms_round(max(nxt["t0"], w["t0"] + 0.05))
+                # A word is sung *until the next one starts* — that is what
+                # makes the sweep land on the next syllable. There is no
+                # minimum-length floor here on purpose: pushing a word past its
+                # successor would overlap two colours. A word that is shorter
+                # than 50 ms is therefore a *timing* problem, and the strip
+                # shows it as a too-thin block for the user to widen (the
+                # editor's own drags keep MIN_WORD_GAP between starts).
+                w["t1"] = ms_round(nxt["t0"])
             else:
                 room = max(0.3, min(1.1, boundary - w["t0"]))
                 w["t1"] = ms_round(w["t0"] + room)
@@ -371,7 +404,30 @@ def plan_of(
             s_end = ms_round(s_start + 0.2)
         sentences.append({"from": a, "to": b, "start": s_start, "end": s_end, "hard": hard, "words": items})
         end = max(end, s_end)
-    return {"sentences": sentences, "end": end}
+    # Two sentences must never be on screen at once: they share one \pos, so an
+    # overlap is two lines printed on top of each other. The handoff point is
+    # the next line's first word — the incoming line is what the eye is already
+    # looking for, and a word's sweep finishing exactly as its line leaves is
+    # what makes a *contiguous* caption look seamless. So the previous line is
+    # allowed to hold until that word, but never past it: when a user taps two
+    # sentences on top of each other, the earlier line is cut short instead of
+    # overprinting, which is the visible, honest signal that they need a gap.
+    # Word times are never moved here, only the display windows. Mirrored
+    # statement for statement in src/karaokeCore.ts.
+    for i in range(1, len(sentences)):
+        prev, cur = sentences[i - 1], sentences[i]
+        if cur["start"] >= prev["end"]:
+            continue
+        first_word = cur["words"][0]["t0"] if cur["words"] else cur["start"]
+        target = min(max(cur["start"], prev["end"]), first_word)
+        cur["start"] = ms_round(target)
+        prev["end"] = ms_round(target)
+        if prev["end"] <= prev["start"]:
+            # Nothing left to truncate: the earlier line keeps a blink and the
+            # later one starts after it, rather than both drawing at once.
+            prev["end"] = ms_round(prev["start"] + 0.2)
+            cur["start"] = ms_round(max(cur["start"], prev["end"]))
+    return {"sentences": sentences, "end": end if not sentences else ms_round(max(s["end"] for s in sentences))}
 
 
 def karaoke_at(plan: dict[str, Any], t: float, style: str = "sweep") -> dict[str, Any]:
@@ -561,7 +617,7 @@ def _sentence_body(text: str, sentence: dict[str, Any], tokens: list[dict[str, A
             step = max(1, int(round(dur * 100 / count)))
             run = "".join(("{" + "\\kf" + str(step) + "}" + _escape_ass(ch)) if ch.strip() else " " for ch in chars)
         if token.get("nl"):
-            run += "\\-N".replace("-", "")
+            run += "\\N"  # the hard break the user typed, as an ASS tag
         out.append(run)
     return " ".join(out)
 
@@ -605,8 +661,8 @@ def build_karaoke_events(
                 tags = (
                     f"{align_tag}\\pos({cx:.0f},{cy:.0f})\\fad({fi},{fo})"
                     f"\\1c{_colour(fill)}\\2c{_colour(base_colour)}"
-                    f"\\t(0,{min(220, int((t1 - t0) * 1000))},\\\\fscx118\\\\fscy118)"
-                    f"\\t({min(220, int((t1 - t0) * 1000))},{min(420, int((t1 - t0) * 1200))},\\\\fscx100\\\\fscy100)"
+                    f"\\t(0,{min(220, int((t1 - t0) * 1000))},\\fscx118\\fscy118)"
+                    f"\\t({min(220, int((t1 - t0) * 1000))},{min(420, int((t1 - t0) * 1200))},\\fscx100\\fscy100)"
                 )
                 events.append(
                     f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},FX,,0,0,0,,{{{tags}}}{_pop_body(token['w'], t1 - t0)}"

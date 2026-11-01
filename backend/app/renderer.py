@@ -32,7 +32,7 @@ from .picture_filters import picture_look
 from .font_registry import font_files
 from . import karaoke as karaoke_mod
 from .text_effects import (
-    LayeredText, build_karaoke_document, build_karaoke_overlay_filter,
+    LayeredText, karaoke_document, karaoke_overlay_filter,
     build_text_overlay, normalize_text_window, overlay_plan, plan_engine,
 )
 from .text_motion import BgChange, build_text_motion_overlay, has_stack, stack_fallback_fields
@@ -800,6 +800,54 @@ def movie_frame_filter(item: dict[str, Any], width: int, height: int, fps: int) 
     )
 
 
+def _waveform_peaks_pcm(ffmpeg_bin: str, source: Path, buckets: int = 800,
+                        start: float = 0.0, length: float = 0.0) -> tuple[list[float], float]:
+    """Peak envelope of (part of) a file's audio — the waveform lane of the
+    karaoke editor.
+
+    Mono 8 kHz PCM, cut into `buckets` windows of the requested span, each
+    reduced to its loudest sample as a 0..1 float. The editor only needs a
+    shape to aim at, and 8 kHz is far above the ~50 ms resolution a word
+    boundary is timed to. Returns ([], 0.0) for a file with no audio track.
+    """
+    import array as _array
+
+    command = [ffmpeg_bin, "-hide_banner", "-nostats"]
+    if start > 0:
+        command += ["-ss", f"{start:.3f}"]
+    command += ["-i", str(source), "-map", "0:a:0?"]
+    if length > 0:
+        command += ["-t", f"{length:.3f}"]
+    command += ["-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"]
+    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=180)
+    if proc.returncode != 0 or not proc.stdout:
+        return [], 0.0
+    count = len(proc.stdout) // 2
+    if count < 160:                      # under 20 ms: nothing worth drawing
+        return [], 0.0
+    samples = _array.array("h")
+    samples.frombytes(proc.stdout[: count * 2])
+    duration = count / 8000.0
+    n = max(8, min(int(buckets), 4000))
+    size = max(1, count // n)
+    peaks: list[float] = []
+    for k in range(n):
+        lo = k * size
+        if lo >= count:
+            break
+        hi = min(count, lo + size)
+        peak = 0
+        for v in samples[lo:hi]:
+            a = -v if v < 0 else v
+            if a > peak:
+                peak = a
+        peaks.append(round(min(1.0, peak / 32768.0), 4))
+    if peaks:
+        top = max(peaks) or 1.0
+        peaks = [round(v / top, 4) for v in peaks]   # normalise: quiet movies are useful too
+    return peaks, duration
+
+
 def _detect_beats_pcm(ffmpeg_bin: str, source: Path, max_beats: int = 1200) -> list[float]:
     """Energy-based onset detection over mono 8 kHz PCM (see Renderer.detect_beats).
 
@@ -1557,11 +1605,11 @@ class Renderer:
             # from drawtext — and, like every other ASS feature, it degrades to
             # the plain caption (words shown, no sweep) on a build without
             # libass instead of failing the render.
-            doc = build_karaoke_document(item, defaults, width, height, lead_in)
+            doc = karaoke_document(item, defaults, width, height, lead_in)
             if doc is not None:
                 ass_path.parent.mkdir(parents=True, exist_ok=True)
                 ass_path.write_text(doc, encoding="utf-8")
-                return build_karaoke_overlay_filter(ass_path)
+                return karaoke_overlay_filter(ass_path)
         if has_stack(item):
             # Stacked effects (textFx): the channel compositor in text_motion.py.
             # It needs libass; without it the caption keeps its words, position
@@ -2467,6 +2515,16 @@ class Renderer:
         except (OSError, RuntimeError) as exc:
             raise RenderError(f"Beat analysis of '{source.name}' failed — {exc}") from exc
         return beats
+
+    def waveform(self, source: Path, buckets: int = 800, start: float = 0.0, length: float = 0.0) -> dict[str, Any]:
+        """Peak envelope + analysed span of an audio/video file (see
+        :func:`_waveform_peaks_pcm`). The karaoke editor draws this under its
+        timing strip so a consonant you can hear is a line you can aim at."""
+        try:
+            peaks, duration = _waveform_peaks_pcm(self.settings.ffmpeg_bin, source, buckets, start, length)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            raise RenderError(f"Waveform analysis of '{source.name}' failed — {exc}") from exc
+        return {"peaks": peaks, "duration": round(duration, 3), "start": round(max(0.0, start), 3)}
 
     def measure_loudness(self, source: Path, target: float, edit_filter: str = "", cancelled: threading.Event | None = None, log_file: Path | None = None) -> dict[str, float] | None:
         """First loudnorm pass: integrated loudness / true peak / LRA of a file.

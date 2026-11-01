@@ -1,6 +1,6 @@
 # Karaoke text on a movie — options for the data model and the timing GUI
 
-Date: 2026-10-25 · Status: **options, nothing built yet** (awaiting your decisions)
+Date: 2026-10-25 · Status: **decided and built** — what shipped is in [docs/karaoke-timing-editor.md](karaoke-timing-editor.md); the options and the research behind them stay here
 
 Question: *"add new functionality to add karaoke text to a movie. The text is long
 text where the sentences need to be timed — which sentence is visible when. If a

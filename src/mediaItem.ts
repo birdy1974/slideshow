@@ -2,6 +2,7 @@
 // Shared by App.tsx and the media/movie editors.
 import type { TextFxLayer } from './textMotionCore'
 import type { CollageSpec } from './collageCore'
+import type { KaraokeData } from './karaokeCore'
 
 export type MediaItem = {
   id: number; name: string; path: string; src: string; type: 'image' | 'video' | 'title';
@@ -17,6 +18,14 @@ export type MediaItem = {
   transitionEasing?: string;
   transitionReverse?: number;
   text: string; textMode: 'overlay' | 'frame';
+  // Karaoke timing (docs/karaoke-text-on-movies-options.md): the caption's own
+  // words with a per-word clock. `text` stays the only place the words live —
+  // this holds one entry per word (its start, and where a sentence ends), and
+  // every sentence window, sweep fraction and ASS tag is derived from it, so
+  // editing the words never throws the timing away. Times are clip-local
+  // seconds like `textStart`/`textEnd`, which is why re-trimming a movie does
+  // not move a single word. src/karaokeCore.ts ↔ backend/app/karaoke.py.
+  karaoke?: KaraokeData;
   // Per-slide opt-out: when false the caption is kept but not drawn on the picture.
   textEnabled?: boolean;
   // Seconds inside the item's visible hold. The outgoing slide transition is

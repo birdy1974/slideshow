@@ -188,13 +188,13 @@ export function autoBreak (tokens: KaraokeToken[], i: number, runStart: number, 
   if (!t) return false
   if (t.nl) return true
   if (i >= tokens.length - 1) return false
-  // The cap only *forces* a cut; when it fires, a comma within the last three
-  // words is a much nicer place to cut than the middle of a clause.
+  // The cap is a legibility promise, so when it fires the line ends there.
+  // Where it ends can still be nicer — `sentenceGroups` steps back onto a comma
+  // one word earlier — but deferring the cut used to run the line on to the
+  // next full stop, which is how "4 words per line" produced an eight-word
+  // sentence and a one-word orphan.
   const cap = Math.max(1, Math.round(maxWords))
-  if (i - runStart + 1 >= cap) {
-    for (let k = i - 1; k > i - 4 && k >= runStart; k--) if (tokens[k] && SOFT.test(tokens[k].w)) return false
-    return true
-  }
+  if (i - runStart + 1 >= cap) return true
   if (!STRONG.test(t.w)) return false
   if (abbreviation(t.w, tokens[i + 1])) return false
   // A lower-case follower after a bare full stop is nearly always "1.5 km" or
@@ -210,13 +210,30 @@ export function autoBreak (tokens: KaraokeToken[], i: number, runStart: number, 
 /** Word-index ranges of the sentences, honouring the forced `br` flags. */
 export function sentenceGroups (tokens: KaraokeToken[], words: KaraokeWord[], maxWords: number): [number, number][] {
   const groups: [number, number][] = []
+  const cap = Math.max(1, Math.round(maxWords))
   let start = 0
   for (let i = 0; i < tokens.length; i++) {
     const forced = words[i]?.br
     const cut = forced === 1 ? true : forced === -1 ? false : autoBreak(tokens, i, start, maxWords)
     if (cut || i === tokens.length - 1) {
-      groups.push([start, i])
-      start = i + 1
+      let end = i
+      if (forced !== 1 && forced !== -1 && cut && i - start + 1 >= cap) {
+        // The cap, not a full stop, ended this line: if the word before it
+        // closes a clause, cut there instead. One word back is the limit, so a
+        // run never grows past the cap and a short line never becomes an orphan.
+        const prev = i - 1
+        if (prev > start && SOFT.test(tokens[prev].w) && !STRONG.test(tokens[i].w) && !SOFT.test(tokens[i].w)) end = prev
+        // …and a handful of words left over is folded back in rather than
+        // stranded as its own caption: two even lines beat a long one and a stub.
+        const short = Math.max(2, Math.ceil(cap / 4))
+        const remaining = tokens.length - (end + 1)
+        if (remaining > 0 && remaining < short) {
+          const back = Math.min(short - remaining, end + 1 - start - Math.ceil(cap / 2))
+          if (back > 0) end -= back
+        }
+      }
+      groups.push([start, end])
+      start = end + 1
     }
   }
   return groups
@@ -418,7 +435,7 @@ export function planOf (text: string, data: KaraokeData, opts: { from?: number; 
     for (let k = 0; k < words.length; k++) {
       const w = words[k]
       const nxt = words[k + 1]
-      if (nxt) w.t1 = msRound(Math.max(nxt.t0, w.t0 + 0.05))
+      if (nxt) w.t1 = msRound(nxt.t0)   // sung until the next word starts; no floor, or two words would overlap
       else {
         const room = Math.max(0.3, Math.min(1.1, boundary - w.t0))
         w.t1 = msRound(w.t0 + room)
@@ -437,6 +454,31 @@ export function planOf (text: string, data: KaraokeData, opts: { from?: number; 
     sentences.push(s)
     end = Math.max(end, s.end)
   }
+  // Two sentences must never be on screen at once: they share one \pos, so an
+  // overlap is two lines printed on top of each other. The handoff point is the
+  // next line's first word — the incoming line is what the eye is already
+  // looking for, and a word's sweep finishing exactly as its line leaves is
+  // what makes a contiguous caption look seamless. So the previous line may hold
+  // until that word, but never past it: when a user taps two sentences on top of
+  // each other the earlier line is cut short instead of overprinting, which is
+  // the visible, honest signal that they need a gap. Word times are never moved
+  // here, only the display windows. Mirrored in backend/app/karaoke.py.
+  for (let i = 1; i < sentences.length; i++) {
+    const prev = sentences[i - 1]
+    const cur = sentences[i]
+    if (cur.start >= prev.end) continue
+    const firstWord = cur.words.length ? cur.words[0].t0 : cur.start
+    const target = Math.min(Math.max(cur.start, prev.end), firstWord)
+    cur.start = msRound(target)
+    prev.end = msRound(target)
+    if (prev.end <= prev.start) {
+      // Nothing left to truncate: keep a blink on the earlier line and let the
+      // later one start after it, rather than drawing both at once.
+      prev.end = msRound(prev.start + 0.2)
+      cur.start = msRound(Math.max(cur.start, prev.end))
+    }
+  }
+  end = sentences.length ? msRound(sentences.reduce((m, s) => Math.max(m, s.end), 0)) : 0
   return { sentences, end }
 }
 
