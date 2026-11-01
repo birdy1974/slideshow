@@ -1,3 +1,9 @@
+2026-10-31
+- add new functionality to add karaoke text to a movie. so the text  is long text where the sentences of that text need to be timed when which specific sentence is visible. if a sentence is visible the coloring of the words also needs to be timed. do a thorough internet deep search on what kind of interface/gui can be best used, so user can quickly setup the timing (most flexibility, but with the least clicking)
+- do a thorough deep internet search to see if there are any more new photo animations possible in the "photo collage" for the photo to appear / disappear (also check within the existing transitions, if they can be used for individual photos). if the number of animations become too big propose a new interface/gui for the user. also provide a random option.
+for both items first give options before changing code
+
+
 2026-10-09
 - 
 - do a thorough deep search on the internet to see if there are any other photo collage effects that we do not have. first give an overview before you change any code. you can check the effects in Canva, and other photo collage maker apps.
