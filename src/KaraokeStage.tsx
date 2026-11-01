@@ -164,16 +164,25 @@ export function KaraokeStage(props: KaraokeStageProps) {
               const index = sentence.words.indexOf(w)
               const state = states[index] || 'next'
               const sweeping = styleKind === 'sweep' && state === 'now'
-              const colour = state === 'next' ? look.colour : fill
+              const colour = state === 'next' || sweeping ? look.colour : fill
+              // The sweep is the same word painted twice: the unsung colour
+              // underneath, the sung one laid over it and cut on a vertical line.
+              // It used to be a gradient clipped to the text (`background-clip:text`
+              // with a transparent fill), which is smaller than it looks — the
+              // gradient's paint box *is* the mask, so any pixel a face draws above
+              // its recorded ascent or below its descent got no colour at all, and
+              // with a transparent text colour that is a letter with its top and
+              // bottom shaved off, worse the bigger the size. A clip on x cannot
+              // hurt the glyphs, needs no -webkit- aliases, and reads the same in
+              // every engine; `inset(0 …)` keeps it to one axis on purpose.
               return (
                 <span
                   key={w.i}
                   className={`kara-word kara-${state}${look.underline ? ' u' : ''}`}
-                  style={sweeping
-                    ? { backgroundImage: `linear-gradient(90deg, ${fill} ${(frame.u * 100).toFixed(1)}%, ${look.colour} ${(frame.u * 100).toFixed(1)}%)`, WebkitTextFillColor: 'transparent', backgroundClip: 'text' }
-                    : { color: colour }}
+                  style={{ color: colour }}
                 >
                   {token.w}
+                  {sweeping ? <span className="kara-word-sung" style={{ color: fill, clipPath: `inset(0 ${(100 - Math.max(0, Math.min(1, frame.u)) * 100).toFixed(2)}% 0 0)` }} aria-hidden="true">{token.w}</span> : null}
                 </span>
               )
             })}

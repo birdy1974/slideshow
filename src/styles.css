@@ -1805,12 +1805,15 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-stage-host{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .kara-stage{position:absolute;left:0;top:0;transform-origin:0 0}
 .kara-block{position:absolute;transform-origin:50% 50%;margin:0;padding:0;pointer-events:none;transition:opacity .12s linear}
-.kara-word{display:inline-block;white-space:pre-wrap;background-clip:text;-webkit-background-clip:text;padding:.04em 0;margin:-.04em 0}
-/* The sweep's gradient is clipped to the glyphs, so the word's own box is what
-   the letters can reach: the line box is measured from the font file (see
-   KaraokeStage) and these 0.04em are the slack a face whose drawings overshoot
-   its recorded ascent still wants. The negative margin pays for it, so nothing
-   about the layout moves. */
+/* The word is the unsung colour; `.kara-word-sung` is the same text again,
+   absolutely placed and clipped on x. The 0.04em is for the copy on top: its box
+   is the line box (measured from the font file in KaraokeStage), and a face whose
+   drawings overshoot their own recorded ascent needs the slack or the overlay sits
+   a few pixels above the letters it is supposed to colour. The negative margin
+   pays for it, so the block does not move — the render has no such box, and the
+   twin promise is that the popup cannot show a layout the MP4 will not do. */
+.kara-word{position:relative;display:inline-block;white-space:pre-wrap;padding:.04em 0;margin:-.04em 0}
+.kara-word-sung{position:absolute;left:0;top:0;width:100%;white-space:pre-wrap;pointer-events:none}
 .kara-tap-cue{position:absolute;left:50%;bottom:11px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:2px;background:#0f110cd9;border:1px solid #78a13e88;border-radius:8px;padding:6px 14px;pointer-events:none}
 .kara-tap-cue b{font:800 17px Manrope;color:#d9efb0}
 .kara-tap-cue span{font:700 8px Manrope;color:#a6ac9c;letter-spacing:.5px}
