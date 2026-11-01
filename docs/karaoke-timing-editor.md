@@ -137,7 +137,7 @@ Merging is one function per engine, and both are trivial:
 | `src/karaokeCore.ts` | the model, once: tokenise → break → distribute → snap → plan → frame, plus the `KARAOKE_TEXT_FIELDS` table, the style sanitizer and `karaokePaintStyle` |
 | `src/KaraokeEditor.tsx` | the popup: four surfaces, the style lane, the text-style lane, the first-pass actions |
 | `src/KaraokeStage.tsx` | the layer that paints a frame of it (and merges `karaoke.text` over the caption's style), plus `useKaraokeClockTime` for the preview clock |
-| `src/App.tsx` | `FrameMotionPreview` swaps to `KaraokeStage` for any item that has real timing, so the storyboard frame, the preview modal and the collage caption all inherit it from one place |
+| `src/App.tsx` | `CaptionStage` is the one karaoke swap — `FrameMotionPreview`, both text popups' canvases and the collage caption all render through it, so no preview can miss a saved timing; the text popups also adopt `karaoke` from the item while they are open |
 | `backend/app/karaoke.py` | the twin of the model, plus the ASS emitter and `TEXT_STYLE` / `style_overrides()` |
 | `backend/app/text_effects.py` | `karaoke_document()` (the `.ass`) and `karaoke_overlay_filter()` |
 | `backend/app/renderer.py` | `_text_filter()` takes the karaoke branch when an item has timing **and** the FFmpeg build has libass |
@@ -199,16 +199,43 @@ fades rather than failing the job.
   (`src/karaokeCore.ts` ↔ `karaoke.py`): unknown styles and editors fall back to
   the default, times outside `[0, 86400)` are dropped, and a data block in which
   nothing is timed is dropped entirely.
+* **The panel follows the playhead while the movie plays.** `followSentence()`
+  picks the sentence that is showing, or the *next* one during a gap, so
+  "Selected sentence 3 of 15" names the line you are hearing and the line you are
+  about to hear is already selected — Aegisub's cursor. Paused it stays where it
+  was; clicking a block, a keyboard step or a drag **pins** the line
+  (`selectLine`) and pressing play picks the cursor back up. The rule is one loop
+  in each engine (`followSentence` ↔ `follow_sentence`) and the twin test compares
+  it at every sentence and word boundary of the plan, so the strip highlight, the
+  side panel and the painted caption cannot disagree.
+* **The timing popup is not the only place it shows.** `CaptionStage` in
+  `src/App.tsx` owns the karaoke swap once: the storyboard frame, the preview
+  modal, the "Edit picture text" and text-frame canvases and the collage caption
+  all go through it. The swap used to live in `FrameMotionPreview` alone, which is
+  how a saved timing could be visible on the storyboard and absent from the popup
+  that made it. The text popups also *adopt* `karaoke` from the item while they
+  are open (and the caption text and window, unless they hold an unsaved edit of
+  their own), because the karaoke popup writes straight to the item and the popup's
+  Save must not write the opening snapshot back over it — that clobber is how
+  "save, close, reopen" lost both the text and the timing.
 
 ## Tests
 
+* `backend/tests/test_database.py` — the block, the word times and its text style
+  survive the save the app actually performs (`payload_json` in, snapshot out),
+  and the `.ass` built from the *loaded* item carries them: `Style: FX,Impact,96`,
+  `\pos(960,340)` — the caption's x, the block's y — and the words in order. That
+  is the "is my karaoke in the final result?" question, asked where it can be
+  answered.
 * `backend/tests/test_karaoke.py` — the rules above against the Python engine,
   the ASS emission (tag spelling, colour direction, per-word `\kf` sums, brace
   escaping, `WrapStyle: 2`), the style block (clamps, "a boolean is not a size",
   "an empty block is no block", the `Style:` line and `\2c` an override produces,
   and that an unset one changes not a byte), and the joints neither engine can
   see: the renderer branch and its degradation, the persisted field, both entry
-  points, the four surfaces, the strip's CSS, the two style tables agreeing.
+  points, the four surfaces, the strip's CSS, the two style tables agreeing, the
+  single `CaptionStage` branch every preview shares, the popup's adopt-not-overwrite
+  merge, and the panel following the playhead.
 * `backend/tests/test_karaoke_twin.py` + `karaoke_twin.mjs` — 22 cases run through
   **both** engines: timing shapes (coarse passes, holes, mistimed taps, emoji,
   forced breaks, a window that cuts the text off) plus the style block (nothing

@@ -23,7 +23,7 @@ for (const c of input.cases) {
   const frames = []
   for (const t of c.times || []) {
     const frame = core.karaokeAt(plan, t, data.style)
-    frames.push({ t, frame, states: core.wordStates(plan, frame, data.style) })
+    frames.push({ t, frame, states: core.wordStates(plan, frame, data.style), follow: core.followSentence(plan, t) })
   }
   out.push({
     plan,

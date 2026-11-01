@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -249,6 +250,80 @@ class ConcurrentAccessTest(unittest.TestCase):
             job = self.db.get_job("job-busy")
         self.assertIsNotNone(job)
         self.assertGreaterEqual(calls["n"], 3)
+
+
+class KaraokeRoundTripTest(unittest.TestCase):
+    """"Save the timing, and it must still be there" — in the only place that claim
+    can actually be checked: SQLite in, SQLite out, and the ``.ass`` the renderer
+    would be handed.
+
+    ``media`` is persisted as ``payload_json``, so a karaoke block is not projected
+    into the ``media_items`` columns and read back without it; the reported bug was
+    that the *editor* wrote its own opening snapshot back over the item on Save,
+    which reverted the caption text the karaoke popup had committed and stranded the
+    word times on words that no longer existed. That is a client-side merge, so it
+    cannot be tested here — what can be tested here is that nothing between the
+    popup and FFmpeg loses a block, style included, so the two halves are pinned
+    together in one file.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.temp.name) / "slideshow.db")
+        self.db.initialize()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def payload(self) -> dict:
+        words = [{"t": round(i * 0.7, 3)} for i in range(6)]
+        return {
+            "schemaVersion": 1, "project": {"name": "Sung"},
+            "media": [{
+                "id": 7, "type": "video", "name": "clip.mp4", "path": "/videos/clip.mp4",
+                "duration": 9.0, "text": "One two three four five six.",
+                "textStart": 0.0, "textEnd": 8.0,
+                "karaoke": {
+                    "editor": "tap", "style": "sweep", "fill": "#00ff00",
+                    "leadIn": 0.4, "tail": 0.3, "snap": 0.2, "maxWords": 12,
+                    # the sung words' own look: bigger, another face, no outline,
+                    # higher in the frame than the caption
+                    "text": {"family": "Impact", "size": 96, "outline": False, "y": 31.5},
+                    "words": words,
+                },
+            }],
+        }
+
+    def test_the_block_and_its_words_come_back_unchanged(self) -> None:
+        from app import karaoke as K
+
+        item = self.db.get_project(self.db.save_project(self.payload())["id"])["media"][0]
+        self.assertTrue(K.has_karaoke(item), "the saved item is still karaoke to the renderer")
+        saved = item["karaoke"]
+        self.assertEqual([w["t"] for w in saved["words"]], [round(i * 0.7, 3) for i in range(6)])
+        self.assertEqual(saved["style"], "sweep")
+        self.assertEqual(saved["fill"], "#00ff00")
+        self.assertEqual(saved["text"], {"family": "Impact", "size": 96, "outline": False, "y": 31.5})
+
+    def test_the_render_document_is_built_from_the_saved_item(self) -> None:
+        from app.text_effects import karaoke_document
+
+        item = self.db.get_project(self.db.save_project(self.payload())["id"])["media"][0]
+        doc = karaoke_document(item, {}, 1920, 1080)
+        self.assertIsNotNone(doc)
+        # The style block reached the one style line libass reads, and the words are
+        # there as a \kf run — the two things the user asks of "the final result".
+        self.assertIn("Style: FX,Impact,96,", doc)
+        # One line says the whole feature: x is the caption's own 50% (960 px)
+        # because the block did not touch it, y is the block's 31.5% (340 px)
+        # because it did — an override that only overrides what it sets.
+        self.assertIn(chr(92) + "pos(960,340)", doc)
+        # A sweep writes one `\\kf` group per *character*, so the words only show up
+        # once the override blocks are out of the way — the same strip the karaoke
+        # tests use, and the honest way to ask "are my words the painted words".
+        painted = re.sub(r"\{[^}]*\}", "", doc.split("[Events]")[1])
+        self.assertIn("One two three four five six.", painted)
+        self.assertNotIn("\\k", painted)
 
 
 if __name__ == "__main__":

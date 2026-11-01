@@ -41,6 +41,7 @@ __all__ = [
     "build_karaoke_events",
     "has_karaoke",
     "data_for",
+    "follow_sentence",
     "shift_times",
     "sanitize_text_style",
     "style_overrides",
@@ -451,6 +452,24 @@ def plan_of(
             prev["end"] = ms_round(prev["start"] + 0.2)
             cur["start"] = ms_round(max(cur["start"], prev["end"]))
     return {"sentences": sentences, "end": end if not sentences else ms_round(max(s["end"] for s in sentences))}
+
+
+def follow_sentence(plan: dict[str, Any], t: float) -> int:
+    """Which sentence the panel and the strip should be on while the playhead
+    moves: the one showing, the next one during a gap, the last one past the end.
+    ``-1`` when there is nothing to follow.
+
+    The twin of ``followSentence`` in ``src/karaokeCore.ts`` — the popup cannot
+    select a line the plan does not consider current, so the rule is one line in
+    each engine and pinned by the twin test.
+    """
+    lines = plan.get("sentences") or []
+    if not lines:
+        return -1
+    for index, line in enumerate(lines):
+        if t < float(line.get("end") or 0.0):
+            return index
+    return len(lines) - 1
 
 
 def karaoke_at(plan: dict[str, Any], t: float, style: str = "sweep") -> dict[str, Any]:

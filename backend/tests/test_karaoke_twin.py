@@ -287,6 +287,9 @@ class KaraokeTwinTest(unittest.TestCase):
                 for key in ("u", "fade"):
                     _close(self, mine["frame"][key], theirs["frame"][key], f"{name}: frame {key} at {theirs['t']}")
                 self.assertEqual(mine["states"], theirs["states"], f"{name}: word colours at {theirs['t']}")
+                # …and which line the panel and the strip should be on, because the
+                # popup promises "this is the sentence you are hearing".
+                self.assertEqual(K.follow_sentence(plan, theirs["t"]), theirs["follow"], f"{name}: followed sentence at {theirs['t']}")
             self.assertEqual([list(g) for g in K.sentence_groups(K.tokenize(case["text"]), data["words"], data["maxWords"])],
                              [list(g) for g in got["groups"]], f"{name}: sentence groups")
             # ---- the text style: same validation, same effective look ----
