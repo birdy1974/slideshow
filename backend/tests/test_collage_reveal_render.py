@@ -179,8 +179,11 @@ class RevealMaskFramesTest(unittest.TestCase):
                     assert spec is not None
                     duration = collage_duration(spec)
                     lines, last = collage_graph(item, W, H, FPS, duration, 0, 1, "cb")
+                    # (`sendcmd=fps=…` is not an option that filter has — the frame
+                    # rate comes from the inputs — and this test only runs where an
+                    # ffmpeg binary does, so it had never been executed)
                     graph = (f"[0:v]null[cb];{''.join(lines)}"
-                             f"[{last}]format=gray,settb=AVTB,sendcmd=fps={FPS}[v]")
+                             f"[{last}]format=gray,settb=AVTB,fps={FPS}[v]")
                     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
                            "-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:r={FPS}:d={duration}",
                            "-f", "lavfi", "-i", f"color=c=white:s=180x120:r={FPS}:d={duration}",

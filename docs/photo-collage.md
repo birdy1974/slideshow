@@ -308,6 +308,21 @@ What follows from a per-photo lane:
   progress in both engines, so `reverse` never turned them either. Naming the collision
   out loud: `fade` is both an entrance id and an exit mode, and the **mode wins** —
   which is harmless here, because both answers mean "fade out".
+- **A photo is invisible outside its own two windows.** Before its arrival starts and
+  after its departure's fly is over, the photo is not on screen at all — no opacity, and
+  in the MP4 no composite either. Both halves needed saying: every entrance curve is at
+  rest at `q = 0`, so an animation that ramps its own alpha hid a late photo anyway, but
+  one that does not (`none`, a colour lane, a 12-frame snap) left it sitting on the
+  canvas at full opacity for its whole delay, because FFmpeg's `fade=t=in` *starts* at
+  the arrival time and passes everything before it through untouched. The model now
+  zeroes `alpha` outside the span (`photo_state` / `entranceState`'s last lines) and the
+  render clips each photo's size-ladder windows to it (`size_levels` → `clip`), which
+  also bounds the other end: a departure whose only hiding is a closing mask no longer
+  hands the photo back for the rest of the slide. The 3 ms boundary pad stays, so the
+  first composited frame is at most a frame early and is inside the fade's first
+  milliseconds, where the photo is transparent either way.
+  `backend/tests/test_collage_visibility_envelope.py` walks the whole catalogue at both
+  ends in both engines, and one ffmpeg test counts pixels in real frames.
 - **Depth push-back stays collage-wide.** Whether the push is on at all follows
   `spec.animation` (drop / pop / flip), because it is a property of the pile;
   but each push follows the *arriving* photo's own entrance length, so a photo

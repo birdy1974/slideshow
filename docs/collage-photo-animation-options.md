@@ -564,7 +564,11 @@ is the name of an arrival, and the departure is that arrival read backwards.**
   completely. Its tiles are not illustrations — `TILE_SPEC` builds a one-photo collage
   whose arrival is `none` and whose exit is the candidate, then samples the same
   `photoState()` the stage and the render use, offset past the hold so the tile is the
-  leaving. A photo's own lane swapped its six-option `<select>` for that same picker
+  leaving — which is why its demo photo carries `delay: 0`: a `none` arrival counts as
+  instant in `baseDuration`, so with the default 0.15 s the fly would begin before the
+  photo existed, and since a photo is now invisible outside its own windows that tile
+  would be an empty square. Its rest frame is the fly's *first* frame rather than a
+  step before it, for the same reason. A photo's own lane swapped its six-option `<select>` for that same picker
   (with an "Inherit · the collage's choice" row). **Random** exists on both lanes and
   shares one pool, one "no repeats" rule, one per-photo lock and one seed, because an
   exit is an arrival — `collageShuffle({lane: 'exit'})` writes the names onto the
@@ -586,6 +590,12 @@ is the name of an arrival, and the departure is that arrival read backwards.**
   name of every kind (a reveal, a mover, an alias, a real xfade name) through the real
   TypeScript gate and compares the fly, the mode and the schedule with the Python
   tables, and keeps a photo's explicit `'none'` a choice.
+* **Both ends of the envelope.** A departure also *ends* invisible: the fly's last
+  frame is the arrival's first, and after that the photo is not composited at all (see
+  *A photo is invisible outside its own two windows* in `docs/photo-collage.md`). An
+  arrival, likewise, starts from nothing — which is why the `none` entrance and the
+  colour lanes gained an explicit rule rather than relying on an alpha ramp they do not
+  have.
 * **Tests.** `backend/tests/test_collage_exit_anim.py` samples all 92 ids at twelve
   progress points and asserts the departure at `q` equals the arrival at `1 - q`, value
   for value, plus: monotone opacity, closing masks, the exact `fade=t=out` window, a

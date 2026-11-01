@@ -1579,11 +1579,21 @@ class CollageTwinTest(unittest.TestCase):
         assert graph.count("between(t,") == 4                     # every photo leaves
         assert graph.count("fade=t=out") == 4
         assert graph.count("*sin(PI*") == 4                       # deal's dy arc, one per photo
-        # 'none' entrance + exit: photos are on screen from frame 0
-        none_item = {"collage": _spec("grid", "none", "4:3", 3, 7, hold=1, exit="sweep")}
-        nlines, _ = collage_graph(none_item, 1280, 720, 25.0, 5.0, 0.5, 1, "cb")
+        # …and a 'none' entrance (no alpha ramp of its own to hide the frame) is NOT
+        # on screen from frame 0: each photo's window opens when that photo arrives,
+        # which is the whole reason the ladder's windows are clipped to the photo's
+        # own span rather than left to `fade=t=in` — that filter passes everything
+        # before its start through at full opacity, so a delayed photo just sat there
+        nspec = normalize_collage({"collage": _spec("grid", "none", "4:3", 3, 7, hold=1,
+                                                     exit="sweep")})
+        none_item = {"collage": nspec}
+        nlines, _ = collage_graph(none_item, 1280, 720, 25.0, collage_duration(nspec), 0.5, 1, "cb")
         ngraph = "".join(nlines)
-        assert ngraph.count("between(t,0,") == 3
+        assert ngraph.count("between(t,0,") == 0
+        for photo_i in range(3):
+            first = min(float(a) for a in re.findall(
+                rf"\[lv{photo_i}(?:_\d+)?\]overlay=x='[^']*':y='[^']*':enable='between\(t,([-0-9.]+)", ngraph))
+            assert abs(first - (photo_start(nspec, photo_i, 0.5) - 0.003)) < 0.002, (photo_i, first)
         # flip: width follows the outBack curve, height only the depth shrink
         flip_spec = _spec("grid", "flip", "4:3", 2, 3, depth=True)
         flines, _ = collage_graph({"collage": flip_spec}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
@@ -1717,7 +1727,11 @@ class CollageTwinTest(unittest.TestCase):
                 # which is before the slide ends
                 ends = [b for _w, _h, ws in levels for _a, b in ws]
                 cover = lead + dur if any(b is None for b in ends) else max(ends)
-                t_first, t_last = lead + 1 / 25, min(lead + dur, cover) - 1 / 25
+                # …measured from the first frame the photo is composited on, which is
+                # where its window now starts: the ladder no longer covers the frames
+                # before the arrival, because nothing of the photo is on screen there
+                t_first = min([a for _w, _h, ws in levels for a, _b in ws] or [lead + 1 / 25])
+                t_last = min(lead + dur, cover) - 1 / 25
                 s_first = photo_state(norm, 0, t_first, lead, 16 / 9)["scale"]
                 s_last = photo_state(norm, 0, t_last, lead, 16 / 9)["scale"]
                 w_first, h_first = held_at(levels, t_first)
@@ -1734,7 +1748,11 @@ class CollageTwinTest(unittest.TestCase):
                 implied_w, implied_h = [], []
                 for w, h, windows in levels:
                     for a, _b in windows:
-                        t = min(max(a, t_first), t_last)
+                        # each level measured at its own window's opening, which since
+                        # the envelope is what it was sampled from — for the first
+                        # level that is the rest pose at the arrival, and the size
+                        # below it holds is that same rest pose, so they still agree
+                        t = min(a, t_last)
                         st = photo_state(norm, 0, t, lead, 16 / 9)
                         implied_w.append(w / (st["scale"] * st["scaleX"]))
                         implied_h.append(h / st["scale"])
