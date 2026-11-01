@@ -1781,10 +1781,10 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .row-select.on{background:#22251f;border-color:#22251f;color:#fff}
 .row-select:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:760px){.file-toolbar{gap:7px}.file-view-toggle button{padding:0 9px}.file-row-tag{display:none}.file-row-player .audio-seek{width:96px}}
-// Karaoke timing (docs/karaoke-timing-editor.md): the caption's words with a
-// clock. Dark editor like the movie trim popup, and the strip reuses the
-// ruler / playhead / handle vocabulary of .editor-strip so a user who has cut
-// a movie already knows how to drag this.
+/* Karaoke timing (docs/karaoke-timing-editor.md): the caption's words with a
+   clock. Dark editor like the movie trim popup, and the strip reuses the
+   ruler / playhead / handle vocabulary of .editor-strip so a user who has cut
+   a movie already knows how to drag this. */
 .karaoke-editor{width:min(1420px,97vw);max-height:calc(100vh - 20px);background:#1e211d;color:#fff;border:1px solid #41443c;border-radius:13px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 30px 80px #0009}
 .karaoke-editor .modal-head{height:auto;min-height:64px;padding:10px 16px;border-bottom-color:#3a3e36;gap:14px;align-items:center}
 .karaoke-editor .modal-head h2{font-size:16px}
@@ -1883,3 +1883,36 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .karaoke-open{align-self:flex-start;height:26px;font-size:9px;gap:5px}
 .karaoke-open svg{color:#78a13e}
 @media(max-width:1180px){.karaoke-body{grid-template-columns:1fr}.kara-side{border-left:0;border-top:1px solid #3a3e36}}
+
+/* The entrance browser (src/AnimPicker.tsx). It borrows the transition browser's
+   shell — header search, group rail, tile grid — because browsing 90 entrances
+   is the same problem, and only adds what the tiles need: a photo-ish square the
+   animation can actually move. */
+.anim-browser>header{padding:9px 11px;gap:8px}
+.anim-browser .browser-body{grid-template-columns:126px minmax(0,1fr)}
+.anim-browser .browser-grid{display:flex;flex-wrap:wrap;gap:9px 8px;align-content:flex-start}
+.anim-inherit{display:flex;align-items:center;gap:6px;width:calc(100% - 24px);margin:8px 12px 0;
+  padding:5px 8px;border:1px dashed #cdd0c6;border-radius:6px;background:#fff;font:600 10px Manrope;
+  color:#5f635b;text-align:left}
+.anim-inherit:hover{border-color:#8ba05c;color:#3e5224}
+.anim-inherit>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.anim-tile-stage{display:block;position:relative;overflow:hidden}
+/* the miniature photo the entrance moves: a flat sky/hill/field, so a wipe, a
+   rotation or a colour ramp is legible at 104px without loading anything */
+.anim-tile-photo{display:block;position:absolute;inset:12%;border-radius:2px;overflow:hidden;will-change:transform,opacity;
+  background:linear-gradient(180deg,#c4e2f6 0 46%,#84b76e 46% 74%,#5d8b4f 74% 100%);
+  box-shadow:0 1px 4px #00000073}
+.anim-tile-art{position:absolute;inset:0;
+  background:radial-gradient(circle at 74% 20%,#ffeaa7 0 8%,transparent 9%),
+    linear-gradient(105deg,transparent 40%,#ffffff38 41% 55%,transparent 56%)}
+/* entrance pickers in the collage panel: the wide row and the per-photo lane */
+.collage-anim-pick{display:flex;align-items:center;gap:8px;margin-top:8px}
+.collage-anim-pick .transition-chip{max-width:280px}
+.collage-shuffle-scope{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:6px 0 0;font-size:10px;color:#5f635b}
+.collage-shuffle-scope>.scope-lead{font:700 8px Manrope;letter-spacing:.8px;text-transform:uppercase;color:#8b8e86}
+.check-label.tiny{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#5f635b;cursor:pointer}
+.check-label.tiny.on{color:#3e5224;font-weight:600}
+.check-label.tiny input{accent-color:#78a13e;margin:0}
+.collage-lane-anim-opts{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:10px;color:#5f635b}
+.collage-lane-anim-opts .collage-lane-amount{margin:0}
+.collage-selected-lanes .anim-chip{width:100%;max-width:230px;height:28px}
