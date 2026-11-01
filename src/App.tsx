@@ -45,7 +45,7 @@ import { TextEffectBrowser, type BrowserCaption } from './TextEffectBrowser'
 import { MotionStage, useMotionClock } from './TextMotionStage'
 import { KaraokeStage, useKaraokeClockTime } from './KaraokeStage'
 import { KaraokeEditor } from './KaraokeEditor'
-import { sanitizeKaraoke, tokenize } from './karaokeCore'
+import { karaokeTextStyleTouched, sanitizeKaraoke, tokenize } from './karaokeCore'
 import { FRAME_H, FRAME_W, type Prepared, type SceneInput } from './textMotionScene'
 import type { BgChange } from './textMotionCore'
 import { FontPicker } from './FontPicker'
@@ -4233,7 +4233,7 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
       </div>
       <aside>
         <div className="below-grid">
-          <div className="text-field-with-karaoke"><FieldLabel>{isFrame ? 'Frame text' : 'Caption'}</FieldLabel><textarea value={draft.text} placeholder={isFrame ? 'Add title text…' : 'Add a caption…'} onChange={e => apply({ text: e.target.value })}/>{onOpenKaraoke && <button type="button" className="btn ghost karaoke-open" onClick={onOpenKaraoke} title="Time the sentences and the words: which line shows when, and which word is sung under it"><Music2 size={13}/> Karaoke timing{item.karaoke ? ' · timed' : '…'}</button>}</div>
+          <div className="text-field-with-karaoke"><FieldLabel>{isFrame ? 'Frame text' : 'Caption'}</FieldLabel><textarea value={draft.text} placeholder={isFrame ? 'Add title text…' : 'Add a caption…'} onChange={e => apply({ text: e.target.value })}/>{onOpenKaraoke && <button type="button" className="btn ghost karaoke-open" onClick={onOpenKaraoke} title="Time the sentences and the words: which line shows when, which word is sung under it, and how the sung text looks"><Music2 size={13}/> Karaoke timing{item.karaoke ? ` · timed${karaokeTextStyleTouched(item.karaoke) ? ' · styled' : ''}` : '…'}</button>}</div>
           {isFrame && <label className="check-label" title="Centre the whole text block on its position and centre every line on the others — at position 50 / 50 the text sits in the middle of the frame"><input type="checkbox" checked={centeredText} onChange={e => apply({ textCentered: e.target.checked } as any)}/><span><Check size={11}/></span> Centre text in frame <small style={{ marginLeft: 6, opacity: .7 }}>lines &amp; block centre on the position</small></label>}
           {!isFrame && <label className="check-label picture-text-enabled"><input type="checkbox" checked={draft.textEnabled !== false} onChange={e => apply({ textEnabled: e.target.checked })}/><span>{draft.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</span>Show text on this picture</label>}
           <TypeControls fontFamily={family} setFontFamily={v => apply({ fontFamily: v })} fontSize={size} setFontSize={v => apply({ fontSize: v })} fontColor={color} setFontColor={v => apply({ fontColor: v })} bold={bold} setBold={v => apply({ textBold: v })} italic={italic} setItalic={v => apply({ textItalic: v })} underline={underline} setUnderline={v => apply({ textUnderline: v })} sample={isFrame ? draft.text.split('\n')[0] : (draft.text || 'Caption sample')} />

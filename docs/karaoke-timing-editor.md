@@ -22,6 +22,7 @@ karaoke?: {
   tail:   0.3                                  // seconds it holds after its last one
   snap:   0.25                                 // how far a tap may move to reach an onset
   maxWords: 12                                 // words per line before the text is cut
+  text?: { … }                                 // how the sung words look; unset = the caption's style
   words: [{ t?: number, br?: -1 | 0 | 1 }, …]   // one entry per word, in clip-local seconds
 }
 ```
@@ -73,15 +74,71 @@ have. (Per-word *forced alignment* would be better still and is deliberately not
 in the container: it needs a model of a few hundred MB, and the plan above is
 what it would have to write anyway.)
 
+## The text style: what the sung words look like
+
+Timing and typography are separate lanes — the lesson of every editor in the
+research notes (`docs/karaoke-text-on-movies-options.md`): Descript, Kapwing and
+Aegisub all keep style out of the timing surface, and this app had to *inherit*
+it: karaoke wore the caption's font, size, colour, outline and position and
+nothing else, because `KaraokeStage` is handed the caption's style as props.
+
+So the block is an **override**, not a replacement. `karaoke.text` carries nine
+optional fields and every one of them means "instead of the caption's value":
+
+```ts
+text?: {
+  family?: string    // font face
+  size?: number      // px on a 1920-wide frame, exactly like the caption's
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  colour?: string    // the *unsung* colour — `fill` stays the sung one
+  outline?: boolean  // off is what most lyric videos do
+  x?: number         // % of the frame
+  y?: number
+}
+```
+
+The popup builds that lane **from the table the engines use**, so a control cannot
+exist that nothing honours: `KARAOKE_TEXT_FIELDS` in `src/karaokeCore.ts` lists the
+nine, `TEXT_STYLE` in `backend/app/karaoke.py` maps each one to the caption key the
+render reads, and a test asserts the two lists are the same names in the same
+order. The chips for the four on/off fields have three states — the caption's
+value, on, off — because *off* is a look people want (no outline) and inheriting
+it back has to stay one click away.
+
+What is deliberately **not** on the list: outline colour, shadow depth, letter
+spacing and text alignment. Those are fixed for every text on this path by the one
+`Style: FX` line libass reads (`_header` in `backend/app/text_effects.py`:
+`Spacing 0`, `Shadow 2`, `Alignment 5` with `\pos`, a constant outline colour), so
+offering them for karaoke alone would put a promise in the preview that the MP4
+contradicts. If that line ever grows per-item control, the fields belong in the
+same two tables and the tests will not let them drift.
+
+Merging is one function per engine, and both are trivial:
+
+* preview — `karaokePaintStyle(caption, karaoke)` in `src/karaokeCore.ts`, applied
+  inside `KaraokeStage`, so *every* mount (storyboard frame, preview modal, the
+  popup's own video overlay) restyles together. It validates while merging, which
+  is what stops a hand-edited project file putting a bad colour into CSS.
+* render — `style_overrides(data)` in `backend/app/karaoke.py`, spliced over the
+  item in `karaoke_document()` *before* `_geometry()`. The overrides therefore
+  travel through the ordinary caption path: no ASS override tags, no second style,
+  and an absent or unusable block leaves the document byte for byte what it was.
+
+`size` is the only field spelled differently in the two models (the stage prop is
+`fontSize`, like every other caption path) and that single rename lives inside
+`karaokePaintStyle` rather than in a caller.
+
 ## Where the code is
 
 | File | Role |
 | --- | --- |
-| `src/karaokeCore.ts` | the model, once: tokenise → break → distribute → snap → plan → frame |
-| `src/KaraokeEditor.tsx` | the popup: four surfaces, the style lane, the first-pass actions |
-| `src/KaraokeStage.tsx` | the layer that paints a frame of it, and `useKaraokeClockTime` for the preview clock |
+| `src/karaokeCore.ts` | the model, once: tokenise → break → distribute → snap → plan → frame, plus the `KARAOKE_TEXT_FIELDS` table, the style sanitizer and `karaokePaintStyle` |
+| `src/KaraokeEditor.tsx` | the popup: four surfaces, the style lane, the text-style lane, the first-pass actions |
+| `src/KaraokeStage.tsx` | the layer that paints a frame of it (and merges `karaoke.text` over the caption's style), plus `useKaraokeClockTime` for the preview clock |
 | `src/App.tsx` | `FrameMotionPreview` swaps to `KaraokeStage` for any item that has real timing, so the storyboard frame, the preview modal and the collage caption all inherit it from one place |
-| `backend/app/karaoke.py` | the twin of the model, plus the ASS emitter |
+| `backend/app/karaoke.py` | the twin of the model, plus the ASS emitter and `TEXT_STYLE` / `style_overrides()` |
 | `backend/app/text_effects.py` | `karaoke_document()` (the `.ass`) and `karaoke_overlay_filter()` |
 | `backend/app/renderer.py` | `_text_filter()` takes the karaoke branch when an item has timing **and** the FFmpeg build has libass |
 | `backend/app/main.py` | `GET /api/media/beats` (onsets) and `GET /api/media/waveform` (peaks) feed the wave surface |
@@ -147,12 +204,18 @@ fades rather than failing the job.
 
 * `backend/tests/test_karaoke.py` — the rules above against the Python engine,
   the ASS emission (tag spelling, colour direction, per-word `\kf` sums, brace
-  escaping, `WrapStyle: 2`) and the joints neither engine can see: the renderer
-  branch and its degradation, the persisted field, both entry points, the four
-  surfaces, the strip's CSS.
-* `backend/tests/test_karaoke_twin.py` + `karaoke_twin.mjs` — 17 timing shapes
-  (coarse passes, holes, mistimed taps, emoji, forced breaks, a window that cuts
-  the text off) run through **both** engines, comparing sentence windows, word
-  windows, per-instant preview frames and word colours value for value. This is
-  the file that decides whether "what you time is what the MP4 does" is a
-  sentence rather than a hope.
+  escaping, `WrapStyle: 2`), the style block (clamps, "a boolean is not a size",
+  "an empty block is no block", the `Style:` line and `\2c` an override produces,
+  and that an unset one changes not a byte), and the joints neither engine can
+  see: the renderer branch and its degradation, the persisted field, both entry
+  points, the four surfaces, the strip's CSS, the two style tables agreeing.
+* `backend/tests/test_karaoke_twin.py` + `karaoke_twin.mjs` — 22 cases run through
+  **both** engines: timing shapes (coarse passes, holes, mistimed taps, emoji,
+  forced breaks, a window that cuts the text off) plus the style block (nothing
+  set, a display face, no outline, moved down the frame, garbage that must be
+  dropped, out-of-range numbers that must clamp). Compared value for value:
+  sentence windows, word windows, per-instant preview frames, word colours, the
+  sanitized style block and the nine effective paint values — the last derived
+  from `TEXT_STYLE` rather than repeated as a literal, so an engine that renames
+  or drops a field fails here. This is the file that decides whether "what you
+  time is what the MP4 does" is a sentence rather than a hope.

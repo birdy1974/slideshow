@@ -1876,6 +1876,22 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-grid label{display:flex;align-items:center;gap:6px;background:#20231f;border:1px solid #41453e;border-radius:6px;padding:4px 7px}
 .kara-grid label span{font:700 8px Manrope;color:#9b9f95;letter-spacing:.5px;white-space:nowrap}
 .kara-grid input{width:100%;border:0;background:transparent;color:#fff;font:700 10px Manrope;text-align:right}
+/* Karaoke's own text style. A field the popup shows is a field the render honours,
+   so these rules only ever restyle what .kara-grid/.kara-styles already draw. */
+.kara-look{border-top:1px solid #34382f;margin-top:12px;padding-top:11px}
+.kara-look .kara-grid{margin-top:7px}
+.kara-look-reset{border:1px solid #41453e;background:#22251f;color:#9b9f95;border-radius:4px;padding:2px 6px;display:flex;align-items:center;gap:4px;font:700 8px Manrope;cursor:pointer}
+.kara-look-reset:hover:not(:disabled){border-color:#78a13e;color:#fff}
+.kara-look-reset:disabled{opacity:.55;cursor:default}
+.kara-look-font{display:flex;align-items:center;gap:6px;margin-top:7px}
+.kara-look-font>button:first-child{flex:0 1 auto}
+.kara-look-flags{margin-top:7px}
+.kara-styles button.pinned{border-color:#78a13e;color:#d9efb0}
+.kara-styles button.pinned.active{color:#141a0c}
+.kara-grid label.set{border-color:#78a13e;background:#232a1e}
+.kara-grid label input[type=color]{width:26px;height:20px;border:1px solid #41453e;border-radius:4px;background:none;padding:0;flex:0 0 auto}
+.kara-unset{flex:0 0 auto;width:16px;height:16px;border:0;border-radius:3px;background:#3a4136;color:#c9cdc4;display:grid;place-items:center;padding:0}
+.kara-unset:hover{background:#78a13e;color:#141a0c}
 .kara-quote{margin:0;font:600 11px/1.5 Manrope;color:#d9e0d0;background:#20231f;border-left:2px solid #78a13e;border-radius:0 5px 5px 0;padding:6px 9px}
 .kara-notice{margin:0;font-size:9px;line-height:1.5;color:#c4cabd;background:#242b20;border:1px solid #45543c;border-radius:6px;padding:7px 9px}
 .kara-notice.warn{color:#f0d9b0;background:#2d2818;border-color:#6a5a34}

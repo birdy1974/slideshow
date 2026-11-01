@@ -20,18 +20,21 @@
 // the MP4 will not do. Times are clip-local seconds like `textStart`/`textEnd`,
 // which is why re-trimming the movie takes the words along with the picture.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlignLeft, Check, ChevronLeft, ChevronRight, FileMusic, Import, Pause, Play, Scissors, Wand2, X } from 'lucide-react'
+import { AlignLeft, Check, ChevronLeft, ChevronRight, FileMusic, Import, Pause, Play, RotateCcw, Scissors, Wand2, X } from 'lucide-react'
 import { PopupBackdrop } from './layers'
 import { TimeField } from './ui'
 import { formatClockPrecise } from './time'
 import { movieRootAndPath } from './filmstrip'
 import type { MediaItem } from './mediaItem'
 import { KaraokeStage } from './KaraokeStage'
+import { FontPicker } from './FontPicker'
 import {
-  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, autoTime, makeContinuous, parseAssKaraoke, parseLrc,
+  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, autoTime, karaokePaintStyle,
+  karaokeTextStyleTouched, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
   timeFromImport, tokenize, wordsPerSecond,
-  type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeToken, type KaraokeWord,
+  type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
+  type KaraokeToken, type KaraokeWord,
 } from './karaokeCore'
 
 const round3 = (v: number) => Math.round(v * 1000) / 1000
@@ -578,6 +581,40 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     y: Number.isFinite(Number(item.textY)) ? Number(item.textY) : 72,
     outline: item.textOutline ?? defaults?.outline ?? true,
   }
+  // ---- how the sung words look ----
+  // `KARAOKE_TEXT_FIELDS` is the whole list, and it is the same nine the render
+  // splices into the caption (`TEXT_STYLE` in backend/app/karaoke.py) — so every
+  // control here has a promise the MP4 keeps, and there is no control for
+  // something only the browser could do. Nothing set = the caption's own style,
+  // which is why there is no "apply" step and no second slide to make: the text
+  // stays one block of words with one clock, wearing whatever you dress it in.
+  const over = data.text || {}
+  const look = karaokePaintStyle(stageStyle, data)
+  const touched = karaokeTextStyleTouched(data)
+  const patchLook = (key: keyof KaraokeTextStyle, value: KaraokeTextStyle[keyof KaraokeTextStyle] | undefined) => {
+    const next: KaraokeTextStyle = { ...over }
+    if (value === undefined) delete next[key]
+    else (next as Record<string, unknown>)[key] = value
+    const merged: KaraokeData = { ...data }
+    if (Object.keys(next).length) merged.text = next
+    else delete merged.text
+    apply(merged)
+  }
+  // A flag has three honest states: whatever the caption says, on, off. One click
+  // per step, and the chip says which one you are in — the caption's own value is
+  // the invisible third, so it has to be spelled out.
+  const flagCycle = (key: KaraokeTextFlag) => {
+    const pinned = over[key]
+    patchLook(key, pinned === undefined ? !look[key] : pinned ? false : undefined)
+  }
+  const textField = (id: keyof KaraokeTextStyle) => KARAOKE_TEXT_FIELDS.find(field => field.id === id)
+  // The typed-with-number fields, in the order the table lists them. The cast is
+  // the filter's, not the model's: `kind` says which ones these are.
+  const lookNumbers = KARAOKE_TEXT_FIELDS.filter(field => field.kind === 'size' || field.kind === 'pos') as
+    (KaraokeTextField & { id: 'size' | 'x' | 'y' })[]
+  const flagState = (key: KaraokeTextFlag) => over[key] === undefined
+    ? `the caption's ${look[key] ? 'on' : 'off'}`
+    : over[key] ? 'on' : 'off'
   const wavePath = useMemo(() => {
     if (!peaks || peaks.values.length < 2) return ''
     const n = peaks.values.length
@@ -711,8 +748,54 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
             <div className="kara-styles">{KARAOKE_STYLES.map(style => <button key={style.id} type="button" className={data.style === style.id ? 'active' : ''} title={style.hint} onClick={() => apply({ ...data, style: style.id as KaraokeStyle })}>{style.label}</button>)}</div>
             <label className="kara-fill">
               <input type="color" value={data.fill} onChange={event => apply({ ...data, fill: event.target.value })}/>
-              <span>Sung colour — the caption’s own colour is the not-yet-sung side, so no other style setting moves.</span>
+              <span>Sung colour — the not-yet-sung side is the caption’s colour, unless you set one of your own in Text style below.</span>
             </label>
+          </div>
+
+          <div className="kara-field kara-look">
+            <span className="field-label">
+              Text style
+              <button type="button" className="kara-look-reset" disabled={!touched} onClick={() => { const merged: KaraokeData = { ...data }; delete merged.text; apply(merged) }} title={touched ? 'Forget these and wear the caption’s own style again' : 'Nothing here yet — the words already wear the caption’s style'}>
+                <RotateCcw size={12}/>{touched ? 'Caption’s style' : 'From the caption'}
+              </button>
+            </span>
+            <div className="kara-look-font">
+              <FontPicker value={look.family} onChange={family => patchLook('family', family)} sample={draftText || item.text || ''}/>
+              {over.family !== undefined ? <button type="button" className="kara-unset" onClick={() => patchLook('family', undefined)} title={`Use the caption’s font instead (${stageStyle.family})`}><X size={11}/></button> : null}
+            </div>
+            <div className="kara-styles kara-look-flags">
+              {KARAOKE_TEXT_FIELDS.filter(field => field.kind === 'flag').map(field => {
+                const key = field.id as KaraokeTextFlag
+                const on = look[key]
+                const pinned = over[key] !== undefined
+                const next = pinned ? (over[key] ? 'force off' : 'let the caption decide again') : `force ${look[key] ? 'off' : 'on'}`
+                return <button key={key} type="button" className={`${on ? 'active' : ''}${pinned ? ' pinned' : ''}`} onClick={() => flagCycle(key)} title={`${field.hint} — ${flagState(key)}. Click to ${next}.`}>{field.label}</button>
+              })}
+            </div>
+            <div className="kara-grid">
+              {lookNumbers.map(field => {
+                const current = field.id === 'size' ? look.fontSize : look[field.id]
+                // What it would go back to — the caption's own number, not the
+                // one on screen, which is the point of the little ×.
+                const inherited = field.id === 'size' ? stageStyle.fontSize : stageStyle[field.id]
+                const pinned = over[field.id] !== undefined
+                return <label key={field.id} className={pinned ? 'set' : undefined} title={field.hint}>
+                  <span>{field.label}</span>
+                  <input type="number" min={field.min} max={field.max} step={field.step} value={current} onChange={event => {
+                    const raw = Number(event.target.value)
+                    if (!Number.isFinite(raw)) return
+                    patchLook(field.id, Math.max(field.min ?? 0, Math.min(field.max ?? 100, raw)))
+                  }}/>
+                  {pinned ? <button type="button" className="kara-unset" onClick={() => patchLook(field.id, undefined)} title={`Back to the caption’s ${inherited}`}><X size={11}/></button> : null}
+                </label>
+              })}
+              <label className={over.colour !== undefined ? 'set' : undefined} title={textField('colour')?.hint}>
+                <span>Unsung</span>
+                <input type="color" value={look.colour} onChange={event => patchLook('colour', event.target.value)}/>
+                {over.colour !== undefined ? <button type="button" className="kara-unset" onClick={() => patchLook('colour', undefined)} title={`Back to the caption’s ${stageStyle.colour}`}><X size={11}/></button> : null}
+              </label>
+            </div>
+            <small>Anything you touch here applies to the sung words only — the caption keeps its own look for every other frame. Size, X and Y mean the same as in the caption editor (px on a 1920-wide frame, percent of the picture), so nothing you set here can be a preview-only wish.</small>
           </div>
 
           <div className="kara-field">

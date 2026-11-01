@@ -231,6 +231,35 @@ class SanitizeTest(unittest.TestCase):
         self.assertFalse(K.has_karaoke({"karaoke": None}))
         self.assertFalse(K.has_karaoke(None))
 
+    def test_the_style_block_is_kept_and_clamped(self) -> None:
+        got = K.sanitize_karaoke({"words": [{"t": 1.0}], "text": {"family": "  Impact  ", "size": 9000,
+                                                                  "x": -20, "colour": "#ff0000", "junk": 1}}, 1)
+        self.assertEqual(got["text"], {"family": "Impact", "size": 400, "x": 0.0, "colour": "#ff0000"})
+
+    def test_an_empty_or_absent_style_block_stays_absent(self) -> None:
+        # "nothing overridden" must be one shape for the loader, the preview and
+        # the render, or a saved project grows a phantom style that changes looks.
+        for raw in ({}, {"junk": 1}, None, "nope", [], 4):
+            got = K.sanitize_karaoke({"words": [{"t": 1.0}], "text": raw}, 1)
+            self.assertNotIn("text", got, repr(raw))
+
+    def test_a_boolean_is_not_a_size_and_a_string_is_not_an_outline(self) -> None:
+        # The block is stricter than the timing fields on purpose: Python would
+        # happily read True as 1 and "24" as a size, while the preview's
+        # `typeof v === "number"` rejects both. Same garbage, same answer.
+        got = K.sanitize_karaoke({"words": [{"t": 1.0}],
+                                  "text": {"size": True, "bold": 1, "x": "24", "outline": "yes"}}, 1)
+        self.assertNotIn("text", got)
+        self.assertEqual(K.sanitize_karaoke({"words": [{"t": 1.0}],
+                                             "text": {"size": 60, "bold": True, "outline": False}}, 1)["text"],
+                         {"size": 60, "bold": True, "outline": False})
+
+    def test_only_a_hex_colour_survives(self) -> None:
+        for bad in ("red", "#abc", "#ff00", "", None, 3):
+            self.assertNotIn("colour", K.sanitize_karaoke({"words": [{"t": 1.0}], "text": {"colour": bad}}, 1).get("text", {}), repr(bad))
+        for good in ("#ff0000", "#AABBCC"):
+            self.assertEqual(K.sanitize_karaoke({"words": [{"t": 1.0}], "text": {"colour": good}}, 1)["text"]["colour"], good)
+
 
 class AssTest(unittest.TestCase):
     TEXT = "The quick brown fox."
@@ -370,7 +399,90 @@ class DocumentTest(unittest.TestCase):
         self.assertNotIn("/tmp/it's here", got)  # the apostrophe is escaped, not passed through
 
 
-class WiringTest(unittest.TestCase):
+class TextStyleTest(unittest.TestCase):
+    """``karaoke.text``: the sung words wearing something other than the caption.
+
+    Three promises, in this order: an unset block changes nothing at all (so
+    every project saved before this feature renders byte for byte as before); a
+    set field lands in the one ``Style:`` line libass reads, plus the ``\\pos``
+    and the ``\\2c`` base colour the sweep paints with; and a field the block
+    cannot honour is dropped rather than guessed at, so the preview can never
+    promise a look the MP4 will not deliver.
+    """
+
+    def item(self, **overrides):
+        return {
+            "text": "The quick brown fox.",
+            "karaoke": data_for([1.0, 2.0, 3.0, 4.0]),
+            "textStart": 0.0, "textEnd": 10.0,
+            "fontFamily": "DejaVu Sans", "fontSize": 48, "fontColor": "#ffffff",
+            "textX": 50, "textY": 88, "textOutline": True,
+            **overrides,
+        }
+
+    def document(self, **item_overrides):
+        from app.text_effects import karaoke_document
+
+        doc = karaoke_document(self.item(**item_overrides), {}, 1920, 1080)
+        self.assertIsNotNone(doc)
+        return doc
+
+    def style_parts(self, doc: str) -> list[str]:
+        line = next(l for l in doc.splitlines() if l.startswith("Style: FX,"))
+        return line.split(",")
+
+    def test_nothing_set_is_the_caption_exactly(self) -> None:
+        plain = self.document()
+        for inert in ({}, {"shadow": 4}, {"size": "72"}, None):
+            self.assertEqual(self.document(karaoke=data_for([1.0, 2.0, 3.0, 4.0], text=inert)), plain, repr(inert))
+
+    def test_the_style_line_carries_the_override(self) -> None:
+        from app.text_effects import ass_colour
+
+        doc = self.document(karaoke=data_for([1.0, 2.0, 3.0, 4.0], text={
+            "family": "Impact", "size": 96, "bold": False, "italic": True, "underline": True,
+            "colour": "#ff0000", "outline": False, "x": 10, "y": 30}))
+        # Name, Fontname, Fontsize, Primary, Secondary, OutlineColour, Back,
+        # Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle,
+        # BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+        parts = self.style_parts(doc)
+        self.assertEqual(parts[1], "Impact")
+        self.assertEqual(parts[2], "96")
+        self.assertEqual(parts[3], ass_colour("#ff0000"))  # the *unsung* colour
+        self.assertEqual((parts[7], parts[8], parts[9]), ("0", "-1", "-1"))
+        self.assertEqual(parts[16], "0")                   # outline off = no border
+        self.assertIn(BS + "pos(192", doc)                 # 10% of 1920 …
+        self.assertIn("324", doc)                          # … and 30% of 1080
+
+    def test_the_sweep_recolours_from_the_overridden_base(self) -> None:
+        doc = self.document(karaoke=data_for([1.0, 2.0, 3.0, 4.0], style="sweep", fill="#00ff00",
+                                                                      text={"colour": "#ff0000"}))
+        # \1c is the colour a word arrives at, \2c the one it leaves — and the
+        # latter must be the override, not the caption's own colour. The events go
+        # through karaoke's own 8-digit writer (alpha first), not the style line's.
+        self.assertIn(BS + "1c" + K._colour("#00ff00") + BS + "2c" + K._colour("#ff0000"), doc)
+        self.assertNotIn(K._colour("#ffffff"), doc)
+
+    def test_only_the_keys_that_are_set_move_the_caption(self) -> None:
+        self.assertEqual(K.style_overrides({"text": {"size": 60}}), {"fontSize": 60})
+        self.assertEqual(K.style_overrides({"text": {"family": "Zilla", "outline": False}}),
+                         {"fontFamily": "Zilla", "textOutline": False})
+        for inert in ({}, None, "nope", {"colour": "red"}):
+            self.assertEqual(K.style_overrides({"text": inert}), {}, repr(inert))
+
+    def test_the_document_is_otherwise_untouched(self) -> None:
+        # A style override restyles the words; it must not re-time them.
+        plain = self.document()
+        styled = self.document(karaoke=data_for([1.0, 2.0, 3.0, 4.0], text={"size": 120, "family": "Impact"}))
+        self.assertEqual([l for l in plain.splitlines() if l.startswith("Dialogue:") and "0:00:0" not in l], [])
+        mine = [visible(body_of(l)) for l in plain.splitlines() if l.startswith("Dialogue:")]
+        theirs = [visible(body_of(l)) for l in styled.splitlines() if l.startswith("Dialogue:")]
+        self.assertEqual(mine, theirs)
+        times = lambda doc: [l.split(",")[1:3] for l in doc.splitlines() if l.startswith("Dialogue:")]
+        self.assertEqual(times(plain), times(styled))
+
+
+
     """Each engine is correct on its own; these are the joints, which no unit
     test of either engine can see."""
 
@@ -391,6 +503,35 @@ class WiringTest(unittest.TestCase):
         self.has(renderer, guard, "libass is required for the karaoke branch")
         self.has(renderer[renderer.index(guard):renderer.index(guard) + 700], "if doc is not None:",
                  "an unusable document degrades instead of failing")
+
+    def test_both_engines_offer_the_same_style_fields(self) -> None:
+        # The popup builds its controls from KARAOKE_TEXT_FIELDS and the render
+        # splices what TEXT_STYLE maps. If one grows a field the other does not
+        # have, a control appears that nothing honours — so the lists are pinned
+        # here, in order, by name.
+        core = self.source("src/karaokeCore.ts")
+        table = core[core.index("KARAOKE_TEXT_FIELDS: readonly"):core.index("export const KARAOKE_DEFAULTS")]
+        self.assertEqual(re.findall(r"\{ id: '(\w+)'", table), list(K.TEXT_STYLE))
+
+    def test_the_render_splices_the_block_before_the_geometry(self) -> None:
+        effects = self.source("backend/app/text_effects.py")
+        self.has(effects, "overrides = karaoke_mod.style_overrides(data)", "the block is read from the sanitized data")
+        self.has(effects, "_geometry({**item, **overrides} if overrides else item, defaults, width, height)",
+                 "the caption is restyled through the ordinary geometry path, not ASS tags")
+
+    def test_the_preview_merges_the_block_over_the_caption(self) -> None:
+        # Neither engine's unit tests can see this: the popup's preview has to run
+        # the same merge, including the font wait, or a bigger face in a different
+        # family shows up in the MP4 and not where the user was looking at it.
+        stage = self.source("src/KaraokeStage.tsx")
+        self.has(stage, "karaokePaintStyle(props, karaoke)", "the stage merges the block over the caption props")
+        self.has(stage, "ensureFont(look.family, look.bold, look.italic)", "the webfont wait follows the override")
+        self.has(stage, "look.fontSize", "the size comes from the merge, not from the caption")
+        self.has(stage, "left: `${look.x}%`", "x moves the block however it is aligned, like \\pos does")
+        editor = self.source("src/KaraokeEditor.tsx")
+        self.has(editor, "karaokePaintStyle(stageStyle, data)", "the popup's own preview paints the same look")
+        self.has(editor, "KARAOKE_TEXT_FIELDS.filter(field => field.kind === 'flag')",
+                 "the controls are built from the table the engines read")
 
     def test_the_field_is_persisted_and_loaded(self) -> None:
         # Media items are stored as free-form dicts, so nothing has to be taught

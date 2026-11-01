@@ -14,7 +14,7 @@ import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, 
 import { useEscapeToClose, useLayer } from './layers'
 import { MOVIE_BACKGROUND_COLOURS, MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { KaraokeEditor } from './KaraokeEditor'
-import { hasKaraoke } from './karaokeCore'
+import { hasKaraoke, karaokeTextStyleTouched } from './karaokeCore'
 
 // Shortest section a movie can be cut down to.
 const MIN_KEEP = 0.5
@@ -265,7 +265,7 @@ export function MovieEditor({ item, src, onChange, onClose }: {
 
       <div className="modal-foot">
         <span><Scissors size={12} /> Keeping {formatClockPrecise(kept)} of {formatClockPrecise(total)}</span>
-        <button className="btn ghost" onClick={() => setKaraokeOpen(true)} title="Time the caption sentence by sentence and word by word against this movie's own audio"><Music2 size={13} /> {hasKaraoke(item) ? 'Karaoke timing · timed' : 'Karaoke timing…'}</button>
+        <button className="btn ghost" onClick={() => setKaraokeOpen(true)} title="Time the caption sentence by sentence and word by word against this movie's own audio — and, in the same popup, dress the sung words differently from the caption"><Music2 size={13} /> {hasKaraoke(item) ? `Karaoke timing · timed${karaokeTextStyleTouched(item.karaoke) ? ' · styled' : ''}` : 'Karaoke timing…'}</button>
         <button className="btn ghost" onClick={reset} title="Use the whole movie again">Use whole movie</button>
         <button className="btn ghost" onClick={cancel}>Cancel</button>
         <button className="btn dark" onClick={onClose}>Done</button>

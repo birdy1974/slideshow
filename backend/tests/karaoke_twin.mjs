@@ -31,6 +31,12 @@ for (const c of input.cases) {
     groups: core.sentenceGroups(core.tokenize(c.text), data.words, data.maxWords),
     auto: core.autoTime(core.tokenize(c.text), [], data.maxWords, c.from ?? 0, c.to ?? 0).map(w => w.t),
     signed: core.textSignature(core.tokenize(c.text)),
+    // The look the preview would paint with: `karaoke.text` validated, then merged
+    // over the caption's own style in `KaraokeStage`'s names. The Python side
+    // builds the same nine values out of `style_overrides` + `_geometry`'s caption
+    // keys, so a mapping that only exists in one engine fails this file.
+    style: core.sanitizeKaraokeTextStyle(data.text) || {},
+    look: core.karaokePaintStyle(c.caption || {}, data),
     warnings: plan.sentences.length === 0 && (data.words || []).some(w => Number.isFinite(w?.t)) ? 'times but no sentences' : '',
   })
 }

@@ -146,7 +146,80 @@ def _cases() -> list[dict]:
             "data": {"words": [{"t": i * 0.6} for i in range(6)], "style": "pop", "leadIn": 0.1, "tail": 0.1},
             "from": 0.0, "to": 5.0,
         },
+        # The sung text wearing something other than the caption's clothes. These
+        # only exercise the style path — the timing above stays what it is.
+        {
+            "name": "no style block: the caption's own look",
+            "text": "Plain as the caption. Nothing overridden here.",
+            "data": {"words": [{"t": i * 0.7} for i in range(7)]},
+            "from": 0.0, "to": 6.0,
+        },
+        {
+            "name": "bigger, in a display face",
+            "text": "Make it large and serif. Like a title card.",
+            "data": {"words": [{"t": i * 0.8} for i in range(8)],
+                     "text": {"family": "Playfair Display", "size": 96}},
+            "from": 0.0, "to": 7.0,
+        },
+        {
+            "name": "no outline, different unsung colour",
+            "text": "Flat lyric video look. No ring around the words.",
+            "data": {"words": [{"t": i * 0.65} for i in range(9)],
+                     "text": {"outline": False, "colour": "#e8e8e8", "bold": False, "italic": True}},
+            "from": 0.0, "to": 7.0,
+        },
+        {
+            "name": "moved down the frame",
+            "text": "Lower third karaoke. Sits above the subtitles.",
+            "data": {"words": [{"t": i * 0.55} for i in range(7)], "text": {"x": 24.5, "y": 91}},
+            "from": 0.0, "to": 6.0,
+        },
+        {
+            "name": "garbage is dropped, never guessed",
+            "text": "Hand edited files happen. Numbers and colours get checked.",
+            "data": {"words": [{"t": i * 0.5} for i in range(8)],
+                     "text": {"size": "40", "colour": "#abc", "bold": 1, "x": 500, "family": "  Times  ",
+                              "y": -20, "shadow": 4, "spacing": 3, "align": "left", "junk": True}},
+            "from": 0.0, "to": 6.0,
+        },
+        {
+            "name": "out of range clamps, an empty block is no block",
+            "text": "Too small and far too big. Both get pulled back.",
+            "data": {"words": [{"t": i * 0.9} for i in range(6)],
+                     "text": {"size": 9000, "family": "   ", "colour": "", "outline": "yes"}},
+            "from": 0.0, "to": 6.0,
+        },
     ]
+
+
+# What a caption looks like before karaoke touches it: `CAPTION_ITEM` in the field
+# names the render reads, `CAPTION_PAINT` in the names the preview paints with. The
+# two are linked by `TEXT_STYLE` (which override goes into which caption key) plus
+# the single rename `karaokePaintStyle` does — `size` on the block, `fontSize` on
+# the stage. Deriving the mapping here instead of repeating a literal is the point:
+# if an engine renames or drops a field, the two views stop lining up and this file
+# says so.
+CAPTION_ITEM = {
+    "fontFamily": "Montserrat",
+    "fontSize": 48,
+    "textBold": True,
+    "textItalic": False,
+    "textUnderline": False,
+    "fontColor": "#ffffff",
+    "textOutline": True,
+    "textX": 50.0,
+    "textY": 72.0,
+}
+STAGE_OF = {"size": "fontSize"}
+PAINT_OF = {caption: STAGE_OF.get(key, key) for key, (caption, _kind, _bounds) in K.TEXT_STYLE.items()}
+CAPTION_PAINT = {PAINT_OF.get(key, key): value for key, value in CAPTION_ITEM.items()}
+
+
+def _effective_paint(data: dict) -> dict:
+    """The caption's style with ``karaoke.text`` spliced over it, in the stage's
+    names — the mirror of ``karaokePaintStyle`` in src/karaokeCore.ts."""
+    overrides = {PAINT_OF[key]: value for key, value in K.style_overrides(data).items()}
+    return {**CAPTION_PAINT, **overrides}
 
 
 def _close(test: unittest.TestCase, a: float | None, b: float | None, what: str) -> None:
@@ -189,7 +262,7 @@ class KaraokeTwinTest(unittest.TestCase):
             plan = K.plan_of(text, data, case.get("from", 0.0), case.get("to", 0.0), 0.0)
             py_plans.append((case, data, plan))
             js_cases.append({"text": text, "data": data, "from": case.get("from", 0.0), "to": case.get("to", 0.0),
-                             "times": _times_for(plan)})
+                             "times": _times_for(plan), "caption": CAPTION_PAINT})
         results = self._js(js_cases)
         self.assertEqual(len(results), len(py_plans))
         for (case, data, plan), got in zip(py_plans, results):
@@ -216,6 +289,25 @@ class KaraokeTwinTest(unittest.TestCase):
                 self.assertEqual(mine["states"], theirs["states"], f"{name}: word colours at {theirs['t']}")
             self.assertEqual([list(g) for g in K.sentence_groups(K.tokenize(case["text"]), data["words"], data["maxWords"])],
                              [list(g) for g in got["groups"]], f"{name}: sentence groups")
+            # ---- the text style: same validation, same effective look ----
+            raw_text = (case.get("data") or {}).get("text")
+            self.assertEqual(K.sanitize_text_style(raw_text) or {}, got["style"], f"{name}: style block validation")
+            mine_paint, their_paint = _effective_paint(data), got["look"]
+            for key in sorted(set(mine_paint) | set(their_paint)):
+                mine_value, their_value = mine_paint.get(key), their_paint.get(key)
+                if isinstance(mine_value, (int, float)) and isinstance(their_value, (int, float)):
+                    _close(self, float(mine_value), float(their_value), f"{name}: style {key}")
+                else:
+                    self.assertEqual(mine_value, their_value, f"{name}: style {key}")
+            # …and the nine the render actually reaches for, spliced into the item:
+            # the same values, read out of the caption keys `style_overrides` wrote.
+            item = {**CAPTION_ITEM, **K.style_overrides(data)}
+            for karaoke_key, (caption_key, _kind, _bounds) in K.TEXT_STYLE.items():
+                mine_value, their_value = item[caption_key], their_paint[STAGE_OF.get(karaoke_key, karaoke_key)]
+                if isinstance(mine_value, (int, float)) and isinstance(their_value, (int, float)):
+                    _close(self, float(mine_value), float(their_value), f"{name}: render {caption_key}")
+                else:
+                    self.assertEqual(mine_value, their_value, f"{name}: render {caption_key}")
             for mine, theirs in zip(K.auto_time(K.tokenize(case["text"]), [], data["maxWords"], case.get("from", 0.0), case.get("to", 0.0)), got["auto"]):
                 _close(self, mine.get("t"), theirs, f"{name}: first-pass time")
             self.assertTrue(got["signed"], f"{name}: signature")
