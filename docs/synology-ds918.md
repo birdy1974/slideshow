@@ -103,6 +103,41 @@ healthcheck:
 `unhealthy` now genuinely means the API stopped answering — check
 `docker logs slideshow` for a crash or a blocked event loop in that case.
 
+## A new release does not appear in the browser
+
+Every file Vite rebuilds is named after a hash of its contents
+(`assets/index-8f2c1a4b.js`), so a new image *cannot* collide with an old bundle —
+but `index.html` is the file that lists those names, its URL never changes, and
+its contents do with every release. Static files used to be served without a
+`Cache-Control` header at all, which leaves freshness to the browser's own
+guessing: a heuristic like "10 % of how old the file looked when I cached it" can
+keep an old shell in place across several deploys, and the app you see is then
+the previous build — same URL, same looks, none of the changes. The shell and the
+unhashed files the fallback serves (`/fonts/*.ttf`, the icons) now answer
+`Cache-Control: no-cache`, which means *ask before using it*: the reply is
+usually a `304`, and the file is a few kilobytes.
+
+So the update procedure is only the update:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+…plus an ordinary reload of the page. If a feature still looks missing after
+that, the image is the thing to check, not the browser — `:latest` is published
+from `main` on every merge, so:
+
+```bash
+docker inspect --format '{{.Image}} {{.Created}}' slideshow
+docker logs slideshow 2>&1 | head -3
+```
+
+An image created before the merge you expected is a registry or a `pull`
+problem; a container started from the newer image but still showing the old UI
+means something in between is caching — a reverse proxy that was told to cache
+HTML is the usual suspect, and it must pass `Cache-Control` through (or not
+cache `/` at all).
+
 ## Folder permissions
 
 The container only sees what `PUID`/`PGID` can read. A shared folder can appear
