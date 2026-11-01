@@ -58,11 +58,15 @@ class BridgeSpecTest(unittest.TestCase):
         self.assertEqual(photo_anim(spec, 1), "drop")
 
     def test_a_name_carries_its_own_direction(self) -> None:
-        # `slideleft` means the new frame comes in from the right; the user's
-        # mirrored choice cannot quietly redefine the name.
-        spec = _norm([_photo(anim="slideleft", animDir=0)])
+        # `wipetl` is defined as the diagonal running towards the top-left corner;
+        # the user's mirrored choice cannot quietly redefine what the name means.
+        spec = _norm([_photo(anim="wipetl", animDir=0)])
         self.assertEqual(photo_reveal_dir(spec, 0), 1)
-        both = _norm([_photo(anim="slideleft", animDir=0), _photo(anim="curtain", animDir=0)], cols=2)
+        # the slides, by contrast, pick a row that already travels the right way
+        # (a translate has no axis for `animDir` to flip), so no forcing is involved
+        self.assertEqual(resolve_anim("slideleft"), "fromRight")
+        self.assertEqual(resolve_anim("slideright"), "fromLeft")
+        both = _norm([_photo(anim="wipetl", animDir=0), _photo(anim="curtain", animDir=0)], cols=2)
         # a name without its own meaning inherits as usual
         self.assertEqual(photo_reveal_dir(both, 1), 0)
 

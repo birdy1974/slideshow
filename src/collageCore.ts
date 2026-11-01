@@ -192,10 +192,10 @@ export const COLLAGE_BRIDGE: Record<CollageBridgeName, CollageBridge> = {
   wipetr: { label: 'Wipe to top-right', hint: 'Uncovered along the diagonal towards the top-right corner', via: 'mask', target: 'diagDownRight', dir: 1 },
   wipebl: { label: 'Wipe to bottom-left', hint: 'Uncovered along the diagonal towards the bottom-left corner', via: 'mask', target: 'diagDownLeft' },
   wipebr: { label: 'Wipe to bottom-right', hint: 'Uncovered along the diagonal towards the bottom-right corner', via: 'mask', target: 'diagDownRight' },
-  slideleft: { label: 'Slide left', hint: 'The photo travels in from the right, as a slide transition would', via: 'geom', target: 'glide', dir: 1 },
-  slideright: { label: 'Slide right', hint: 'The photo travels in from the left', via: 'geom', target: 'glide' },
-  slideup: { label: 'Slide up', hint: 'The photo rises in from below', via: 'geom', target: 'rise' },
-  slidedown: { label: 'Slide down', hint: 'The photo drops in from above', via: 'geom', target: 'drop' },
+  slideleft: { label: 'Slide left', hint: 'The photo travels in from the right, as a slide transition would', via: 'geom', target: 'fromRight' },
+  slideright: { label: 'Slide right', hint: 'The photo travels in from the left', via: 'geom', target: 'fromLeft' },
+  slideup: { label: 'Slide up', hint: 'The photo rises in from below, without the pendulum or tilt a `rise` adds', via: 'geom', target: 'fromBottom' },
+  slidedown: { label: 'Slide down', hint: 'The photo drops in from above, straight — no settling bounce', via: 'geom', target: 'fromTop' },
   circleopen: { label: 'Circle open', hint: 'A circle opening from the centre out', via: 'mask', target: 'iris' },
   circleclose: { label: 'Circle close', hint: 'The edges closing in on the centre', via: 'mask', target: 'irisOut' },
   vertopen: { label: 'Vertical open', hint: 'Two halves drawing open from the middle', via: 'mask', target: 'curtain' },
@@ -211,7 +211,7 @@ export const COLLAGE_BRIDGE: Record<CollageBridgeName, CollageBridge> = {
   fadefast: { label: 'Fade (fast)', hint: 'A plain dissolve in, over half the usual time', via: 'mask', target: 'fade' },
   fadeslow: { label: 'Fade (slow)', hint: 'A plain dissolve in, unhurried', via: 'mask', target: 'fade' },
   radial: { label: 'Radial', hint: 'A clock sweep from twelve o’clock', via: 'mask', target: 'clock' },
-  rectcrop: { label: 'Rect crop', hint: 'A rectangle opening from the middle outwards', via: 'mask', target: 'diamond' },
+  rectcrop: { label: 'Rect crop', hint: 'A window opening from the middle out — drawn as the diamond reveal this app has', via: 'mask', target: 'diamond' },
   smoothleft: { label: 'Smooth left', hint: 'A soft-edged wipe from the left — drawn as the hard-edged wipe for now', via: 'bridge', target: 'wipeLeft', soft: 0.22 },
   smoothright: { label: 'Smooth right', hint: 'A soft-edged wipe from the right — drawn as the hard-edged wipe for now', via: 'bridge', target: 'wipeRight', soft: 0.22 },
   smoothup: { label: 'Smooth up', hint: 'A soft-edged wipe upward — drawn as the hard-edged wipe for now', via: 'bridge', target: 'wipeUp', soft: 0.22 },
@@ -393,6 +393,25 @@ export const COLLAGE_GEOM: Record<CollageGeomAnim, GeomRow & { label: string, hi
   glide: {
     label: 'Glide', hint: 'A long, calm drift in from the lower right, unrotating as it goes', length: 0.7,
     dx: ['one-smooth', 16], dy: ['one-smooth', 12], rot: ['one-smooth', 3], fade: 0.28,
+  },
+  // Four straight travels, with no tilt and no scale: these exist because
+  // FFmpeg's `slide*` transitions *are* plain translates, and pointing an alias
+  // at `drop` or `glide` would quietly add a rotation the name does not promise.
+  fromLeft: {
+    label: 'From the left', hint: 'Travels in from the left edge, nothing else', length: 0.5,
+    dx: ['one-smooth', -34], fade: 0.16,
+  },
+  fromRight: {
+    label: 'From the right', hint: 'Travels in from the right edge, nothing else', length: 0.5,
+    dx: ['one-smooth', 34], fade: 0.16,
+  },
+  fromTop: {
+    label: 'From above', hint: 'Lowers into place from the top edge, straight', length: 0.5,
+    dy: ['one-smooth', -26], fade: 0.16,
+  },
+  fromBottom: {
+    label: 'From below', hint: 'Lifts into place from the bottom edge, straight', length: 0.5,
+    dy: ['one-smooth', 26], fade: 0.16,
   },
   peek: {
     label: 'Peek', hint: 'Rises from behind the bottom edge, tilting back upright as it clears it', length: 0.5,
@@ -658,6 +677,8 @@ export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 
  *  cannot make is worse than no animation, so this family is expressed as
  *  foreshortening (`scaleX` following the hinge angle) instead of `rotateX`. */
 export type CollageGeomAnim = 'cube' | 'book' | 'door' | 'unfold' | 'rollover' | 'spiral'
+  // the four straight travels the bridge's `slide*` names run — see COLLAGE_GEOM
+  | 'fromLeft' | 'fromRight' | 'fromTop' | 'fromBottom'
   | 'swish' | 'glide' | 'peek' | 'boomerang' | 'sling' | 'thread'
 /** The look-based entrances: the photo sits still and its *colour* arrives.
  *  These are the only animation ids that are not in `PhotoState`'s transform at
@@ -682,9 +703,12 @@ export type CollageStickers = 'none' | 'tape' | 'pin' | 'mix'
 
 export const COLLAGE_LAYOUTS_ALL: CollageLayout[] = ['stack', 'grid', 'scatter', 'filmstrip', 'fan', 'masonry', 'free', 'template', 'honeycomb', 'zigzag', 'arc', 'photowall', 'booth', 'silhouette', 'cube']
 export const COLLAGE_SHAPES_ALL: CollageShape[] = ['native', '4:3', 'square', '3:4', '16:9', '9:16', '3:2', '2:3']
+// The paper and colour ids come from their own tables rather than being repeated
+// here: a row added to `COLLAGE_GEOM` that this list did not hear about is an
+// entrance the picker offers and the validator silently deletes on save.
 export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip', 'fade', 'slide', 'rise', 'tumble', 'zoom', 'fold', 'glitch', 'ink', 'brush',
-  'cube', 'book', 'door', 'unfold', 'rollover', 'spiral', 'swish', 'glide', 'peek', 'boomerang', 'sling', 'thread',
-  'develop', 'flashIn', 'colourFlood', 'hueSwing', 'negative', 'shadowLift', 'glowIn', 'xerox',
+  ...(Object.keys(COLLAGE_GEOM) as CollageGeomAnim[]),
+  ...(Object.keys(COLLAGE_LOOK_ENTRANCE) as CollageLookEntrance[]),
   'none', ...COLLAGE_REVEALS]
 
 /** Every id a spec may carry, aliases included: what the validator accepts and
