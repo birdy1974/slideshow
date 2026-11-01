@@ -564,7 +564,11 @@ is the name of an arrival, and the departure is that arrival read backwards.**
   completely. Its tiles are not illustrations — `TILE_SPEC` builds a one-photo collage
   whose arrival is `none` and whose exit is the candidate, then samples the same
   `photoState()` the stage and the render use, offset past the hold so the tile is the
-  leaving. A photo's own lane swapped its six-option `<select>` for that same picker
+  leaving — which is why its demo photo carries `delay: 0`: a `none` arrival counts as
+  instant in `baseDuration`, so with the default 0.15 s the fly would begin before the
+  photo existed, and since a photo is now invisible outside its own windows that tile
+  would be an empty square. Its rest frame is the fly's *first* frame rather than a
+  step before it, for the same reason. A photo's own lane swapped its six-option `<select>` for that same picker
   (with an "Inherit · the collage's choice" row). **Random** exists on both lanes and
   shares one pool, one "no repeats" rule, one per-photo lock and one seed, because an
   exit is an arrival — `collageShuffle({lane: 'exit'})` writes the names onto the

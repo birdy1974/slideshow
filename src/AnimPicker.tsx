@@ -69,7 +69,12 @@ const TILE_SPEC = (id: string, dir: 0 | 1, out = false): CollageSpec => ({
   // percent-of-frame and degrees, which is the only reason a 104-pixel square can
   // reuse it at all — there is nothing here scaled by the frame size.
   layout: 'grid', cols: 1, rows: 1, animation: id, animDir: dir,
-  frame: 'none', photos: [{ src: '', anim: id }],
+  // …and `delay: 0`, because the demo photo is the only one and its own arrival has
+  // to be *over* before the departure the tile demonstrates begins: baseDuration
+  // counts a 'none' arrival as instant (only the hold), so with the default 0.15 s
+  // delay the fly would start before the photo exists — and since the envelope says a
+  // photo is invisible outside its own two windows, the tile would be an empty square.
+  frame: 'none', photos: [{ src: '', anim: id, delay: 0 }],
   // …and for an exit, the same id on the *departure* lane with nothing arriving of
   // its own. `hold: 0` starts the exit as early as the engine allows, so the tile is
   // the leaving and not the waiting, and the mirrored curve runs over the length that
@@ -80,7 +85,7 @@ const TILE_SPEC = (id: string, dir: 0 | 1, out = false): CollageSpec => ({
   // exactly what choosing it does to this photo.)
   ...(out ? {
     animation: id === 'reverse' ? 'drop' as const : 'none' as const,
-    hold: 0, exit: id as CollageSpec['exit'], photos: [{ src: '', exit: id as CollageSpec['exit'] }],
+    hold: 0, exit: id as CollageSpec['exit'], photos: [{ src: '', delay: 0, exit: id as CollageSpec['exit'] }],
   } : {}),
 } as unknown as CollageSpec)
 
@@ -95,9 +100,11 @@ function tileStyle (row: CollageAnimRow, t: number | null, out = false): React.C
   // A departure starts after the hold, so the sample is offset by it; without that the
   // first two thirds of every exit tile would be a photo standing perfectly still.
   const pre = out ? baseDuration(spec) : 0
-  // At rest an arrival sits where it landed, and a departure one step before its own
-  // start: an unfocused exit tile shows the photo still hanging on the board.
-  const at = t === null ? pre + (out ? -0.2 : length + 0.2) : pre + t * length
+  // At rest an arrival sits where it landed, and a departure at the first frame of
+  // its own fly: the photo still hanging on the board, whole and in place. Not a step
+  // *before* the fly — with `hold: 0` that is before the demo photo's arrival, and the
+  // envelope (rightly) has nothing to show there.
+  const at = t === null ? (out ? pre : pre + length + 0.2) : pre + t * length
   const st = photoState(spec, 0, at, 0, 16 / 9)
   const style: React.CSSProperties = {
     position: 'absolute',

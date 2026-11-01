@@ -147,6 +147,52 @@ class PreviewTest(unittest.TestCase):
                 self.assertEqual(landed['alpha'], 1.0, (name, i))
 
 
+class TileSampleTest(unittest.TestCase):
+    """The animation browser's tiles are one-photo collages sampled through this same
+    model, with `hold: 0` so the departure starts as early as the engine allows. That
+    is only honest while the demo photo's own arrival is already over — `base_duration`
+    counts a `none` arrival as instant, so a default per-photo delay would put the fly
+    before the photo exists, and the envelope would (correctly) draw nothing: an empty
+    tile instead of a preview. `src/AnimPicker.tsx` sets `delay: 0` for that reason, and
+    this is the number that pins."""
+
+    def _tile(self, name: str, out: bool) -> dict:
+        photo = {'src': '', 'delay': 0, 'exit': name} if out else {'src': '', 'delay': 0, 'anim': name}
+        spec = {'layout': 'grid', 'cols': 1, 'rows': 1, 'shape': '4:3', 'seed': 5, 'frame': 'none',
+                'animDir': 0, 'photos': [photo], 'animation': name if not out else
+                ('drop' if name == 'reverse' else 'none')}
+        if out:
+            spec['hold'] = 0
+        return spec
+
+    def test_every_sample_a_tile_draws_is_on_screen(self):
+        for name in list(ANIM_IDS) + [e for e in EXITS if e != 'none']:
+            for out in (False, True):
+                spec = self._tile(name, out)
+                if not out and name in EXITS and name != 'reverse':
+                    continue                      # the arrival lane does not hold the modes
+                fly = exit_fly_length(spec, 0) if out else entrance_length(spec, 0)
+                pre = base_duration(spec) if out else 0.0
+                length = fly or entrance_length(spec, 0) or 0.6
+                idle = pre if out else pre + length + 0.2
+                for label, t in (('idle', idle), ('start', pre), ('mid', pre + 0.5 * length),
+                                 ('end', pre + length)):
+                    # the two frames an envelope may legitimately empty: an arrival's
+                    # first, where it is transparent by design, and a departure's last,
+                    # where it has just finished leaving
+                    if label == 'end' or (label == 'start' and not out):
+                        continue
+                    st = photo_state(spec, 0, max(0.0, t), 0.0, 16 / 9)
+                    # at rest the tile owes a *whole* photo (that is what "here is the
+                    # animation you are about to pick" means), and mid-fly it only owes
+                    # one that is not blank — a fade-out at its halfway point is half
+                    # gone, and that is the animation, not an empty square
+                    floor = 0.5 if label in ('idle', 'start') else 0.05
+                    visible = st['alpha'] > floor or (st.get('revealP') or 0.0) > floor
+                    self.assertTrue(visible, (name, 'out' if out else 'in', label, round(t, 3),
+                                              round(st['alpha'], 2), round(st.get('revealP', 1.0), 2)))
+
+
 class GraphTest(unittest.TestCase):
     """The expressions the MP4 is built from, clipped at both ends."""
 
