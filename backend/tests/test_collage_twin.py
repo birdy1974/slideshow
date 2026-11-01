@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 from app.collage_reveal import REVEALS, REVEAL_LENGTH  # noqa: E402
-from app.collage import GEOM, base_duration, exit_fly_length  # noqa: E402
+from app.collage import GEOM, LOOK_ENTRANCE, base_duration, exit_fly_length  # noqa: E402
 from app.collage import (
     COLLAGE_TEMPLATES,
     ENTRANCE_LENGTH,
@@ -634,6 +634,23 @@ def _cases() -> list[dict]:
                   "times": [0.0, te0m - 0.1, te0m, round(te0m + 0.15, 3), round(te0m + 0.3, 3),
                             round(te0m + 0.45, 3), round(te0m + 0.6, 3), te0m + 0.75],
                   "hashArgs": [5, 5, 5], "matW": 30})
+    # the look-based entrances: eight ids that arrive as colour rather than as
+    # motion. `photo_look_state` is the single place the preview's CSS string and
+    # the render's hue/eq/negate chain read from, so these cases are the whole
+    # parity proof for the family — and one of them also carries a "while" look,
+    # because the two lanes have to multiply and add rather than fight.
+    for kind in LOOK_ENTRANCE:
+        length = LOOK_ENTRANCE[kind]["length"]
+        times = [0.0] + [round(length * f, 3) for f in (0.2, 0.5, 0.8, 0.99)] + [length, length + 0.35, 2.4]
+        base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1)
+        cases.append({"id": f"look-{kind}", "spec": base, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [9, 2, 4], "matW": 30})
+    both = _spec("stack", "develop", "4:3", 3, 4, delays=[0.0, 0.3, 0.6], hold=1)
+    both["lookAnim"] = "flicker"
+    both["photos"][1]["lookAnim"] = "toColor"
+    both["photos"][2]["lookAnim"] = "invert"
+    cases.append({"id": "look-entrance-plus-while", "spec": both, "aspect": 16 / 9, "leadIn": 0.0,
+                  "times": [0.0, 0.12, 0.3, 0.5, 0.75, 1.1, 1.6, 2.2], "hashArgs": [6, 6, 6], "matW": 30})
     # the paper family: twelve geometry entrances, compared at the moments a
     # hinge, a bow and an overshoot actually differ — the first frame (a size of
     # zero would show up here), the middle of the sweep, the settle, and at rest.

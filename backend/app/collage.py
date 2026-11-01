@@ -1159,6 +1159,35 @@ def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
 # never shows.
 SCALE_ANIMS = ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble")
 
+# The eight look-based entrances, the same rows as `COLLAGE_LOOK_ENTRANCE` in
+# src/collageCore.ts. A channel is a curve on the look's own scale — 1 is
+# untouched for `sat`/`bright`, degrees for `hue` — and `inv` has no amount,
+# because FFmpeg's `negate` is on or off and so is the preview's CSS invert().
+LOOK_ENTRANCE: dict[str, dict[str, Any]] = {
+    "develop": {"length": 0.75, "fade": 0.3, "label": "Develop", "bright": ("one-smooth", -0.88, 1),
+                "sat": ("one-smooth", -0.75, 1)},
+    "flashIn": {"length": 0.4, "fade": 0.12, "label": "Flash", "bright": ("one-smooth", 1.2, 1)},
+    "colourFlood": {"length": 0.6, "fade": 0.2, "label": "Colour flood", "sat": ("one-smooth", -0.95, 1)},
+    "hueSwing": {"length": 0.65, "fade": 0.18, "label": "Hue swing", "hue": ("one-smooth", 120)},
+    "negative": {"length": 0.45, "fade": 0.15, "label": "Negative", "inv": True},
+    "shadowLift": {"length": 0.6, "fade": 0.25, "label": "Out of shadow",
+                   "bright": ("one-smooth", -0.85, 1)},
+    "glowIn": {"length": 0.5, "fade": 0.16, "label": "Glow", "bright": ("one-smooth", 0.45, 1),
+               "sat": ("one-smooth", -0.3, 1)},
+    "xerox": {"length": 0.6, "fade": 0.18, "label": "Photocopy", "bright": ("one-back", -0.35, 1.35),
+              "sat": ("one-smooth", -0.95, 1)},
+}
+LOOK_ENTRANCE_ANIMS = tuple(LOOK_ENTRANCE)
+
+
+def look_entrance(anim: str) -> dict[str, Any] | None:
+    """The row for a look-based entrance id, or None for any other animation."""
+    return LOOK_ENTRANCE.get(anim)
+
+
+def is_look_entrance(anim: str) -> bool:
+    return anim in LOOK_ENTRANCE
+
 
 GEOM: dict[str, dict[str, Any]] = {
     "cube": {"length": 0.5, "dx": ("settle3", 18), "scaleX": ("hinge", 0.25, 0),
@@ -1227,11 +1256,13 @@ def _geom(spec_curve: Any, q: float, base: float) -> float:
     if kind == "recip":
         return 1 / max(spec_curve[1], _geom_curve("hinge", q, bool(spec_curve[2])))
     amp = spec_curve[1] if len(spec_curve) > 1 else 1.0
+    # a row may name its own base (`xerox` starts at 1.35 brightness, not at the
+    # 1 a scale channel rests at); when it does not, the caller's default stands
     b = spec_curve[2] if len(spec_curve) > 2 else base
     return b + amp * _geom_curve(kind, q)
 
 
-def _geom_expr(spec_curve: Any, q: str, span: float) -> str:
+def _geom_expr(spec_curve: Any, q: str, span: float, base: float = 0.0, signed: bool = True) -> str:
     """A curve as an FFmpeg expression, for the overlay's x/y. `span` converts
     the percent-of-frame unit the preview works in into pixels, exactly as the
     hand-written `drop`/`slide` terms above do; `rot` passes span=1 because
@@ -1242,9 +1273,11 @@ def _geom_expr(spec_curve: Any, q: str, span: float) -> str:
     if kind in ("hinge", "recip"):
         raise ValueError("hinge curves belong on the size ladder, not on an offset")
     amp = spec_curve[1] if len(spec_curve) > 1 else 1.0
+    b = spec_curve[2] if len(spec_curve) > 2 else base
     mag = abs(amp) * span
+    head = _n(b) if b else ""
     if not mag:
-        return ""
+        return head
     sign = "+" if amp > 0 else "-"
     if kind == "settle3":
         c = f"pow(1-{q},3)"
@@ -1260,7 +1293,11 @@ def _geom_expr(spec_curve: Any, q: str, span: float) -> str:
         c = f"sin(PI*(1-{q}))"
     else:
         raise ValueError(f"no FFmpeg form for entrance curve {kind!r}")
-    return f"{sign}{_n(mag)}*{c}"
+    if not head:
+        # a term that starts an expression needs no leading `+`; one that is
+        # appended to the overlay's x= or to another term does
+        return f"{_n(mag)}*{c}" if not signed else f"+{_n(mag)}*{c}"
+    return f"{head}{sign}{_n(mag)}*{c}"
 
 
 # How long an entrance runs until the photo is fully at rest.
@@ -1273,6 +1310,7 @@ ENTRANCE_LENGTH = {
     # sweep takes, so the slide's length and the ladder's sampling cannot use two
     # different numbers for the same reveal.
     **{a: r["length"] for a, r in GEOM.items()},
+    **{a: r["length"] for a, r in LOOK_ENTRANCE.items()},
     **REVEAL_LENGTH,
 }
 # One entrance's alpha ramp in seconds, at speed 1 — `ENTRANCE_FADE` in
@@ -1285,6 +1323,7 @@ ENTRANCE_FADE = {
     "slide": 0.18, "rise": 0.18, "tumble": 0.16, "zoom": 0.16, "fold": 0.14, "glitch": 0.12,
     "ink": 0.4, "brush": 0.16,
     **{a: r["fade"] for a, r in GEOM.items()},
+    **{a: r["fade"] for a, r in LOOK_ENTRANCE.items()},
     **{a: 0.0 for a in REVEALS},
 }
 # The same range the exits use: one slider grammar for arriving and for leaving.
@@ -1324,7 +1363,7 @@ LAYOUTS = ("stack", "grid", "scatter", "filmstrip", "fan", "masonry", "free", "t
 # The mask reveals are animations too: one list, so a photo can be given a wipe
 # wherever an entrance is chosen, and `photo_anim` cannot forget one.
 ANIMS = ("drop", "pop", "swing", "flip", "none", "fade", "slide", "rise", "tumble",
-         "zoom", "fold", "glitch", "ink", "brush", *GEOM_ANIMS, *REVEALS)
+         "zoom", "fold", "glitch", "ink", "brush", *GEOM_ANIMS, *LOOK_ENTRANCE_ANIMS, *REVEALS)
 FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart", "star",
                 "diamond", "hexagon", "triangle", "octagon", "cloud", "arch", "ticket")
 
@@ -1789,6 +1828,13 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         settle = (1 - q) ** 3
         st = {"dx": -36 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.12, 1 - 0.55 * settle),
               "alpha": _clamp01((ti - t0) / fade), "dim": 0.0}
+    elif anim in LOOK_ENTRANCE:
+        # The photo does not move: its colour arrives, so every transform field is
+        # at rest and only the alpha ramp belongs here. The eight channels live in
+        # `photo_look_state`, which is where the preview's CSS filter and the
+        # render's `hue`/`eq`/`negate` chain both read them from.
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1 - DEPTH["scale"] * push, "scaleX": 1.0,
+              "alpha": _clamp01((ti - t0) / (fade or 0.001)), "dim": 0.0}
     elif anim in GEOM:
         row = GEOM[anim]
         q = _clamp01((ti - t0) / (ent or 0.001))
@@ -1989,8 +2035,14 @@ def photo_look_anim(spec: dict[str, Any], i: int) -> str:
 
 
 def photo_look_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> dict[str, float]:
-    """How the animated look tints photo i at time t: a saturation multiplier
-    and a brightness multiplier, 1.0 = untouched (twin of photoLookState()).
+    """How the photo is tinted at time t: the animated look *and* any look-based
+    entrance, composed into one set of channels (twin of `photoLookState`).
+
+    Multiplying saturation and brightness and adding hue is not a convenience:
+    the preview applies one CSS filter string, so if the two lanes were applied as
+    two filters in one engine and one string in the other, a photo with both a
+    `flicker` look and a `develop` entrance would be tinted in a different order
+    on each side. One composed answer, read by both, cannot disagree.
 
     The preview applies them as CSS saturate() / brightness() on the mat. The
     render drives saturation with a per-frame `hue=s='...'` expression — hue
@@ -1998,6 +2050,22 @@ def photo_look_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.
     measured on the render binary — and brightness with a sendcmd ladder into a
     second eq, the same machinery the depth dim uses.
     """
+    out = _look_anim_state(spec, i, t, lead_in)
+    row = LOOK_ENTRANCE.get(photo_anim(spec, i))
+    if row is not None:
+        ent = entrance_length(spec, i) or 0.001
+        q = _clamp01((t - photo_start(spec, i, lead_in)) / ent)
+        out = dict(out)
+        out["sat"] *= _geom(row.get("sat"), q, 1.0)
+        out["bright"] *= _geom(row.get("bright"), q, 1.0)
+        out["hue"] += _geom(row.get("hue"), q, 0.0)
+        if row.get("inv"):
+            out["inv"] = max(out["inv"], 1.0 if q < 1 else 0.0)
+    return out
+
+
+def _look_anim_state(spec: dict[str, Any], i: int, t: float, lead_in: float) -> dict[str, float]:
+    """The "while" lane on its own: what the photo's animated look does at t."""
     lid = photo_look_anim(spec, i)
     plain = {"sat": 1.0, "bright": 1.0, "inv": 0.0, "hue": 0.0}
     if lid == "none":
@@ -2556,35 +2624,64 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         the flip.
         """
         lid = photo_look_anim(spec, i)
-        if lid == "none":
+        row = LOOK_ENTRANCE.get(photo_anim(spec, i))
+        if lid == "none" and row is None:
             return ""
         t0 = photo_start(spec, i, lead_in)
         ent = entrance_length(spec, i)
         land = t0 + ent
         segs: list[str] = []
         span = max(0.8, collage_duration(spec) * 0.7)
+        # Each channel is collected from whichever lanes ask for it, then merged
+        # into the one `hue` instance — because `photo_look_state` multiplied and
+        # added them for the preview, and a second filter would apply the two
+        # lanes in the other order.
+        s_terms: list[str] = []
+        h_terms: list[str] = []
+        inv_until: float | None = None
         if lid == "toBw":
-            segs.append(f"hue=s='1-min(max((t-{_n(land)})/{_n(span)},0),1)'")
+            s_terms.append(f"1-min(max((t-{_n(land)})/{_n(span)},0),1)")
         elif lid == "toColor":
-            segs.append(f"hue=s='min(max((t-{_n(t0)})/{_n(max(0.45, ent))},0),1)'")
+            s_terms.append(f"min(max((t-{_n(t0)})/{_n(max(0.45, ent))},0),1)")
         elif lid == "hueFlip":
             # `hue=H=` takes RADIANS — the filter multiplies the expression by
             # 180/pi itself — while the twin's hue is in degrees, which is what
             # the preview's CSS hue-rotate() wants. So the turn is converted
             # once, here, and the ramp stays a plain 0…1 progress.
             turn = LOOK_ANIM[lid]["hue"] * math.pi / 180
-            segs.append(f"hue=H='{_n(turn)}*min(max((t-{_n(t0)})/{_n(span)},0),1)'")
+            h_terms.append(f"{_n(turn)}*min(max((t-{_n(t0)})/{_n(span)},0),1)")
         elif lid == "invert":
             # It arrives as a negative and flips to its real colours once it has
             # landed; a photo with no entrance still gets INVERT_MIN seconds of
             # negative, or the flip would happen before it is visible.
-            segs.append(f"negate=enable='lt(t,{_n(t0 + max(ent, INVERT_MIN))})'")
-        else:
-            look = LOOK_ANIM[lid]
+            inv_until = t0 + max(ent, INVERT_MIN)
+        if row is not None:
+            q_look = f"min(max((t-{_n(t0)})/{_n(ent or 0.001)},0),1)"
+            sat = _geom_expr(row.get("sat"), q_look, 1.0, signed=False)
+            if sat:
+                s_terms.append(sat)
+            hue = _geom_expr(row.get("hue"), q_look, math.pi / 180, signed=False)
+            if hue:
+                h_terms.append(hue)
+            if row.get("inv"):
+                # The flip is at the end of the entrance — `q < 1` is the whole
+                # negative stretch in the twin, and the same instant here.
+                inv_until = max(inv_until or 0.0, land)
+        if s_terms:
+            segs.append("hue=s='" + (s_terms[0] if len(s_terms) == 1
+                                    else "*".join(f"({t})" for t in s_terms)) + "'")
+        if h_terms:
+            segs.append("hue=H='" + (h_terms[0] if len(h_terms) == 1
+                                    else "+".join(f"({t})" for t in h_terms)) + "'")
+        if inv_until is not None:
+            segs.append(f"negate=enable='lt(t,{_n(inv_until)})'")
+        if lid == "flicker" or (row is not None and row.get("bright")):
             r1 = hash01(seed, i, 87)
             r2 = hash01(seed, i, 89)
             tau = math.pi * 2
-            first = land
+            # A look entrance brightens from its first frame; a flicker look only
+            # jitters after the photo has landed.
+            first = t0 if row is not None else land
             last = lead_in + duration
             cmds: list[str] = []
             prev_b: float | None = None

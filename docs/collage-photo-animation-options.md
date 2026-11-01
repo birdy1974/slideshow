@@ -358,3 +358,36 @@ Two consequences worth knowing:
 `Entrance speed` now sits under the entrance chips as the twin of `Exit speed`:
 one multiplier (0.05–2×) for the whole arrival — the sweep, its fade, a swing's
 clock and the export's mask ladder together — on the collage or on one photo.
+
+## P3 — the eight look-based entrances (shipped)
+
+`develop` `flashIn` `colourFlood` `hueSwing` `negative` `shadowLift` `glowIn`
+`xerox` — the photo sits still and its *colour* arrives. Table rows in
+`COLLAGE_LOOK_ENTRANCE` (TypeScript) and `LOOK_ENTRANCE` (Python), each channel a
+curve from the same vocabulary the paper family uses, on the look's own scale
+(1 = untouched for `sat`/`bright`, degrees for `hue`).
+
+They are animations, not look animations, which is why the two lanes have to
+compose: `photo_look_state` multiplies saturation and brightness, adds hue and
+ORs the invert, and the render merges them into **one** `hue=s='…':H='…'` instance
+plus one sendcmd `eq` ladder, because the preview applies a single CSS filter
+string and CSS evaluates left to right. Two filters in the other order would be a
+different photo.
+
+Why each channel goes the way it does (measured on the render binary, and the
+reason the split exists at all):
+
+| channel | filter | why |
+|---|---|---|
+| saturation, hue | `hue=s=`/`hue=H=` | `hue` re-evaluates its expressions per frame → an exact ramp |
+| brightness | `sendcmd` → `eq` | `eq` evaluates once at init, so the ramp is stepped per frame into it |
+| invert | `negate=enable='lt(t,land)'` | `negate` has no amount — a hard flip, which is also what `invert(1)` is |
+
+The brightness ladder stops at the end of the entrance (a test asserts it), so a
+long slide does not carry thousands of commands for a colour that settled in 0.75 s.
+`hue`'s `H=` takes radians while the state speaks degrees, so the conversion
+happens exactly once, in the graph.
+
+The twin grew 9 cases (all eight, plus one photo carrying `flicker`, `toColor` and
+`invert` *while* an entrance develops, where composition is the whole point); the
+graph tests pin which filter carries which channel. 125 collage tests pass.

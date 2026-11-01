@@ -118,14 +118,17 @@ const GEOM_SMOOTH = (q: number): number => q * q * (3 - 2 * q)
  *  scales, which is why it is a parameter rather than stored in every row. */
 export function geomCurve (c: GeomCurve | undefined, q: number, base: number): number {
   if (!c) return base
-  const [kind, a = 0, b = 0] = c as [string, number?, number?]
+  const [kind, a = 0, b] = c as [string, number?, number?]
+  // A row may name its own base (`xerox` starts at 1.35 brightness, not at the
+  // 1 a scale channel rests at); when it does not, the caller's default stands.
+  const at = b ?? base
   switch (kind) {
-    case 'settle3': return base + a * Math.pow(1 - q, 3)
-    case 'settle2': return base + a * Math.pow(1 - q, 2)
-    case 'smooth': return base + a * GEOM_SMOOTH(q)
-    case 'one-smooth': return base + a * (1 - GEOM_SMOOTH(q))
-    case 'one-back': return base + a * (1 - GEOM_BACK(q))
-    case 'bow': return base + a * Math.sin(Math.PI * (1 - q))
+    case 'settle3': return at + a * Math.pow(1 - q, 3)
+    case 'settle2': return at + a * Math.pow(1 - q, 2)
+    case 'smooth': return at + a * GEOM_SMOOTH(q)
+    case 'one-smooth': return at + a * (1 - GEOM_SMOOTH(q))
+    case 'one-back': return at + a * (1 - GEOM_BACK(q))
+    case 'bow': return at + a * Math.sin(Math.PI * (1 - q))
     case 'hinge': return Math.max(a, Math.sin(Math.PI / 2 * (b ? GEOM_SMOOTH(q) : q)))
     case 'recip': return 1 / Math.max(a, Math.sin(Math.PI / 2 * (b ? GEOM_SMOOTH(q) : q)))
     default: return base
@@ -203,10 +206,62 @@ export const COLLAGE_GEOM_SCALES: CollageGeomAnim[] =
   (Object.keys(COLLAGE_GEOM) as CollageGeomAnim[]).filter(id =>
     COLLAGE_GEOM[id].scale !== undefined || COLLAGE_GEOM[id].scaleX !== undefined)
 
+/** The eight look-based entrances. A channel is one of the shared curves — the
+ *  same `base + amp × curve(q)` the paper family uses — on the look's own scale:
+ *  1 is untouched for `sat`/`bright`, 0 degrees for `hue`, and `inv` is the one
+ *  channel with no amount (FFmpeg's `negate` is on or off, so it is a hard flip
+ *  at the moment the photo lands, exactly as the preview's CSS `invert()` is). */
+export const COLLAGE_LOOK_ENTRANCE: Record<CollageLookEntrance, {
+  label: string, hint: string, length: number, fade: number,
+  sat?: GeomCurve, bright?: GeomCurve, hue?: GeomCurve, inv?: boolean
+}> = {
+  develop: {
+    label: 'Develop', hint: 'A print developing: it arrives dark and washed out, then gains its light and colour',
+    length: 0.75, fade: 0.3, bright: ['one-smooth', -0.88, 1], sat: ['one-smooth', -0.75, 1],
+  },
+  flashIn: {
+    label: 'Flash', hint: 'Overexposed on arrival — a blown-out highlight that settles back to its real exposure',
+    length: 0.4, fade: 0.12, bright: ['one-smooth', 1.2, 1],
+  },
+  colourFlood: {
+    label: 'Colour flood', hint: 'Black & white at first, colour running in over it',
+    length: 0.6, fade: 0.2, sat: ['one-smooth', -0.95, 1],
+  },
+  hueSwing: {
+    label: 'Hue swing', hint: 'A wrong colour cast turning back to true, a third of the wheel',
+    length: 0.65, fade: 0.18, hue: ['one-smooth', 120],
+  },
+  negative: {
+    label: 'Negative', hint: 'It arrives as a film negative and flips to its real colours as it lands',
+    length: 0.45, fade: 0.15, inv: true,
+  },
+  shadowLift: {
+    label: 'Out of shadow', hint: 'Lit from black: the photo lifts out of darkness without moving',
+    length: 0.6, fade: 0.25, bright: ['one-smooth', -0.85, 1],
+  },
+  glowIn: {
+    label: 'Glow', hint: 'A hot, faint version cooling into its colours',
+    length: 0.5, fade: 0.16, bright: ['one-smooth', 0.45, 1], sat: ['one-smooth', -0.3, 1],
+  },
+  xerox: {
+    label: 'Photocopy', hint: 'A copier flash — white, colourless, then the original underneath comes back',
+    length: 0.6, fade: 0.18, bright: ['one-back', -0.35, 1.35], sat: ['one-smooth', -0.95, 1],
+  },
+}
+
+export function isCollageLookEntrance (anim: string | undefined): anim is CollageLookEntrance {
+  return anim !== undefined && Object.prototype.hasOwnProperty.call(COLLAGE_LOOK_ENTRANCE, anim)
+}
+
 /** One row of the entrance picker for each mask reveal. The label and hint come
  *  out of the table the two engines read, so the name in the UI, the name the
  *  validator accepts and the name the render switches on cannot drift apart. */
 export type CollageAnimChoice = { id: CollageAnim, label: string, hint: string }
+export const COLLAGE_LOOK_ENTRANCE_CHOICES: CollageAnimChoice[] =
+  (Object.keys(COLLAGE_LOOK_ENTRANCE) as CollageLookEntrance[]).map(id => ({
+    id, label: COLLAGE_LOOK_ENTRANCE[id].label, hint: COLLAGE_LOOK_ENTRANCE[id].hint,
+  }))
+
 export const COLLAGE_GEOM_CHOICES: CollageAnimChoice[] = (Object.keys(COLLAGE_GEOM) as CollageGeomAnim[])
   .map(id => ({ id, label: COLLAGE_GEOM[id].label, hint: COLLAGE_GEOM[id].hint }))
 
@@ -380,7 +435,7 @@ export function revealMaskStyle (kind: CollageRevealKind, p: number, dir = 0): {
 // one list of ids wherever an entrance is chosen, so a wipe cannot be offered
 // in the picker and rejected by the engine.
 export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush'
-  | CollageGeomAnim | CollageRevealKind
+  | CollageGeomAnim | CollageLookEntrance | CollageRevealKind
 /** The paper-and-card family: hinge, fold and swing motions that live entirely
  *  in the fields the render can build — offset, rotation, and the two scales.
  *  A real 3D cube or a book on a perspective hinge cannot be composited by
@@ -389,6 +444,14 @@ export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 
  *  foreshortening (`scaleX` following the hinge angle) instead of `rotateX`. */
 export type CollageGeomAnim = 'cube' | 'book' | 'door' | 'unfold' | 'rollover' | 'spiral'
   | 'swish' | 'glide' | 'peek' | 'boomerang' | 'sling' | 'thread'
+/** The look-based entrances: the photo sits still and its *colour* arrives.
+ *  These are the only animation ids that are not in `PhotoState`'s transform at
+ *  all — they ride the same channels the animated looks use (saturation,
+ *  brightness, hue, an invert, and the dim multiplier), which is what lets the
+ *  render put them through `hue=` and a sendcmd `eq` instead of inventing a
+ *  third mechanism. */
+export type CollageLookEntrance = 'develop' | 'flashIn' | 'colourFlood' | 'hueSwing'
+  | 'negative' | 'shadowLift' | 'glowIn' | 'xerox'
 /** Every entrance id, reveals included: what the pickers list and what
  *  `normalizeCollage` accepts. */
 export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle' | 'fade' | 'reverse'
@@ -406,6 +469,7 @@ export const COLLAGE_LAYOUTS_ALL: CollageLayout[] = ['stack', 'grid', 'scatter',
 export const COLLAGE_SHAPES_ALL: CollageShape[] = ['native', '4:3', 'square', '3:4', '16:9', '9:16', '3:2', '2:3']
 export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip', 'fade', 'slide', 'rise', 'tumble', 'zoom', 'fold', 'glitch', 'ink', 'brush',
   'cube', 'book', 'door', 'unfold', 'rollover', 'spiral', 'swish', 'glide', 'peek', 'boomerang', 'sling', 'thread',
+  'develop', 'flashIn', 'colourFlood', 'hueSwing', 'negative', 'shadowLift', 'glowIn', 'xerox',
   'none', ...COLLAGE_REVEALS]
 /** Motion one photo keeps doing while it is on screen — the "while" lane of
  *  the three-lane model the text layers use (enter / while / exit). These
@@ -1479,6 +1543,8 @@ export const ENTRANCE_LENGTH: Record<CollageAnim, number> = {
   // MP4 — and adding a kind there cannot leave one missing here.
   ...Object.fromEntries(
     (Object.keys(COLLAGE_GEOM) as CollageGeomAnim[]).map(id => [id, COLLAGE_GEOM[id].length])),
+  ...Object.fromEntries((Object.keys(COLLAGE_LOOK_ENTRANCE) as CollageLookEntrance[])
+    .map(id => [id, COLLAGE_LOOK_ENTRANCE[id].length])),
   ...COLLAGE_REVEAL_LENGTH,
 } as Record<CollageAnim, number>
 
@@ -1494,6 +1560,8 @@ export const ENTRANCE_FADE: Record<CollageAnim, number> = {
   ink: 0.4, brush: 0.16,
   ...Object.fromEntries((Object.keys(COLLAGE_GEOM) as CollageGeomAnim[])
     .map(id => [id, COLLAGE_GEOM[id].fade])),
+  ...Object.fromEntries((Object.keys(COLLAGE_LOOK_ENTRANCE) as CollageLookEntrance[])
+    .map(id => [id, COLLAGE_LOOK_ENTRANCE[id].fade])),
   ...Object.fromEntries(COLLAGE_REVEALS.map(id => [id, 0])),
 } as Record<CollageAnim, number>
 
@@ -1746,6 +1814,13 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
     const q = clamp01((ti - t0) / ent)
     const settle = Math.pow(1 - q, 3)
     st = { dx: -36 * settle, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.12, 1 - 0.55 * settle), alpha: clamp01((ti - t0) / fade), dim: 0 }
+  } else if (isCollageLookEntrance(anim)) {
+    // The photo does not move: its colour arrives. Every transform field is at
+    // rest and only the alpha ramp belongs here — sat, brightness, hue and the
+    // invert are composed into one set of channels by photoLookState, which is
+    // what the render's hue/eq/negate chain and the preview's CSS string both read.
+    st = { dx: 0, dy: 0, rot: 0, scale: 1 - DEPTH.scale * push, scaleX: 1,
+      alpha: clamp01((ti - t0) / fade), dim: 0 }
   } else if (isGeomAnim(anim)) {
     // The paper family, evaluated from one row of `COLLAGE_GEOM` rather than a
     // branch each: the render's twin turns the SAME row into FFmpeg expressions,
@@ -2035,6 +2110,27 @@ export function photoLookAnim (spec: CollageSpec, i: number): CollageLookAnim {
  *  depth dim uses. Each look moves only ONE of the two, so the two engines
  *  cannot disagree about how they compose. */
 export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn = 0): { sat: number; bright: number; inv: number; hue: number } {
+  // A look *entrance* tints from its own row, and composes with whatever the
+  // photo is doing in between: saturation and brightness multiply, hue adds, and
+  // the invert is on while either lane wants it. Multiplying and adding is what
+  // lets the render put both lanes into one `hue=s=…:H=…` expression instead of
+  // a second filter that would apply in a different order than the preview's.
+  const ent = entranceLength(spec, i)
+  const le = photoAnim(spec, i)
+  const out = lookChannels(spec, i, t, leadIn)
+  if (isCollageLookEntrance(le)) {
+    const row = COLLAGE_LOOK_ENTRANCE[le]
+    const q = clamp01((t - photoStart(spec, i, leadIn)) / (ent || 0.001))
+    out.sat *= geomCurve(row.sat, q, 1)
+    out.bright *= geomCurve(row.bright, q, 1)
+    out.hue += geomCurve(row.hue, q, 0)
+    if (row.inv) out.inv = Math.max(out.inv, q < 1 ? 1 : 0)
+    return out
+  }
+  return out
+}
+
+function lookChannels (spec: CollageSpec, i: number, t: number, leadIn: number): { sat: number; bright: number; inv: number; hue: number } {
   const id = photoLookAnim(spec, i)
   if (id === 'none') return { sat: 1, bright: 1, inv: 0, hue: 0 }
   const L = LOOK_ANIM[id]
