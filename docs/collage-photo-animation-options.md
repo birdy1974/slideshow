@@ -232,3 +232,73 @@ the DS918+ degrades them.
 6. **P4 (GL per photo)**: include with an "approximate preview / may degrade to
    dissolve on Synology" warning, or leave the GL names for slide transitions
    only?
+
+---
+
+## Decisions taken (2026‑11‑01)
+
+All six asked above were answered "the biggest option": **P1+P2+P3+P4**,
+directions as a parameter, the full Browse‑all picker, mirrored exits, the
+shuffle with scope/lock/one‑of‑each, and the GL names included — marked
+approximate, degrading to dissolve where the hardware cannot run them.
+The `normalizeCollage` exit bug found while writing this plan was fixed first
+(`8f466ab`).
+
+## P1 — the 16 mask reveals (shipped)
+
+`src/collageCore.ts` owns the catalogue: `COLLAGE_REVEALS` with one
+`COLLAGE_REVEAL_GEOM` row each (`fam / label / hint / mirror / n / out / angle`),
+`COLLAGE_REVEAL_LENGTH` for how long each sweep takes, and one scalar
+
+```ts
+q <= p            // uncovered, for an `out` kind: q >= 1 - p
+```
+
+per family — `q` being the geometry measured at a pixel (distance along the wipe
+axis, from the centre, round the clock, inside which tile). Both the preview's
+CSS mask and the export's `geq` alpha expression are *generated from that one
+comparison*, which is what keeps them showing the same photo at the same moment;
+describing a shape twice is the way this kind of table rots.
+
+| family | ids | `q` at a pixel |
+|---|---|---|
+| linear | `wipeUp` `wipeDown` `wipeLeft` `wipeRight` `diagDownRight` `diagDownLeft` | projection on the axis, `angle` clockwise from up |
+| centre | `curtain` `diamond` | `|x-½|·2`, `|x-½|+|y-½|` |
+| radial | `iris` `irisOut` | distance from the centre, `out` inverts |
+| wedge | `clock` `pinwheel` | angle round the clock, `n` wedges |
+| repeat | `blindsDown` `blindsRight` | inside its own slat, slats led across |
+| mosaic | `mosaic` `mosaicOut` | inside its own tile, tiles led diagonally |
+
+`animDir` (spec *and* per photo) mirrors a kind on the axis its `mirror` field
+names; the round kinds have no axis, so the UI shows them no direction control
+rather than a checkbox that does nothing.
+
+**Render.** A per‑frame `geq` over a full‑size photo is what a NAS cannot afford,
+so the sweep rides the sprite ladder that already exists for sizes: each photo's
+stream is cut into runs of *(size, mask step)*, one masked still per run, each
+`overlay`‑ed with `enable='between(t,…)'`. Two details make it honest rather than
+merely fast:
+
+* the step is quantised by `REVEAL_STEPS = 32` in **both** engines — the preview
+  caches its mask image per step, the export bakes a sprite per step, and one
+  shared number is why they agree;
+* a masked run is `select`‑ed to its own window before the `geq`, because a step
+  is a still and the frames outside its window are worth nothing. Without that
+  the mask would be recomputed for every level for every frame of the slide.
+
+**Verification.** `backend/tests/test_collage_reveal.py` (16 tests) compares the
+engines point by point on a 12×12 grid, re‑evaluates the generated `geq`
+expression with a miniature FFmpeg‑expression evaluator, and checks that
+coverage is monotone, that every kind is a different shape, and that `p=1` is
+reachable. `test_collage_reveal_render.py` reads the filter graph: the number of
+masked runs must equal the quantised steps `photo_state` walks through, each
+bounded to the same window its overlay is enabled for, with no mask left on the
+resting level. The 33 reveal specs are in the animation twin too, so
+`revealP`/`revealDir`/`revealKind` are compared at every sampled time of every
+entrance.
+
+## Still open
+
+P2 (geometry/paper), P3 (looks), P4 (the xfade/GL bridge), the mirrored exits
+for these ids, entrance *speed* as a parameter, and the Browse‑all picker —
+which is also where the per‑photo `animDir` override gets its control.

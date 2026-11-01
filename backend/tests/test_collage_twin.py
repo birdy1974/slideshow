@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 
+from app.collage_reveal import REVEALS, REVEAL_LENGTH  # noqa: E402
 from app.collage import (
     COLLAGE_TEMPLATES,
     ENTRANCE_LENGTH,
@@ -589,6 +590,22 @@ def _cases() -> list[dict]:
             "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.5, 2.0, 2.4, 2.8, 3.4],
             "hashArgs": [6, 4, 71], "matW": 30,
         })
+    # per-photo mask reveals: the sweep's progress is the one number the render's
+    # mask ladder and the preview's CSS mask both sample, so every kind is
+    # compared across its own entrance — and again mirrored, because `animDir`
+    # flips the geometry on both sides of that sample.
+    for kind in REVEALS:
+        length = REVEAL_LENGTH[kind]
+        times = [0.0] + [round(length * f, 3) for f in (0.15, 0.35, 0.5, 0.65, 0.85)] + [length, length + 0.35, 2.6]
+        base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1)
+        cases.append({"id": f"reveal-{kind}", "spec": base, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [2, 3, 5], "matW": 30})
+        cases.append({"id": f"reveal-{kind}-mirrored", "spec": {**base, "animDir": 1}, "aspect": 16 / 9,
+                      "leadIn": 0.0, "times": times, "hashArgs": [2, 3, 5], "matW": 30})
+    one_each = _spec("stack", "wipeUp", "4:3", 4, 7, delays=[0.0, 0.25, 0.5, 0.75], hold=1)
+    one_each["photos"] = [dict(p, anim=REVEALS[k], animDir=k % 2) for k, p in enumerate(one_each["photos"])]
+    cases.append({"id": "reveal-one-of-each", "spec": one_each, "aspect": 16 / 9, "leadIn": 0.0,
+                  "times": [0.0, 0.2, 0.45, 0.7, 1.1, 1.6, 2.4], "hashArgs": [4, 4, 9], "matW": 30})
     # the editor's track→slide beat mapping, evaluated in the TS twin
     for i, mb in enumerate([
         {"beats": [0.0, 0.5, 1.0, 1.5, 2.0], "trackStart": 0.0, "trimStart": 0.0, "trimEnd": 0.0, "holdStart": 1.25},
@@ -805,8 +822,14 @@ class CollageTwinTest(unittest.TestCase):
                 for i in range(len(spec["photos"])):
                     py = photo_state(spec, i, t, lead_in, aspect)
                     ts = got["states"][ti][i]
-                    for key in ("dx", "dy", "rot", "scale", "scaleX", "alpha", "dim"):
-                        assert abs(ts[key] - py[key]) < TOL, f"{where} t={t} photo {i} {key}: {ts[key]} != {py[key]}"
+                    for key in ("dx", "dy", "rot", "scale", "scaleX", "alpha", "dim", "revealP", "revealDir"):
+                        # A photo with no mask reveal has no reveal fields at all:
+                        # missing and 0.0 are the same answer, and both engines say
+                        # "nothing to mask" that way.
+                        a, b = ts.get(key, 0.0), py.get(key, 0.0)
+                        assert abs(a - b) < TOL, f"{where} t={t} photo {i} {key}: {a} != {b}"
+                    assert ts.get("revealKind") == py.get("revealKind"), \
+                        f"{where} t={t} photo {i} reveal kind: {ts.get('revealKind')} != {py.get('revealKind')}"
             # virtual camera: same window, same clamps
             if case.get("camera"):
                 for ti, t in enumerate(case["times"]):

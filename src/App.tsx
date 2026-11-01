@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -3533,6 +3533,26 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
   // arrangement) and the Free rotate knob that rides it.
   const selectIndex = selectedIndex != null && geo[selectedIndex] ? selectedIndex : null
   const rotateIndex = onRotatePhoto ? selectIndex : null
+  // One place to put a reveal mask on a mat element: clearing it matters as much
+  // as setting it, because the same nodes are reused for every frame of the
+  // preview and a stale mask would sit on a photo that has finished arriving.
+  const setMatMask = (el: HTMLElement, style?: { [key: string]: string }) => {
+    const url = style?.maskImage ?? ''
+    el.style.setProperty('mask-image', url)
+    el.style.setProperty('-webkit-mask-image', url)
+    if (url) {
+      el.style.setProperty('mask-size', '100% 100%')
+      el.style.setProperty('-webkit-mask-size', '100% 100%')
+      el.style.setProperty('mask-repeat', 'no-repeat')
+      el.style.setProperty('-webkit-mask-repeat', 'no-repeat')
+    } else {
+      el.style.removeProperty('mask-size')
+      el.style.removeProperty('-webkit-mask-size')
+      el.style.removeProperty('mask-repeat')
+      el.style.removeProperty('-webkit-mask-repeat')
+    }
+  }
+
   // Where the selected photo's motion ends up: a dashed ghost at the position
   // `move` travels to (draggable, because that is how you pick it) or turned to
   // the angle `turn` reaches. The ghost is drawn from the photo's RESTING place,
@@ -3556,6 +3576,11 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
         el.style.transform = `translate(-50%, ${g.pin ? '0' : '-50%'}) rotate(${g.rot + st.rot}deg) scale(${st.scale}) scaleX(${st.scaleX})`
         el.style.opacity = String(st.alpha)
         el.style.filter = matFilterCss(st.dim, photoLookState(spec, i, t, 0))
+        // A mask reveal uncovers this mat instead of moving it, so the sweep is
+        // a mask on the same element the transform rides — and it is the same
+        // sampled 0/1 grid the render's `geq` mask holds for that step of the
+        // ladder (src/collageCore.ts → revealMaskStyle).
+        setMatMask(el, st.revealKind ? revealMaskStyle(st.revealKind, st.revealP ?? 0, st.revealDir ?? 0) : undefined)
       })
       // Virtual camera over the whole scene (background + photos): the same
       // window maths the render's crop/zoompan chain uses.
@@ -4439,8 +4464,17 @@ const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string
   { id: 'glitch', label: 'Glitch', hint: 'A Canva-style digital glitch settle' },
   { id: 'ink', label: 'Ink', hint: 'An ink-blot mask that grows to reveal the photo' },
   { id: 'brush', label: 'Brush', hint: 'A brush-stroke wipe from the left' },
+  // The mask reveals are generated from the catalogue the engines share rather
+  // than typed out again here: 16 of them, each with the name a viewer would
+  // search for. B5 turns this row into a searchable picker; until then it is
+  // the honest list — what appears here is exactly what the render accepts.
+  ...COLLAGE_REVEAL_CHOICES,
   { id: 'none', label: 'None', hint: 'Photos appear with the slide — no entrance animation' },
 ]
+
+/** The entrance as a label, for the hints that name the collage's own choice. */
+const animLabel = (id: string | undefined): string =>
+  COLLAGE_ANIMS.find(a => a.id === id)?.label ?? 'Drop'
 const COLLAGE_FRAMES: { id: CollageFrameShape; label: string; hint: string }[] = [
   { id: 'polaroid', label: 'Polaroid', hint: 'Classic white mat with a caption strip' },
   { id: 'none', label: 'None', hint: 'No border — the photo is the cell' },
@@ -5087,6 +5121,16 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         <div className={`collage-choices-group${closedSections['photo-animation'] ? ' closed' : ''}`}><CollageGroupHead id="photo-animation" open={!closedSections['photo-animation']} onToggle={toggleSection}>Photo animation</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
           <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
+          {isCollageReveal(spec.animation) && COLLAGE_REVEAL_GEOM[spec.animation].mirror !== 'none' &&
+            <label className="collage-check">
+              {/* Only kinds with an axis to mirror get the choice. An iris or a
+                  diamond is round: a checkbox that changed nothing would be a lie
+                  about what the render does, so the round ones simply do not show
+                  one — and `revealGeom` is the file that decides which is which,
+                  for the preview and the export alike. */}
+              <input type="checkbox" checked={spec.animDir === 1} onChange={e => setSpec({ animDir: e.target.checked ? 1 : undefined })} />
+              <span>From the other side — {COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label} reversed</span>
+            </label>}
           <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' || spec.animation === 'flip' ? '' : ' disabled'}`}>
             <input type="checkbox" checked={spec.depth === true} disabled={spec.animation !== 'drop' && spec.animation !== 'pop' && spec.animation !== 'flip'} onChange={e => setSpec({ depth: e.target.checked })} />
             <span>Depth push-back — photos already landed shrink back and dim a little as each new one lands</span>

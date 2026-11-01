@@ -19,6 +19,8 @@ from typing import Any
 from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, source_path
 from .picture_crop import crop_filters, normalize_crop
 from .picture_filters import picture_look
+from .collage_reveal import (REVEALS, REVEAL_LENGTH, REVEAL_STEPS, geq_alpha, is_reveal, reveal_alpha,
+                             reveal_length, reveal_progress, reveal_quantise)
 
 MAX_COLLAGE_PHOTOS = 12
 
@@ -1141,11 +1143,18 @@ ENTRANCE_LENGTH = {
     "drop": 0.55, "pop": 0.5, "swing": 2.0, "flip": 0.45, "none": 0.0,
     "fade": 0.45, "slide": 0.5, "rise": 0.5, "tumble": 0.6, "zoom": 0.55,
     "fold": 0.55, "glitch": 0.5, "ink": 0.55, "brush": 0.5,
+    # …and the reveals take theirs from the shared table, exactly like
+    # ENTRANCE_LENGTH in src/collageCore.ts does: one source for how long a
+    # sweep takes, so the slide's length and the ladder's sampling cannot use two
+    # different numbers for the same reveal.
+    **REVEAL_LENGTH,
 }
 LAYOUTS = ("stack", "grid", "scatter", "filmstrip", "fan", "masonry", "free", "template",
            "honeycomb", "zigzag", "arc", "photowall", "booth", "silhouette", "cube")
+# The mask reveals are animations too: one list, so a photo can be given a wipe
+# wherever an entrance is chosen, and `photo_anim` cannot forget one.
 ANIMS = ("drop", "pop", "swing", "flip", "none", "fade", "slide", "rise", "tumble",
-         "zoom", "fold", "glitch", "ink", "brush")
+         "zoom", "fold", "glitch", "ink", "brush", *REVEALS)
 FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart", "star",
                 "diamond", "hexagon", "triangle", "octagon", "cloud", "arch", "ticket")
 
@@ -1533,7 +1542,7 @@ def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lea
     )
 
 
-def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, float]:
+def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, Any]:
     """Animated offsets of photo i at segment time t — twin of photoState()."""
     t0 = photo_start(spec, i, lead_in)
     push = push_depth(spec, i, t, lead_in)
@@ -1596,6 +1605,13 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         settle = (1 - q) ** 3
         st = {"dx": -36 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.12, 1 - 0.55 * settle),
               "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+    elif is_reveal(anim):
+        # A mask reveal: the photo never moves, it is uncovered, so every
+        # transform field rests and `alpha` stays 1 — the mask is the opacity.
+        # `revealP` is the eased progress both engines turn into a shape.
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0,
+              "revealKind": anim, "revealP": reveal_progress(anim, _clamp01((t - t0) / ent)),
+              "revealDir": float(photo_reveal_dir(spec, i))}
     else:
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0}
     if spec.get("kenBurns") is True:
@@ -1652,6 +1668,21 @@ def pin_anchor(spec: dict[str, Any], i: int | None = None) -> bool:
     (and the sprite's rotation origin) is per photo."""
     anim = str(spec.get("animation") or "drop") if i is None else photo_anim(spec, i)
     return anim == "swing"
+
+
+def st_dir(spec: dict[str, Any], i: int) -> int:
+    """`photo_reveal_dir` under the short name the graph builder uses."""
+    return photo_reveal_dir(spec, i)
+
+
+def photo_reveal_dir(spec: dict[str, Any], i: int | None = None) -> int:
+    """Which way a mask reveal runs: 0 is the direction its kind is named for,
+    1 mirrors it on the axis that kind declares (twin of `photoRevealDir`)."""
+    if i is not None:
+        photos = spec.get("photos") or []
+        if 0 <= i < len(photos) and photos[i].get("animDir") in (0, 1):
+            return int(photos[i]["animDir"])
+    return 1 if spec.get("animDir") == 1 else 0
 
 
 def photo_anim(spec: dict[str, Any], i: int) -> str:
@@ -2607,14 +2638,21 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         fall = f"-{_n(0.26 * height)}*pow(1-{q_drop},3)" if anim == "drop" else ""
 
         # --- size ladder ---------------------------------------------------
-        def size_levels() -> list[tuple[int, int, list[list[float]]]]:
-            """Distinct (W, H) sprite sizes photo i shows, each with the
-            [start, end) frame windows it is on screen. The last window is
-            open-ended (end=None)."""
+        def size_levels() -> list[tuple[int, int, float | None, list[list[float]]]]:
+            """Distinct (W, H, mask step) sprite variants photo i shows, each with
+            the [start, end) frame windows it is on screen. The last window is
+            open-ended (end=None).
+
+            The mask step is part of the key because a reveal needs the same
+            treatment as a changing size: FFmpeg's `geq` would otherwise evaluate a
+            whole clip per pixel per frame, while here each step of the sweep is
+            ONE baked still that is held for its window — which is why a NAS can
+            render a mosaic in about what a wipe costs."""
+            reveal = is_reveal(anim)
             varies = (anim in ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble")
-                      or depth_on or spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS)
+                      or depth_on or spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS or reveal)
             if not varies:
-                return [(cw, ch, [[0.0, None]])]
+                return [(cw, ch, None, [[0.0, None]])]
             # the timeline only moves during the entrance and the depth push
             # windows — sample the twin at frame resolution up to there
             last_var = t0 + ENTRANCE_LENGTH[anim]
@@ -2639,7 +2677,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 end_var = max(last_var, t_end if t_end is not None else lead_in + duration)
             buckets = ladder_buckets(cw, ch)
             n_frames = max(1, math.ceil(end_var * fps))
-            runs: list[list] = []           # [start_frame, end_frame, W, H]
+            runs: list[list] = []           # [start_frame, end_frame, W, H, mask step]
             for k in range(n_frames + 1):
                 t = k / fps
                 st = photo_state(spec, i, t, lead_in, aspect, ratios)
@@ -2652,14 +2690,21 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                     # the entrance window, sampled exactly as before
                     w_ = max(2, int(round(cw * st["scale"] * st["scaleX"])))
                     h_ = max(2, int(round(ch * st["scale"])))
-                if runs and runs[-1][2] == w_ and runs[-1][3] == h_:
+                # …and the sweep's step, quantised with the SAME constant the
+                # preview's mask cache uses, so frame k shows the same shape here
+                # as it does on screen. 1.0 means "no mask left to apply".
+                mp: float | None = None
+                if reveal:
+                    rp = st.get("revealP")
+                    mp = 1.0 if rp is None or rp >= 1.0 else reveal_quantise(REVEAL_STEPS, float(rp))
+                if runs and runs[-1][2] == w_ and runs[-1][3] == h_ and runs[-1][4] == mp:
                     runs[-1][1] = k
                 else:
-                    runs.append([k, k, w_, h_])
-            levels: dict[tuple[int, int], list[list[float]]] = {}
-            order: list[tuple[int, int]] = []
-            for k0, k1, w_, h_ in runs:
-                key = (w_, h_)
+                    runs.append([k, k, w_, h_, mp])
+            levels: dict[tuple[int, int, float | None], list[list[float]]] = {}
+            order: list[tuple[int, int, float | None]] = []
+            for k0, k1, w_, h_, mp in runs:
+                key = (w_, h_, mp)
                 if key not in levels:
                     levels[key] = []
                     order.append(key)
@@ -2671,7 +2716,28 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 a = max(0.0, k0 / fps - 0.003)
                 b = None if k1 == n_frames else k1 / fps + 0.5 / fps + 0.003
                 levels[key].append([a, b])
-            return [(w_, h_, levels[(w_, h_)]) for w_, h_ in order]
+            return [(w_, h_, mp, levels[(w_, h_, mp)]) for w_, h_, mp in order]
+
+        def select_expr(windows: list[list[float]]) -> str:
+            """The same windows as `enable_expr`, as a bare `select` condition.
+
+            A masked level is a still image with the sweep's step burned in, so
+            the frames outside its window are worth nothing — but FFmpeg does not
+            know that and would evaluate the mask for every frame of the slide,
+            for every level. Dropping them first costs one geq per frame of the
+            entrance instead of one per frame of the whole slide, which is the
+            difference between a NAS exporting a mosaic in seconds and in
+            minutes."""
+            parts = []
+            for a, b in windows:
+                if b is None:
+                    parts.append(f"gte(t,{_n(a - 0.003)})" if t_end is None else
+                                 f"between(t,{_n(a)},{_n(t_end + 0.003)})")
+                else:
+                    if t_end is not None:
+                        b = min(b, t_end + 0.003)
+                    parts.append(f"between(t,{_n(a)},{_n(b)})")
+            return "+".join(parts)
 
         def enable_expr(windows: list[list[float]]) -> str:
             # Any level can carry the open-ended window: the entrance's
@@ -2754,16 +2820,31 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # only for its frame windows. Later levels overlay earlier ones, and
         # the windows partition time, so exactly one size per photo is ever
         # on screen.
-        for k, (W, H, windows) in enumerate(levels):
+        for k, (W, H, mp, windows) in enumerate(levels):
             is_last = k == len(levels) - 1
             src = f"sp{i}f" if len(levels) == 1 else f"b{i}_{k}"
             # the final level closes photo i's chain, so its output keeps the
             # short label the camera/caption chains consume
             out = f"o{i}" if is_last else f"o{i}_{k}"
-            lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
             x_expr = f"{_n(ax_px - W / 2)}{ex_x}{extra_x}{mo_x}"
             y_expr = f"{_n(ay_px - H / 2)}{fall}{ex_y}{extra_y}{mo_y}"
             enable = enable_expr(windows)
+            # The reveal mask, with this level's step of the sweep baked in. It
+            # rides on the sprite's own box — the same box the preview masks —
+            # which is why the two agree without any coordinate translation, and
+            # before the rotate, because a CSS mask turns with the element.
+            a_expr = geq_alpha(anim, mp, int(st_dir(spec, i))) if (
+                mp is not None and mp < 1.0) else ""
+            if a_expr:
+                # `select` first: a step is a still image, so the frames outside
+                # its window are worth nothing, and dropping them before the mask
+                # is the difference between one geq per frame of the entrance and
+                # one per frame of the whole slide, per level.
+                lines.append(f"[{src}]select='{select_expr(windows)}',setpts=N/FRAME_RATE/TB,"
+                             f"scale={W}:{H},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{a_expr}'"
+                             f"{rot_seg}[lv{i}_{k}];")
+            else:
+                lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
             lines.append(f"[{prev}][lv{i}_{k}]overlay=x='{x_expr}':y='{y_expr}'{enable}[{out}];")
             prev = out
 

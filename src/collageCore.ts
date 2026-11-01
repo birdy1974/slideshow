@@ -12,7 +12,263 @@
 // filter expressions in the renderer.
 
 export type CollageLayout = 'stack' | 'grid' | 'scatter' | 'filmstrip' | 'fan' | 'masonry' | 'free' | 'template' | 'honeycomb' | 'zigzag' | 'arc' | 'photowall' | 'booth' | 'silhouette' | 'cube'
-export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush'
+// ---------------------------------------------------------------------------
+/** The kinds offered in the picker. */
+export type CollageRevealKind =
+  | 'wipeUp' | 'wipeDown' | 'wipeLeft' | 'wipeRight'
+  | 'diagDownRight' | 'diagDownLeft'
+  | 'iris' | 'irisOut' | 'clock' | 'pinwheel'
+  | 'blindsDown' | 'blindsRight' | 'mosaic' | 'mosaicOut'
+  | 'diamond' | 'curtain'
+
+/** Every id, in the order the picker lists them. */
+export const COLLAGE_REVEALS: CollageRevealKind[] = [
+  'wipeUp', 'wipeDown', 'wipeLeft', 'wipeRight',
+  'diagDownRight', 'diagDownLeft',
+  'iris', 'irisOut', 'clock', 'pinwheel',
+  'blindsDown', 'blindsRight', 'mosaic', 'mosaicOut',
+  'diamond', 'curtain',
+]
+
+export type RevealFamily = 'linear' | 'curtain' | 'diamond' | 'radial' | 'wedge' | 'repeat' | 'mosaic'
+
+export interface RevealGeom {
+  fam: RevealFamily
+  label: string
+  hint: string
+  /** Axis `dir: 1` mirrors on; 'none' = reversing changes nothing visible. */
+  mirror: 'x' | 'y' | 'both' | 'none'
+  /** Bars / grid divisions / wedge count, for the tiled families. */
+  n?: number
+  /** Sweep the other way round: what is uncovered last becomes what is left. */
+  out?: boolean
+  /** Direction the uncovered side grows toward, degrees clockwise from up. */
+  angle?: number
+  /** Whether the picker offers the reverse toggle for this one. */
+  reversible?: boolean
+}
+
+export const COLLAGE_REVEAL_GEOM: Record<CollageRevealKind, RevealGeom> = {
+  wipeUp: { fam: 'linear', label: 'Wipe up', hint: 'Uncovered from the bottom edge upward', mirror: 'y', angle: 0, reversible: true },
+  wipeDown: { fam: 'linear', label: 'Wipe down', hint: 'Uncovered from the top edge downward', mirror: 'y', angle: 180, reversible: true },
+  wipeLeft: { fam: 'linear', label: 'Wipe left', hint: 'Uncovered from the right edge leftward', mirror: 'x', angle: 270, reversible: true },
+  wipeRight: { fam: 'linear', label: 'Wipe right', hint: 'Uncovered from the left edge rightward', mirror: 'x', angle: 90, reversible: true },
+  diagDownRight: { fam: 'linear', label: 'Diagonal down-right', hint: 'Uncovered along the diagonal from the top-left corner', mirror: 'both', angle: 135, reversible: true },
+  diagDownLeft: { fam: 'linear', label: 'Diagonal down-left', hint: 'Uncovered along the diagonal from the top-right corner', mirror: 'both', angle: 225, reversible: true },
+  iris: { fam: 'radial', label: 'Iris in', hint: 'A circle opening from the centre out', mirror: 'none' },
+  irisOut: { fam: 'radial', label: 'Iris out', hint: 'The edges closing in on the centre', mirror: 'none', out: true },
+  clock: { fam: 'wedge', label: 'Clock', hint: 'A pie sweeping round from twelve o’clock', mirror: 'x', n: 1, reversible: true },
+  pinwheel: { fam: 'wedge', label: 'Pinwheel', hint: 'Four wedges sweeping round together', mirror: 'x', n: 4, reversible: true },
+  blindsDown: { fam: 'repeat', label: 'Blinds', hint: 'Horizontal slats opening one after another, top first', mirror: 'y', n: 6, reversible: true },
+  blindsRight: { fam: 'repeat', label: 'Blinds across', hint: 'Vertical slats opening left to right', mirror: 'x', n: 6, reversible: true },
+  mosaic: { fam: 'mosaic', label: 'Mosaic in', hint: 'A grid of tiles appearing from their own centres', mirror: 'both', n: 4, reversible: true },
+  mosaicOut: { fam: 'mosaic', label: 'Mosaic out', hint: 'The grid closing tile by tile onto the centre', mirror: 'both', n: 4, out: true, reversible: true },
+  diamond: { fam: 'diamond', label: 'Diamond', hint: 'A diamond opening from the centre', mirror: 'none' },
+  curtain: { fam: 'curtain', label: 'Curtain', hint: 'Two halves drawing open from the middle', mirror: 'x', reversible: true },
+}
+
+/** Seconds one reveal takes at speed 1. The tiled and round ones need a touch
+ *  longer than a wipe to read as what they are. */
+export const COLLAGE_REVEAL_LENGTH: Record<CollageRevealKind, number> = {
+  wipeUp: 0.5, wipeDown: 0.5, wipeLeft: 0.5, wipeRight: 0.5,
+  diagDownRight: 0.55, diagDownLeft: 0.55,
+  iris: 0.6, irisOut: 0.6, clock: 0.75, pinwheel: 0.75,
+  blindsDown: 0.7, blindsRight: 0.7, mosaic: 0.75, mosaicOut: 0.75,
+  diamond: 0.6, curtain: 0.6,
+}
+
+/** The progress each family is eased with. A wipe wants to start and stop
+ *  decisively; the tiled ones want to accelerate, because a constant-speed
+ *  slat pattern reads as a machine and an easing one reads as paper. */
+const EASE: Record<RevealFamily, (q: number) => number> = {
+  linear: q => q * q * (3 - 2 * q),
+  curtain: q => q * q * (3 - 2 * q),
+  diamond: q => q * q * (3 - 2 * q),
+  radial: q => q * q * (3 - 2 * q),
+  wedge: q => q,
+  repeat: q => q * (2 - q),
+  mosaic: q => q * (2 - q),
+}
+
+export const isCollageReveal = (v: unknown): v is CollageRevealKind =>
+  typeof v === 'string' && (COLLAGE_REVEALS as string[]).includes(v)
+
+/** One row of the entrance picker for each mask reveal. The label and hint come
+ *  out of the table the two engines read, so the name in the UI, the name the
+ *  validator accepts and the name the render switches on cannot drift apart. */
+export type CollageAnimChoice = { id: CollageAnim, label: string, hint: string }
+export const COLLAGE_REVEAL_CHOICES: CollageAnimChoice[] = COLLAGE_REVEALS.map(id => ({
+  id,
+  label: COLLAGE_REVEAL_GEOM[id].label,
+  hint: COLLAGE_REVEAL_GEOM[id].hint ?? `Uncovers the photo as a ${COLLAGE_REVEAL_GEOM[id].fam} mask`,
+}))
+
+export function revealGeom (kind: string | undefined | null): RevealGeom | null {
+  return isCollageReveal(kind) ? COLLAGE_REVEAL_GEOM[kind] : null
+}
+
+export function revealLength (kind: string | undefined | null): number {
+  return isCollageReveal(kind) ? COLLAGE_REVEAL_LENGTH[kind] : 0
+}
+
+/** Entrance progress `q` (0…1) → the mask's own `p`, with the family's easing.
+ *  The only easing step either engine applies: the render samples `p` at the same
+ *  points the preview does, so an eased sweep cannot land a frame apart. */
+export function revealProgress (kind: CollageRevealKind, q: number): number {
+  const g = COLLAGE_REVEAL_GEOM[kind]
+  const t = q < 0 ? 0 : q > 1 ? 1 : q
+  return g ? EASE[g.fam](t) : t
+}
+
+const DEG = Math.PI / 180
+
+/** Each family reduces a point to one number in 0…1: how far *into* the sweep
+ *  that point sits. A point is uncovered when its number has been passed —
+ *  `q <= p` — or, for the "out" kinds, when it is still ahead: `q >= 1 - p`.
+ *  One comparison for seven families is what makes the Python twin and the FFmpeg
+ *  `geq` expression the same maths and not a translation of it. */
+export function revealMeasure (g: RevealGeom, x: number, y: number): number {
+  switch (g.fam) {
+    case 'linear': {
+      // Project the point on the sweep direction and renormalise over the mat's
+      // own extent in that direction, so p = 1 always means "the far corner is
+      // just uncovered" — for a diagonal too, not only for the four axis wipes.
+      const a = (g.angle ?? 0) * DEG
+      const sx = Math.sin(a)
+      const sy = -Math.cos(a)
+      const extent = Math.abs(sx) + Math.abs(sy)
+      return Math.max(0, Math.min(1, 0.5 + ((x - 0.5) * sx + (y - 0.5) * sy) / extent))
+    }
+    case 'curtain':
+      return Math.abs(x - 0.5) * 2
+    case 'diamond':
+      // 0 at the centre, 1 at the four corners; the 0.5 contour is a diamond
+      // through the edge midpoints, which is what the name asks for.
+      return Math.abs(x - 0.5) + Math.abs(y - 0.5)
+    case 'radial': {
+      // Scaled by the corner distance so p = 1 is exactly the whole mat.
+      return Math.min(1, Math.hypot((x - 0.5) * 2, (y - 0.5) * 2) / Math.SQRT2)
+    }
+    case 'wedge': {
+      const n = Math.max(1, Math.round(g.n ?? 1))
+      let a = Math.atan2(x - 0.5, 0.5 - y) / (2 * Math.PI)
+      if (a < 0) a += 1
+      return n === 1 ? a : (a * n) % 1
+    }
+    case 'repeat': {
+      // n slats along the mirror axis, each opening along the other one, a fixed
+      // fraction apart so they read as a sequence rather than all at once.
+      const n = Math.max(1, Math.round(g.n ?? 6))
+      const along = g.mirror === 'y' ? y : x
+      const idx = Math.min(n - 1, Math.max(0, Math.floor(along * n)))
+      const lead = n > 1 ? idx / (n - 1) * 0.6 : 0
+      const across = ((along * n) % 1 + 1) % 1
+      return Math.min(1, lead + across * 0.4)
+    }
+    case 'mosaic': {
+      // n×n tiles growing square from their own centres, started in a diagonal
+      // wave so it reads as a wave and not as noise.
+      const n = Math.max(1, Math.round(g.n ?? 4))
+      const cx = Math.min(n - 1, Math.floor(x * n))
+      const cy = Math.min(n - 1, Math.floor(y * n))
+      const lead = n > 1 ? (cx + cy) / (2 * n - 2) * 0.55 : 0
+      const inX = Math.abs((x * n) % 1 - 0.5) * 2
+      const inY = Math.abs((y * n) % 1 - 0.5) * 2
+      return Math.min(1, lead + Math.max(inX, inY) * 0.45)
+    }
+  }
+  return 1
+}
+
+/** Is the point (u, v) of the mat — 0…1 rightwards, 0…1 downwards — uncovered at
+ *  progress `p` (0 = nothing shown, 1 = the whole photo)? `dir: 1` mirrors.
+ *
+ *  Deliberately plain arithmetic: Python reimplements it and FFmpeg runs it as a
+ *  `geq` expression, and every operator that differs between those three is a
+ *  photo that reveals on screen differently than in the file. */
+export function revealAlpha (kind: CollageRevealKind, u: number, v: number, p: number, dir = 0): number {
+  const g = COLLAGE_REVEAL_GEOM[kind]
+  if (!g) return 1
+  let x = u
+  let y = v
+  if (dir === 1) {
+    if (g.mirror === 'x') x = 1 - x
+    else if (g.mirror === 'y') y = 1 - y
+    else if (g.mirror === 'both') { x = 1 - x; y = 1 - y }
+  }
+  const t = p < 0 ? 0 : p > 1 ? 1 : p
+  const q = revealMeasure(g, x, y)
+  // The "out" kinds are the same measure read from the far side: an iris that
+  // closes in on the centre instead of opening out of it. They are still
+  // *entrances* — nothing is visible at p = 0, everything at p = 1 — which is
+  // what the complement of the predicate alone would have got wrong.
+  if (g.out) return t > 0 && q >= 1 - t ? 1 : 0
+  return q <= t ? 1 : 0
+}
+
+/** The uncovered fraction of the mat at progress p, by sampling — used by the
+ *  picker's thumbnails, the tests, and the `out` variants' mirror check. */
+export function revealCoverage (kind: CollageRevealKind, p: number, dir = 0, grid = 16): number {
+  let hit = 0
+  for (let r = 0; r < grid; r++) {
+    for (let c = 0; c < grid; c++) {
+      hit += revealAlpha(kind, (c + 0.5) / grid, (r + 0.5) / grid, p, dir)
+    }
+  }
+  return hit / (grid * grid)
+}
+
+/** How finely a sweep is stepped, in BOTH engines: the preview caches one mask
+ *  image per step and the render holds one masked sprite per step, so the same
+ *  constant is what makes them show the same pixels at the same moment. 32 is
+ *  well under a frame of difference at collage sizes on a 25 fps timeline. */
+export const REVEAL_STEPS = 32
+
+/** The centre of the step `p` falls in — the mask's own quantised progress.
+ *  `revealQuantise` in backend/app/collage_reveal.py is the same function. */
+export function revealQuantise (p: number): number {
+  if (p >= 1) return 1
+  const t = p < 0 ? 0 : p
+  return (Math.min(REVEAL_STEPS - 1, Math.max(0, Math.floor(t * REVEAL_STEPS))) + 0.5) / REVEAL_STEPS
+}
+
+const maskCache = new Map<string, { [key: string]: string } | undefined>()
+
+/** CSS for one frame of one reveal. The sampled SVG mask is the whole point: the
+ *  browser and FFmpeg then rasterise the *same* 0/1 grid the twin test compares,
+ *  instead of each interpreting a description of its own. */
+export function revealMaskStyle (kind: CollageRevealKind, p: number, dir = 0): { [key: string]: string } | undefined {
+  if (p >= 1) return undefined
+  const q = revealQuantise(p)
+  const step = Math.round(q * REVEAL_STEPS - 0.5)
+  const key = `${kind}|${dir}|${step}`
+  if (maskCache.has(key)) return maskCache.get(key)
+  const grid = 12
+  const cells: string[] = []
+  for (let r = 0; r < grid; r++) {
+    for (let c = 0; c < grid; c++) {
+      if (revealAlpha(kind, (c + 0.5) / grid, (r + 0.5) / grid, q, dir) > 0) {
+        cells.push(`<rect x="${c}" y="${r}" width="1" height="1"/>`)
+      }
+    }
+  }
+  const style = cells.length
+    ? (() => {
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${grid} ${grid}" preserveAspectRatio="none"><g fill="#fff">${cells.join('')}</g></svg>`
+        const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
+        return { maskImage: url, WebkitMaskImage: url, maskSize: '100% 100%', WebkitMaskSize: '100% 100%' }
+      })()
+    : { maskImage: 'none', WebkitMaskImage: 'none' }
+  maskCache.set(key, style)
+  return style
+}
+
+// The entrance each photo plays. The mask reveals above are part of this type:
+// one list of ids wherever an entrance is chosen, so a wipe cannot be offered
+// in the picker and rejected by the engine.
+export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush' | CollageRevealKind
+/** Every entrance id, reveals included: what the pickers list and what
+ *  `normalizeCollage` accepts. */
 export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle' | 'fade'
 export type CollageMotion = 'none' | 'drift' | 'float' | 'orbit' | 'shake' | 'sway' | 'breathe' | 'pulse' | 'beat' | 'move' | 'turn' | 'spin'
 /** An animated look: the photo's colour changes over time, on top of whatever
@@ -26,7 +282,7 @@ export type CollageStickers = 'none' | 'tape' | 'pin' | 'mix'
 
 export const COLLAGE_LAYOUTS_ALL: CollageLayout[] = ['stack', 'grid', 'scatter', 'filmstrip', 'fan', 'masonry', 'free', 'template', 'honeycomb', 'zigzag', 'arc', 'photowall', 'booth', 'silhouette', 'cube']
 export const COLLAGE_SHAPES_ALL: CollageShape[] = ['native', '4:3', 'square', '3:4', '16:9', '9:16', '3:2', '2:3']
-export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip', 'fade', 'slide', 'rise', 'tumble', 'zoom', 'fold', 'glitch', 'ink', 'brush', 'none']
+export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip', 'fade', 'slide', 'rise', 'tumble', 'zoom', 'fold', 'glitch', 'ink', 'brush', 'none', ...COLLAGE_REVEALS]
 /** Motion one photo keeps doing while it is on screen — the "while" lane of
  *  the three-lane model the text layers use (enter / while / exit). These
  *  five only move and turn the photo, which a render can do per frame; the
@@ -165,6 +421,9 @@ export interface CollagePhoto extends CollagePhotoLook {
   /** Enter lane: this photo's own entrance, overriding `spec.animation`.
    *  Missing = inherit, which is what every existing project does. */
   anim?: CollageAnim
+  /** Which way this photo's mask reveal runs: 1 mirrors the kind on its own
+   *  axis (a "wipe up" becomes a wipe down). Missing = the collage's `animDir`. */
+  animDir?: 0 | 1
   /** Exit lane: how this photo leaves, overriding `spec.exit`. 'none' is a
    *  real choice here — it keeps this one on screen while the others go. */
   exit?: CollageExit
@@ -195,6 +454,10 @@ export interface CollageSpec {
   photos: CollagePhoto[]
   layout: CollageLayout
   animation: CollageAnim
+  /** Direction of the mask reveals: 1 mirrors every one on its own axis, so a
+   *  slide of "wipe up" photos becomes a slide of wipes going down without
+   *  re-picking all of them. Per photo, `photos[].animDir` overrides it. */
+  animDir?: 0 | 1
   shape: CollageShape
   seed: number
   /** Seconds the finished collage stays on screen after the last photo has
@@ -262,7 +525,18 @@ export interface Placement { cx: number; cy: number; w: number; rot: number }
 /** Animated offsets of one photo at time t (seconds since the slide's own
  *  segment start, lead-in handles included — pass leadIn so entrances start
  *  after the incoming transition handle). */
-export interface PhotoState { dx: number; dy: number; rot: number; scale: number; scaleX: number; alpha: number; dim: number }
+export interface PhotoState {
+  dx: number; dy: number; rot: number; scale: number; scaleX: number; alpha: number; dim: number
+  /** Set while a mask reveal is uncovering this photo: which kind, how far the
+   *  sweep has got (0 = nothing shown, 1 = the whole photo) and which way it
+   *  runs. Three flat fields rather than one object because the render's twin
+   *  returns the same three and the comparison is field by field. The transform
+   *  fields stay at rest — a reveal does not move the photo, it uncovers it —
+   *  and `alpha` stays 1 because the mask *is* the opacity. */
+  revealKind?: CollageRevealKind
+  revealP?: number
+  revealDir?: 0 | 1
+}
 
 // Deterministic pseudo-random number in [0, 1) — bit-identical to
 // hash01() in backend/app/collage.py (and the text engines' hash).
@@ -1070,7 +1344,11 @@ export const ENTRANCE_LENGTH: Record<CollageAnim, number> = {
   drop: 0.55, pop: 0.5, swing: 2.0, flip: 0.45, none: 0,
   fade: 0.45, slide: 0.5, rise: 0.5, tumble: 0.6, zoom: 0.55,
   fold: 0.55, glitch: 0.5, ink: 0.55, brush: 0.5,
-}
+  // The mask reveals take their lengths from the same table the render's twin
+  // reads, so a reveal cannot be a different length in the preview than in the
+  // MP4 — and adding a kind there cannot leave one missing here.
+  ...COLLAGE_REVEAL_LENGTH,
+} as Record<CollageAnim, number>
 
 // ---------------------------------------------------------------------------
 // Exits - how the photos leave after the hold
@@ -1093,6 +1371,18 @@ export const COLLAGE_EXIT_MODES: readonly CollageExit[] = COLLAGE_EXITS.filter(e
 /** Bounds of the exit speed multiplier (the editor slider uses the same range). */
 export const EXIT_SPEED_MIN = 0.05
 export const EXIT_SPEED_MAX = 2
+
+/** Which way a photo's reveal runs: 0 is the direction its kind is named for,
+ *  1 mirrors it on the axis that kind declares. Per photo, inheriting the
+ *  collage's own setting — a mosaic that all opens inward is a look, and being
+ *  able to say it once is why the setting exists on both levels. */
+export function photoRevealDir (spec: CollageSpec, i?: number): 0 | 1 {
+  if (i !== undefined) {
+    const own = spec.photos?.[i]?.animDir
+    if (own === 0 || own === 1) return own
+  }
+  return spec.animDir === 1 ? 1 : 0
+}
 
 /** The exit speed multiplier, clamped; 1 when missing or malformed. */
 export function exitSpeed (spec: CollageSpec): number {
@@ -1268,6 +1558,11 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
     const q = clamp01((t - t0) / 0.5)
     const settle = Math.pow(1 - q, 3)
     st = { dx: -36 * settle, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.12, 1 - 0.55 * settle), alpha: clamp01((t - t0) / 0.16), dim: 0 }
+  } else if (isCollageReveal(anim)) {
+    // A mask reveal: the photo sits exactly where it will stay and is
+    // *uncovered*. Everything about the shape lives in collageReveal.ts, which
+    // the render reads too — this branch only says how far the sweep has got.
+    st = { dx: 0, dy: 0, rot: 0, scale: 1, scaleX: 1, alpha: 1, dim: 0, revealKind: anim, revealP: revealProgress(anim, clamp01((t - t0) / ent)), revealDir: photoRevealDir(spec, i) }
   } else {
     // none: the photos are simply part of the slide from the first frame,
     // incoming transition included.
@@ -1714,6 +2009,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       shape: COLLAGE_SHAPES_ALL.includes(p.shape as CollageShape) ? p.shape as CollageShape : undefined,
       ...(COLLAGE_ANIMS_ALL.includes(p.anim as CollageAnim) ? { anim: p.anim as CollageAnim } : {}),
       ...(COLLAGE_EXITS.includes(p.exit as CollageExit) ? { exit: p.exit as CollageExit } : {}),
+      ...(p.animDir === 1 ? { animDir: 1 as const } : p.animDir === 0 ? { animDir: 0 as const } : {}),
       ...(COLLAGE_MOTIONS.includes(p.motion as CollageMotion) ? { motion: p.motion as CollageMotion } : {}),
       ...(num(p.motionAmount) !== undefined && num(p.motionAmount)! > 0 ? { motionAmount: Math.max(MOTION_AMOUNT_MIN, Math.min(MOTION_AMOUNT_MAX, num(p.motionAmount)!)) } : {}),
       ...(COLLAGE_LOOK_ANIMS.includes(p.lookAnim as CollageLookAnim) ? { lookAnim: p.lookAnim as CollageLookAnim } : {}),
@@ -1746,6 +2042,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     layout: COLLAGE_LAYOUTS_ALL.includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
     animation: COLLAGE_ANIMS_ALL.includes(c.animation as CollageAnim) ? c.animation as CollageAnim : 'drop',
     exit: COLLAGE_EXIT_MODES.includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
+    animDir: c.animDir === 1 ? 1 : undefined,
     exitSpeed: num(c.exitSpeed) !== undefined && num(c.exitSpeed)! > 0 && num(c.exitSpeed) !== 1 ? Math.max(EXIT_SPEED_MIN, Math.min(EXIT_SPEED_MAX, num(c.exitSpeed)!)) : undefined,
     exitReverse: c.exitReverse === true ? true : undefined,
     camera: (['pan', 'zoom', 'telescope', 'droste'] as readonly CollageCamera[]).includes(c.camera as CollageCamera) ? c.camera as CollageCamera : undefined,
