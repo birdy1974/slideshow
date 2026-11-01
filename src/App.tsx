@@ -14,7 +14,7 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { ENTRANCE_LENGTH, COLLAGE_GEOM_CHOICES, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
@@ -4468,6 +4468,7 @@ const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string
   // than typed out again here: 16 of them, each with the name a viewer would
   // search for. B5 turns this row into a searchable picker; until then it is
   // the honest list — what appears here is exactly what the render accepts.
+  ...COLLAGE_GEOM_CHOICES,
   ...COLLAGE_REVEAL_CHOICES,
   { id: 'none', label: 'None', hint: 'Photos appear with the slide — no entrance animation' },
 ]

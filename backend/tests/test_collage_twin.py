@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 from app.collage_reveal import REVEALS, REVEAL_LENGTH  # noqa: E402
+from app.collage import GEOM  # noqa: E402
 from app.collage import (
     COLLAGE_TEMPLATES,
     ENTRANCE_LENGTH,
@@ -590,6 +591,21 @@ def _cases() -> list[dict]:
             "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.5, 2.0, 2.4, 2.8, 3.4],
             "hashArgs": [6, 4, 71], "matW": 30,
         })
+    # the paper family: twelve geometry entrances, compared at the moments a
+    # hinge, a bow and an overshoot actually differ — the first frame (a size of
+    # zero would show up here), the middle of the sweep, the settle, and at rest.
+    for kind in GEOM:
+        length = GEOM[kind]["length"]
+        times = [0.0] + [round(length * f, 3) for f in (0.2, 0.45, 0.7, 0.95)] + [length, length + 0.4, 2.6]
+        cases.append({"id": f"geom-{kind}", "spec": _spec("stack", kind, "4:3", 3, 5,
+                                                           delays=[0.0, 0.3, 0.6], hold=1),
+                      "aspect": 16 / 9, "leadIn": 0.0, "times": times,
+                      "hashArgs": [7, 3, 4], "matW": 30})
+        # depth push-back multiplies the scale of these too, so one row is
+        # checked with it on: that is where a forgotten `push` would hide.
+        deep = {**_spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1), "depth": True}
+        cases.append({"id": f"geom-{kind}-depth", "spec": deep, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [7, 3, 4], "matW": 30})
     # per-photo mask reveals: the sweep's progress is the one number the render's
     # mask ladder and the preview's CSS mask both sample, so every kind is
     # compared across its own entrance — and again mirrored, because `animDir`

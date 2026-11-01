@@ -93,10 +93,123 @@ const EASE: Record<RevealFamily, (q: number) => number> = {
 export const isCollageReveal = (v: unknown): v is CollageRevealKind =>
   typeof v === 'string' && (COLLAGE_REVEALS as string[]).includes(v)
 
+/** One field of a geometry entrance: `base + amp × curve(q)`, where `q` is how
+ *  far through the entrance the photo is. The curve names are the whole
+ *  vocabulary the render can build — powers, a smoothstep, an outBack, a
+ *  half-sine — because FFmpeg gets these as text and the preview as numbers.
+ *  `hinge`/`recip` are the two shapes that need a floor of their own: the width
+ *  a hinge leaves you is the sine of the angle it travelled, and it must not
+ *  reach zero or the photo is invisible in the first frames. */
+export type GeomCurve = ['settle3' | 'settle2' | 'smooth' | 'one-smooth' | 'one-back' | 'bow', number?, number?]
+  | ['hinge', number, 0 | 1] | ['recip', number, 0 | 1]
+export type GeomRow = {
+  dx?: GeomCurve, dy?: GeomCurve, rot?: GeomCurve, dim?: GeomCurve,
+  scale?: GeomCurve, scaleX?: GeomCurve,
+  /** Seconds of alpha ramp, which the render does with `fade=t=in` — so it must
+   *  stay a linear ramp in both engines, and this is the only alpha a geometry
+   *  entrance is allowed. */
+  fade: number
+}
+
+const GEOM_BACK = (q: number): number => 1 + 2.70158 * Math.pow(q - 1, 3) + 1.70158 * Math.pow(q - 1, 2)
+const GEOM_SMOOTH = (q: number): number => q * q * (3 - 2 * q)
+
+/** The value of one curve spec at `q`. `base` is 0 for the offsets and 1 for the
+ *  scales, which is why it is a parameter rather than stored in every row. */
+export function geomCurve (c: GeomCurve | undefined, q: number, base: number): number {
+  if (!c) return base
+  const [kind, a = 0, b = 0] = c as [string, number?, number?]
+  switch (kind) {
+    case 'settle3': return base + a * Math.pow(1 - q, 3)
+    case 'settle2': return base + a * Math.pow(1 - q, 2)
+    case 'smooth': return base + a * GEOM_SMOOTH(q)
+    case 'one-smooth': return base + a * (1 - GEOM_SMOOTH(q))
+    case 'one-back': return base + a * (1 - GEOM_BACK(q))
+    case 'bow': return base + a * Math.sin(Math.PI * (1 - q))
+    case 'hinge': return Math.max(a, Math.sin(Math.PI / 2 * (b ? GEOM_SMOOTH(q) : q)))
+    case 'recip': return 1 / Math.max(a, Math.sin(Math.PI / 2 * (b ? GEOM_SMOOTH(q) : q)))
+    default: return base
+  }
+}
+
+export function isGeomAnim (anim: string): anim is CollageGeomAnim {
+  return Object.prototype.hasOwnProperty.call(COLLAGE_GEOM, anim)
+}
+
+/** The twelve paper-and-card entrances. `dx`/`dy` are percent of the frame (the
+ *  same unit the other entrances use), `rot` degrees, and the lengths are seconds
+ *  at speed 1 — the number `photoState` divides by, so an entrance cannot take
+ *  longer in the preview than in the MP4. */
+export const COLLAGE_GEOM: Record<CollageGeomAnim, GeomRow & { label: string, hint: string, length: number }> = {
+  cube: {
+    label: 'Cube', hint: 'The photo turns in as the side face of a cube, thin until it squares up', length: 0.5,
+    dx: ['settle3', 18], scaleX: ['hinge', 0.25, 0], dim: ['settle3', 0.15], fade: 0.14,
+  },
+  book: {
+    label: 'Book', hint: 'Opens like a cover off its left hinge, straightening as it lies flat', length: 0.55,
+    dx: ['one-smooth', -12], rot: ['one-smooth', -5], scaleX: ['hinge', 0.06, 1], dim: ['one-smooth', 0.12], fade: 0.12,
+  },
+  door: {
+    label: 'Door', hint: 'Swings open on a hinge, coming out of shadow as it turns', length: 0.55,
+    dx: ['one-smooth', -9], scaleX: ['hinge', 0.1, 1], dim: ['one-smooth', 0.25], fade: 0.1,
+  },
+  unfold: {
+    // Only the height changes, which this model can express exactly: width is
+    // scale × scaleX and height is scale, so height k at width 1 is scale k and
+    // scaleX 1/k.
+    label: 'Unfold', hint: 'A sheet unfolding from its middle line, widening in height as it flattens', length: 0.5,
+    scale: ['hinge', 0.08, 0], scaleX: ['recip', 0.08, 0], fade: 0.12,
+  },
+  rollover: {
+    label: 'Rollover', hint: 'Rolls up from below, turning over its own top edge as it lands', length: 0.6,
+    dy: ['settle3', 28], rot: ['settle3', -28], scale: ['settle3', -0.18], fade: 0.16,
+  },
+  spiral: {
+    label: 'Spiral', hint: 'Turns a quarter of the way round as it grows to size', length: 0.65,
+    rot: ['settle3', 90], scale: ['one-back', -0.9, 1], fade: 0.18,
+  },
+  swish: {
+    label: 'Swish', hint: 'Whipped in from the left with a lean that flicks back past upright', length: 0.5,
+    dx: ['one-back', -30], rot: ['settle2', -14], fade: 0.1,
+  },
+  glide: {
+    label: 'Glide', hint: 'A long, calm drift in from the lower right, unrotating as it goes', length: 0.7,
+    dx: ['one-smooth', 16], dy: ['one-smooth', 12], rot: ['one-smooth', 3], fade: 0.28,
+  },
+  peek: {
+    label: 'Peek', hint: 'Rises from behind the bottom edge, tilting back upright as it clears it', length: 0.5,
+    dy: ['settle3', 16], rot: ['settle3', 7], scaleX: ['settle3', -0.1], fade: 0.14,
+  },
+  boomerang: {
+    label: 'Boomerang', hint: 'Comes in short, throws past its resting place and settles back', length: 0.7,
+    dx: ['one-back', -20], dy: ['one-back', -9], rot: ['settle3', 24], scale: ['one-back', -0.38, 1], fade: 0.16,
+  },
+  sling: {
+    // The bow of the path is a half-sine of the part still to travel, so it
+    // starts and ends on the straight line and is only ever in between.
+    label: 'Sling', hint: 'Fired in along a bowed path that flattens as it arrives', length: 0.55,
+    dx: ['one-smooth', 24], dy: ['bow', -18], rot: ['settle2', -16], fade: 0.12,
+  },
+  thread: {
+    label: 'Thread', hint: 'Sweeps in from the corner, unspinning as it is pulled straight', length: 0.7,
+    dx: ['settle3', -16], dy: ['settle3', -13], rot: ['settle3', -55], scale: ['settle3', -0.3], fade: 0.14,
+  },
+}
+
+/** Which geometry entrances change a size, and therefore need the render's size
+ *  ladder rather than a plain overlay. Derived, so a new row cannot be added
+ *  with a scale and forget to ask for the ladder. */
+export const COLLAGE_GEOM_SCALES: CollageGeomAnim[] =
+  (Object.keys(COLLAGE_GEOM) as CollageGeomAnim[]).filter(id =>
+    COLLAGE_GEOM[id].scale !== undefined || COLLAGE_GEOM[id].scaleX !== undefined)
+
 /** One row of the entrance picker for each mask reveal. The label and hint come
  *  out of the table the two engines read, so the name in the UI, the name the
  *  validator accepts and the name the render switches on cannot drift apart. */
 export type CollageAnimChoice = { id: CollageAnim, label: string, hint: string }
+export const COLLAGE_GEOM_CHOICES: CollageAnimChoice[] = (Object.keys(COLLAGE_GEOM) as CollageGeomAnim[])
+  .map(id => ({ id, label: COLLAGE_GEOM[id].label, hint: COLLAGE_GEOM[id].hint }))
+
 export const COLLAGE_REVEAL_CHOICES: CollageAnimChoice[] = COLLAGE_REVEALS.map(id => ({
   id,
   label: COLLAGE_REVEAL_GEOM[id].label,
@@ -266,7 +379,16 @@ export function revealMaskStyle (kind: CollageRevealKind, p: number, dir = 0): {
 // The entrance each photo plays. The mask reveals above are part of this type:
 // one list of ids wherever an entrance is chosen, so a wipe cannot be offered
 // in the picker and rejected by the engine.
-export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush' | CollageRevealKind
+export type CollageAnim = 'drop' | 'pop' | 'swing' | 'flip' | 'none' | 'fade' | 'slide' | 'rise' | 'tumble' | 'zoom' | 'fold' | 'glitch' | 'ink' | 'brush'
+  | CollageGeomAnim | CollageRevealKind
+/** The paper-and-card family: hinge, fold and swing motions that live entirely
+ *  in the fields the render can build — offset, rotation, and the two scales.
+ *  A real 3D cube or a book on a perspective hinge cannot be composited by
+ *  FFmpeg's `scale`+`rotate` at all, and a preview that shows what the export
+ *  cannot make is worse than no animation, so this family is expressed as
+ *  foreshortening (`scaleX` following the hinge angle) instead of `rotateX`. */
+export type CollageGeomAnim = 'cube' | 'book' | 'door' | 'unfold' | 'rollover' | 'spiral'
+  | 'swish' | 'glide' | 'peek' | 'boomerang' | 'sling' | 'thread'
 /** Every entrance id, reveals included: what the pickers list and what
  *  `normalizeCollage` accepts. */
 export type CollageExit = 'none' | 'sweep' | 'deal' | 'shuffle' | 'fade'
@@ -282,7 +404,9 @@ export type CollageStickers = 'none' | 'tape' | 'pin' | 'mix'
 
 export const COLLAGE_LAYOUTS_ALL: CollageLayout[] = ['stack', 'grid', 'scatter', 'filmstrip', 'fan', 'masonry', 'free', 'template', 'honeycomb', 'zigzag', 'arc', 'photowall', 'booth', 'silhouette', 'cube']
 export const COLLAGE_SHAPES_ALL: CollageShape[] = ['native', '4:3', 'square', '3:4', '16:9', '9:16', '3:2', '2:3']
-export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip', 'fade', 'slide', 'rise', 'tumble', 'zoom', 'fold', 'glitch', 'ink', 'brush', 'none', ...COLLAGE_REVEALS]
+export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip', 'fade', 'slide', 'rise', 'tumble', 'zoom', 'fold', 'glitch', 'ink', 'brush',
+  'cube', 'book', 'door', 'unfold', 'rollover', 'spiral', 'swish', 'glide', 'peek', 'boomerang', 'sling', 'thread',
+  'none', ...COLLAGE_REVEALS]
 /** Motion one photo keeps doing while it is on screen — the "while" lane of
  *  the three-lane model the text layers use (enter / while / exit). These
  *  five only move and turn the photo, which a render can do per frame; the
@@ -1347,6 +1471,8 @@ export const ENTRANCE_LENGTH: Record<CollageAnim, number> = {
   // The mask reveals take their lengths from the same table the render's twin
   // reads, so a reveal cannot be a different length in the preview than in the
   // MP4 — and adding a kind there cannot leave one missing here.
+  ...Object.fromEntries(
+    (Object.keys(COLLAGE_GEOM) as CollageGeomAnim[]).map(id => [id, COLLAGE_GEOM[id].length])),
   ...COLLAGE_REVEAL_LENGTH,
 } as Record<CollageAnim, number>
 
@@ -1558,6 +1684,19 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
     const q = clamp01((t - t0) / 0.5)
     const settle = Math.pow(1 - q, 3)
     st = { dx: -36 * settle, dy: 0, rot: 0, scale: 1, scaleX: Math.max(0.12, 1 - 0.55 * settle), alpha: clamp01((t - t0) / 0.16), dim: 0 }
+  } else if (isGeomAnim(anim)) {
+    // The paper family, evaluated from one row of `COLLAGE_GEOM` rather than a
+    // branch each: the render's twin turns the SAME row into FFmpeg expressions,
+    // so a curve cannot mean one motion here and another one in the MP4.
+    const q = clamp01((t - t0) / ent)
+    const row = COLLAGE_GEOM[anim]
+    const v = (c: GeomCurve | undefined, base: number) => geomCurve(c, q, base)
+    st = {
+      dx: v(row.dx, 0), dy: v(row.dy, 0), rot: v(row.rot, 0),
+      scale: v(row.scale, 1) * (1 - DEPTH.scale * push),
+      scaleX: v(row.scaleX, 1),
+      alpha: clamp01((t - t0) / row.fade), dim: v(row.dim, 0),
+    }
   } else if (isCollageReveal(anim)) {
     // A mask reveal: the photo sits exactly where it will stay and is
     // *uncovered*. Everything about the shape lives in collageReveal.ts, which

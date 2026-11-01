@@ -1138,6 +1138,121 @@ def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
     return lead_in + hold
 
 
+# ---------------------------------------------------------------------------
+# The paper family — geometry entrances, one row each
+# ---------------------------------------------------------------------------
+
+# The same twelve rows as `COLLAGE_GEOM` in src/collageCore.ts, and the ONLY
+# place the render gets its motion from as well: `photo_state` evaluates these
+# curves as numbers and the filter graph builds the same curve as FFmpeg text,
+# so an entrance cannot be a different move in the MP4 than in the editor. A
+# curve is (kind, amplitude[, base]); the value is `base + amp × curve(q)`, with
+# base 0 for the offsets and 1 for the scales. `hinge`/`recip` carry a floor of
+# their own because the width a hinge leaves you is the sine of the angle it
+# travelled, and it must not reach 0 in the first frames.
+GEOM: dict[str, dict[str, Any]] = {
+    "cube": {"length": 0.5, "dx": ("settle3", 18), "scaleX": ("hinge", 0.25, 0),
+             "dim": ("settle3", 0.15), "fade": 0.14},
+    "book": {"length": 0.55, "dx": ("one-smooth", -12), "rot": ("one-smooth", -5),
+             "scaleX": ("hinge", 0.06, 1), "dim": ("one-smooth", 0.12), "fade": 0.12},
+    "door": {"length": 0.55, "dx": ("one-smooth", -9), "scaleX": ("hinge", 0.1, 1),
+             "dim": ("one-smooth", 0.25), "fade": 0.1},
+    # Only the height changes, which this model can express exactly: width is
+    # scale × scaleX and height is scale, so height k at width 1 is scale k and
+    # scaleX 1/k.
+    "unfold": {"length": 0.5, "scale": ("hinge", 0.08, 0), "scaleX": ("recip", 0.08, 0), "fade": 0.12},
+    "rollover": {"length": 0.6, "dy": ("settle3", 28), "rot": ("settle3", -28),
+                 "scale": ("settle3", -0.18), "fade": 0.16},
+    "spiral": {"length": 0.65, "rot": ("settle3", 90), "scale": ("one-back", -0.9, 1), "fade": 0.18},
+    "swish": {"length": 0.5, "dx": ("one-back", -30), "rot": ("settle2", -14), "fade": 0.1},
+    "glide": {"length": 0.7, "dx": ("one-smooth", 16), "dy": ("one-smooth", 12),
+              "rot": ("one-smooth", 3), "fade": 0.28},
+    "peek": {"length": 0.5, "dy": ("settle3", 16), "rot": ("settle3", 7),
+             "scaleX": ("settle3", -0.1), "fade": 0.14},
+    "boomerang": {"length": 0.7, "dx": ("one-back", -20), "dy": ("one-back", -9),
+                  "rot": ("settle3", 24), "scale": ("one-back", -0.38, 1), "fade": 0.16},
+    # The bow of the path is a half-sine of the part still to travel, so it starts
+    # and ends on the straight line and is only ever in between.
+    "sling": {"length": 0.55, "dx": ("one-smooth", 24), "dy": ("bow", -18),
+              "rot": ("settle2", -16), "fade": 0.12},
+    "thread": {"length": 0.7, "dx": ("settle3", -16), "dy": ("settle3", -13),
+               "rot": ("settle3", -55), "scale": ("settle3", -0.3), "fade": 0.14},
+}
+GEOM_ANIMS = tuple(GEOM)
+# Which of them change a size, and therefore have to ride the render's size
+# ladder. Derived from the rows, so adding one with a scale cannot forget it.
+GEOM_SCALES = frozenset(a for a, r in GEOM.items() if "scale" in r or "scaleX" in r)
+
+
+def _geom_curve(kind: str, q: float, smooth: bool = False) -> float:
+    """One curve of the shared vocabulary, at `q`. `_geom_expr` below is the same
+    list as FFmpeg text; the two are checked against each other by
+    tests/test_collage_twin.py."""
+    if kind == "settle3":
+        return (1 - q) ** 3
+    if kind == "settle2":
+        return (1 - q) ** 2
+    if kind == "smooth":
+        return q * q * (3 - 2 * q)
+    if kind == "one-smooth":
+        return 1 - q * q * (3 - 2 * q)
+    if kind == "one-back":
+        return 1 - (1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2)
+    if kind == "bow":
+        return math.sin(math.pi * (1 - q))
+    if kind in ("hinge", "recip"):
+        inner = q * q * (3 - 2 * q) if smooth else q
+        fold = max(0.0, math.sin(math.pi / 2 * inner))
+        return fold
+    raise ValueError(f"unknown entrance curve: {kind}")
+
+
+def _geom(spec_curve: Any, q: float, base: float) -> float:
+    """`base + amp × curve(q)`, and a `hinge`/`recip` floor instead."""
+    if not spec_curve:
+        return base
+    kind = spec_curve[0]
+    if kind == "hinge":
+        return max(spec_curve[1], _geom_curve("hinge", q, bool(spec_curve[2])))
+    if kind == "recip":
+        return 1 / max(spec_curve[1], _geom_curve("hinge", q, bool(spec_curve[2])))
+    amp = spec_curve[1] if len(spec_curve) > 1 else 1.0
+    b = spec_curve[2] if len(spec_curve) > 2 else base
+    return b + amp * _geom_curve(kind, q)
+
+
+def _geom_expr(spec_curve: Any, q: str, span: float) -> str:
+    """A curve as an FFmpeg expression, for the overlay's x/y. `span` converts
+    the percent-of-frame unit the preview works in into pixels, exactly as the
+    hand-written `drop`/`slide` terms above do; `rot` passes span=1 because
+    degrees are already the unit."""
+    if not spec_curve:
+        return ""
+    kind = spec_curve[0]
+    if kind in ("hinge", "recip"):
+        raise ValueError("hinge curves belong on the size ladder, not on an offset")
+    amp = spec_curve[1] if len(spec_curve) > 1 else 1.0
+    mag = abs(amp) * span
+    if not mag:
+        return ""
+    sign = "+" if amp > 0 else "-"
+    if kind == "settle3":
+        c = f"pow(1-{q},3)"
+    elif kind == "settle2":
+        c = f"pow(1-{q},2)"
+    elif kind == "smooth":
+        c = f"pow({q},2)*(3-2*{q})"
+    elif kind == "one-smooth":
+        c = f"(1-pow({q},2)*(3-2*{q}))"
+    elif kind == "one-back":
+        c = f"(1-(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
+    elif kind == "bow":
+        c = f"sin(PI*(1-{q}))"
+    else:
+        raise ValueError(f"no FFmpeg form for entrance curve {kind!r}")
+    return f"{sign}{_n(mag)}*{c}"
+
+
 # How long an entrance runs until the photo is fully at rest.
 ENTRANCE_LENGTH = {
     "drop": 0.55, "pop": 0.5, "swing": 2.0, "flip": 0.45, "none": 0.0,
@@ -1147,6 +1262,7 @@ ENTRANCE_LENGTH = {
     # ENTRANCE_LENGTH in src/collageCore.ts does: one source for how long a
     # sweep takes, so the slide's length and the ladder's sampling cannot use two
     # different numbers for the same reveal.
+    **{a: r["length"] for a, r in GEOM.items()},
     **REVEAL_LENGTH,
 }
 LAYOUTS = ("stack", "grid", "scatter", "filmstrip", "fan", "masonry", "free", "template",
@@ -1154,7 +1270,7 @@ LAYOUTS = ("stack", "grid", "scatter", "filmstrip", "fan", "masonry", "free", "t
 # The mask reveals are animations too: one list, so a photo can be given a wipe
 # wherever an entrance is chosen, and `photo_anim` cannot forget one.
 ANIMS = ("drop", "pop", "swing", "flip", "none", "fade", "slide", "rise", "tumble",
-         "zoom", "fold", "glitch", "ink", "brush", *REVEALS)
+         "zoom", "fold", "glitch", "ink", "brush", *GEOM_ANIMS, *REVEALS)
 FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart", "star",
                 "diamond", "hexagon", "triangle", "octagon", "cloud", "arch", "ticket")
 
@@ -1605,6 +1721,14 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         settle = (1 - q) ** 3
         st = {"dx": -36 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.12, 1 - 0.55 * settle),
               "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+    elif anim in GEOM:
+        row = GEOM[anim]
+        q = _clamp01((t - t0) / (ent or 0.001))
+        st = {"dx": _geom(row.get("dx"), q, 0.0), "dy": _geom(row.get("dy"), q, 0.0),
+              "rot": _geom(row.get("rot"), q, 0.0),
+              "scale": _geom(row.get("scale"), q, 1.0) * (1 - DEPTH["scale"] * push),
+              "scaleX": _geom(row.get("scaleX"), q, 1.0),
+              "alpha": _clamp01((t - t0) / row["fade"]), "dim": _geom(row.get("dim"), q, 0.0)}
     elif is_reveal(anim):
         # A mask reveal: the photo never moves, it is uncovered, so every
         # transform field rests and `alpha` stays 1 — the mask is the opacity.
@@ -2585,6 +2709,15 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             extra_r = f"+28*pow(1-{q_tumble},3)"
         elif anim == "brush":
             extra_x = f"-{_n(0.36 * width)}*pow(1-{q_brush},3)"
+        elif anim in GEOM:
+            # The paper family's offsets, straight out of the row the preview
+            # evaluates — no second copy of the numbers here, which is how the
+            # hand-written terms above drifted from the curves once already.
+            row = GEOM[anim]
+            qg = f"min(max((t-{_n(t0)})/{_n(ENTRANCE_LENGTH.get(anim, 0.0) or 0.001)},0),1)"
+            extra_x = _geom_expr(row.get("dx"), qg, width)
+            extra_y = _geom_expr(row.get("dy"), qg, height)
+            extra_r = _geom_expr(row.get("rot"), qg, 1.0)
         elif anim == "glitch":
             jg = f"pow(1-{q_glitch},2)"
             extra_x = fly_term((hash01(seed, i, 61) - 0.5) * 0.10 * width, jg)
@@ -2625,9 +2758,12 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # static scales whose overlay enable windows partition time. The
         # sizes are sampled from the twin's photoState() at frame resolution,
         # so the MP4 shows what the preview shows, frame for frame.
+        # …and the alpha ramp, which every geometry entrance keeps linear so the
+        # filter's own `fade` is the same curve the preview computes.
         fade_d_in = {"drop": 0.22, "pop": 0.18, "flip": 0.15, "swing": 0.15,
                      "fade": 0.45, "slide": 0.18, "rise": 0.18, "tumble": 0.16, "zoom": 0.16,
-                     "fold": 0.14, "glitch": 0.12, "ink": 0.4, "brush": 0.16}.get(anim)
+                     "fold": 0.14, "glitch": 0.12, "ink": 0.4, "brush": 0.16,
+                     **{a: r["fade"] for a, r in GEOM.items()}}.get(anim)
         mid = (f"fade=t=in:st={_n(t0)}:d={_n(fade_d_in)}:alpha=1" if fade_d_in else "null") + fade_out
 
         # The anchor: the canvas centre lands on the mat centre (or the pin
@@ -2650,6 +2786,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             render a mosaic in about what a wipe costs."""
             reveal = is_reveal(anim)
             varies = (anim in ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble")
+                      or anim in GEOM_SCALES
                       or depth_on or spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS or reveal)
             if not varies:
                 return [(cw, ch, None, [[0.0, None]])]
