@@ -252,7 +252,9 @@ def _cases() -> list[dict]:
         "hashArgs": [6, 3, 11], "matW": 30,
     })
     # exits: the photos leave after the hold — every entrance × every exit
-    for exit_mode_name in ("sweep", "deal", "shuffle"):
+    # every mode in the list the chips build from, so a mode cannot be added to
+    # the UI and left out of a validator again (see test_collage_normalize.py)
+    for exit_mode_name in ("sweep", "deal", "shuffle", "fade"):
         for animation in ("drop", "pop", "none", "flip"):
             cases.append({
                 "id": f"exit-{exit_mode_name}-{animation}",
@@ -578,7 +580,7 @@ def _cases() -> list[dict]:
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.5, 1.0], "hashArgs": [1, 1, 41], "matW": 30,
     })
     # reversed exit order: the last (top) photo leaves first
-    for mode in ("sweep", "deal", "shuffle"):
+    for mode in ("sweep", "deal", "shuffle", "fade"):
         rev = _spec("stack", "drop", "4:3", 4, 6, delays=[0.2, 0.2, 0.2, 0.2], hold=1, exit=mode)
         rev["exitReverse"] = True
         cases.append({

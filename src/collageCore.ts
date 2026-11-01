@@ -1083,6 +1083,12 @@ export const EXIT_STAGGER: Record<Exclude<CollageExit, 'none'>, number> = { swee
 
 /** Every exit mode, 'none' (stay until the transition) first. */
 export const COLLAGE_EXITS: CollageExit[] = ['none', 'sweep', 'deal', 'shuffle', 'fade']
+/** The modes that actually leave: everything but 'none'. One list on purpose —
+ *  `exitMode` and `normalizeCollage` used to keep their own, and when 'fade'
+ *  was added to the chips and to `exitMode` but not to the one inside
+ *  `normalizeCollage`, a whole-collage "Fade out" was dropped on the next load:
+ *  the setting vanished, and with it the seconds the exit added to the slide. */
+export const COLLAGE_EXIT_MODES: readonly CollageExit[] = COLLAGE_EXITS.filter(e => e !== 'none')
 
 /** Bounds of the exit speed multiplier (the editor slider uses the same range). */
 export const EXIT_SPEED_MIN = 0.05
@@ -1109,7 +1115,7 @@ export function exitMode (spec: CollageSpec, i?: number): CollageExit {
     const own = spec.photos?.[i]?.exit as CollageExit | undefined
     if (own && COLLAGE_EXITS.includes(own)) return own
   }
-  return (COLLAGE_EXITS.filter(e => e !== 'none') as readonly CollageExit[]).includes(spec.exit as CollageExit) ? spec.exit as CollageExit : 'none'
+  return COLLAGE_EXIT_MODES.includes(spec.exit as CollageExit) ? spec.exit as CollageExit : 'none'
 }
 
 /** The mode that sets the ORDER of the exit: the collage's own exit when it
@@ -1739,7 +1745,7 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
     photos,
     layout: COLLAGE_LAYOUTS_ALL.includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
     animation: COLLAGE_ANIMS_ALL.includes(c.animation as CollageAnim) ? c.animation as CollageAnim : 'drop',
-    exit: (['sweep', 'deal', 'shuffle'] as readonly CollageExit[]).includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
+    exit: COLLAGE_EXIT_MODES.includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
     exitSpeed: num(c.exitSpeed) !== undefined && num(c.exitSpeed)! > 0 && num(c.exitSpeed) !== 1 ? Math.max(EXIT_SPEED_MIN, Math.min(EXIT_SPEED_MAX, num(c.exitSpeed)!)) : undefined,
     exitReverse: c.exitReverse === true ? true : undefined,
     camera: (['pan', 'zoom', 'telescope', 'droste'] as readonly CollageCamera[]).includes(c.camera as CollageCamera) ? c.camera as CollageCamera : undefined,
