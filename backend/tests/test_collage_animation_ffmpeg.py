@@ -293,7 +293,12 @@ def _render_ken_burns(ffmpeg: str) -> tuple[tuple[int, int], tuple[int, int], di
             raise AssertionError(f"the photo is missing from frame {n}")
         return max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
 
-    return box(1), box(frame_count - 1), spec, duration
+    # …measured on the first frame the photo is *composited*: a free-layout photo
+    # arrives 0.15 s in, and the envelope says nothing of it is on the canvas before
+    # that, so frame 1 is the empty slide (which is what the slide always showed
+    # before the envelope existed, and what it no longer does)
+    early = max(1, int(math.ceil((photo_start(spec, 0, 0) + 1 / FPS) * FPS)))
+    return box(early), box(frame_count - 1), spec, duration
 
 
 @unittest.skipIf(_ffmpeg_bin() is None, "no FFmpeg binary available")
@@ -566,7 +571,10 @@ class CollagePhotoLanesRenderTest(unittest.TestCase):
         graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
         # the added term, not the arrival's own: `pow(1-<mirrored progress>,3)` with the
         # exit window inside it is what distinguishes "rise as an exit" from "reverse"
-        self.assertRegex(graph, r"pow\(1-1-min\(max\(\(t-[\d.]+\)/[\d.]+,0\),1\),3\)")
+        # the mirrored term with its progress parenthesised: without the parens this
+        # is pow(-progress,3), and the departure runs the wrong way round
+        self.assertRegex(graph, r"pow\(1-\(1-min\(max\(\(t-[\d.]+\)/[\d.]+,0\),1\)\),3\)")
+        self.assertNotIn("pow(1-1-min(", graph)
         rest = _lane_box(frames[int((base - 0.05) * FPS)], "red")
         self.assertGreater(rest[0], 200, "the photo is on screen and at rest before it leaves")
         mid = _lane_box(frames[int((base + fly * 0.55) * FPS)], "red")
@@ -579,7 +587,7 @@ class CollagePhotoLanesRenderTest(unittest.TestCase):
                            exit="reverse")
         graph2 = "".join(collage_graph(plain, W, H, FPS, collage_duration(normalize_collage(plain)),
                                       0, 1, "cb")[0])
-        self.assertNotIn("pow(1-1-min(max((", graph2,
+        self.assertNotIn("pow(1-(1-min(max((", graph2,
                          "a photo mirroring its own arrival must not get the exit twice")
 
     def test_a_reveal_exit_closes_instead_of_fading(self):
@@ -1046,30 +1054,40 @@ class CollagePreviewParityRenderTest(unittest.TestCase):
         used to sit there fully visible for its own delay. Symmetrically, a photo
         whose departure is over stays off for the rest of the slide.
 
-        Red arrives at 0.5 s and never leaves. Lime fades out at the start of the
+        The three photos arrive one after another (0.15 s, 0.47 s, 0.79 s) and the
+        slide's exit clock only starts after the last of them has landed, so each lane
+        has a real span on both sides of its own window. Red never leaves. Lime fades
+        out at the start of the
         exit, blue mirrors a long arrival, so the slide outlives lime's departure and
         there is a tail to measure at all — the last photo's fly always ends with the
         slide, which leaves nothing after it to look at.
         """
         ffmpeg = str(_ffmpeg_bin())
-        item = _lane_item({
-            0: {"cx": 22, "cy": 50, "w": 24, "delay": 0.5},
-            1: {"cx": 50, "cy": 50, "w": 24, "delay": 0.5, "exit": "fade"},
-            2: {"cx": 78, "cy": 50, "w": 24, "delay": 0.5, "exit": "boomerang"},
-        }, animation="none", hold=1.0)
+        # a grid, because that is where the arrivals are staggered *and* the exit
+        # clock starts after the last of them: a free layout lets each photo's own
+        # delay move its arrival, but not the exit, so a delayed photo there would be
+        # asked to leave before it had landed
+        item = {"collage": {
+            "layout": "grid", "shape": "4:3", "seed": 5, "hold": 1.0, "animation": "none",
+            "frame": {"shape": "none", "shadow": False},
+            "photos": [{"path": "/photos/red.jpg"},
+                       {"path": "/photos/lime.jpg", "exit": "fade"},
+                       {"path": "/photos/blue.jpg", "exit": "boomerang"}],
+        }}
         frames, spec, duration = _render_lanes(ffmpeg, item)
         red, lime, blue = _LANES
-        t0 = photo_start(spec, 0, 0)
-        self.assertGreater(t0, 1 / FPS, "the photos have to arrive after the first frame")
-        for k in range(0, int((t0 - 1 / FPS) * FPS) + 1):
-            for lane in (red, lime, blue):
+        # `free` photos each carry their own delay, and the collage starts the clock
+        # 0.15 s in, so every photo has a different arrival to be absent before
+        for i, lane in enumerate((red, lime, blue)):
+            start = photo_start(spec, i, 0)
+            self.assertGreater(start, 1 / FPS, f"{lane} has to arrive after frame 0")
+            for k in range(0, int((start - 1 / FPS) * FPS) + 1):
                 self.assertLess(_lane_box(frames[k], lane)[0], 25,
                                 f"frame {k} (t={k / FPS:.2f}) already shows {lane}")
-        # …and they are solidly there once their turn came, or the loop above would be
-        # satisfied by a render that drew nothing at all
-        shown = min(len(frames) - 1, int((t0 + 0.3) * FPS))
-        for lane in (red, lime, blue):
-            self.assertGreater(_lane_box(frames[shown], lane)[0], 1500, f"{lane} at the start")
+            # …and solidly there once its turn came, or the loop above would be
+            # satisfied by a render that drew nothing at all
+            shown = min(len(frames) - 1, int((start + 0.3) * FPS))
+            self.assertGreater(_lane_box(frames[shown], lane)[0], 1500, f"{lane} at its start")
         gone_at = base_duration(spec) + exit_offset(spec, 1) + exit_fly_length(spec, 1)
         self.assertLess(gone_at, duration - 2 / FPS, "lime's exit has to end before the slide")
         for k in range(int(gone_at * FPS) + 1, len(frames)):

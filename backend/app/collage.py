@@ -3229,7 +3229,17 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 # each curve is at rest outside its own window — the arrival has
                 # settled at q=1 by the time the photo leaves, and the mirror is 1
                 # (also at rest) until the fly starts.
-                q_x = q_rev
+                #
+                # The parentheses are not decoration. This string is substituted into
+                # the easing templates as `1-{q}`, and unparenthesised that is
+                # `pow(1-1-min(...),3)` — the cube of a negated progress — which sent a
+                # photo leaving on a mirrored `rise` *up* out of the frame instead of
+                # back down the way it came. `arrival_terms()` is handed either this or
+                # the arrival's own `q_ent`, and `q_ent` never begins with `1-`, so the
+                # parentheses belong here rather than in the templates: every arrival's
+                # emitted text, and every existing 'reverse' project's, stays byte-for-
+                # byte what it was.
+                q_x = "(%s)" % q_rev
             else:
                 # 'reverse' mirrors the photo's own curve, so one expression can serve
                 # both directions: before the exit the mirrored term is 1 and the

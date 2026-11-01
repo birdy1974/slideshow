@@ -262,7 +262,11 @@ class GraphTest(unittest.TestCase):
         # rise's own offset (0.22 of the frame height) carrying the mirrored progress:
         # `pow(1-<1 - the exit window>,3)` is a shape only an added *second* curve has
         self.assertIn(f"+{0.22 * FRAME_H:.4g}".rstrip("0").rstrip("."), graph)
-        self.assertIn("pow(1-1-min(max((t-", graph)
+        self.assertIn("pow(1-(1-min(max((t-", graph)
+        # …and not the unparenthesised form, which ffmpeg evaluates as pow(-q,3): the
+        # same curve with its direction flipped, so a photo that leaves the way it
+        # arrived would leave upwards instead of back down
+        self.assertNotIn("pow(1-1-min(max((t-", graph)
         # …and the photo's own arrival is untouched by it: a plain progress term, with
         # no mirror folded in the way 'reverse' folds one
         self.assertIn("pow(1-min(max((t-", graph)
@@ -273,7 +277,7 @@ class GraphTest(unittest.TestCase):
         # with min(), and therefore no `1-min(max(` term of its own anywhere
         own = self._graph(_spec("reverse", animation="rise"))
         self.assertIn("pow(1-min(min(max((t-", own)
-        self.assertNotIn("pow(1-1-min(max((t-", own)
+        self.assertNotIn("pow(1-(1-min(max((t-", own)
         # …asked for by name: the arrival keeps its plain progress and the departure
         # adds exactly one mirrored term — the same number of characters, one term
         # …and an exit that names the arrival it already performs IS 'reverse', down to
