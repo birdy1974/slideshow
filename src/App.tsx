@@ -4572,10 +4572,10 @@ const COLLAGE_EDITOR_SECTIONS = [
 ] as const
 
 /** Header row of a collapsible settings section: the whole row toggles it. */
-function CollageGroupHead({ id, open, onToggle, children }: { id: string; open: boolean; onToggle: (id: string) => void; children: ReactNode }) {
+function CollageGroupHead({ id, open, onToggle, note, children }: { id: string; open: boolean; onToggle: (id: string) => void; note?: ReactNode; children: ReactNode }) {
   return <div className="collage-group-head" role="button" tabIndex={0} aria-expanded={open} title={open ? 'Click to collapse this section' : 'Click to expand this section'}
     onClick={() => onToggle(id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(id) } }}>
-    <span className="field-label">{children}</span>
+    <span className="field-label">{children}{note && <i className="group-note">{note}</i>}</span>
     <ChevronDown size={14} aria-hidden="true" />
   </div>
 }
@@ -4715,7 +4715,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   // Merging stored values over the new defaults also migrates older `{}`
   // preferences to the requested collapsed-by-default layout.
   const [closedSections, setClosedSections] = useState<Record<string, boolean>>(() => {
-    const defaults: Record<string, boolean> = Object.fromEntries(COLLAGE_EDITOR_SECTIONS.map(id => [id, true]))
+    // All closed would hide the one thing a visitor came for: the entrance
+    // catalogue is a dozen times bigger than the row of chips it replaced, and a
+    // bare "Photo animation" heading says nothing about that. These two start
+    // open; a visitor who collapses them once is remembered, like everything else
+    // in this panel.
+    const defaults: Record<string, boolean> = Object.fromEntries(
+      COLLAGE_EDITOR_SECTIONS.map(id => [id, !(id === 'photo-animation' || id === 'photo-exit')]))
     try {
       const stored: unknown = JSON.parse(localStorage.getItem('collageEditorClosedSections') || 'null')
       if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return defaults
@@ -5174,7 +5180,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <span>%</span>
           </div>}
         </div>
-        <div className={`collage-choices-group${closedSections['photo-animation'] ? ' closed' : ''}`}><CollageGroupHead id="photo-animation" open={!closedSections['photo-animation']} onToggle={toggleSection}>Photo animation</CollageGroupHead>
+        <div className={`collage-choices-group${closedSections['photo-animation'] ? ' closed' : ''}`}><CollageGroupHead id="photo-animation" open={!closedSections['photo-animation']} onToggle={toggleSection}
+              note={`${animLabel(spec.animation)} · ${COLLAGE_ANIMS.length} entrances to browse`}>Photo animation</CollageGroupHead>
           <div className="collage-anim-pick">
             <AnimPicker value={spec.animation} ariaLabel="Photo entrance"
               onChange={a => setSpec({ animation: a })} />
@@ -5235,7 +5242,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <input type="checkbox" checked={spec.sway === true} onChange={e => setSpec({ sway: e.target.checked || undefined })} />
             <span>Idle sway — a gentle corkboard wobble once photos have landed</span>
           </label></div>
-        <div className={`collage-choices-group${closedSections['photo-exit'] ? ' closed' : ''}`}><CollageGroupHead id="photo-exit" open={!closedSections['photo-exit']} onToggle={toggleSection}>Photo exit</CollageGroupHead>
+        <div className={`collage-choices-group${closedSections['photo-exit'] ? ' closed' : ''}`}><CollageGroupHead id="photo-exit" open={!closedSections['photo-exit']} onToggle={toggleSection}
+              note={COLLAGE_EXITS.find(x => x.id === (spec.exit ?? 'none'))?.label ?? 'Stay on'}>Photo exit</CollageGroupHead>
           <div className="collage-choices">{COLLAGE_EXITS.map(e => <button key={e.id} type="button" className={(spec.exit ?? 'none') === e.id ? 'active' : ''} title={e.hint} onClick={() => setSpec({ exit: e.id === 'none' ? undefined : e.id })}>{e.label}</button>)}</div>
           <small>{COLLAGE_EXITS.find(e => e.id === (spec.exit ?? 'none'))?.hint}</small>
           {(spec.exit ?? 'none') !== 'none' && <label className="collage-exit-speed" title="How fast the photos leave: scales the fly-out of each photo and the gap between photos. The slide length follows.">
