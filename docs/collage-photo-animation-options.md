@@ -419,11 +419,25 @@ Each row says which animation it runs, and one function resolves it:
 `resolveAnim` / `resolve_anim`. That is the whole design: the picker, the
 validator, `ENTRANCE_LENGTH`, the state and the graph all go through that one
 lookup, so a bridge cannot mean a wipe to the preview and a colour ramp to the
-export. Three rows also carry a `dir`, because FFmpeg's names state a direction —
-`slideleft` pushes the new frame in *from the right* — and a mirrored alias would
-be a lie about the MP4. A name with a direction of its own shows no direction
-toggle at all (`animHasDirection` returns false), because the only thing it could
-change is the label.
+export. Three names carry a `dir`, because FFmpeg's names state a direction and a
+mirrored alias would be a lie about the MP4; a name with a direction of its own
+shows no direction toggle at all (`animHasDirection` returns false), because the
+only thing it could change is the label.
+
+The four `slide*` names are the case that nearly got away. `animDir` mirrors
+*masks*, so pointing `slideleft` at `glide` with a `dir: 1` would have rendered
+exactly the slide `slideright` renders — a flag the geometry path never reads — and
+pointing it at `drop` would have added a settling tilt the name does not promise.
+They run four dedicated straight travels instead (`fromLeft`, `fromRight`,
+`fromTop`, `fromBottom`: one axis, no rotation, no scale), which also gave the paper
+family four entrances worth picking by hand.
+
+Adding those exposed the catalogue's other weak seam: `COLLAGE_ANIMS_ALL` spelled out
+the paper and colour ids, so a new row was offered by the picker and deleted by the
+validator on save. Both lists are derived from `COLLAGE_GEOM` and
+`COLLAGE_LOOK_ENTRANCE` now — python's `ANIMS` already spread `GEOM_ANIMS` — which is
+the only shape that cannot go stale, and a test asserts the catalogue, the accepted
+ids and the bridge's targets are one set in both engines.
 
 Two smaller consequences:
 
