@@ -2334,7 +2334,9 @@ def karaoke_document(item: dict[str, Any], defaults: dict[str, Any], width: int,
     ``Dialogue`` event per sentence with ``\\kf`` per character. The caption's
     font, size, colour, outline and position all come from the ordinary text
     settings through :func:`_geometry`, so a karaoke slide keeps looking like
-    the slide the user styled and the karaoke only adds the timing.
+    the slide the user styled and the karaoke only adds the timing — unless
+    ``karaoke.text`` overrides some of those, which is the same nine fields the
+    preview's :class:`KaraokeStage` merges (see ``style_overrides``).
 
     The style/geometry helpers here are reused rather than duplicated: the same
     ``Style: FX`` line, the same ``WrapStyle: 2`` (which is what stops libass
@@ -2344,7 +2346,13 @@ def karaoke_document(item: dict[str, Any], defaults: dict[str, Any], width: int,
     data = karaoke_mod.data_for(item, lead_in)
     if data is None:
         return None
-    g = _geometry(item, defaults, width, height)
+    # ``karaoke.text`` holds the look the user asked the *sung* text to have. It is
+    # spliced over the item rather than translated into ASS override tags, so the
+    # font, size, weight, colour, outline and position go on through the one
+    # caption path every other text on this codebase uses — and a karaoke block
+    # that sets nothing keeps the caption's style to the byte.
+    overrides = karaoke_mod.style_overrides(data)
+    g = _geometry({**item, **overrides} if overrides else item, defaults, width, height)
     if g is None:
         return None
     plan = karaoke_mod.plan_of(g.text, data, g.start, g.end, 0.0)

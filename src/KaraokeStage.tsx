@@ -10,12 +10,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FRAME_H, FRAME_W, ensureFont, fontCssFor } from './textMotionScene'
-import { karaokeAt, planOf, tokenize, wordStates, type KaraokeData } from './karaokeCore'
+import { karaokeAt, karaokePaintStyle, planOf, tokenize, wordStates, type KaraokeData } from './karaokeCore'
 
 export interface KaraokeStageProps {
   text: string
   karaoke: KaraokeData
-  /** The caption's own style, so karaoke is the same text, only timed. */
+  /** The caption's own style, so karaoke is the same text, only timed. A field
+   *  of `karaoke.text` wins over the matching prop here, exactly as the render
+   *  splices those overrides into the caption before it builds its style line —
+   *  so the popup can make the sung words bigger, bolder or outline-free without
+   *  restyling the caption itself. */
   family: string
   bold: boolean
   italic: boolean
@@ -82,6 +86,11 @@ export function KaraokeStage(props: KaraokeStageProps) {
   const root = useRef<HTMLDivElement | null>(null)
   useStageScale(host, root)
   const { text, karaoke } = props
+  // The one merge: the props are what the caption is styled with, `karaoke.text`
+  // is what the user asked the sung words to look like instead. `karaokePaintStyle`
+  // is the same function the popup's own preview runs through, and it validates
+  // while merging, so a hand-edited project file cannot put a bad colour into CSS.
+  const look = karaokePaintStyle(props, karaoke)
   const plan = useMemo(() => planOf(text, karaoke, { from: props.from ?? 0, to: props.to ?? 0 }), [text, karaoke, props.from, props.to])
   const tokens = useMemo(() => tokenize(text), [text])
   const styleKind = karaoke.style
@@ -94,7 +103,7 @@ export function KaraokeStage(props: KaraokeStageProps) {
   useEffect(() => {
     let alive = true
     setReady(false)
-    void ensureFont(props.family, props.bold, props.italic).then(() => {
+    void ensureFont(look.family, look.bold, look.italic).then(() => {
       if (alive) setReady(true)
     }).catch(() => {
       if (alive) setReady(true)
@@ -102,21 +111,25 @@ export function KaraokeStage(props: KaraokeStageProps) {
     return () => {
       alive = false
     }
-  }, [props.family, props.bold, props.italic])
+  }, [look.family, look.bold, look.italic])
 
-  const px = Math.max(4, (Number(props.fontSize) || 48) * FRAME_W / 1920)
+  const px = Math.max(4, (Number(look.fontSize) || 48) * FRAME_W / 1920)
   const fill = karaoke.fill
   const blockStyle: React.CSSProperties = {
-    font: fontCssFor(props.family, props.bold, props.italic, px),
-    color: props.colour,
-    left: `${props.align === 'left' ? props.x : 50}%`,
-    top: `${props.y}%`,
-    transform: props.align === 'left' ? 'translate(0, -50%)' : 'translate(-50%, -50%)',
+    font: fontCssFor(look.family, look.bold, look.italic, px),
+    color: look.colour,
+    // `\an5\pos()` anchors the *centre* of the block at x,y for centred text and
+    // `\an4` anchors its left edge there, so x moves the block either way. The
+    // preview used to drop x whenever the caption was centred — invisible while
+    // karaoke could only inherit, visible the moment `karaoke.text.x` exists.
+    left: `${look.x}%`,
+    top: `${look.y}%`,
+    transform: look.align === 'left' ? 'translate(0, -50%)' : 'translate(-50%, -50%)',
     maxWidth: '86%',
-    textAlign: props.align === 'left' ? 'left' : 'center',
+    textAlign: look.align === 'left' ? 'left' : 'center',
     lineHeight: 1.28,
     whiteSpace: 'pre-wrap',
-    textShadow: props.outline !== false ? '0 2px 8px #0009, 0 0 2px #0007' : 'none',
+    textShadow: look.outline !== false ? '0 2px 8px #0009, 0 0 2px #0007' : 'none',
     opacity: sentence ? frame.fade : 0,
     visibility: ready ? 'visible' : 'hidden',
   }
@@ -139,13 +152,13 @@ export function KaraokeStage(props: KaraokeStageProps) {
               const index = sentence.words.indexOf(w)
               const state = states[index] || 'next'
               const sweeping = styleKind === 'sweep' && state === 'now'
-              const colour = state === 'next' ? props.colour : fill
+              const colour = state === 'next' ? look.colour : fill
               return (
                 <span
                   key={w.i}
-                  className={`kara-word kara-${state}${props.underline ? ' u' : ''}`}
+                  className={`kara-word kara-${state}${look.underline ? ' u' : ''}`}
                   style={sweeping
-                    ? { backgroundImage: `linear-gradient(90deg, ${fill} ${(frame.u * 100).toFixed(1)}%, ${props.colour} ${(frame.u * 100).toFixed(1)}%)`, WebkitTextFillColor: 'transparent', backgroundClip: 'text' }
+                    ? { backgroundImage: `linear-gradient(90deg, ${fill} ${(frame.u * 100).toFixed(1)}%, ${look.colour} ${(frame.u * 100).toFixed(1)}%)`, WebkitTextFillColor: 'transparent', backgroundClip: 'text' }
                     : { color: colour }}
                 >
                   {token.w}

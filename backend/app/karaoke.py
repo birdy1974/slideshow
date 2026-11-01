@@ -42,6 +42,8 @@ __all__ = [
     "has_karaoke",
     "data_for",
     "shift_times",
+    "sanitize_text_style",
+    "style_overrides",
 ]
 
 KARAOKE_DEFAULTS: dict[str, Any] = {
@@ -55,7 +57,28 @@ KARAOKE_DEFAULTS: dict[str, Any] = {
 }
 
 EDITORS = ("strip", "tap", "chips", "wave")
+
 STYLES = ("sweep", "word", "reveal", "pop")
+
+# What a karaoke block may restyle, mapped to the caption key the renderer reads
+# (``_geometry`` in backend/app/text_effects.py takes font, size, the weight trio,
+# colour, outline and position from those). ``kind`` picks the validation and
+# ``bounds`` the clamp; the preview's controls come from ``KARAOKE_TEXT_FIELDS`` in
+# src/karaokeCore.ts, which lists the same fields in the same order. Outline
+# colour, shadow depth, letter spacing and alignment are *not* here because the
+# shared ``Style: FX`` line fixes them for every text on this path — offering them
+# for karaoke alone would mean a preview the MP4 contradicts.
+TEXT_STYLE: dict[str, tuple[str, str, tuple[float, float] | None]] = {
+    "family": ("fontFamily", "text", None),
+    "size": ("fontSize", "size", (8.0, 400.0)),
+    "bold": ("textBold", "bool", None),
+    "italic": ("textItalic", "bool", None),
+    "underline": ("textUnderline", "bool", None),
+    "colour": ("fontColor", "colour", None),
+    "outline": ("textOutline", "bool", None),
+    "x": ("textX", "pos", (0.0, 100.0)),
+    "y": ("textY", "pos", (0.0, 100.0)),
+}
 
 _STRONG = re.compile(r"[.!?…][\"'”’)\]]*$")
 _SOFT = re.compile(r"[,;:…][\"'”’)\]]*$")
@@ -488,6 +511,7 @@ def sanitize_karaoke(raw: Any, word_count: int) -> dict[str, Any] | None:
     fill = str(raw.get("fill") or "")
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", fill):
         fill = KARAOKE_DEFAULTS["fill"]
+    text = sanitize_text_style(raw.get("text"))
     source = raw.get("words") if isinstance(raw.get("words"), list) else []
     n = int(_clamp(round(_num(word_count, len(source))), 0, 5000))
     words: list[dict[str, Any]] = []
@@ -515,8 +539,69 @@ def sanitize_karaoke(raw: Any, word_count: int) -> dict[str, Any] | None:
         "tail": _clamp(_num(raw.get("tail"), KARAOKE_DEFAULTS["tail"]), 0.0, 10.0),
         "snap": _clamp(_num(raw.get("snap"), KARAOKE_DEFAULTS["snap"]), 0.0, 2.0),
         "maxWords": int(_clamp(round(_num(raw.get("maxWords"), KARAOKE_DEFAULTS["maxWords"])), 1, 80)),
+        # Only present when something is overridden, so a project that never
+        # touched the block loads and saves exactly as it always did.
+        **({"text": text} if text else {}),
         "words": words,
     }
+
+
+def sanitize_text_style(raw: Any) -> dict[str, Any] | None:
+    """Validate ``karaoke.text``: keep the nine known fields, clamp each to its
+    own range, and return ``None`` when nothing is left.
+
+    The stricter-than-the-rest rule here is deliberate: a number must *be* a
+    number (``True`` is an ``int`` in Python and ``float("24")`` works, but the
+    preview's ``typeof v === "number"`` check rejects both), and a colour must be
+    the same ``#rrggbb`` the ``fill`` field already demands. Two engines reading
+    one file have to agree on what is garbage, or the preview and the MP4 diverge
+    on a hand-edited project. Field for field the twin of
+    ``sanitizeKaraokeTextStyle`` in src/karaokeCore.ts.
+    """
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key, (_caption_key, kind, bounds) in TEXT_STYLE.items():
+        value = raw.get(key)
+        if kind == "text":
+            family = value.strip() if isinstance(value, str) else ""
+            if family:
+                out[key] = family[:64]
+        elif kind == "colour":
+            colour = value if isinstance(value, str) else ""
+            if re.fullmatch(r"#[0-9a-fA-F]{6}", colour):
+                out[key] = colour
+        elif kind == "bool":
+            if isinstance(value, bool):
+                out[key] = value
+        else:
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            if not math.isfinite(float(value)):
+                continue
+            lo, hi = bounds or (0.0, 100.0)
+            clamped = _clamp(float(value), lo, hi)
+            out[key] = int(math.floor(clamped + 0.5)) if kind == "size" else clamped
+    return out or None
+
+
+def style_overrides(data: Any) -> dict[str, Any]:
+    """``karaoke.text`` in the shape the caption model uses, ready to splice over
+    an item: ``{**item, **style_overrides(karaoke)}`` gives the caption's own
+    look with the karaoke block's answers on top.
+
+    Only the keys the block actually sets appear, so everything else keeps
+    falling through to the caption and then to the project defaults — which is
+    the whole point: karaoke inherits until you say otherwise. Sanitized again on
+    the way out, so callers may hand it a raw dict from a project file.
+    """
+    text = sanitize_text_style(data.get("text") if isinstance(data, dict) else None)
+    if not text:
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in text.items():
+        out[TEXT_STYLE[key][0]] = value
+    return out
 
 
 def shift_times(data: dict[str, Any], delta: float) -> dict[str, Any]:

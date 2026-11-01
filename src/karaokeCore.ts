@@ -49,8 +49,38 @@ export interface KaraokeData {
   snap: number
   /** Auto-split cap: a run longer than this many words is cut anyway. */
   maxWords: number
+  /** How the sung text looks, when it should not look like the caption. Every
+   *  field is optional and unset means "the caption's own value", which is what
+   *  makes karaoke able to carry a *different* typography from the text it is
+   *  sung from (a bigger face, a serif, no outline) without a second slide.
+   *  Absent `text` entirely = the caption's style exactly. */
+  text?: KaraokeTextStyle
   /** The timing, one entry per word of `text`. */
   words: KaraokeWord[]
+}
+
+/** The nine settings a caption's look is made of — the same nine the render's
+ *  `Style: FX` line carries (font, size, weight trio, colour, outline, position)
+ *  and the same nine `KaraokeStage` paints.
+ *
+ *  Deliberately not here: outline *colour*, shadow depth, letter spacing and text
+ *  alignment. Those are fixed for every text on this path by that one shared
+ *  style line (backend/app/text_effects.py `_header`: `Spacing 0`, `Shadow 2`,
+ *  `Alignment 5` with `\pos`, a constant outline colour), so a karaoke-only
+ *  control for them would show up in the preview and never in the MP4. */
+export interface KaraokeTextStyle {
+  family?: string
+  /** px at the 1920-wide stage, exactly like the caption's own size. */
+  size?: number
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  /** The "not yet sung" colour; `fill` is the sung one. */
+  colour?: string
+  outline?: boolean
+  /** Percent of the frame, like the caption's position. */
+  x?: number
+  y?: number
 }
 
 /** A word with its char span in the caption text, as `tokenize` returns it. */
@@ -115,6 +145,39 @@ export const KARAOKE_STYLES: { id: KaraokeStyle; label: string; hint: string }[]
   { id: 'pop', label: 'Pop', hint: 'One word at a time, centred and punched in — the Reels/TikTok caption look' },
 ]
 
+/** The fields a chip toggles rather than a box types — three states (inherit,
+ *  on, off), because "off" is a look people want and "the caption's value" is the
+ *  default that must stay reachable. */
+export type KaraokeTextFlag = 'bold' | 'italic' | 'underline' | 'outline'
+
+/** One row per overridable field of `KaraokeData.text`: the label, the widget, the
+ *  range and the promise. The popup builds its controls from this table and the
+ *  sanitizer validates against it, so a control cannot exist that nothing honours.
+ *  `TEXT_STYLE` in backend/app/karaoke.py is the mirror, and it additionally names
+ *  the caption key each override is spliced into; a wiring test asserts the two
+ *  lists hold the same names in the same order. */
+export interface KaraokeTextField {
+  id: keyof KaraokeTextStyle
+  label: string
+  kind: 'font' | 'size' | 'flag' | 'colour' | 'pos'
+  hint: string
+  min?: number
+  max?: number
+  step?: number
+}
+
+export const KARAOKE_TEXT_FIELDS: readonly KaraokeTextField[] = [
+  { id: 'family', label: 'Font', kind: 'font', hint: 'The face the words are sung in' },
+  { id: 'size', label: 'Size', kind: 'size', hint: 'Pixels on a 1920-wide frame, like the caption’s own size', min: 8, max: 400, step: 1 },
+  { id: 'bold', label: 'Bold', kind: 'flag', hint: 'Heavy face' },
+  { id: 'italic', label: 'Italic', kind: 'flag', hint: 'Slanted face' },
+  { id: 'underline', label: 'Underline', kind: 'flag', hint: 'Underlined as it is sung' },
+  { id: 'colour', label: 'Unsung colour', kind: 'colour', hint: 'The colour before a word is sung — the fill is the colour after' },
+  { id: 'outline', label: 'Outline', kind: 'flag', hint: 'Readability ring. Off is what most lyric videos do' },
+  { id: 'x', label: 'X %', kind: 'pos', hint: 'Percent of the frame width', min: 0, max: 100, step: 0.5 },
+  { id: 'y', label: 'Y %', kind: 'pos', hint: 'Percent of the frame height', min: 0, max: 100, step: 0.5 },
+]
+
 export const KARAOKE_DEFAULTS = {
   editor: 'strip',
   style: 'sweep',
@@ -131,6 +194,83 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 /** Round to milliseconds — the resolution both engines agree on, so a save →
  *  load → render cycle cannot drift by a frame. */
 export const msRound = (v: number) => Math.round(v * 1000) / 1000
+
+/** `#rrggbb` and nothing else — the form both CSS and the ASS colour field want,
+ *  and exactly the rule `fill` follows in both engines. A 3-digit or named colour
+ *  is dropped rather than guessed at, and a valid one survives verbatim: the
+ *  loader must not be the place where a colour's case (or meaning) changes. */
+export const KARAOKE_COLOUR = /^#[0-9a-fA-F]{6}$/
+
+export function karaokeColour(value: unknown): string | undefined {
+  return typeof value === 'string' && KARAOKE_COLOUR.test(value) ? value : undefined
+}
+
+/** A number in range, or undefined. `typeof` first on purpose: JS would happily
+ *  turn `true` into `1`, and a toggle is never a font size. */
+function karaokeNumberInRange(value: unknown, min: number, max: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return clamp(value, min, max)
+}
+
+/** Keep only the fields `KaraokeTextStyle` knows, each inside its own range, and
+ *  return undefined when nothing is left — so "no overrides" is one shape (absent)
+ *  for the loader, the preview and the renderer to agree on. Unknown keys are
+ *  dropped quietly: this block is written by older and newer builds and by hand.
+ *  Mirrored field for field by `sanitize_text_style` in backend/app/karaoke.py. */
+export function sanitizeKaraokeTextStyle(raw: unknown): KaraokeTextStyle | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const src = raw as Record<string, unknown>
+  const out: KaraokeTextStyle = {}
+  const range = (id: string) => {
+    const field = KARAOKE_TEXT_FIELDS.find(f => f.id === id)
+    return { min: field?.min ?? 0, max: field?.max ?? 100 }
+  }
+  const family = typeof src.family === 'string' ? src.family.trim() : ''
+  if (family) out.family = family.slice(0, 64)
+  const size = karaokeNumberInRange(src.size, range('size').min, range('size').max)
+  if (size !== undefined) out.size = Math.round(size)
+  const colour = karaokeColour(src.colour)
+  if (colour) out.colour = colour
+  for (const key of ['bold', 'italic', 'underline', 'outline'] as const) {
+    if (typeof src[key] === 'boolean') out[key] = src[key] as boolean
+  }
+  for (const key of ['x', 'y'] as const) {
+    const v = karaokeNumberInRange(src[key], range(key).min, range(key).max)
+    if (v !== undefined) out[key] = v
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/** What a karaoke block paints with: the caption's style, in the names
+ *  `KaraokeStage` takes as props, with the block's overrides on top.
+ *
+ *  `size` is the one field spelled differently between the two models (the stage
+ *  prop is `fontSize`, like every other caption path), and that rename lives here
+ *  instead of in a caller — which is what keeps the popup preview and the main
+ *  preview from drifting apart, and keeps `style_overrides` in
+ *  backend/app/karaoke.py as the only mapping on the render side. */
+export interface KaraokePaintStyle extends KaraokeTextStyle {
+  family: string
+  fontSize: number
+  bold: boolean
+  italic: boolean
+  colour: string
+  x: number
+  y: number
+  align?: 'center' | 'left'
+}
+
+export function karaokePaintStyle<S extends KaraokePaintStyle>(caption: S, data?: { text?: KaraokeTextStyle } | null): S {
+  const over = sanitizeKaraokeTextStyle(data?.text)
+  if (!over) return caption
+  const { size, ...rest } = over
+  return { ...caption, ...rest, ...(size === undefined ? {} : { fontSize: size }) }
+}
+
+/** Whether anything is overridden at all — the popup only offers a reset then. */
+export function karaokeTextStyleTouched(data?: { text?: KaraokeTextStyle } | null): boolean {
+  return sanitizeKaraokeTextStyle(data?.text) !== undefined
+}
 
 /** Length of a token in UTF-16 code units, i.e. `String.length` in JS and
  *  `len(s.encode('utf-16-le')) // 2` in Python. Python counts code *points*,
@@ -542,7 +682,8 @@ export function sanitizeKaraoke (raw: unknown, wordCount: number): KaraokeData |
   const styles: KaraokeStyle[] = ['sweep', 'word', 'reveal', 'pop']
   const editor = editors.includes(r.editor as KaraokeEditorMode) ? (r.editor as KaraokeEditorMode) : KARAOKE_DEFAULTS.editor
   const style = styles.includes(r.style as KaraokeStyle) ? (r.style as KaraokeStyle) : KARAOKE_DEFAULTS.style
-  const fill = /^#[0-9a-fA-F]{6}$/.test(String(r.fill)) ? String(r.fill) : KARAOKE_DEFAULTS.fill
+  const text = sanitizeKaraokeTextStyle(r.text)
+  const fill = karaokeColour(r.fill) ?? KARAOKE_DEFAULTS.fill
   const list = Array.isArray(r.words) ? r.words : []
   const n = clamp(Math.round(num(wordCount, list.length)), 0, 5000)
   const words: KaraokeWord[] = []
@@ -568,6 +709,9 @@ export function sanitizeKaraoke (raw: unknown, wordCount: number): KaraokeData |
     tail: clamp(num(r.tail, KARAOKE_DEFAULTS.tail), 0, 10),
     snap: clamp(num(r.snap, KARAOKE_DEFAULTS.snap), 0, 2),
     maxWords: clamp(Math.round(num(r.maxWords, KARAOKE_DEFAULTS.maxWords)), 1, 80),
+    // Only written when something is actually overridden, so a project saved
+    // before this existed (or one that never touches the block) stays byte-same.
+    ...(text ? { text } : {}),
     words,
   }
 }
