@@ -30,7 +30,11 @@ from .media import UnsafePath, mounted_path, source_path
 from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
 from .picture_filters import picture_look
 from .font_registry import font_files
-from .text_effects import LayeredText, build_text_overlay, normalize_text_window, overlay_plan, plan_engine
+from . import karaoke as karaoke_mod
+from .text_effects import (
+    LayeredText, build_karaoke_document, build_karaoke_overlay_filter,
+    build_text_overlay, normalize_text_window, overlay_plan, plan_engine,
+)
 from .text_motion import BgChange, build_text_motion_overlay, has_stack, stack_fallback_fields
 
 log = logging.getLogger(__name__)
@@ -1547,6 +1551,17 @@ class Renderer:
         }
         has_ass = self.ass_filter_supported()
         has_drawtext = self.drawtext_filter_supported()
+        if has_ass and ass_path is not None and karaoke_mod.has_karaoke(item):
+            # Karaoke text: one .ass event per sentence with \kf per character.
+            # It *is* the caption, so it takes over from the effect stack and
+            # from drawtext — and, like every other ASS feature, it degrades to
+            # the plain caption (words shown, no sweep) on a build without
+            # libass instead of failing the render.
+            doc = build_karaoke_document(item, defaults, width, height, lead_in)
+            if doc is not None:
+                ass_path.parent.mkdir(parents=True, exist_ok=True)
+                ass_path.write_text(doc, encoding="utf-8")
+                return build_karaoke_overlay_filter(ass_path)
         if has_stack(item):
             # Stacked effects (textFx): the channel compositor in text_motion.py.
             # It needs libass; without it the caption keeps its words, position
