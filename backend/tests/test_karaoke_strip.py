@@ -8,19 +8,33 @@ floor under a one-word sentence has to be to stay grabbable, and the clamp that
 keeps the slider honest. Those are pure functions in ``src/karaokeCore.ts``, run
 through ``karaoke_strip.mjs`` the way ``test_karaoke_twin.py`` runs the plan maths.
 
-The second half pins something the popup cannot check by itself. The sweep colours
-a word by painting a gradient *clipped to the glyphs*, which makes the word's own
-box the mask: a line box shorter than the face's ascent plus descent shaves the
-tops and bottoms off the letters, a couple of pixels at 40 px and a visible bite
-at 120. ``KaraokeStage`` therefore measures the box from the font file — the same
-win metrics ``app.text_motion`` gives libass — and the assertions below are what
-keeps a tidy-up from putting a constant back. They need no Node, so they run even
-where the numbers above are skipped.
+The second half pins two things the popup cannot check by itself, both learned the
+hard way from "the top and bottom of the letters are cut off".
+
+*Sung words are revealed, never masked.* A gradient clipped to the glyphs
+(``background-clip:text``) makes the word's box the mask, and the ``clip-path``
+that replaced it clips to that same box: any face whose ink is taller than its own
+line box — one whose metrics could not be read, a fallback substitution, a
+condensed display cut — loses its cap and its descender to the clip either way.
+``KaraokeStage`` measures the box from the font file (the win metrics
+``app.text_motion`` hands libass, so the preview moves towards the render rather
+than inventing a second guess) *and* grows the clip's rectangle vertically, so the
+only thing the reveal can ever cut is on the x axis it is meant to cut.
+
+*The lyric line must not wear the strip's class.* The stage used ``.kara-block``,
+which the timing strip also uses, further down the same stylesheet, for a 34 px
+tall ``display:flex`` row with ``overflow:hidden``, a background, a border and 9 px
+of padding. Same specificity, later rule: the stage lost its line to a strip row's
+chrome — a plate that does not grow with the font, letters outside it, words
+ellipsised instead of wrapped. That, not a mask, is what "the background of the
+karaoke text must fit the height of the text size" was. The stage now has a class
+of its own, and ``StageBoxCollisionTest`` keeps the two apart.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -162,13 +176,19 @@ class SungWordBoxTest(unittest.TestCase):
         self.assertEqual(len(rule), 1, "exactly one .kara-word rule, or the padding belongs somewhere unclear")
         body = rule[0][rule[0].index(".kara-word{"):]
         self.assertIn("position:relative", body, "the sung copy is placed against the word's own box")
-        self.assertIn("padding:.04em 0", body, "the box needs the slack that pays for overshoot")
-        self.assertIn("margin:-.04em 0", body, "…paid for, or the block moves and the MP4 does not")
+        self.assertIn("overflow:visible", body, "nothing may clip the word's box, however it is sized")
+        self.assertNotIn("padding:", body,
+                         "padding would raise the absolutely placed overlay off the letters it colours")
+        self.assertNotIn("margin:", body, "…and the compensating negative margin is that mistake twice")
         self.assertNotIn("background-clip", body, "a gradient clipped to the text is what cut the letters off")
 
     def test_the_sweep_is_a_clip_on_x_and_nothing_else(self) -> None:
         stage = STAGE_TSX.read_text(encoding="utf-8")
-        self.assertRegex(stage, r"clipPath: `inset\(0 ", "the sung half must be cut on one vertical line")
+        self.assertRegex(stage, r"clipPath: `inset\(-100% ",
+                         "the sung half is cut on one vertical line, and nothing else")
+        self.assertIn("-100%", stage,
+                      "a clip-path clips to the element's box: the vertical insets have to be grown "
+                      "or a face taller than its own line box loses its cap and its descender anyway")
         self.assertNotIn("WebkitTextFillColor", stage, "transparent text needs a mask to be painted at all; a second copy does not")
         self.assertNotIn("backgroundClip", stage, "same: the mask was the bug")
 
@@ -204,6 +224,65 @@ class SungWordBoxTest(unittest.TestCase):
         block = core[core.index("export interface KaraokeData"):]
         block = block[:block.index("\n}")]
         self.assertNotIn("zoom", block, "the strip's zoom belongs to the editor, not to the data")
+
+
+class StageBoxCollisionTest(unittest.TestCase):
+    """The letters were being cut by a *borrowed* box, not by a mask.
+
+    `KaraokeStage` laid its lyric line out in an element whose class was also used,
+    further down the same stylesheet, by the timing strip's rows — 34 px tall,
+    `display:flex`, `overflow:hidden`, with a background, a border and 9 px of
+    padding. Equal specificity, later rule, so the stage lost its text to a strip
+    row's chrome: a plate behind the words that did not grow with the font, and
+    letters whose tops and bottoms fell outside 34 px. The MP4 wraps a line in no
+    box at all, so the stage may not either — hence a class of its own.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.stage = (REPO / "src" / "KaraokeStage.tsx").read_text(encoding="utf-8")
+        cls.css = (REPO / "src" / "styles.css").read_text(encoding="utf-8")
+
+    def test_the_stage_does_not_wear_the_strips_class(self) -> None:
+        used = re.findall(r'className=\{?["`\x27]([^"`\x27]+)', self.stage)
+        joined = " ".join(used)
+        self.assertNotIn("kara-block", joined,
+                         "the strip's row class carries a 34px clipped flex box; the lyric line must not")
+        self.assertIn("kara-lyric", joined)
+
+    def test_exactly_one_rule_owns_kara_block_and_it_is_the_strips(self) -> None:
+        blocks = re.findall(r"\.kara-block\{[^}]*\}", self.css)
+        self.assertEqual(len(blocks), 1, "a second rule with the same name silently edits the first")
+        self.assertIn("height:34px", blocks[0])
+        self.assertIn("overflow:hidden", blocks[0])
+
+    def test_the_lyric_rule_clips_nothing_and_sizes_nothing(self) -> None:
+        lyric = re.findall(r"\.kara-lyric\{[^}]*\}", self.css)
+        self.assertEqual(len(lyric), 1, "the stage's line box is declared once")
+        body = lyric[0]
+        self.assertIn("overflow:visible", body)
+        for forbidden in ("height:", "background:", "border:", "display:flex", "padding:0 9px"):
+            self.assertNotIn(forbidden, body, f"a lyric plate has no {forbidden} in the render")
+
+    def test_the_sung_copy_is_placed_on_the_same_line_box(self) -> None:
+        """Both copies are laid out on one box, so the reveal can colour the letters
+        it is drawn over rather than the empty air a few pixels above them."""
+        sung = re.findall(r"\.kara-word-sung\{[^}]*\}", self.css)
+        self.assertEqual(len(sung), 1, "the overlay copy is declared once")
+        self.assertIn("top:0", sung[0])
+        self.assertIn("left:0", sung[0])
+        self.assertIn("position:absolute", sung[0])
+        word = re.findall(r"\.kara-word\{[^}]*\}", self.css)[0]
+        for shift in ("padding:", "margin:", "top:", "translate"):
+            self.assertNotIn(shift, word, f"a {shift} on the word offsets the overlay from the letters")
+
+    def test_a_word_never_ellipsises_itself(self) -> None:
+        word = [b for b in re.findall(r"\.kara-word\{[^}]*\}", self.css)]
+        self.assertEqual(len(word), 1)
+        self.assertIn("overflow:visible", word[0])
+        self.assertIn("text-overflow:clip", word[0])
+        self.assertNotIn("background-clip", word[0])
+        self.assertNotIn("white-space:nowrap", word[0], "a sung line wraps; it does not shorten")
 
 
 if __name__ == "__main__":

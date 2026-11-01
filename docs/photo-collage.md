@@ -546,6 +546,19 @@ fields per photo.
   block is bright lime where the schedule's is dim olive. Times snap to 1/25 s and a window is
   never allowed below 0.12 s, because two frames is the shortest thing a curve can
   be seen doing.
+- **The drag is measured across the row, not across the popup.** A lane's outer box
+  also holds the photo name (128 px) and the seconds column (96 px), so mapping the
+  pointer through it answers a click at "30 s" with 22 s and slides the block a third
+  of the lane over per inch — which is what "the cursor changed but nothing moved"
+  was. `src/CollageLaneMath.ts` holds the mapping, taken from the track under the
+  pointer and captured once at `pointerdown`, and the `pointermove` listener lives on
+  the window, because a 22 px lane loses the pointer inside one frame. Both are
+  asserted where they can be measured: `LaneMathTest` runs that module under node
+  (`backend/tests/collage_lane_math.mjs`).
+- **The right edge is the exit timeline.** It ends the photo's departure, so the row
+  says which: the out handle's tooltip names that photo's exit and its fly, and a
+  photo whose exit is `none` reads "stays until the slide ends, unless you stop it
+  here" — the one sentence that makes the second handle obvious.
 
 Everything the lane does not touch is exactly what it was: a photo with neither field
 takes the Σ-delay start, the shared hold and its own exit offset, and the graph it
@@ -630,7 +643,11 @@ measured rather than assumed:
   reads `photoStart` / `exitStart` / `exitFlyLength` from `collageCore` instead of
   re-deriving them, snaps with `Math.round(v * 25) / 25`, and is mounted under the
   head that explains it, inside the timing group, with `onChange` wired to
-  `setPhotoLane`.
+  `setPhotoLane`. `LaneMathTest` in the same file drives `src/CollageLaneMath.ts`
+  through node and measures the pointer↔seconds mapping itself: the same place on a
+  track answers the same second wherever the lane sits on the page; a body drag keeps
+  the window's width and stops at both ends of the lane; a pinned start cannot pass
+  its stop; and one edge moves without moving the other.
 - `backend/tests/test_collage_animation_ffmpeg.py` — real FFmpeg renders, pixels
   measured. `CollageFreeTiltRenderTest` renders one red photo on a grey bed at
   0°, ±45°, ±90°, 135°, 180° and checks the bounding box turns the right way and

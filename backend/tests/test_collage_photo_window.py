@@ -26,12 +26,18 @@ because a lane the render ignores is a lie in a text box.
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+LANE_TSX = REPO / "src" / "CollageTimingLanes.tsx"
+LANE_MATH_TS = REPO / "src" / "CollageLaneMath.ts"
+DRIVER = Path(__file__).resolve().parent / "collage_lane_math.mjs"
 sys.path.insert(0, str(REPO / "backend"))
 sys.path.insert(0, str(REPO))
 
@@ -240,7 +246,8 @@ class PopupWiringTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.lane = (REPO / "src" / "CollageTimingLanes.tsx").read_text()
+        cls.lane = LANE_TSX.read_text(encoding="utf-8")
+        cls.math = LANE_MATH_TS.read_text(encoding="utf-8")
         cls.app = (REPO / "src" / "App.tsx").read_text()
         cls.core = (REPO / "src" / "collageCore.ts").read_text()
 
@@ -251,9 +258,31 @@ class PopupWiringTest(unittest.TestCase):
                       "the lane reads the shared engine, so it cannot drift from the render")
         self.assertNotIn("baseDuration", self.lane, "the lane draws windows, it does not schedule them")
 
+    def test_the_lane_moves_on_a_drag_and_measures_its_own_track(self) -> None:
+        """The two ways this lane was dead: nothing was listening for the move,
+        and the numbers it read came from the lane's outer box (name column, seconds
+        column and all) instead of the track under the cursor."""
+        self.assertIn("window.addEventListener('pointermove'", self.lane,
+                      "a 22 px lane loses the pointer in one frame, so the move lives on the window")
+        self.assertIn("window.removeEventListener('pointermove'", self.lane,
+                      "…and is taken off again, or every lane in the popup moves with one drag")
+        self.assertIn(".closest<HTMLElement>('.collage-window-track')", self.lane,
+                      "the ruler the drag is measured across is the row's track")
+        self.assertNotIn("lanes.current?.getBoundingClientRect()", self.lane,
+                         "the outer box is not a ruler: it also holds the name and value columns")
+        self.assertNotIn("setPointerCapture", self.lane,
+                         "capture retargets the events the window listener is already handling")
+
+    def test_the_exit_end_of_a_lane_says_which_exit_it_ends(self) -> None:
+        self.assertIn("exitChoice(spec, i)", self.lane, "the right edge ends an exit, so it names it")
+        self.assertIn("exitMode(spec, i)", self.lane, "…by the name they gave it, flattened where that is all there is")
+        self.assertIn("exitFlyLength(spec, i)", self.lane)
+
     def test_the_lane_snaps_to_the_frames_the_render_renders(self) -> None:
-        self.assertIn("Math.round(v * 25) / 25", self.lane,
+        self.assertIn("LANE_FPS = 25", self.math,
                       "25 frames a second is what the MP4 gets, so the lane must not offer a third of one")
+        self.assertRegex(self.math.replace(" ", ""), r"Math\.round\(t\*fps\)/fps")
+        self.assertIn("MIN_WINDOW = 0.12", self.math)
 
     def test_the_popup_mounts_the_lane_in_the_timing_group(self) -> None:
         self.assertIn("import { CollageTimingLanes } from './CollageTimingLanes'", self.app)
@@ -276,6 +305,102 @@ class PopupWiringTest(unittest.TestCase):
         backend = (REPO / "backend" / "app" / "collage.py").read_text()
         self.assertIn('entry["at"] = at', backend)
         self.assertIn('entry["until"] = until', backend)
+
+
+
+class LaneMathTest(unittest.TestCase):
+    """The lane's cursor↔second mapping, executed from the module the component
+    uses — a pure function is only a promise until something outside it calls it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node or not DRIVER.exists():
+            raise unittest.SkipTest("needs node and the lane math driver")
+
+    def _run(self, cases: list[dict]) -> list[dict]:
+        proc = subprocess.run(
+            [self.node, "--experimental-strip-types", str(DRIVER)],
+            input=json.dumps({"cases": cases}), capture_output=True, text=True, timeout=180,
+        )
+        if proc.returncode != 0:
+            self.fail(f"lane math driver failed: {proc.stderr.strip()[:2000]}")
+        return json.loads(proc.stdout)
+
+    def test_the_pointer_maps_across_the_track_only(self) -> None:
+        span = 60.0
+        track = {"left": 140.0, "width": 660.0}
+        got = self._run([
+            {"rect": track, "span": span, "x": 140.0},
+            {"rect": track, "span": span, "x": 470.0},
+            {"rect": track, "span": span, "x": 800.0},
+            {"rect": {"left": 0.0, "width": 660.0}, "span": span, "x": 330.0},
+            {"rect": {"left": 140.0, "width": 898.0}, "span": span, "x": 470.0},
+        ])
+        self.assertAlmostEqual(got[0]["secondsAt"], 0.0, places=6)
+        self.assertAlmostEqual(got[1]["secondsAt"], 30.0, places=6)
+        self.assertAlmostEqual(got[2]["secondsAt"], 60.0, places=6)
+        # the same offset in seconds for the same place on the track, whichever
+        # column layout the popup happens to have
+        self.assertAlmostEqual(got[3]["secondsAt"], got[1]["secondsAt"], places=6,
+                               msg="a drag must not depend on where the lane starts on the page")
+        self.assertAlmostEqual(got[4]["secondsAt"], 22.05, delta=0.02,
+                               msg="across the outer box the same click is 22 s, not 30 s — the whole bug")
+        self.assertLess(got[4]["secondsAt"], 30.0,
+                           "measuring the track is the whole point: the outer box said 22s here")
+
+    def test_a_drag_measures_travel_not_absolute_position(self) -> None:
+        track = {"left": 140.0, "width": 660.0}
+        got = self._run([
+            {"rect": track, "span": 60, "from": 300, "to": 366, "at": 1.0, "until": 4.0},
+            {"rect": track, "span": 60, "from": 300, "to": 366, "at": 57, "until": 59},
+            {"rect": track, "span": 60, "from": 300, "to": 240, "at": 1.0, "until": 4.0},
+            {"rect": track, "span": 60, "from": 300, "to": 366, "at": 1.0, "until": 1.02},
+        ])
+        # 66 px of travel on a 660 px track across a 60 s lane is 6 seconds
+        self.assertAlmostEqual(got[0]["move"]["at"], 7.0, places=6)
+        self.assertAlmostEqual(got[0]["move"]["until"], 10.0, places=6,
+                               msg="the window keeps the width the person set")
+        self.assertAlmostEqual(got[1]["move"]["until"], 60.0, places=6, msg="…and stops at the lane")
+        self.assertAlmostEqual(got[1]["move"]["at"], 58.0, places=6)
+        self.assertAlmostEqual(got[2]["move"]["at"], 0.0, places=6, msg="and never goes negative")
+        self.assertAlmostEqual(got[3]["move"]["until"] - got[3]["move"]["at"], 0.12, places=6,
+                               msg="two frames is the shortest window worth writing")
+
+    def test_the_edges_pin_and_clamp_the_other_end(self) -> None:
+        track = {"left": 140.0, "width": 660.0}
+        got = self._run([
+            # Shift-click at 15 s on a 60 s lane with room, then at 59 s on a photo
+            # whose stop is already at 4 s
+            {"rect": track, "span": 60, "x": 305.0, "at": 1.0, "until": 20.0},
+            {"rect": track, "span": 60, "x": 790.0, "at": 1.0, "until": 4.0},
+            # Ctrl-click before the arrival, and one edge dragged past the other
+            {"rect": track, "span": 60, "from": 0, "to": 0, "at": 10.0, "until": 4.0},
+            {"rect": track, "span": 60, "from": 300, "to": 700, "at": 1.0, "until": 4.0},
+        ])
+        self.assertAlmostEqual(got[0]["pinStart"], 15.0, places=6,
+                               msg="Shift-click pins the arrival where the pointer is")
+        self.assertAlmostEqual(got[0]["pinStop"], 15.0, places=6,
+                               msg="Ctrl-click pins the departure where the pointer is — the end of the fly")
+        self.assertAlmostEqual(got[1]["pinStart"], 3.88, places=6,
+                               msg="a pinned start stops short of its stop, never past it")
+        self.assertLessEqual(got[1]["pinStart"], 4.0 - 0.12 + 1e-9,
+                             "a start cannot pass the stop it is paired with")
+        self.assertGreaterEqual(got[2]["pinStop"], 10.0 + 0.12 - 1e-9)
+        self.assertLessEqual(got[3]["edgeStart"], 4.0 - 0.12 + 1e-9)
+        self.assertAlmostEqual(got[3]["edgeEnd"], 40.36, places=6,
+                               msg="the other edge does not move when one is dragged, and the one that "
+                                   "does lands on a whole frame (40.3636 s snapped to 40.36 s)")
+
+    def test_an_unusable_track_maps_to_zero_instead_of_a_division(self) -> None:
+        got = self._run([
+            {"rect": None, "span": 60, "x": 400},
+            {"rect": {"left": 0, "width": 0}, "span": 60, "x": 400},
+            {"rect": {"left": 0, "width": 660}, "span": 0, "x": 400},
+            {"rect": {"left": 0, "width": 660}, "span": 60, "snap": 1.237},
+        ])
+        self.assertEqual([g["secondsAt"] for g in got[:3]], [0.0, 0.0, 0.0])
+        self.assertAlmostEqual(got[3]["snap"], 1.24, places=9, msg="a fortieth of a second is the grid")
 
 
 if __name__ == "__main__":

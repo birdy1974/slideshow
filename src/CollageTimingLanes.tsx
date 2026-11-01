@@ -1,4 +1,7 @@
-// One line per photo: when it appears, when it goes.
+// One line per photo: when it appears, when it goes. Both ends of a block are the
+// photo's own — the left edge is its entrance, the right edge is the end of its
+// exit fly — so the lane under *Photo size & timing* is the exit timeline too, and
+// the only place where appear and disappear can be set against each other.
 //
 // The collage's own model is a *sequence* — photo i arrives after the sum of the
 // delays in front of it, then stays until the end of the hold and leaves on its
@@ -13,14 +16,10 @@
 // on a slide that was never touched.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CollageSpec } from './collageCore'
-import { entranceLength, exitFlyLength, exitStart, photoAt, photoDelay, photoStart, photoUntil } from './collageCore'
+import { entranceLength, exitChoice, exitFlyLength, exitMode, exitStart, photoAt, photoDelay, photoStart, photoUntil } from './collageCore'
+import { MIN_WINDOW, dragEdge, moveWindow, pinStart, pinStop } from './CollageLaneMath'
+import type { LaneRect } from './CollageLaneMath'
 
-/** The render is 25 fps, so a twentieth-of-a-second grid is the finest unit that
- *  still means something: every snapped value is a whole frame of the MP4. */
-const snap = (v: number) => Math.round(v * 25) / 25
-/** The narrowest window worth writing — below it the entrance has no room and the
- *  engine would refuse the stop anyway (see `exit_start` in collage.py). */
-const MIN_WINDOW = 0.12
 
 export interface CollageTimingLanesProps {
   spec: CollageSpec
@@ -42,6 +41,25 @@ interface Drag {
   x0: number
   at: number
   until: number
+  /** The track this row's block lives in, grabbed once at the start. Not the
+   *  lane's outer box — that one also holds the name and the seconds columns, and
+   *  measuring across it was the whole of "the cursor changed but nothing moved". */
+  rect: LaneRect | null
+}
+
+/** What ends this photo, named the way the exit group names it — the right edge of
+ *  a lane is the end of a *departure*, and saying which one is what makes the same
+ *  lane read as an exit editor instead of a mysterious second handle. */
+function exitLabel (spec: CollageSpec, i: number): string {
+  const mode = exitMode(spec, i)
+  const fly = exitFlyLength(spec, i)
+  if (mode === 'none') return 'no exit: stays until the slide ends, unless you stop it here'
+  const choice = exitChoice(spec, i)
+  // A departure that names an arrival is that arrival running backwards, and the
+  // id the user picked is the only name worth showing — `reverse` is what it
+  // *behaves* like, not what they called it.
+  const named = choice === 'reverse' || choice === mode ? mode : `${choice} (its arrival, backwards)`
+  return `${named} out · ${fly.toFixed(2)}s fly`
 }
 
 /** The photo's visible window as the engines see it, authored or not. */
@@ -58,61 +76,88 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
   const drag = useRef<Drag | null>(null)
   const [moving, setMoving] = useState(false)
 
-  const timeAt = useCallback((clientX: number) => {
-    const rect = lanes.current?.getBoundingClientRect()
-    if (!rect || rect.width < 8) return 0
-    return Math.max(0, Math.min(span, ((clientX - rect.left) / rect.width) * span))
-  }, [span])
   const percent = useCallback((t: number) => `${Math.max(0, Math.min(100, (t / span) * 100))}%`, [span])
+  /** The track of the row a pointer event came from. Every number the lane writes
+   *  is measured across this box, because this box is what the ruler and the block
+   *  are drawn inside. */
+  const trackOf = (node: EventTarget | null): LaneRect | null => {
+    const el = node instanceof Element ? node.closest<HTMLElement>('.collage-window-track') : null
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    return { left: rect.left, width: rect.width }
+  }
 
   const begin = (index: number, kind: Drag['kind']) => (event: React.PointerEvent) => {
-    event.stopPropagation()
+    // The edge handles are inside the track, and a pointerdown there would also
+    // start a body drag; the first handler wins and the track's guard below keeps
+    // the two apart.
+    if (drag.current) return
     event.preventDefault()
+    event.stopPropagation()
     const win = photoWindow(spec, index)
     drag.current = {
-      index, kind, x0: event.clientX,
+      index, kind, x0: event.clientX, rect: trackOf(event.currentTarget),
       at: photoAt(spec, index) ?? win.from,
       until: photoUntil(spec, index) ?? win.to,
     }
     setMoving(true)
     onSelect(index)
-    ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
   }
-  const move = (event: React.PointerEvent) => {
-    const held = drag.current
-    if (!held) return
-    const rect = lanes.current?.getBoundingClientRect()
-    if (!rect || rect.width < 8) return
-    const delta = ((event.clientX - held.x0) / rect.width) * span
-    if (held.kind === 'both') {
-      const width = held.until - held.at
-      const from = snap(Math.max(0, Math.min(span - width, held.at + delta)))
-      onChange(held.index, 'at', String(from))
-      onChange(held.index, 'until', String(from + width))
-      return
-    }
-    const at = snap(timeAt(event.clientX))
-    if (held.kind === 'start') onChange(held.index, 'at', String(Math.max(0, Math.min(at, held.until - MIN_WINDOW))))
-    else onChange(held.index, 'until', String(Math.min(span, Math.max(at, held.at + MIN_WINDOW))))
-  }
+
   const end = useCallback(() => {
     if (!drag.current) return
     drag.current = null
     setMoving(false)
   }, [])
-  // A pointerup on a handle that was captured lands on the handle, not the lane,
-  // so the drag is also ended on the window: otherwise a fast release outside the
-  // popup leaves the block welded to the cursor.
+
+  // `pointermove` on the window, not on the block: the pointer leaves a 22 px lane
+  // within a frame, and a handler that only fires while it is inside would drop the
+  // drag exactly when someone drags far enough to matter. The listeners live in an
+  // effect keyed on `moving`, so a release outside the popup — or a second popup
+  // opened over it — still ends the drag cleanly.
   useEffect(() => {
     if (!moving) return
+    const onMove = (event: PointerEvent) => {
+      const held = drag.current
+      if (!held) return
+      const to = event.clientX
+      if (held.kind === 'both') {
+        const next = moveWindow(held.rect, span, held.x0, to, held.at, held.until)
+        onChange(held.index, 'at', String(next.at))
+        onChange(held.index, 'until', String(next.until))
+        return
+      }
+      // One edge at a time: the other end is left exactly where it is, which is
+      // what makes the far edge a *start* or a *stop* and not a duration.
+      const value = dragEdge(held.rect, span, held.x0, to, held.at, held.until, held.kind)
+      onChange(held.index, held.kind === 'start' ? 'at' : 'until', String(value))
+    }
     const off = () => end()
+    window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', off)
     window.addEventListener('pointercancel', off)
     return () => {
+      window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', off)
       window.removeEventListener('pointercancel', off)
     }
-  }, [moving, end])
+  }, [moving, span, onChange, end])
+
+  /** Shift/Ctrl-click on the track itself: pin one end at the pointer, leaving the
+   *  other to the schedule or to whatever is already written. */
+  const pinFromTrack = (index: number, which: 'at' | 'until') => (event: React.PointerEvent) => {
+    if (!(event.shiftKey || event.ctrlKey || event.metaKey)) return false
+    const win = photoWindow(spec, index)
+    const rect = trackOf(event.currentTarget)
+    if (which === 'at') {
+      onChange(index, 'at', String(pinStart(rect, span, event.clientX, win.to)))
+    } else {
+      onChange(index, 'until', String(pinStop(rect, span, event.clientX, win.from)))
+    }
+    onSelect(index)
+    event.preventDefault()
+    return true
+  }
 
   if (!photos.length) return null
   const ticks: number[] = []
@@ -120,7 +165,7 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
   for (let t = 0; t <= span + 0.001; t += step) ticks.push(Math.round(t * 100) / 100)
 
   return (
-    <div className="collage-window" ref={el => { lanes.current = el }}>
+    <div className={`collage-window${moving ? ' moving' : ''}`} ref={el => { lanes.current = el }}>
       <div className="collage-window-ruler">
         <span className="collage-window-key">photo</span>
         <div className="collage-window-track ruler">{ticks.map(t => <b key={t} style={{ left: percent(t) }}><s>{Math.round(t)}</s></b>)}</div>
@@ -144,13 +189,7 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
                  onPointerDown={event => {
                    // The lane's own empty ground: Shift-click pins the arrival there,
                    // Ctrl-click the stop — the same mouse map the caption strip uses.
-                   const win2 = photoWindow(spec, i)
-                   const at2 = at ?? win2.from
-                   const until2 = until ?? win2.to
-                   const t = snap(timeAt(event.clientX))
-                   if (event.shiftKey) onChange(i, 'at', String(Math.max(0, Math.min(t, until2 - MIN_WINDOW))))
-                   else if (event.ctrlKey || event.metaKey) onChange(i, 'until', String(Math.min(span, Math.max(t, at2 + MIN_WINDOW))))
-                   else begin(i, 'both')(event)
+                   if (!pinFromTrack(i, event.shiftKey ? 'at' : 'until')(event)) begin(i, 'both')(event)
                  }}>
               {/* What the schedule would do anyway, drawn faintly, so a pinned photo
                   still shows what the photo is *not* doing. */}
@@ -162,7 +201,7 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
                 <button type="button" className="collage-window-edge in" aria-label={`Start of photo ${i + 1}`} onPointerDown={begin(i, 'start')}
                         title={`Drag: when this photo appears · now ${win.from.toFixed(2)}s`}/>
                 <button type="button" className="collage-window-edge out" aria-label={`End of photo ${i + 1}`} onPointerDown={begin(i, 'end')}
-                        title={`Drag: when this photo is gone · now ${win.to.toFixed(2)}s`}/>
+                        title={`Drag: when this photo is gone · now ${win.to.toFixed(2)}s · ${exitLabel(spec, i)}`}/>
               </div>
             </div>
             <span className="collage-window-values">

@@ -1841,15 +1841,29 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-overlay{position:absolute;inset:0;pointer-events:none}
 .kara-stage-host{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .kara-stage{position:absolute;left:0;top:0;transform-origin:0 0}
-.kara-block{position:absolute;transform-origin:50% 50%;margin:0;padding:0;pointer-events:none;transition:opacity .12s linear}
+/* The line of sung words on the preview stage. It used to be called `.kara-block`,
+   which is also what the timing strip under the stage calls a row — and that rule
+   (height 34px, display flex, overflow hidden, background, border, 9px padding)
+   came later in this file, so it won and turned the lyric line into a strip row:
+   a box shorter than the text, clipping its cap and descender, with a green plate
+   behind it and ellipsised words. The stage owns its own geometry through inline
+   styles, so this rule adds nothing but the paint order, the fade and an explicit
+   refusal to clip. `max-width` is the inline style's, for wrapping. */
+.kara-lyric{position:absolute;transform-origin:50% 50%;margin:0;padding:0;pointer-events:none;transition:opacity .12s linear;overflow:visible}
 /* The word is the unsung colour; `.kara-word-sung` is the same text again,
-   absolutely placed and clipped on x. The 0.04em is for the copy on top: its box
-   is the line box (measured from the font file in KaraokeStage), and a face whose
-   drawings overshoot their own recorded ascent needs the slack or the overlay sits
-   a few pixels above the letters it is supposed to colour. The negative margin
-   pays for it, so the block does not move — the render has no such box, and the
-   twin promise is that the popup cannot show a layout the MP4 will not do. */
-.kara-word{position:relative;display:inline-block;white-space:pre-wrap;padding:.04em 0;margin:-.04em 0}
+   absolutely placed and revealed on x. Both copies are laid out on one box — the
+   line box KaraokeStage measures from the font file — so the word carries no
+   padding and no compensating margin: the overlay is placed at the top of its
+   parent's *padding* box, which with padding would sit a few pixels above the
+   letters it is supposed to colour, and a sweep that paints its word slightly
+   higher than the word underneath reads as a rendering bug rather than as one
+   being fixed. The measured `line-height` is what keeps the ascent and the
+   descender inside that box, exactly where `prepareScene` puts the line for
+   libass. `overflow:visible` and `text-overflow:clip` are not decoration either:
+   they are the reason no ancestor — the strip's clipped, ellipsised row, for one,
+   which this element used to share a class with — can ever shrink the box the
+   glyphs are cut against. */
+.kara-word{position:relative;display:inline-block;white-space:pre-wrap;overflow:visible;text-overflow:clip}
 .kara-word-sung{position:absolute;left:0;top:0;width:100%;white-space:pre-wrap;pointer-events:none}
 .kara-tap-cue{position:absolute;left:50%;bottom:11px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:2px;background:#0f110cd9;border:1px solid #78a13e88;border-radius:8px;padding:6px 14px;pointer-events:none}
 .kara-tap-cue b{font:800 17px Manrope;color:#d9efb0}
