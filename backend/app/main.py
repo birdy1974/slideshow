@@ -941,6 +941,19 @@ def job_log(job_id: str) -> dict[str, str]:
 
 # The production image copies the Vite build here. API routes are registered
 # first so the SPA fallback never shadows them.
+#
+# `SHELL_HEADERS` is the difference between a release nobody sees and one every-
+# body sees. Everything Vite rebuilds is named after a hash of its contents, so
+# `/assets/*` may be cached forever — but `index.html` is the file that *points at*
+# those names, and its URL never changes while its meaning changes with every
+# image. Starlette sends no `Cache-Control` at all, which leaves a browser free to
+# apply heuristic freshness to it and serve the previous shell for as long as it
+# likes: the app then keeps painting the old bundle, and a redeploy looks like it
+# never arrived. `no-cache` means "ask first, every time" — the answer is usually a
+# 304, and the file itself is small. The same reasoning covers the unhashed
+# `public/` files the fallback serves (`/fonts/*.ttf`, the icons): replaced in a
+# new image under the same name, so they must be revalidated too.
+SHELL_HEADERS = {"Cache-Control": "no-cache"}
 static_dir = Path(os.getenv("STATIC_DIR", "/app/static"))
 if static_dir.exists():
     app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
@@ -949,5 +962,5 @@ if static_dir.exists():
     def spa(path: str) -> FileResponse:
         candidate = (static_dir / path).resolve()
         if candidate.is_file() and static_dir.resolve() in candidate.parents:
-            return FileResponse(candidate)
-        return FileResponse(static_dir / "index.html")
+            return FileResponse(candidate, headers=SHELL_HEADERS)
+        return FileResponse(static_dir / "index.html", headers=SHELL_HEADERS)
