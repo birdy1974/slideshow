@@ -1739,6 +1739,9 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .collage-choices-group.closed .collage-group-head svg{transform:rotate(-90deg)}
 .collage-choices-group.closed>:not(.collage-group-head){display:none}
 .collage-choices-group.closed{margin-bottom:6px}
+/* what a collapsed section holds — the head is the only thing left on screen, so
+   it has to say more than the section's name */
+.collage-group-head .group-note{font:600 8px Manrope;letter-spacing:.3px;color:#8b9084;text-transform:none;margin-left:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;display:inline-block;vertical-align:bottom}
 
 /* Media browser: what a card shows while its picture waits in the load queue,
    and the names-only list view. Rows are text only — no <img>/<video> is
