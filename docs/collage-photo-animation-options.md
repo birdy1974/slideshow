@@ -649,6 +649,21 @@ in the column to the right of the lane, and every gesture on the lane ends in th
 same `setPhotoLane(i, 'at' | 'until', seconds)` the size and wait rows use, so the
 popup has exactly one way to write a timing and it is the one that clamps.
 
+The exit wanted its own timeline too, and it got the *same* one: the right edge of
+a block is where a departure finishes, so one lane edits appear and disappear
+against each other, which is the only way to see whether a photo leaves before its
+neighbour arrives. That is also why the row names the exit on that handle instead
+of adding a second list of fields somewhere else — a second control for the same
+two numbers is how a popup ends up disagreeing with itself.
+
+What the first cut of this got wrong is worth keeping on the record, because both
+mistakes were invisible from inside the component: nothing was listening for
+`pointermove`, and the mapping read the lane's outer box instead of the row's
+track. A control that changes its cursor and then ignores the drag is, from the
+user's side, indistinguishable from a feature that was never built — which is the
+case for putting the arithmetic in a module that the backend suite can run under
+node, rather than eyeballing a lane in a browser.
+
 `backend/tests/test_collage_photo_window.py` holds the semantics, the twin gained a
 `lanes-authored-window` case (four photos, authored arrival beating a snapped one,
 a cut, and a window too short to hold its own fly), and `test_collage_normalize.py`

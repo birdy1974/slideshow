@@ -115,14 +115,14 @@ export function KaraokeStage(props: KaraokeStageProps) {
   }, [look.family, look.bold, look.italic])
 
   const px = Math.max(4, (Number(look.fontSize) || 48) * FRAME_W / 1920)
-  // The box the sung words are painted in, measured from the font file rather
-  // than guessed. `background-clip:text` makes the sweep's gradient the mask, so
-  // a line box shorter than the face's own ascent + descent shaves the tops and
-  // bottoms off the glyphs — a few pixels at 40 px, an obvious bite at 120, which
-  // is what "the background must fit the text size" looked like. `prepareScene`
-  // lays the caption out on these same win metrics because that is where libass
-  // puts a line, so measuring here agrees with the MP4 instead of trading one
-  // constant for another. 1.02 is only a floor: a face that wants more gets more.
+  // The line box the words are laid out in, measured from the font file rather
+  // than guessed: `prepareScene` gives libass a line whose height is these win
+  // metrics, so measuring here moves the preview towards the MP4 instead of
+  // trading one constant for another. 1.02 em is only a floor — a face that wants
+  // 1.73 (Anton) gets 1.73. It is *not* what stops the letters being cut: any box
+  // a clip or an `overflow` is given clips whatever it is, which is why the reveal
+  // below grows its rectangle vertically and why this element's class is its own
+  // (see `kara-lyric` in styles.css and StageBoxCollisionTest).
   const faceStyle = effectiveFontStyle(look.family, look.bold, look.italic)
   const metrics = fontMetrics(look.family, faceStyle.bold, faceStyle.italic)
   const boxEm = Math.max(1.02, (metrics.winAscent + metrics.winDescent) / (metrics.upm || 1000))
@@ -157,7 +157,17 @@ export function KaraokeStage(props: KaraokeStageProps) {
     <div ref={host} className={`kara-stage-host${props.className ? ` ${props.className}` : ''}`} style={props.style}>
       <div ref={root} className="kara-stage" style={{ width: FRAME_W, height: FRAME_H }}>
         {sentence ? (
-          <div className={`kara-block${styleKind === 'pop' ? ' pop' : ''}`} style={blockStyle}>
+          <div className={`kara-lyric${styleKind === 'pop' ? ' pop' : ''}`} style={blockStyle}>
+            {/* `kara-lyric`, not `kara-block`: the strip under the stage builds its
+                rows out of `kara-block`, which is a 34 px tall flex line with
+                `overflow:hidden`, a background, a border and 9 px of padding — and
+                a later rule of that name beat the stage's own, so the lyric line in
+                the *preview* was painted inside the editor's block chrome. That is
+                what "the background of the karaoke text must fit the height of the
+                text size" and "the top and bottom of the letters are cut off"
+                actually were: not a mask, and not a line box measured wrong, but a
+                borrowed box. The MP4 has no box around a line, so neither may the
+                preview. */}
             {shown.map(w => {
               const token = tokens[w.i]
               if (!token) return null
@@ -168,13 +178,17 @@ export function KaraokeStage(props: KaraokeStageProps) {
               // The sweep is the same word painted twice: the unsung colour
               // underneath, the sung one laid over it and cut on a vertical line.
               // It used to be a gradient clipped to the text (`background-clip:text`
-              // with a transparent fill), which is smaller than it looks — the
-              // gradient's paint box *is* the mask, so any pixel a face draws above
-              // its recorded ascent or below its descent got no colour at all, and
-              // with a transparent text colour that is a letter with its top and
-              // bottom shaved off, worse the bigger the size. A clip on x cannot
-              // hurt the glyphs, needs no -webkit- aliases, and reads the same in
-              // every engine; `inset(0 …)` keeps it to one axis on purpose.
+              // with a transparent fill), and that had the same flaw one level down:
+              // *any* clip is a rectangle, and the rectangle a `clip-path` uses is
+              // the element's own box. So a face whose ink is taller than its line
+              // box — one whose metrics could not be read, a fallback substitution,
+              // a display cut that overshoots its recorded ascent — loses its cap
+              // and its descender to the reveal just as it did to the gradient,
+              // worse the bigger the font. The vertical insets are therefore
+              // negative: the rectangle is grown to three times the word's height,
+              // which no face paints outside, and the only edge that can bite is the
+              // one the sweep is made of. `word-break` never needs a clip; the
+              // -webkit- aliases are gone because nothing is clipped to text any more.
               return (
                 <span
                   key={w.i}
@@ -182,7 +196,7 @@ export function KaraokeStage(props: KaraokeStageProps) {
                   style={{ color: colour }}
                 >
                   {token.w}
-                  {sweeping ? <span className="kara-word-sung" style={{ color: fill, clipPath: `inset(0 ${(100 - Math.max(0, Math.min(1, frame.u)) * 100).toFixed(2)}% 0 0)` }} aria-hidden="true">{token.w}</span> : null}
+                  {sweeping ? <span className="kara-word-sung" style={{ color: fill, clipPath: `inset(-100% ${(100 - Math.max(0, Math.min(1, frame.u)) * 100).toFixed(2)}% -100% 0)` }} aria-hidden="true">{token.w}</span> : null}
                 </span>
               )
             })}

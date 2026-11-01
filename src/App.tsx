@@ -5415,12 +5415,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 window: `photoStart` → `exitStart` + fly, the same two functions the
                 render clips its overlays to, so a lane can only show what the MP4
                 will do. Drag the middle to move the window, an edge to set one of
-                its ends, Shift/Ctrl-click a spot to pin the start or the stop there,
+                its ends (the right one ends the photo's *exit*), Shift/Ctrl-click a spot
+                to pin the start or the stop there,
                 double-click the row to hand the photo back to the schedule. A row
                 nobody touches writes nothing at all. */}
             <div className="collage-window-head">
               <span>When each photo is on screen</span>
-              <small>Drag a block to move it, its edges to set appear / disappear · snapped to the render's 25 fps frames</small>
+              <small>Drag a block to move it, its left edge to set when it appears, its right edge to set when its exit has finished · snapped to the render's 25 fps frames</small>
             </div>
             <CollageTimingLanes
               spec={spec}

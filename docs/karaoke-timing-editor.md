@@ -167,34 +167,48 @@ remain exact to the millisecond.
 
 ## The box the words are painted in
 
-`sweep` colours a word by painting it twice: the word in the look's unsung
-`colour`, then the same text again in the `fill`, laid over it and cut on one
-vertical line (`clip-path: inset(0 40% 0 0)` — the right edge is the only moving
-number, driven by the twin's `u`).
+Two things cut the tops and bottoms off the sung words in the preview, and they
+had the same shape: **a rectangle was smaller than the letters, and something was
+clipping to it.** Neither touched the MP4, because libass paints a line and its
+`\kf` colour with no box around them.
 
-Before that it was a gradient behind the glyphs, clipped to them
-(`background-clip:text` with a transparent text fill), which makes the word's own
-box the *mask*: anything the font draws outside that box is transparent. The
-preview used a constant line box of 1.28 em, and 76 of the 93 styles in the font
-registry want a taller line than that — Anton measures 1.73 em, so at a karaoke
-size of 120 px roughly 27 px of cap and 27 px of descender fell outside the mask
-and vanished. That is the whole "increase the font size and the letters get cut
-off top and bottom", and it was preview-only: libass paints the glyphs and the
-`\kf` colour, so the MP4 was never losing anything. Measuring the box from the
-font file (`winAscent + winDescent` over `upm`, floored at 1.02 em — the same
-numbers `app/text_motion.py` uses to place a line) moved the preview *towards* the
-render, but it could not have stopped the clipping: a rectangular mask clips
-whatever rectangle it is given.
+*The borrowed box.* `KaraokeStage` laid the line out in an element with class
+`kara-block` — which is also what the timing strip under the stage calls a row,
+and the strip's rule came later in the same stylesheet at the same specificity:
+`height: 34px`, `display: flex`, `overflow: hidden`, a background, a border, 9 px
+of padding and `white-space: nowrap` on the words inside it. The lyric line was
+therefore painted on a green plate that never grew with the font, its words
+ellipsised instead of wrapped, its ascenders and descenders outside 34 px. "The
+background of the karaoke text must fit the height of the text size" was this: not
+a background to size, but a background that should not exist. The stage now has a
+class of its own (`.kara-lyric`: positioning, the fade, nothing else), and
+`StageBoxCollisionTest` keeps the two apart — it asserts the stage never uses the
+strip's class, that exactly one rule owns `.kara-block`, and that the lyric rule
+carries no height, background, border or clip.
 
-So there is no mask any more, only a reveal, and a horizontal inset cannot touch a
-glyph's top or bottom at any size or any face. The two copies are `.kara-word` and
-`.kara-word-sung` in `src/styles.css`; the overlay copy keeps 0.04 em of padding
-above and below the line box, paid for by an equal negative margin, for the faces
-whose drawings overshoot the metrics recorded in their own table — the margin means
-the block's position, and so the twin's arithmetic, does not move. It also needs no
-`-webkit-` prefix, no `background-clip`, and no `color: transparent`, which is the
-combination that silently loses its paint in a browser that decides not to support
-it.
+*The mask, and the clip that replaced it.* The sweep used to colour a word by
+painting a gradient and clipping it to the glyphs (`background-clip: text` with a
+transparent fill), which makes the word's box the mask. It is now the same word
+painted twice — the unsung colour underneath, the sung one laid over it — with
+the top copy revealed by `clip-path: inset(-100% R% -100% 0)`, where `R` is
+`1 - u` from the twin. Replacing the mask was not enough by itself, and that took
+a second report to see: **a `clip-path` clips to the element's box too**, so with
+`inset(0 …)` a face taller than its own line box (one whose metrics could not be
+read yet, a fallback substitution, a display cut that overshoots its recorded
+ascent) still lost its cap and its descender — the same bite, from a different
+direction. Growing the rectangle's vertical insets to `-100%` makes the clip three
+times the word's height, which nothing paints outside, and leaves exactly one edge
+that can bite: the vertical line the sweep is made of.
+
+The box itself is measured from the font file — `winAscent + winDescent` over
+`upm`, floored at 1.02 em — because that is the height `app/text_motion.py` gives
+the line in the ASS file, so the change moved the preview *towards* the render
+instead of inventing a second guess. The word no longer carries `padding` with a
+compensating negative margin: that pair was left over from the mask era, and an
+absolutely positioned overlay is placed against its parent's *padding* box, so the
+padding was lifting the coloured copy a few pixels above the letters it is
+supposed to colour. One box, both copies, no offset — and the twin's arithmetic
+does not move, because the box is unchanged in size, only in who owns it.
 
 ## Where the code is
 
