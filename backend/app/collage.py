@@ -1265,6 +1265,50 @@ ENTRANCE_LENGTH = {
     **{a: r["length"] for a, r in GEOM.items()},
     **REVEAL_LENGTH,
 }
+# One entrance's alpha ramp in seconds, at speed 1 — `ENTRANCE_FADE` in
+# src/collageCore.ts. `photo_state` reads it as the divisor of a ramp and
+# `collage_graph` emits it as `fade=t=in:d=`, from this table, so the two cannot
+# fade a photo in at different rates; `fade` and `ink` are the two whose preview
+# alpha is an eased curve, and the export keeps the linear ramp on purpose.
+ENTRANCE_FADE = {
+    "drop": 0.22, "pop": 0.18, "swing": 0.15, "flip": 0.15, "none": 0.0, "fade": 0.45,
+    "slide": 0.18, "rise": 0.18, "tumble": 0.16, "zoom": 0.16, "fold": 0.14, "glitch": 0.12,
+    "ink": 0.4, "brush": 0.16,
+    **{a: r["fade"] for a, r in GEOM.items()},
+    **{a: 0.0 for a in REVEALS},
+}
+# The same range the exits use: one slider grammar for arriving and for leaving.
+ENTRANCE_SPEED_MIN, ENTRANCE_SPEED_MAX = 0.05, 2.0
+
+
+def anim_speed(spec: dict[str, Any], i: int | None = None) -> float:
+    """The speed multiplier on photo i's entrance (twin of `animSpeed`)."""
+    raw = spec.get("animSpeed") if i is None else (
+        (spec.get("photos") or [])[i].get("animSpeed")
+        if 0 <= i < len(spec.get("photos") or []) else None)
+    if raw is None:
+        raw = spec.get("animSpeed")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(v) or v <= 0:
+        return 1.0
+    return max(ENTRANCE_SPEED_MIN, min(ENTRANCE_SPEED_MAX, v))
+
+
+def entrance_length(spec: dict[str, Any], i: int) -> float:
+    """Seconds photo i's entrance takes at its speed. Every length read in the
+    engine goes through here, so a speed that scaled the sweep but not the alpha
+    ramp, the pendulum or the size ladder cannot happen."""
+    return ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0) / anim_speed(spec, i)
+
+
+def entrance_fade(spec: dict[str, Any], i: int) -> float:
+    """…and the same for the alpha ramp."""
+    return ENTRANCE_FADE.get(photo_anim(spec, i), 0.0) / anim_speed(spec, i)
+
+
 LAYOUTS = ("stack", "grid", "scatter", "filmstrip", "fan", "masonry", "free", "template",
            "honeycomb", "zigzag", "arc", "photowall", "booth", "silhouette", "cube")
 # The mask reveals are animations too: one list, so a photo can be given a wipe
@@ -1497,7 +1541,7 @@ def base_duration(spec: dict[str, Any]) -> float:
         a = photo_anim(spec, i)
         if a != "none":
             animated = True
-        last = max(last, photo_start(spec, i, 0.0) + ENTRANCE_LENGTH.get(a, 0.0))
+        last = max(last, photo_start(spec, i, 0.0) + entrance_length(spec, i))
     if not animated:
         return _round2(hold)
     return _round2(last + hold)
@@ -1558,7 +1602,7 @@ def push_depth(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> 
         tj = photo_start(spec, j, lead_in)
         # The push follows the ARRIVING photo's landing, so a photo with its
         # own entrance pushes back on its own clock.
-        e = ENTRANCE_LENGTH.get(photo_anim(spec, j), 0.0)
+        e = entrance_length(spec, j)
         q = _clamp01((t - (tj + DEPTH["delay"] * e)) / DEPTH["span"])
         p += q * q * (3 - 2 * q)
     return min(DEPTH["max"], p)
@@ -1663,64 +1707,68 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     t0 = photo_start(spec, i, lead_in)
     push = push_depth(spec, i, t, lead_in)
     anim = photo_anim(spec, i)
-    ent = ENTRANCE_LENGTH.get(anim, 0.0)
+    spd = anim_speed(spec, i)
+    ent = ENTRANCE_LENGTH.get(anim, 0.0) / spd
+    fade = ENTRANCE_FADE.get(anim, 0.0) / spd
     if anim == "drop":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((t - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1 - DEPTH["scale"] * push, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.22), "dim": DEPTH["dim"] * push}
+        st = {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1 - DEPTH["scale"] * push, "scaleX": 1.0, "alpha": _clamp01((t - t0) / fade), "dim": DEPTH["dim"] * push}
     elif anim == "pop":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((t - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": (0.55 + 0.45 * back) * (1 - DEPTH["scale"] * push), "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": DEPTH["dim"] * push}
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": (0.55 + 0.45 * back) * (1 - DEPTH["scale"] * push), "scaleX": 1.0, "alpha": _clamp01((t - t0) / fade), "dim": DEPTH["dim"] * push}
     elif anim == "flip":
         # A card flipping open around its vertical axis: edge-on (4% width)
         # with an outBack overshoot, straightening as it settles.
-        q = _clamp01((t - t0) / 0.45)
+        q = _clamp01((t - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": -4 * (1 - q), "scale": 1 - DEPTH["scale"] * push, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / 0.15), "dim": DEPTH["dim"] * push}
+        st = {"dx": 0.0, "dy": 0.0, "rot": -4 * (1 - q), "scale": 1 - DEPTH["scale"] * push, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / fade), "dim": DEPTH["dim"] * push}
     elif anim == "swing":
-        tau = max(0.0, t - t0)
+        # The pendulum is the one entrance measured in raw seconds, so speed
+        # compresses the clock it runs on rather than a divisor.
+        tau = max(0.0, t - t0) * spd
         rot = 14 * math.exp(-1.3 * tau) * math.cos(2 * math.pi * tau / 1.6)
         st = {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01(tau / 0.15), "dim": 0.0}
     elif anim == "fade":
-        q = _clamp01((t - t0) / 0.45)
+        q = _clamp01((t - t0) / ent)
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": q * q * (3 - 2 * q), "dim": 0.0}
     elif anim == "slide":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((t - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": -28 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": 0.0}
+        st = {"dx": -28 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / fade), "dim": 0.0}
     elif anim == "rise":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((t - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": 0.0, "dy": 22 * settle, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": 0.0}
+        st = {"dx": 0.0, "dy": 22 * settle, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / fade), "dim": 0.0}
     elif anim == "tumble":
-        q = _clamp01((t - t0) / 0.6)
+        q = _clamp01((t - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": 10 * settle, "dy": -18 * settle, "rot": 28 * settle, "scale": 1 - 0.15 * settle, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+        st = {"dx": 10 * settle, "dy": -18 * settle, "rot": 28 * settle, "scale": 1 - 0.15 * settle, "scaleX": 1.0, "alpha": _clamp01((t - t0) / fade), "dim": 0.0}
     elif anim == "zoom":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((t - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.2 + 0.8 * back, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.2 + 0.8 * back, "scaleX": 1.0, "alpha": _clamp01((t - t0) / fade), "dim": 0.0}
     elif anim == "fold":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((t - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / 0.14), "dim": 0.0}
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / fade), "dim": 0.0}
     elif anim == "glitch":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((t - t0) / ent)
         j = (1 - q) * (1 - q)
         seed = int(spec.get("seed") or 1)
         st = {"dx": (hash01(seed, i, 61) - 0.5) * 10 * j, "dy": (hash01(seed, i, 63) - 0.5) * 6 * j,
               "rot": (hash01(seed, i, 65) - 0.5) * 8 * j, "scale": 1.0,
-              "scaleX": 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, "alpha": _clamp01((t - t0) / 0.12), "dim": 0.15 * j}
+              "scaleX": 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, "alpha": _clamp01((t - t0) / fade), "dim": 0.15 * j}
     elif anim == "ink":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((t - t0) / ent)
         blob = q * q * (3 - 2 * q)
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.35 + 0.65 * blob, "scaleX": 1.0, "alpha": blob, "dim": 0.0}
     elif anim == "brush":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((t - t0) / ent)
         settle = (1 - q) ** 3
         st = {"dx": -36 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.12, 1 - 0.55 * settle),
-              "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+              "alpha": _clamp01((t - t0) / fade), "dim": 0.0}
     elif anim in GEOM:
         row = GEOM[anim]
         q = _clamp01((t - t0) / (ent or 0.001))
@@ -1728,7 +1776,7 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
               "rot": _geom(row.get("rot"), q, 0.0),
               "scale": _geom(row.get("scale"), q, 1.0) * (1 - DEPTH["scale"] * push),
               "scaleX": _geom(row.get("scaleX"), q, 1.0),
-              "alpha": _clamp01((t - t0) / row["fade"]), "dim": _geom(row.get("dim"), q, 0.0)}
+              "alpha": _clamp01((t - t0) / (fade or 0.001)), "dim": _geom(row.get("dim"), q, 0.0)}
     elif is_reveal(anim):
         # A mask reveal: the photo never moves, it is uncovered, so every
         # transform field rests and `alpha` stays 1 — the mask is the opacity.
@@ -1930,7 +1978,7 @@ def photo_look_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.
         return dict(plain)
     look = LOOK_ANIM[lid]
     t0 = photo_start(spec, i, lead_in)
-    ent = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0)
+    ent = entrance_length(spec, i)
     land = t0 + ent
     if lid == "toBw":
         # colour drains away across the hold, at Ken Burns' pace
@@ -1985,7 +2033,7 @@ def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
     if mid in TARGET_MOTIONS:
         a = 1.0
     start = photo_start(spec, i, lead_in) if t0 is None else t0
-    e0 = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0) if ent is None else ent
+    e0 = entrance_length(spec, i) if ent is None else ent
     u = max(0.0, t - (start + e0))
     g = _clamp01(u / MOTION_RAMP)
     dur = photo_motion_duration(spec, i)
@@ -2064,6 +2112,22 @@ def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
     return st
 
 
+def _speed_val(raw: Any) -> float | None:
+    """A speed multiplier as saved: finite, positive and clamped to the slider's
+    range, or None when it is missing or malformed — which means 1. Both engines
+    clamp here rather than trusting the UI, so a hand-edited 9001 cannot make a
+    photo arrive in a single frame."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v) or v <= 0:
+        return None
+    return max(ENTRANCE_SPEED_MIN, min(ENTRANCE_SPEED_MAX, v))
+
+
 def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     """The item's valid collage spec, or None when it has no usable photos.
 
@@ -2138,6 +2202,14 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             entry["shape"] = p["shape"]
         if p.get("anim") in ANIMS:
             entry["anim"] = p["anim"]
+        # …and the two things that say *how* that entrance plays. Both are read
+        # with the same tolerance at both levels, because a photo that carries a
+        # direction the save dropped is a photo that wipes the wrong way.
+        if p.get("animDir") in (0, 1) or p.get("animDir") in (False, True):
+            entry["animDir"] = 1 if p["animDir"] else 0
+        spd = _speed_val(p.get("animSpeed"))
+        if spd is not None:
+            entry["animSpeed"] = spd
         if p.get("exit") in EXITS:
             entry["exit"] = p["exit"]
         if p.get("motion") in MOTIONS:
@@ -2174,6 +2246,8 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         return None
     layout = raw.get("layout") if raw.get("layout") in LAYOUTS else "stack"
     animation = raw.get("animation") if raw.get("animation") in ANIMS else "drop"
+    anim_dir = 1 if raw.get("animDir") in (1, True) else 0
+    anim_speed = _speed_val(raw.get("animSpeed"))
     exit_ = raw.get("exit") if raw.get("exit") in EXITS[1:] else None
     try:
         speed_in = float(raw.get("exitSpeed")) if raw.get("exitSpeed") is not None and not isinstance(raw.get("exitSpeed"), bool) else None
@@ -2219,6 +2293,10 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     bg = raw.get("backgroundImage")
     bg = bg if isinstance(bg, str) and bg else None
     spec = {"photos": photos, "layout": layout, "animation": animation, "shape": shape, "seed": seed}
+    if anim_dir:
+        spec["animDir"] = 1
+    if anim_speed is not None:
+        spec["animSpeed"] = anim_speed
     if hold is not None:
         spec["hold"] = hold
     if raw.get("beatSync") is True:
@@ -2415,10 +2493,9 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             return None
         # The push follows each ARRIVING photo's own landing, so a photo that
         # enters on its own clock pushes back on that clock.
-        first = (photo_start(spec, i + 1, lead_in)
-                 + DEPTH["delay"] * ENTRANCE_LENGTH.get(photo_anim(spec, i + 1), 0.0))
+        first = (photo_start(spec, i + 1, lead_in) + DEPTH["delay"] * entrance_length(spec, i + 1))
         last = (photo_start(spec, len(pls) - 1, lead_in)
-                + DEPTH["delay"] * ENTRANCE_LENGTH.get(photo_anim(spec, len(pls) - 1), 0.0)
+                + DEPTH["delay"] * entrance_length(spec, len(pls) - 1)
                 + DEPTH["span"])
         cmds: list[str] = []
         prev_m: float | None = None
@@ -2456,7 +2533,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         if lid == "none":
             return ""
         t0 = photo_start(spec, i, lead_in)
-        ent = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0)
+        ent = entrance_length(spec, i)
         land = t0 + ent
         segs: list[str] = []
         span = max(0.8, collage_duration(spec) * 0.7)
@@ -2507,6 +2584,12 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # This photo's three lanes: how it enters, how it leaves, and what it
         # keeps doing in between. A missing override inherits the collage's.
         anim = photo_anim(spec, i)
+        # The entrance's own clock for this photo: every term the graph builds
+        # from here (offsets, rotation, the size ladder's sampling, the fade)
+        # divides by `ent` so that one number — the table's length over the
+        # speed — is what the whole arrival is measured in.
+        ent = entrance_length(spec, i)
+        spd = anim_speed(spec, i)
         ex_mode = exit_mode(spec, i)
         pin = pin_anchor(spec, i)
         mo_id, mo_amt = photo_motion(spec, i)
@@ -2624,7 +2707,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             if mo_id == "none":
                 return "", "", ""
             m = MOTION[mo_id]
-            land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+            land = t0 + ent
             u = f"max(t-{_n(land)},0)"                  # seconds since it landed
             ramp = f"min({u}/{_n(MOTION_RAMP)},1)"      # eases in from rest
             r1 = hash01(seed, idx, 81)
@@ -2692,12 +2775,13 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
 
         # Time-varying rotation: the entrance's settle plus the exit spin,
         # one expression per animation (empty when the photo never rotates).
-        q_drop = f"min(max((t-{_n(t0)})/0.55,0),1)"
-        q_flip = f"min(max((t-{_n(t0)})/0.45,0),1)"
-        q_slide = f"min(max((t-{_n(t0)})/0.5,0),1)"
-        q_tumble = f"min(max((t-{_n(t0)})/0.6,0),1)"
-        q_brush = f"min(max((t-{_n(t0)})/0.5,0),1)"
-        q_glitch = f"min(max((t-{_n(t0)})/0.5,0),1)"
+        # One entrance progress, shared by every animation's terms — and read
+        # from the scaled length, so a faster entrance is a shorter fade, a
+        # tighter pendulum and a shorter size ladder in the MP4 as well as in the
+        # editor. The per-animation literals this replaces (0.55, 0.45, …) were
+        # each the table's own number, so nothing about an unchanged slide moves.
+        q_ent = f"min(max((t-{_n(t0)})/{_n(ent or 0.001)},0),1)"
+        q_drop = q_flip = q_slide = q_tumble = q_brush = q_glitch = q_ent
         extra_x = extra_y = extra_r = ""
         if anim == "slide":
             extra_x = f"-{_n(0.28 * width)}*pow(1-{q_slide},3)"
@@ -2714,7 +2798,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # evaluates — no second copy of the numbers here, which is how the
             # hand-written terms above drifted from the curves once already.
             row = GEOM[anim]
-            qg = f"min(max((t-{_n(t0)})/{_n(ENTRANCE_LENGTH.get(anim, 0.0) or 0.001)},0),1)"
+            qg = q_ent
             extra_x = _geom_expr(row.get("dx"), qg, width)
             extra_y = _geom_expr(row.get("dy"), qg, height)
             extra_r = _geom_expr(row.get("rot"), qg, 1.0)
@@ -2724,7 +2808,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             extra_y = fly_term((hash01(seed, i, 63) - 0.5) * 0.06 * height, jg)
             extra_r = fly_term((hash01(seed, i, 65) - 0.5) * 8, jg)
         if spec.get("kenBurns") is True:
-            land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+            land = t0 + ent
             span = max(0.8, collage_duration(spec) * 0.7)
             kb = f"min(max((t-{_n(land)})/{_n(span)},0),1)"
             extra_x = (extra_x or "") + fly_term((hash01(seed, i, 51) - 0.5) * 0.05 * width, kb)
@@ -2739,7 +2823,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # same angle instead of straightening it.
             ang = f"({_n(pl['rot'])}-4*(1-{q_flip}){ex_r}{extra_r}{sway_r}{mo_r})*PI/180"
         elif anim == "swing":
-            tau = f"max(t-{_n(t0)},0)"
+            # the same compressed clock photo_state() uses
+            # at speed 1 the clock is the clock: no factor to carry around
+            tau = (f"max(t-{_n(t0)},0)*{_n(anim_speed(spec, i))}"
+                   if anim_speed(spec, i) != 1.0 else f"max(t-{_n(t0)},0)")
             # Keep every component in degrees until the final conversion.
             # The old expression converted the 14° swing amplitude twice,
             # leaving only ~0.24° of motion in the rendered MP4 even though
@@ -2760,10 +2847,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # so the MP4 shows what the preview shows, frame for frame.
         # …and the alpha ramp, which every geometry entrance keeps linear so the
         # filter's own `fade` is the same curve the preview computes.
-        fade_d_in = {"drop": 0.22, "pop": 0.18, "flip": 0.15, "swing": 0.15,
-                     "fade": 0.45, "slide": 0.18, "rise": 0.18, "tumble": 0.16, "zoom": 0.16,
-                     "fold": 0.14, "glitch": 0.12, "ink": 0.4, "brush": 0.16,
-                     **{a: r["fade"] for a, r in GEOM.items()}}.get(anim)
+        fade_d_in = entrance_fade(spec, i) or None
         mid = (f"fade=t=in:st={_n(t0)}:d={_n(fade_d_in)}:alpha=1" if fade_d_in else "null") + fade_out
 
         # The anchor: the canvas centre lands on the mat centre (or the pin
@@ -2792,9 +2876,9 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 return [(cw, ch, None, [[0.0, None]])]
             # the timeline only moves during the entrance and the depth push
             # windows — sample the twin at frame resolution up to there
-            last_var = t0 + ENTRANCE_LENGTH[anim]
+            last_var = t0 + ent
             if depth_on:
-                e = ENTRANCE_LENGTH[anim]
+                e = ent
                 for j in range(i + 1, len(pls)):
                     tj = photo_start(spec, j, lead_in)
                     last_var = max(last_var, tj + DEPTH["delay"] * e + DEPTH["span"])

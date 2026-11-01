@@ -591,6 +591,28 @@ def _cases() -> list[dict]:
             "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.5, 2.0, 2.4, 2.8, 3.4],
             "hashArgs": [6, 4, 71], "matW": 30,
         })
+    # entrance speed as a parameter: the multiplier has to reach every part of an
+    # arrival at once — the sweep, the alpha ramp, a pendulum measured in raw
+    # seconds, and the size ladder's sampling window. Half and double of it, on
+    # the collage and on one photo inside it, because a speed that only scaled the
+    # preview would be a slider that lies about the MP4.
+    for mult in (2.0, 0.5):
+        for kind in ("drop", "swing", "pop", "brush", "wipeUp", "mosaicOut", "cube", "boomerang", "sling"):
+            base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1)
+            length = base and {"drop": 0.55, "swing": 2.0, "pop": 0.5, "brush": 0.5,
+                              "wipeUp": 0.5, "mosaicOut": 0.75, "cube": 0.5,
+                              "boomerang": 0.7, "sling": 0.55}[kind] / mult
+            times = [0.0] + [round(length * f, 3) for f in (0.25, 0.5, 0.8)] + [length, length + 0.3, 2.6]
+            cases.append({"id": f"speed{mult}-{kind}", "spec": {**base, "animSpeed": mult},
+                          "aspect": 16 / 9, "leadIn": 0.0, "times": times,
+                          "hashArgs": [2, 9, 3], "matW": 30})
+        mixed = _spec("stack", "drop", "4:3", 4, 11, delays=[0.0, 0.3, 0.6, 0.9], hold=1)
+        mixed["photos"] = [dict(x, animSpeed=(2.0 if k % 2 else None)) for k, x in enumerate(mixed["photos"])]
+        mixed["photos"][1]["anim"] = "iris"
+        mixed["photos"][2]["anim"] = "thread"
+        cases.append({"id": f"speed{mult}-per-photo", "spec": {**mixed, "animSpeed": 1.5},
+                      "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": [0.0, 0.15, 0.3, 0.55, 0.9, 1.4, 2.2, 3.1], "hashArgs": [4, 2, 6], "matW": 30})
     # the paper family: twelve geometry entrances, compared at the moments a
     # hinge, a bow and an overshoot actually differ — the first frame (a size of
     # zero would show up here), the middle of the sweep, the settle, and at rest.
