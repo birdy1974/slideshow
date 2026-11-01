@@ -9,6 +9,7 @@
 // twin tests and the wrapping is left to the renderer.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
+import { effectiveFontStyle, fontMetrics } from './fonts'
 import { FRAME_H, FRAME_W, ensureFont, fontCssFor } from './textMotionScene'
 import { karaokeAt, karaokePaintStyle, planOf, tokenize, wordStates, type KaraokeData } from './karaokeCore'
 
@@ -114,6 +115,17 @@ export function KaraokeStage(props: KaraokeStageProps) {
   }, [look.family, look.bold, look.italic])
 
   const px = Math.max(4, (Number(look.fontSize) || 48) * FRAME_W / 1920)
+  // The box the sung words are painted in, measured from the font file rather
+  // than guessed. `background-clip:text` makes the sweep's gradient the mask, so
+  // a line box shorter than the face's own ascent + descent shaves the tops and
+  // bottoms off the glyphs — a few pixels at 40 px, an obvious bite at 120, which
+  // is what "the background must fit the text size" looked like. `prepareScene`
+  // lays the caption out on these same win metrics because that is where libass
+  // puts a line, so measuring here agrees with the MP4 instead of trading one
+  // constant for another. 1.02 is only a floor: a face that wants more gets more.
+  const faceStyle = effectiveFontStyle(look.family, look.bold, look.italic)
+  const metrics = fontMetrics(look.family, faceStyle.bold, faceStyle.italic)
+  const boxEm = Math.max(1.02, (metrics.winAscent + metrics.winDescent) / (metrics.upm || 1000))
   const fill = karaoke.fill
   const blockStyle: React.CSSProperties = {
     font: fontCssFor(look.family, look.bold, look.italic, px),
@@ -127,7 +139,7 @@ export function KaraokeStage(props: KaraokeStageProps) {
     transform: look.align === 'left' ? 'translate(0, -50%)' : 'translate(-50%, -50%)',
     maxWidth: '86%',
     textAlign: look.align === 'left' ? 'left' : 'center',
-    lineHeight: 1.28,
+    lineHeight: boxEm,
     whiteSpace: 'pre-wrap',
     textShadow: look.outline !== false ? '0 2px 8px #0009, 0 0 2px #0007' : 'none',
     opacity: sentence ? frame.fade : 0,

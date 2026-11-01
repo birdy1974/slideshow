@@ -1805,7 +1805,12 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-stage-host{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .kara-stage{position:absolute;left:0;top:0;transform-origin:0 0}
 .kara-block{position:absolute;transform-origin:50% 50%;margin:0;padding:0;pointer-events:none;transition:opacity .12s linear}
-.kara-word{display:inline-block;white-space:pre-wrap;background-clip:text;-webkit-background-clip:text}
+.kara-word{display:inline-block;white-space:pre-wrap;background-clip:text;-webkit-background-clip:text;padding:.04em 0;margin:-.04em 0}
+/* The sweep's gradient is clipped to the glyphs, so the word's own box is what
+   the letters can reach: the line box is measured from the font file (see
+   KaraokeStage) and these 0.04em are the slack a face whose drawings overshoot
+   its recorded ascent still wants. The negative margin pays for it, so nothing
+   about the layout moves. */
 .kara-tap-cue{position:absolute;left:50%;bottom:11px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:2px;background:#0f110cd9;border:1px solid #78a13e88;border-radius:8px;padding:6px 14px;pointer-events:none}
 .kara-tap-cue b{font:800 17px Manrope;color:#d9efb0}
 .kara-tap-cue span{font:700 8px Manrope;color:#a6ac9c;letter-spacing:.5px}
@@ -1821,6 +1826,17 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-scope button.active{background:#3a4035;color:#fff}
 .kara-strip{position:relative;flex:0 0 auto;background:#111310;border:1px solid #3a3e36;border-radius:8px;padding:22px 0 8px;cursor:crosshair;touch-action:none;user-select:none;min-height:104px}
 .kara-strip.wave{padding-top:8px}
+/* At zoom 1 the strip is exactly this box wide and there is nothing to scroll;
+   each step in adds width instead of re-measuring anything, which is why the
+   scroller only ever needs one axis. */
+.kara-strip-scroll{overflow-x:auto;overflow-y:hidden;min-width:0;padding-bottom:2px;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
+.kara-strip-scroll .kara-strip{min-width:100%}
+.kara-zoom{display:flex;align-items:center;gap:4px;margin-left:auto;background:#161813;border:1px solid #3a3e36;border-radius:6px;padding:2px 4px}
+.kara-zoom button{display:flex;align-items:center;justify-content:center;gap:3px;min-width:20px;height:20px;padding:0 5px;border:0;border-radius:4px;background:transparent;color:#a4a89e;font:700 8px Manrope;cursor:pointer}
+.kara-zoom button:hover{background:#272b23;color:#fff}
+.kara-zoom button.on{background:#3a4035;color:#fff}
+.kara-zoom b{font:700 9px Manrope;color:#dfe2da;min-width:31px;text-align:center}
+.kara-zoom input[type=range]{width:74px;height:3px;accent-color:#78a13e;cursor:pointer}
 .kara-wave{position:relative;height:44px;margin:0 0 4px;opacity:.85;pointer-events:none}
 .kara-wave svg{position:absolute;inset:0;width:100%;height:100%}
 .kara-wave path{fill:#4c5c3c}
@@ -1872,6 +1888,14 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-import{margin-top:7px;display:flex;flex-direction:column;gap:5px}
 .kara-import input[type=file]{font-size:9px;color:#b8bcb2}
 .kara-import input[type=file]::file-selector-button{background:#78a13e;border:0;color:#141a0c;font:800 9px Manrope;border-radius:4px;padding:5px 8px;margin-right:8px}
+.kara-import-tabs{display:flex;gap:3px;flex-wrap:wrap}
+.kara-import-tabs button{border:1px solid #41453e;background:#22251f;color:#b8bcb2;font:700 9px Manrope;padding:3px 7px;border-radius:5px;cursor:pointer}
+.kara-import-tabs button:hover{border-color:#78a13e;color:#fff}
+.kara-import-tabs button.active{background:#78a13e;border-color:#78a13e;color:#141a0c;font-weight:800}
+.kara-import-code{position:relative;margin:0;background:#101210;border:1px solid #3a3e36;border-radius:6px;padding:8px 9px;max-height:132px;overflow:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
+.kara-import-code code{display:block;font:600 9px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#cfe0b8;white-space:pre}
+.kara-import-code button{position:absolute;right:5px;top:5px;display:flex;align-items:center;gap:3px;border:1px solid #41453e;background:#22251f66;color:#a4a89e;font:700 8px Manrope;padding:2px 5px;border-radius:4px;cursor:pointer}
+.kara-import-code button:hover{border-color:#78a13e;color:#fff}
 .kara-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .kara-grid label{display:flex;align-items:center;gap:6px;background:#20231f;border:1px solid #41453e;border-radius:6px;padding:4px 7px}
 .kara-grid label span{font:700 8px Manrope;color:#9b9f95;letter-spacing:.5px;white-space:nowrap}

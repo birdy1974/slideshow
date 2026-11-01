@@ -61,7 +61,8 @@ because a two-line quote and a whole song lyric want different ones.
 Keys are shared: `Space` tap, `Enter` next line, `Shift+←/→` ±100 ms,
 `Alt+←/→` ±1 frame, `I`/`O` set the selected line's start/end at the playhead,
 `S` split, `M` merge, `F` 50/75/100/150 % rate, `L` loop the line, `A` auto
-first pass, `B` snap to onsets, `1`–`4` switch surface. The mouse map on the
+first pass, `B` snap to onsets, `1`–`4` switch surface, `+`/`-` zoom the strip and
+`0` fit it back. The mouse map on the
 strip is Subtitle Edit's: Shift-click sets the start, Ctrl-click the end, and
 dragging a block ripples every later word by the same amount so a line never
 lands on top of the next.
@@ -70,9 +71,11 @@ Nothing here is a "generate" button pretending to be exact: the first pass
 distributes the words by character weight across the caption window, onset
 snapping pulls each one onto the nearest attack in the movie's own audio, and
 `.lrc` / `.srt` / `.vtt` / `.ass` import takes times from a file you already
-have. (Per-word *forced alignment* would be better still and is deliberately not
-in the container: it needs a model of a few hundred MB, and the plan above is
-what it would have to write anyway.)
+have — and the popup shows a worked example of every one of them, in a tab per
+format, because a parser that is described to you in one line is a parser you
+feed a file you invented. (Per-word *forced alignment* would be better still and
+is deliberately not in the container: it needs a model of a few hundred MB, and
+the plan above is what it would have to write anyway.)
 
 ## The text style: what the sung words look like
 
@@ -129,6 +132,58 @@ Merging is one function per engine, and both are trivial:
 `size` is the only field spelled differently in the two models (the stage prop is
 `fontSize`, like every other caption path) and that single rename lives inside
 `karaokePaintStyle` rather than in a caller.
+
+## The strip's zoom
+
+A three-minute song squeezed into a 700 px box is 0.26 seconds per pixel: the
+ruler is honest and a divider is un-hittable. So the strip zooms, 100 % (the whole
+clip, as it always was) to 800 %, by the slider in the transport row, `+`/`-`, or
+⌘/Ctrl+wheel over the strip itself; `0` or *Fit* comes back out, and Alt-click
+puts the time you clicked in the middle of the box.
+
+Nothing about the *model* changes, which is the whole design: every lane already
+stores its geometry as a percent of the clip, so zooming is drawing that one
+mapping wider inside a scroller (`width: zoom × 100 %`). Blocks, handles,
+dividers, the playhead and the waveform all follow without a second coordinate
+system, and `pointerTime()` keeps inverting the strip's own `getBoundingClientRect()`,
+so a drag is as exact at 8× as at 1×. Three things are measured in screen pixels
+rather than in time, and only those three had to learn about the zoom — the ruler's
+step (a tick every ~55 px, from a 300 s clip down to 0.01 s, which is why one
+frame at 25 fps is reachable), the tick's label (written with the step's own
+decimals, or a ruler reading `10.3` above the tick at 10.25 would point at a time
+that is not there), and the floor under a one-word sentence's block (0.8 % of the
+*box*, divided by the zoom, so it stays ~6 px grabbable instead of stretching a
+0.2 s line to a quarter of the screen). They are pure functions in
+`karaokeCore.ts`, which is what makes them testable at all.
+
+Zooming is deliberately not part of `karaokeData`: it says how wide this person
+wants the ruler, and the render reads the data. It rides in `localStorage` under
+`slideshow.karaoke.zoom` and never reaches a project file. While the movie plays
+the scroller keeps the playhead inside itself, so zoomed-in playback is not a
+strip you watch disappear. The one thing the zoom cannot do is sharpen the
+waveform: 700 buckets are fetched for the kept cut and stay 700 buckets, so at 8×
+the peaks stretch (they do not lie — they just get soft) while the onset marks
+remain exact to the millisecond.
+
+## The box the words are painted in
+
+`sweep` colours a word by painting a gradient and clipping it to the glyphs
+(`background-clip:text`), which makes the word's own box the *mask*: anything the
+font draws outside that box is transparent. The preview used a constant line box
+of 1.28 em, and 76 of the 93 styles in the font registry want a taller line than
+that — Anton measures 1.73 em, so at a karaoke size of 120 px roughly 27 px of
+cap and 27 px of descender fell outside the mask and vanished. That is the whole
+"increase the font size and the letters get cut off top and bottom", and it was
+preview-only: libass paints the glyphs and the `\kf` colour, so the MP4 was never
+losing anything.
+
+`KaraokeStage` now measures the box from the font file (`winAscent + winDescent`
+over `upm`, floored at 1.02 em) — the same numbers `app/text_motion.py` uses to
+place a line, so the change moved the preview *towards* the render rather than
+inventing a second guess. `.kara-word` keeps 0.04 em of padding above and below,
+paid for by an equal negative margin, for the faces whose drawings overshoot the
+metrics recorded in their own table; the margin means the block's position, and
+so the twin's arithmetic, does not move.
 
 ## Where the code is
 
@@ -236,6 +291,17 @@ fades rather than failing the job.
   points, the four surfaces, the strip's CSS, the two style tables agreeing, the
   single `CaptionStage` branch every preview shares, the popup's adopt-not-overwrite
   merge, and the panel following the playhead.
+* `backend/tests/test_karaoke_strip.py` + `karaoke_strip.mjs` — the strip's zoom as
+  the editor draws it: the clamp (1 is "the clip already fits", nothing narrower;
+  8 is eight screens; a NaN from a hand-written project file is just "fit"), the
+  ruler's step (always a rung of the ladder, never coarser for a longer clip,
+  never finer for a bigger one, 40–140 px of room per tick at every span from 1 s
+  to an hour, ticks unique and reaching the end, and labels that say the time they
+  stand on), the block's floor in box-percent, and — with no Node required, because
+  they are the parts a CSS tidy-up could silently undo — that the sung words' box
+  is measured from the font rather than assumed, that `.kara-word` still carries its
+  padding and its negative margin, that no bundled face is given a box shorter than
+  its own line, and that the zoom never leaked into `KaraokeData`.
 * `backend/tests/test_karaoke_twin.py` + `karaoke_twin.mjs` — 22 cases run through
   **both** engines: timing shapes (coarse passes, holes, mistimed taps, emoji,
   forced breaks, a window that cuts the text off) plus the style block (nothing

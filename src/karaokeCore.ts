@@ -1060,3 +1060,95 @@ export function rebuildText (tokens: KaraokeToken[], text: string): string {
 export function planEnd (plan: KaraokePlan): number {
   return plan.sentences.length ? plan.sentences[plan.sentences.length - 1].end : 0
 }
+
+// ---------------------------------------------------------------------------
+// The strip's zoom
+//
+// Every lane of the timing strip is laid out as a percent of the clip (`t/span`),
+// which is what makes a zoom cheap: the strip is simply drawn `zoom` times as
+// wide inside a scroller and the same percentages land further apart, so blocks,
+// handles, dividers and `pointerTime` all stay exact without a second coordinate
+// system. What *does* have to follow the zoom is anything measured in screen
+// pixels instead of in time — how dense the ruler is, and the floor that keeps a
+// one-word sentence grabbable — so those are pure numbers here, where
+// backend/tests/test_karaoke_twin.py can pin them.
+// ---------------------------------------------------------------------------
+
+/** Narrowest the strip can be: its own box, which already shows the whole clip. */
+export const KARAOKE_ZOOM_MIN = 1
+/** Widest: a 3-minute clip becomes 8 screens wide, enough to land on a frame. */
+export const KARAOKE_ZOOM_MAX = 8
+
+/** 1 = the whole clip fits the box; the strip's width is this × its container. */
+export function clampKaraokeZoom (zoom: number): number {
+  const value = Number(zoom)
+  if (!Number.isFinite(value)) return KARAOKE_ZOOM_MIN
+  return Math.min(KARAOKE_ZOOM_MAX, Math.max(KARAOKE_ZOOM_MIN, Math.round(value * 1000) / 1000))
+}
+
+/**
+ * The ruler's ladder, seconds apart, fine to coarse. The bottom rungs are there so
+ * a short clip zoomed to the top of the range still has a tick every ~70 px, and
+ * 0.04 is one frame of the render at 25 fps — below that the labels are a lie,
+ * because nothing in the MP4 happens between two frames.
+ */
+const KARAOKE_TICK_STEPS = [0.01, 0.02, 0.04, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
+
+/** Roughly how wide the strip's box is, and how much room one tick wants. */
+const KARAOKE_BOX_PX = 700
+const KARAOKE_TICK_PX = 55
+
+/**
+ * Seconds between ruler ticks for `span` seconds of clip at `zoom`.
+ *
+ * The zoom is deliberately not part of the *label* maths: a tick is a tick
+ * wherever you are, and the only thing that changes is that a wider strip can
+ * afford finer rungs of the ladder. Measured against a 700 px box a tick gets
+ * about 55 px of its own, which is what the strip's old fixed ladder was aiming
+ * at (a 20 s clip still ticks every 2 s, a minute one every 5 s) without its
+ * mid-range crowding: a 100 s clip used to be labelled every 5 s, 20 times across
+ * the box, 35 px apart, which is not legible at a 7 px font.
+ */
+export function karaokeTickStep (span: number, zoom: number): number {
+  const seconds = Math.max(0.5, Number(span) || 0.5)
+  const pxPerSecond = (KARAOKE_BOX_PX * clampKaraokeZoom(zoom)) / seconds
+  // Scanned from the short end, so this returns the *finest* rung at least as
+  // wide as the spacing we want — the other order answers with 300 to everything.
+  const want = KARAOKE_TICK_PX / pxPerSecond
+  for (const step of KARAOKE_TICK_STEPS) if (step >= want) return step
+  return KARAOKE_TICK_STEPS[KARAOKE_TICK_STEPS.length - 1]
+}
+
+/** Where to put a tick, in percent of the strip — `toPercent` at any zoom. */
+export function karaokeTicks (span: number, zoom: number): number[] {
+  const seconds = Math.max(0.5, Number(span) || 0.5)
+  const step = karaokeTickStep(seconds, zoom)
+  const out: number[] = []
+  // Rounded to the step's own precision, or the last tick lands on 14.999999.
+  const digits = step >= 1 ? 0 : Math.min(3, String(step).split('.')[1]?.length || 0)
+  for (let t = 0; t <= seconds + step * 0.001; t += step) out.push(Number(t.toFixed(digits)))
+  return out
+}
+
+/**
+ * A tick's caption: whole seconds stay plain, anything finer is written with the
+ * step's own number of decimals. Not fewer — a ruler that reads 10.3 above the
+ * tick at 10.25 tells you the divider is somewhere it is not, and the strip is
+ * exactly the place people read a time off a mark.
+ */
+export function karaokeTickLabel (step: number, t: number): string {
+  if (step >= 1) return String(Math.round(t))
+  const digits = Math.min(3, String(step).split('.')[1]?.replace(/0+$/, '').length || 0)
+  return t.toFixed(Math.max(1, digits)).replace(/\.?0+$/, '')
+}
+
+/**
+ * The narrowest a sentence block may look, as a percent of the strip.
+ *
+ * 0.8 % of a 700 px box is the ~6 px a pointer needs to hit a handle; divide by
+ * the zoom and it stays ~6 px *on screen* however wide the strip is drawn, so a
+ * zoomed-in 0.2 s line is not stretched into a lie about its length.
+ */
+export function karaokeBlockFloor (zoom: number): number {
+  return 0.8 / clampKaraokeZoom(zoom)
+}
