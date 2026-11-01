@@ -134,6 +134,221 @@ export function geomCurve (c: GeomCurve | undefined, q: number, base: number): n
     default: return base
   }
 }
+// The transition bridge — the xfade names, as per-photo reveals
+// ---------------------------------------------------------------------------
+
+/** One native transition name, and how this app produces it for a single photo.
+ *
+ *  Most of FFmpeg's `xfade` names are already something the collage can build
+ *  more cheaply than a mask: a wipe is the mask the `geq` path bakes, a slide is
+ *  a translate, `fadewhite` is a brightness ramp. Those are **aliases** here —
+ *  the native name is what the spec stores and what the picker shows, and the
+ *  animation that runs is the existing one, so the MP4 costs nothing extra and
+ *  the preview is exact.
+ *
+ *  The handful with no equivalent are marked `via: 'bridge'`: the mask they should
+ *  run is FFmpeg's own transition between two solid layers, used as the photo's
+ *  alpha — the trick that turns any two-clip transition into a single-image
+ *  reveal without a second clip. Until that mask builder lands they run the
+ *  nearest shape above, and their `hint` says which shape that is, because an
+ *  approximation you can see coming is a trade and one you cannot is a bug. */
+export type CollageBridgeVia = 'mask' | 'geom' | 'look' | 'bridge'
+/** What a spec's `animation` / a photo's `anim` may hold: an entrance of our
+ *  own, or one of FFmpeg's transition names, which resolves to an entrance
+ *  through `COLLAGE_BRIDGE` below. Kept apart from `CollageAnim` so the tables
+ *  keyed by animation (length, fade, the state's branches) still have to cover
+ *  every *real* animation, and an alias is data that cannot widen them. */
+export type CollageAnimation = CollageAnim | CollageBridgeName
+export type CollageBridgeName =
+  | 'wiperight' | 'wipeleft' | 'wipeup' | 'wipedown'
+  | 'wipetl' | 'wipetr' | 'wipebl' | 'wipebr'
+  | 'slideleft' | 'slideright' | 'slideup' | 'slidedown'
+  | 'circleopen' | 'circleclose' | 'vertopen' | 'vertclose' | 'horzopen' | 'horzclose'
+  | 'squeezeh' | 'squeezev' | 'zoomin'
+  | 'fadegrays' | 'fadewhite' | 'fadeblack' | 'fadefast' | 'fadeslow'
+  | 'radial' | 'rectcrop'
+  | 'smoothleft' | 'smoothright' | 'smoothup' | 'smoothdown'
+  | 'hlslice' | 'hrslice' | 'vuslice' | 'vdslice'
+  | 'dissolve' | 'pixelize'
+export type CollageBridge = {
+  label: string, hint: string, via: CollageBridgeVia,
+  /** the animation this name runs when `via` is not 'bridge' */
+  target: CollageAnim
+  /** and the direction it forces, because FFmpeg's names carry one
+   *  (`slideleft` pushes the new photo in from the right; ours enters from the
+   *  left) and a name that silently meant the other way would be a lie. */
+  dir?: 0 | 1
+  /** the feather the preview draws for a bridged name, as a share of the photo's
+   *  width — the render's own edge comes from FFmpeg, which is the point. */
+  soft?: number
+}
+
+export const COLLAGE_BRIDGE: Record<CollageBridgeName, CollageBridge> = {
+  wiperight: { label: 'Wipe right', hint: 'The photo is uncovered left to right', via: 'mask', target: 'wipeRight' },
+  wipeleft: { label: 'Wipe left', hint: 'The photo is uncovered right to left', via: 'mask', target: 'wipeLeft' },
+  wipeup: { label: 'Wipe up', hint: 'The photo is uncovered from the bottom edge upward', via: 'mask', target: 'wipeUp' },
+  wipedown: { label: 'Wipe down', hint: 'The photo is uncovered from the top edge downward', via: 'mask', target: 'wipeDown' },
+  wipetl: { label: 'Wipe to top-left', hint: 'Uncovered along the diagonal towards the top-left corner', via: 'mask', target: 'diagDownLeft', dir: 1 },
+  wipetr: { label: 'Wipe to top-right', hint: 'Uncovered along the diagonal towards the top-right corner', via: 'mask', target: 'diagDownRight', dir: 1 },
+  wipebl: { label: 'Wipe to bottom-left', hint: 'Uncovered along the diagonal towards the bottom-left corner', via: 'mask', target: 'diagDownLeft' },
+  wipebr: { label: 'Wipe to bottom-right', hint: 'Uncovered along the diagonal towards the bottom-right corner', via: 'mask', target: 'diagDownRight' },
+  slideleft: { label: 'Slide left', hint: 'The photo travels in from the right, as a slide transition would', via: 'geom', target: 'glide', dir: 1 },
+  slideright: { label: 'Slide right', hint: 'The photo travels in from the left', via: 'geom', target: 'glide' },
+  slideup: { label: 'Slide up', hint: 'The photo rises in from below', via: 'geom', target: 'rise' },
+  slidedown: { label: 'Slide down', hint: 'The photo drops in from above', via: 'geom', target: 'drop' },
+  circleopen: { label: 'Circle open', hint: 'A circle opening from the centre out', via: 'mask', target: 'iris' },
+  circleclose: { label: 'Circle close', hint: 'The edges closing in on the centre', via: 'mask', target: 'irisOut' },
+  vertopen: { label: 'Vertical open', hint: 'Two halves drawing open from the middle', via: 'mask', target: 'curtain' },
+  vertclose: { label: 'Vertical close', hint: 'Two halves closing towards the middle', via: 'mask', target: 'curtain', dir: 1 },
+  horzopen: { label: 'Horizontal open', hint: 'Top and bottom opening from the middle line', via: 'mask', target: 'curtain', dir: 1 },
+  horzclose: { label: 'Horizontal close', hint: 'Top and bottom closing to the middle line', via: 'mask', target: 'curtain' },
+  squeezeh: { label: 'Squeeze horizontal', hint: 'Squashed flat sideways and released', via: 'geom', target: 'fold' },
+  squeezev: { label: 'Squeeze vertical', hint: 'Squashed flat from top to bottom and released', via: 'geom', target: 'unfold' },
+  zoomin: { label: 'Zoom in', hint: 'Grows into place from a half size', via: 'geom', target: 'zoom' },
+  fadegrays: { label: 'Fade from grey', hint: 'Colourless at first, its colours coming back as it lands', via: 'look', target: 'colourFlood' },
+  fadewhite: { label: 'Fade from white', hint: 'Arrives blown out and settles to its real exposure', via: 'look', target: 'flashIn' },
+  fadeblack: { label: 'Fade from black', hint: 'Lifts out of black', via: 'look', target: 'shadowLift' },
+  fadefast: { label: 'Fade (fast)', hint: 'A plain dissolve in, over half the usual time', via: 'mask', target: 'fade' },
+  fadeslow: { label: 'Fade (slow)', hint: 'A plain dissolve in, unhurried', via: 'mask', target: 'fade' },
+  radial: { label: 'Radial', hint: 'A clock sweep from twelve o’clock', via: 'mask', target: 'clock' },
+  rectcrop: { label: 'Rect crop', hint: 'A rectangle opening from the middle outwards', via: 'mask', target: 'diamond' },
+  smoothleft: { label: 'Smooth left', hint: 'A soft-edged wipe from the left — drawn as the hard-edged wipe for now', via: 'bridge', target: 'wipeLeft', soft: 0.22 },
+  smoothright: { label: 'Smooth right', hint: 'A soft-edged wipe from the right — drawn as the hard-edged wipe for now', via: 'bridge', target: 'wipeRight', soft: 0.22 },
+  smoothup: { label: 'Smooth up', hint: 'A soft-edged wipe upward — drawn as the hard-edged wipe for now', via: 'bridge', target: 'wipeUp', soft: 0.22 },
+  smoothdown: { label: 'Smooth down', hint: 'A soft-edged wipe downward — drawn as the hard-edged wipe for now', via: 'bridge', target: 'wipeDown', soft: 0.22 },
+  hlslice: { label: 'Slices in from left', hint: 'Vertical strips opening from the left, one after another', via: 'bridge', target: 'blindsRight', soft: 0 },
+  hrslice: { label: 'Slices in from right', hint: 'Vertical strips, the right-hand one first', via: 'bridge', target: 'blindsRight', dir: 1, soft: 0 },
+  vuslice: { label: 'Slices from above', hint: 'Horizontal strips, the top one first', via: 'bridge', target: 'blindsDown', soft: 0 },
+  vdslice: { label: 'Slices from below', hint: 'Horizontal strips, the bottom one first', via: 'bridge', target: 'blindsDown', dir: 1, soft: 0 },
+  dissolve: { label: 'Dissolve', hint: 'Grain by grain in — the app draws it as a fine mosaic', via: 'bridge', target: 'mosaic', soft: 0 },
+  pixelize: { label: 'Pixelize', hint: 'Tiles resolving into detail — the app draws it as a mosaic appearing tile by tile', via: 'bridge', target: 'mosaic', soft: 0 },
+}
+
+/** Every bridged name, as the ids the engine accepts. */
+export const COLLAGE_BRIDGE_NAMES = Object.keys(COLLAGE_BRIDGE) as CollageBridgeName[]
+
+export function isCollageBridge (anim: string | undefined): anim is CollageBridgeName {
+  return anim !== undefined && Object.prototype.hasOwnProperty.call(COLLAGE_BRIDGE, anim)
+}
+
+/** The animation a name runs: itself, or the row the bridge points at. Every
+ *  consumer — the state, the length, the picker's hint, the render — resolves a
+ *  name here, once, so a bridge cannot mean one thing to the preview and another
+ *  to the MP4. */
+export function resolveAnim (anim: CollageAnimation | undefined): CollageAnim {
+  return isCollageBridge(anim) ? COLLAGE_BRIDGE[anim].target : (anim ?? 'drop')
+}
+
+/** What a bridged name *runs*. The one place a name turns into an animation, so
+ *  the state, the length table, the picker's hint and the render cannot each
+ *  resolve it a little differently. */
+export function bridgeTarget (anim: string | undefined): CollageAnim | undefined {
+  return isCollageBridge(anim) ? COLLAGE_BRIDGE[anim].target : undefined
+}
+
+/** The direction a bridged name carries with it, or null when it inherits. */
+export function bridgeDir (anim: string | undefined): 0 | 1 | null {
+  return isCollageBridge(anim) ? COLLAGE_BRIDGE[anim].dir ?? null : null
+}
+
+/** Names this app draws with FFmpeg's own transition as the alpha mask — the set
+ *  the render sends through `xfade` and the preview can only approximate. */
+export const COLLAGE_BRIDGE_XFADE: CollageBridgeName[] =
+  COLLAGE_BRIDGE_NAMES.filter(n => COLLAGE_BRIDGE[n].via === 'bridge')
+
+// ---------------------------------------------------------------------------
+// The one catalogue: every entrance, its name, its hint and its family
+// ---------------------------------------------------------------------------
+
+/** What kind of thing an entrance is. The picker groups by it, the shuffle draws
+ *  its pool from it, and the per-photo direction toggle only appears for the
+ *  families that have an axis to flip — so it has to be derived from the tables
+ *  the engines read rather than typed out again somewhere they cannot see. */
+export type CollageAnimFamily = 'classic' | 'paper' | 'colour' | 'mask' | 'ffmpeg'
+/** The families in list order — the shuffle's pool chips and the validator both
+ *  read this, so a family cannot be selectable in one place and rejected in another. */
+export const ANIM_FAMILIES: CollageAnimFamily[] = ['classic', 'paper', 'colour', 'mask', 'ffmpeg']
+export interface CollageAnimRow {
+  id: CollageAnimation
+  label: string
+  hint: string
+  family: CollageAnimFamily
+}
+
+/** The whole entrance catalogue, in the order a list should show it. This is the
+ *  single place an entrance has a *name*: the chips, the per-photo select, the
+ *  browser's search index and the shuffle all read it, so a label cannot drift
+ *  away from the animation it describes. */
+/** Built on first use rather than at module load: the catalogue reads the choice
+ *  lists of four other sections, and a const here would depend on where in the
+ *  file those happen to be declared. */
+let ANIM_ROWS: CollageAnimRow[] | null = null
+export function collageAnimRows (): CollageAnimRow[] {
+  if (ANIM_ROWS) return ANIM_ROWS
+  const rows: CollageAnimRow[] = [
+  { id: 'drop', label: 'Drop in', hint: 'Photos fall in from above, straightening as they land', family: 'classic' },
+  { id: 'pop', label: 'Pop in', hint: 'Photos pop up from 55% with a springy overshoot', family: 'classic' },
+  { id: 'swing', label: 'Swing', hint: 'Photos hang from a pin at the top of the mat and swing to rest', family: 'classic' },
+  { id: 'flip', label: 'Flip in', hint: 'Cards flip open edge-on with a springy overshoot', family: 'classic' },
+  { id: 'fade', label: 'Fade in', hint: 'Photos dissolve in place', family: 'classic' },
+  { id: 'slide', label: 'Slide in', hint: 'Photos slide in from the left', family: 'classic' },
+  { id: 'rise', label: 'Rise', hint: 'Photos rise from below', family: 'classic' },
+  { id: 'tumble', label: 'Tumble', hint: 'Photos tumble in with a spin', family: 'classic' },
+  { id: 'zoom', label: 'Zoom in', hint: 'Photos scale up from a small origin', family: 'classic' },
+  { id: 'fold', label: 'Origami', hint: 'Cards fold open like origami around the vertical axis', family: 'classic' },
+  { id: 'glitch', label: 'Glitch', hint: 'A Canva-style digital glitch settle', family: 'classic' },
+  { id: 'ink', label: 'Ink', hint: 'An ink-blot mask that grows to reveal the photo', family: 'classic' },
+  { id: 'brush', label: 'Brush', hint: 'A brush-stroke wipe from the left', family: 'classic' },
+  ...COLLAGE_GEOM_CHOICES.map(r => ({ ...r, family: 'paper' as const })),
+  ...COLLAGE_LOOK_ENTRANCE_CHOICES.map(r => ({ ...r, family: 'colour' as const })),
+  ...COLLAGE_REVEAL_CHOICES.map(r => ({ ...r, family: 'mask' as const })),
+  ...COLLAGE_BRIDGE_CHOICES.map(r => ({ ...r, family: 'ffmpeg' as const })),
+    { id: 'none', label: 'None', hint: 'Photos appear with the slide — no entrance animation', family: 'classic' },
+  ]
+  ANIM_ROWS = rows
+  return rows
+}
+
+/** The family an entrance belongs to — for a bridged name, the family of the
+ *  mechanism it runs, because that is what decides whether it has a direction or
+ *  a size ladder. `via: 'bridge'` names are their own family, since those are the
+ *  ones whose edge comes from FFmpeg rather than from a shape we drew. */
+export function animFamily (anim: CollageAnimation | undefined): CollageAnimFamily | null {
+  return collageAnimRows().find(r => r.id === anim)?.family ?? null
+}
+
+/** The rows of one family, in catalogue order — the picker's tabs and the
+ *  shuffle's pools both ask for these, so neither keeps its own copy. */
+export function collageAnimFamilyRows (family: CollageAnimFamily): CollageAnimRow[] {
+  return collageAnimRows().filter(r => r.family === family)
+}
+
+/** Labels and hints by id, for the places that only need to *name* a stored
+ *  animation (the per-photo row, the direction toggle's tooltip). */
+export function animLabelOf (anim: CollageAnimation | undefined): string {
+  return collageAnimRows().find(r => r.id === anim)?.label ?? 'Drop'
+}
+export function animHintOf (anim: CollageAnimation | undefined): string | undefined {
+  return collageAnimRows().find(r => r.id === anim)?.hint
+}
+
+/** True when a direction control would *do* something for this entrance: it runs
+ *  a mask reveal, and that reveal has an axis to mirror. An iris or a diamond is
+ *  round, so a checkbox that changed nothing would be a lie about what the render
+ *  does — `revealGeom` is the file that decides which kinds have an axis, for the
+ *  preview and the export alike. A bridged name whose own meaning already says
+ *  which way it goes is excluded too: the toggle could only ever lie. */
+export function animHasDirection (anim: CollageAnimation | undefined): boolean {
+  if (!anim) return false
+  if (isCollageBridge(anim) && COLLAGE_BRIDGE[anim].dir !== undefined) return false
+  const target = resolveAnim(anim)
+  return isCollageReveal(target) && COLLAGE_REVEAL_GEOM[target].mirror !== 'none'
+}
+
+/** Picker rows for every bridged name. */
+export const COLLAGE_BRIDGE_CHOICES: CollageAnimChoice[] = COLLAGE_BRIDGE_NAMES.map(n => ({
+  id: n as unknown as CollageAnim, label: COLLAGE_BRIDGE[n].label, hint: COLLAGE_BRIDGE[n].hint,
+}))
 
 export function isGeomAnim (anim: string): anim is CollageGeomAnim {
   return Object.prototype.hasOwnProperty.call(COLLAGE_GEOM, anim)
@@ -471,6 +686,11 @@ export const COLLAGE_ANIMS_ALL: CollageAnim[] = ['drop', 'pop', 'swing', 'flip',
   'cube', 'book', 'door', 'unfold', 'rollover', 'spiral', 'swish', 'glide', 'peek', 'boomerang', 'sling', 'thread',
   'develop', 'flashIn', 'colourFlood', 'hueSwing', 'negative', 'shadowLift', 'glowIn', 'xerox',
   'none', ...COLLAGE_REVEALS]
+
+/** Every id a spec may carry, aliases included: what the validator accepts and
+ *  the pickers list. */
+export const COLLAGE_ANIM_IDS_ALL: CollageAnimation[] = [...COLLAGE_ANIMS_ALL, ...COLLAGE_BRIDGE_NAMES]
+
 /** Motion one photo keeps doing while it is on screen — the "while" lane of
  *  the three-lane model the text layers use (enter / while / exit). These
  *  five only move and turn the photo, which a render can do per frame; the
@@ -608,7 +828,9 @@ export interface CollagePhoto extends CollagePhotoLook {
   shape?: CollageShape
   /** Enter lane: this photo's own entrance, overriding `spec.animation`.
    *  Missing = inherit, which is what every existing project does. */
-  anim?: CollageAnim
+  anim?: CollageAnimation
+  /** the entrance survives a random shuffle — a photo the user pinned keeps it */
+  animLock?: boolean
   /** Which way this photo's mask reveal runs: 1 mirrors the kind on its own
    *  axis (a "wipe up" becomes a wipe down). Missing = the collage's `animDir`. */
   animDir?: 0 | 1
@@ -645,13 +867,22 @@ export interface CollagePhoto extends CollagePhotoLook {
 export interface CollageSpec {
   photos: CollagePhoto[]
   layout: CollageLayout
-  animation: CollageAnim
+  animation: CollageAnimation
   /** Direction of the mask reveals: 1 mirrors every one on its own axis, so a
    *  slide of "wipe up" photos becomes a slide of wipes going down without
    *  re-picking all of them. Per photo, `photos[].animDir` overrides it. */
   animDir?: 0 | 1
   /** How fast every photo in this collage arrives; see `CollagePhoto.animSpeed`. */
   animSpeed?: number
+  /** Which families a random shuffle drew from; missing = all of them. The
+   *  entrances a shuffle picked are stored concretely on the photos, so the
+   *  render never reads this — it is the roll's own memory. */
+  animFamilies?: CollageAnimFamily[]
+  /** the shuffle avoided repeats while its pool could supply them */
+  animOneOfEach?: boolean
+  /** the seed the last roll used, so "roll again" is reproducible and the number
+   *  in the UI is the number that made the file */
+  animSeed?: number
   shape: CollageShape
   seed: number
   /** Seconds the finished collage stays on screen after the last photo has
@@ -1584,13 +1815,79 @@ export function animSpeed (spec: CollageSpec, i?: number): number {
  *  read through here: a speed that scaled the sweep but not the alpha ramp, the
  *  pendulum or the size ladder would produce a photo that arrives in one shot
  *  and settles in another. */
+// ---------------------------------------------------------------------------
+// Random entrances
+// ---------------------------------------------------------------------------
+
+/** mulberry32: 12 lines of deterministic noise. The shuffle needs to be
+ *  repeatable from its seed — the same seed and the same pool must hand back the
+ *  same assignment, so a "roll again" can be undone and a screenshot of the
+ *  picker still describes the file. */
+function rngFrom (seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+export interface CollageShuffleOptions {
+  /** families to draw from; missing = every family in the catalogue */
+  families?: CollageAnimFamily[]
+  /** no photo gets the same entrance as another, while the pool can supply it */
+  oneOfEach?: boolean
+  /** the seed actually used, so the caller can store it next to the result */
+  seed?: number
+}
+
+/** Pick a random entrance per photo and hand back the concrete ids.
+ *
+ *  The result is **materialised**, not a `random` marker in the spec: the engines
+ *  then see ordinary ids, so nothing has to agree about a random number generator
+ *  across two languages, and reopening the project shows and renders exactly the
+ *  file you previewed. The seed is stored alongside so a re-roll can be
+ *  reproduced, and a photo the user locked keeps its own entrance either way. */
+export function collageShuffle (spec: CollageSpec, count: number, opts: CollageShuffleOptions = {}) {
+  const seed = Number.isFinite(opts.seed) ? (opts.seed as number) >>> 0 : (Date.now() & 0x7fffffff) >>> 0
+  const rng = rngFrom(seed || 1)
+  const wanted = opts.families?.length ? opts.families : null
+  const pool = collageAnimRows().filter(r => r.id !== 'none' && (!wanted || wanted.includes(r.family)))
+  const locked = new Set<number>()
+  spec.photos?.forEach((p, i) => { if (p?.animLock && p.anim) locked.add(i) })
+  const chosen: (CollageAnimation | undefined)[] = []
+  const used = new Set<string>()
+  let spare = pool.slice()
+  for (let i = 0; i < count; i++) {
+    const own = spec.photos?.[i]?.anim as CollageAnimation | undefined
+    if (locked.has(i) && own) { chosen.push(own); continue }
+    if (!pool.length) { chosen.push(own); continue }
+    let pick: CollageAnimRow | undefined
+    if (opts.oneOfEach) {
+      if (!spare.length) spare = pool.slice()        // fewer names than photos: repeat, but not in the same order
+      const j = Math.floor(rng() * spare.length) % spare.length
+      pick = spare.splice(j, 1)[0]
+      // a locked photo's name is out of the running too, so "one of each" cannot
+      // hand the same entrance to the locked photo and to a rolled one
+      if (own && pick.id === own) pick = spare.length ? spare.splice(Math.floor(rng() * spare.length), 1)[0] : pick
+    } else {
+      pick = pool[Math.floor(rng() * pool.length) % pool.length]
+    }
+    used.add(pick.id)
+    chosen.push(pick.id)
+  }
+  return { anims: chosen, seed }
+}
+
 export function entranceLength (spec: CollageSpec, i: number): number {
-  return (ENTRANCE_LENGTH[photoAnim(spec, i)] ?? 0) / animSpeed(spec, i)
+  return (ENTRANCE_LENGTH[resolveAnim(photoAnim(spec, i))] ?? 0) / animSpeed(spec, i)
 }
 
 /** …and the same for the alpha ramp, so the fade keeps pace with the motion. */
 export function entranceFade (spec: CollageSpec, i: number): number {
-  return (ENTRANCE_FADE[photoAnim(spec, i)] ?? 0) / animSpeed(spec, i)
+  return (ENTRANCE_FADE[resolveAnim(photoAnim(spec, i))] ?? 0) / animSpeed(spec, i)
 }
 
 // ---------------------------------------------------------------------------
@@ -1620,7 +1917,12 @@ export const EXIT_SPEED_MAX = 2
  *  collage's own setting — a mosaic that all opens inward is a look, and being
  *  able to say it once is why the setting exists on both levels. */
 export function photoRevealDir (spec: CollageSpec, i?: number): 0 | 1 {
+  // A bridged name carries its own direction: FFmpeg's `slideleft` means the new
+  // frame comes in from the right, so the photo that wipes must wipe the way its
+  // name says rather than the way the collage was set to.
   if (i !== undefined) {
+    const forced = bridgeDir(photoAnim(spec, i))
+    if (forced !== null) return forced
     const own = spec.photos?.[i]?.animDir
     if (own === 0 || own === 1) return own
   }
@@ -1742,7 +2044,7 @@ export function bgBlurRadius (blur: number): number {
 export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0, aspect = 16 / 9, ratios?: ArrayLike<number | undefined>): PhotoState {
   const t0 = photoStart(spec, i, leadIn)
   const push = pushDepth(spec, i, t, leadIn)
-  const anim = photoAnim(spec, i)
+  const anim = resolveAnim(photoAnim(spec, i))
   const spd = animSpeed(spec, i)
   const ent = (ENTRANCE_LENGTH[anim] ?? 0) / spd
   const fade = (ENTRANCE_FADE[anim] ?? 0) / spd
@@ -2116,7 +2418,7 @@ export function photoLookState (spec: CollageSpec, i: number, t: number, leadIn 
   // lets the render put both lanes into one `hue=s=…:H=…` expression instead of
   // a second filter that would apply in a different order than the preview's.
   const ent = entranceLength(spec, i)
-  const le = photoAnim(spec, i)
+  const le = resolveAnim(photoAnim(spec, i))
   const out = lookChannels(spec, i, t, leadIn)
   if (isCollageLookEntrance(le)) {
     const row = COLLAGE_LOOK_ENTRANCE[le]
@@ -2191,9 +2493,11 @@ export function matFilterCss (dim: number, look: { sat: number; bright: number; 
 
 /** The entrance a photo actually performs: its own override when it has one,
  *  the collage's animation otherwise. */
-export function photoAnim (spec: CollageSpec, i: number): CollageAnim {
-  const own = spec.photos?.[i]?.anim as CollageAnim | undefined
-  return own && COLLAGE_ANIMS_ALL.includes(own) ? own : (spec.animation ?? 'drop')
+/** The entrance photo i plays — the name as stored, which may be a bridged
+ *  transition. `resolveAnim` turns it into the animation that runs. */
+export function photoAnim (spec: CollageSpec, i: number): CollageAnimation {
+  const own = spec.photos?.[i]?.anim as CollageAnimation | undefined
+  return own && COLLAGE_ANIM_IDS_ALL.includes(own) ? own : (spec.animation ?? 'drop')
 }
 
 /** How long photo i's motion plays, in seconds from its landing; 0 means
@@ -2282,6 +2586,20 @@ export function bgFitStyle (fit: CollageBgFit | string | undefined): { backgroun
   return { backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }
 }
 
+/** A stored integer, read the same way in both engines: a bool is not a number
+ *  here (JSON's `true` would otherwise arrive as 1), an empty string is not a
+ *  number either, and anything else numeric is truncated. The Python validator
+ *  applies the same three rules, so a field cannot be kept by one engine and
+ *  dropped by the other — the divergence class that costs the most to find. */
+function intField (value: unknown): number | undefined {
+  if (value === undefined || value === null || typeof value === 'boolean') return undefined
+  // a decimal, and only a decimal: JS's Number() also reads hex, and python's
+  // float() does not, so "0x10" would be 16 here and nothing there
+  if (typeof value === 'string' && !/^[-+]?\d*\.?\d+([eE][-+]?\d+)?$/.test(value.trim())) return undefined
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.trunc(n) : undefined
+}
+
 export function normalizeCollage (raw: unknown): CollageSpec | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const c = raw as Partial<CollageSpec>
@@ -2311,7 +2629,11 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       slot: slot !== undefined && Number.isInteger(slot) && slot >= 0 ? Math.min(MAX_COLLAGE_PHOTOS - 1, slot) : undefined,
       frame: frameFields(p.frame),
       shape: COLLAGE_SHAPES_ALL.includes(p.shape as CollageShape) ? p.shape as CollageShape : undefined,
-      ...(COLLAGE_ANIMS_ALL.includes(p.anim as CollageAnim) ? { anim: p.anim as CollageAnim } : {}),
+      ...(COLLAGE_ANIM_IDS_ALL.includes(p.anim as CollageAnimation) ? { anim: p.anim as CollageAnimation } : {}),
+      // "keep my entrance when the shuffle rolls the others" is editor state, but
+      // it has to survive the save or the lock silently unlocks on reopen — in
+      // both engines, which is why python's validator keeps the same key
+      ...(p.animLock === true ? { animLock: true } : {}),
       ...(COLLAGE_EXITS.includes(p.exit as CollageExit) ? { exit: p.exit as CollageExit } : {}),
       ...(p.animDir === 1 ? { animDir: 1 as const } : p.animDir === 0 ? { animDir: 0 as const } : {}),
       ...(Number.isFinite(Number(p.animSpeed)) && Number(p.animSpeed) > 0
@@ -2346,9 +2668,15 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
   return {
     photos,
     layout: COLLAGE_LAYOUTS_ALL.includes(c.layout as CollageLayout) ? c.layout as CollageLayout : 'stack',
-    animation: COLLAGE_ANIMS_ALL.includes(c.animation as CollageAnim) ? c.animation as CollageAnim : 'drop',
+    animation: COLLAGE_ANIM_IDS_ALL.includes(c.animation as CollageAnimation)
+      ? c.animation as CollageAnimation : 'drop',
     exit: COLLAGE_EXIT_MODES.includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
     animDir: c.animDir === 1 ? 1 : undefined,
+    animSeed: intField(c.animSeed),
+    animFamilies: Array.isArray(c.animFamilies)
+      ? (c.animFamilies.filter(f => ANIM_FAMILIES.includes(f as CollageAnimFamily)) as CollageAnimFamily[])
+      : undefined,
+    animOneOfEach: c.animOneOfEach === true ? true : undefined,
     animSpeed: Number.isFinite(Number(c.animSpeed)) && Number(c.animSpeed) > 0
       ? Math.max(ENTRANCE_SPEED_MIN, Math.min(ENTRANCE_SPEED_MAX, Number(c.animSpeed))) : undefined,
     exitSpeed: num(c.exitSpeed) !== undefined && num(c.exitSpeed)! > 0 && num(c.exitSpeed) !== 1 ? Math.max(EXIT_SPEED_MIN, Math.min(EXIT_SPEED_MAX, num(c.exitSpeed)!)) : undefined,

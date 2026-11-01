@@ -318,12 +318,24 @@ render as a still, which is the failure mode this family was designed around.
 
 ## Still open
 
-P3 (the eight look‑based entrances), P4 (the xfade/GL bridge), mirrored exits
-for the 28 new ids, entrance *speed* as a parameter — the reveal lengths already
-take a `speed`, the geometry rows do not, and the older entrances still repeat
-their length as a literal (`0.55`‑style) instead of reading `ENTRANCE_LENGTH` —
-the Browse‑all picker, which is now also where the per‑photo `animDir` override
-gets its control, and the 🎲 shuffle.
+Only the mask builder that would make ten bridged names exact. `smoothleft`,
+`smoothright`, `smoothup`, `smoothdown`, the four `*slice` names, `dissolve` and
+`pixelize` have no equivalent among the shapes this app draws, so their rows are
+marked `via: 'bridge'`: the mask they should carry is FFmpeg's own `xfade` between
+two solid layers, `alphamerge`d onto the photo (the single-image-reveal-without-a-
+second-clip trick). They currently run the nearest animation instead — a hard-edged
+wipe, a strip mask, a mosaic — and their hints say which, so the tile, the preview
+and the MP4 all describe the same file. What the builder has to solve before it is
+worth its graph lines: the photo's entrance alpha is an expression (`geq a=` per
+ladder level) and `alphamerge` *replaces* alpha rather than multiplying it, so the
+two have to be composed in one step (a mask stream that already carries the fade,
+or `fade=t=in:alpha=1` after the merge) in both engines, in the same order, or the
+preview and the MP4 disagree about the first 0.2 s of every photo.
+
+Not planned, and recorded so the reason survives: the 133 GL transition names stay
+slide-level only (a per-photo GL name would need the whole scene as a backdrop
+crop, and on a DS918+ they degrade to a dissolve anyway); a *blur* entrance needs a
+second sprite ladder, which is a feature of its own rather than a row in a table.
 
 ## Mirrored exits (shipped)
 
@@ -391,3 +403,95 @@ happens exactly once, in the graph.
 The twin grew 9 cases (all eight, plus one photo carrying `flicker`, `toColor` and
 `invert` *while* an entrance develops, where composition is the whole point); the
 graph tests pin which filter carries which channel. 125 collage tests pass.
+
+## P4 — the transition bridge (shipped, 41 names)
+
+The user asked whether the existing *slide transition* set could be reused per
+photo. It can, mostly by aliasing: 31 of FFmpeg's `xfade` names are already
+something the collage builds more cheaply than a mask, because a wipe is the mask
+the `geq` ladder bakes, a slide is a translate and `fadewhite` is a brightness
+ramp. So the catalogue grew 41 rows — `COLLAGE_BRIDGE` in TypeScript, `BRIDGE` in
+Python — where the *id is FFmpeg's own name* (`wiperight`, `circleopen`,
+`slideup`, `fadegrays`, `zoomin`, …), which is both what a viewer searches for and
+what a hand-written spec would write.
+
+Each row says which animation it runs, and one function resolves it:
+`resolveAnim` / `resolve_anim`. That is the whole design: the picker, the
+validator, `ENTRANCE_LENGTH`, the state and the graph all go through that one
+lookup, so a bridge cannot mean a wipe to the preview and a colour ramp to the
+export. Three rows also carry a `dir`, because FFmpeg's names state a direction —
+`slideleft` pushes the new frame in *from the right* — and a mirrored alias would
+be a lie about the MP4. A name with a direction of its own shows no direction
+toggle at all (`animHasDirection` returns false), because the only thing it could
+change is the label.
+
+Two smaller consequences:
+
+* `photo_anim` (Python) returns the *resolved* animation while `photo_anim_name`
+  returns the stored name, because the direction rules and the picker need the
+  name and everything downstream needs the animation. The TypeScript twin keeps
+  them apart the other way round — `photoAnim` raw, `resolveAnim` at each use —
+  which is why the twin driver reports `resolveAnim(photoAnim(…))` in its `anim`
+  lane: without that, 41 cases failed on names doing nothing wrong.
+* `fadegrays`, `fadewhite`, `fadeblack` land in the colour family, so the bridge
+  also proved the P3 composer out: `fadewhite` is `flashIn`, and both engines had
+  to agree about a brightness curve reaching 1.0 exactly at the landing. They now
+  do — the twin found a real `geomCurve` base bug on the way (see P3).
+
+41 names × six sampled times are compared in the twin, which is what a per-photo
+transition catalogue needs to be worth anything. 133 collage tests pass.
+
+## B5 — the entrance browser (shipped)
+
+90 entrance ids do not fit a row of chips, so the picker took the shape the
+transition browser already uses: a chip that opens a portalled popover with a
+search box, a family rail (★ favourites, Recent, All, Classic, Paper, Colour,
+Reveals, FFmpeg), and a tile grid with a star on each tile. New CSS only where the
+shell did not already reach: the tile's square needs a *photo* to move, so
+`.anim-tile-photo` is a flat sky/hill/field gradient — readable at 104 px, no
+network, and it makes a wipe, a rotation or a colour ramp unmistakable.
+
+The tiles are not icons and not a second implementation: `tileStyle` builds a
+one-photo spec and asks `photoState`, `photoLookState` and `revealMaskStyle` —
+the same three functions the stage and the export sample — for the transform, the
+filter and the mask at the hovered time. A tile therefore cannot promise a move the
+render will not make, which is the failure mode every catalogue this size grows
+into. The animation runs while a tile is hovered (one entrance, a beat of hold,
+repeat), and rests at its end state otherwise, so opening the browser is not 90
+`requestAnimationFrame` loops.
+
+One catalogue feeds it: `collageAnimRows()` builds the rows from the four choice
+lists, and `COLLAGE_ANIMS` in `App.tsx` is that same list rather than a hand-typed
+copy of labels and hints — the picker, the per-photo select, the shuffle's pools
+and both validators now read one table, and `animLabelOf`/`animHintOf`/
+`animFamily`/`animHasDirection` are its only accessors. The catalogue is built on
+first call rather than at module load, because it reads constants declared in four
+later sections and a `const` here would depend on where they happen to sit.
+
+The same picker serves the collage *and* one photo (the per-photo lane gained
+direction, speed and a lock checkbox next to it), with an "inherit" row that
+deletes the photo's own `anim` again.
+
+## B6 — the random roll (shipped)
+
+`Random` gives every photo its own entrance, drawn from the ticked families, and
+**writes the chosen ids onto the photos**. That materialisation is the point: the
+engines see ordinary ids, so nothing has to agree about a random number generator
+across two languages, and reopening a project shows and renders exactly the file
+you previewed rather than a new lottery. `spec.animSeed` is stored next to them —
+enough to replay the same roll with the *Replay seed* button, and enough for a
+screenshot of the panel to describe the MP4.
+
+Three rules the UI exposes and a test locks: `no repeats` samples without
+replacement and wraps only when the pool runs out (more photos than names), the
+family checkboxes are the pool (`classic/paper/colour/mask/ffmpeg`, all ticked =
+the field is not written at all), and a photo with `lock` keeps its entrance
+through every roll — "one of each" additionally refuses to hand that same name to
+a second photo, which is the only way a lock and a no-repeat rule can coexist.
+`collageShuffle` is a pure function in `collageCore` with a 12-line mulberry32
+inside it, so the roll is reproducible from its seed rather than merely stable.
+
+Not built: beat-snapped entrance *times*. The collage has no beat clock of its
+own — `spec.beats` drives motion, not arrivals — so snapping a shuffle to the
+music would mean reusing the karaoke feature's onset data, which is a separate
+piece of work.

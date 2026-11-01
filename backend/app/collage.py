@@ -1923,21 +1923,116 @@ def photo_reveal_dir(spec: dict[str, Any], i: int | None = None) -> int:
     """Which way a mask reveal runs: 0 is the direction its kind is named for,
     1 mirrors it on the axis that kind declares (twin of `photoRevealDir`)."""
     if i is not None:
+        # A bridged name carries its own direction: FFmpeg's `slideleft` means the
+        # new frame comes in from the right, so the wipe has to run the way the
+        # name says rather than the way the collage was set to.
+        row = bridge_row(photo_anim_name(spec, i))
+        if row and row.get("dir") is not None:
+            return int(row["dir"])
         photos = spec.get("photos") or []
         if 0 <= i < len(photos) and photos[i].get("animDir") in (0, 1):
             return int(photos[i]["animDir"])
     return 1 if spec.get("animDir") == 1 else 0
 
 
-def photo_anim(spec: dict[str, Any], i: int) -> str:
-    """The entrance photo i actually performs: its own override when it has
-    one, the collage's animation otherwise (twin of photoAnim())."""
+# ---------------------------------------------------------------------------
+# The transition bridge — FFmpeg's own names, as per-photo reveals
+# ---------------------------------------------------------------------------
+
+# The same 41 rows as `COLLAGE_BRIDGE` in src/collageCore.ts. Most of FFmpeg's
+# `xfade` names are something the collage can build more cheaply than a mask, so
+# the row says which animation the name *runs*: the name is what the spec stores
+# and what the picker lists, and the animation is what both engines evaluate.
+# `dir` is the direction the name carries with it — `slideleft` pushes the new
+# frame in from the right, and a name that silently meant the other way round
+# would be a lie about the MP4.
+BRIDGE: dict[str, dict[str, Any]] = {
+    "wiperight": {"label": "Wipe right", "target": "wipeRight"},
+    "wipeleft": {"label": "Wipe left", "target": "wipeLeft"},
+    "wipeup": {"label": "Wipe up", "target": "wipeUp"},
+    "wipedown": {"label": "Wipe down", "target": "wipeDown"},
+    "wipetl": {"label": "Wipe to top-left", "target": "diagDownLeft", "dir": 1},
+    "wipetr": {"label": "Wipe to top-right", "target": "diagDownRight", "dir": 1},
+    "wipebl": {"label": "Wipe to bottom-left", "target": "diagDownLeft"},
+    "wipebr": {"label": "Wipe to bottom-right", "target": "diagDownRight"},
+    "slideleft": {"label": "Slide left", "target": "glide", "dir": 1},
+    "slideright": {"label": "Slide right", "target": "glide"},
+    "slideup": {"label": "Slide up", "target": "rise"},
+    "slidedown": {"label": "Slide down", "target": "drop"},
+    "circleopen": {"label": "Circle open", "target": "iris"},
+    "circleclose": {"label": "Circle close", "target": "irisOut"},
+    "vertopen": {"label": "Vertical open", "target": "curtain"},
+    "vertclose": {"label": "Vertical close", "target": "curtain", "dir": 1},
+    "horzopen": {"label": "Horizontal open", "target": "curtain", "dir": 1},
+    "horzclose": {"label": "Horizontal close", "target": "curtain"},
+    "squeezeh": {"label": "Squeeze horizontal", "target": "fold"},
+    "squeezev": {"label": "Squeeze vertical", "target": "unfold"},
+    "zoomin": {"label": "Zoom in", "target": "zoom"},
+    "fadegrays": {"label": "Fade from grey", "target": "colourFlood"},
+    "fadewhite": {"label": "Fade from white", "target": "flashIn"},
+    "fadeblack": {"label": "Fade from black", "target": "shadowLift"},
+    "fadefast": {"label": "Fade (fast)", "target": "fade"},
+    "fadeslow": {"label": "Fade (slow)", "target": "fade"},
+    "radial": {"label": "Radial", "target": "clock"},
+    "rectcrop": {"label": "Rect crop", "target": "diamond"},
+    # …and the ten the collage cannot build: the render runs FFmpeg's own
+    # transition between two solid layers and uses the result as the photo's
+    # alpha mask, and the preview draws the nearest shape it has.
+    "smoothleft": {"label": "Smooth left", "target": "wipeLeft", "bridge": True, "soft": 0.22},
+    "smoothright": {"label": "Smooth right", "target": "wipeRight", "bridge": True, "soft": 0.22},
+    "smoothup": {"label": "Smooth up", "target": "wipeUp", "bridge": True, "soft": 0.22},
+    "smoothdown": {"label": "Smooth down", "target": "wipeDown", "bridge": True, "soft": 0.22},
+    "hlslice": {"label": "Slices in from left", "target": "blindsRight", "bridge": True},
+    "hrslice": {"label": "Slices in from right", "target": "blindsRight", "dir": 1, "bridge": True},
+    "vuslice": {"label": "Slices from above", "target": "blindsDown", "bridge": True},
+    "vdslice": {"label": "Slices from below", "target": "blindsDown", "dir": 1, "bridge": True},
+    "dissolve": {"label": "Dissolve", "target": "mosaic", "bridge": True},
+    "pixelize": {"label": "Pixelize", "target": "mosaic", "bridge": True},
+}
+BRIDGE_NAMES = tuple(BRIDGE)
+# The families an entrance belongs to — the shuffle's pools and the picker's tabs
+# in both languages, so a name cannot be in a group in one and not the other.
+ANIM_FAMILIES = ("classic", "paper", "colour", "mask", "ffmpeg")
+ANIM_FAMILY = {
+    **{k: "mask" for k in REVEALS},
+    **{k: "paper" for k in GEOM},
+    **{k: "colour" for k in LOOK_ENTRANCE},
+    **{name: ("ffmpeg" if row.get("bridge") else str(row.get("family", "mask")))
+       for name, row in BRIDGE.items()},
+}
+# Every id a spec may carry: our own animations and the bridged names.
+ANIM_IDS = ANIMS + BRIDGE_NAMES
+
+
+def resolve_anim(name: Any) -> str:
+    """The animation a stored name runs. One place, so the state, the lengths and
+    the graph cannot each resolve a bridge a little differently."""
+    row = BRIDGE.get(str(name))
+    return str(row["target"]) if row else str(name)
+
+
+def bridge_row(name: Any) -> dict[str, Any] | None:
+    """The bridge row for a name, or None for an animation of our own."""
+    return BRIDGE.get(str(name))
+
+
+def photo_anim_name(spec: dict[str, Any], i: int) -> str:
+    """The entrance of photo i as it is *stored* — a bridged name stays itself, so
+    the picker and the direction rules can see what the user picked."""
     photos = spec.get("photos") or []
     if i < len(photos) and isinstance(photos[i], dict):
         own = photos[i].get("anim")
-        if own in ANIMS:
-            return own
+        if own in ANIM_IDS:
+            return str(own)
     return str(spec.get("animation") or "drop")
+
+
+def photo_anim(spec: dict[str, Any], i: int) -> str:
+    """The entrance photo i performs: its own override when it has one, the
+    collage's animation otherwise, and either way resolved through the bridge, so
+    a stored FFmpeg name arrives as the animation standing behind it (twin of
+    photoAnim() + resolveAnim())."""
+    return resolve_anim(photo_anim_name(spec, i))
 
 
 def photo_motion(spec: dict[str, Any], i: int) -> tuple[str, float]:
@@ -2294,7 +2389,7 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             entry["frame"] = photo_frame({"frame": p["frame"]}, None)
         if p.get("shape") in SHAPES:
             entry["shape"] = p["shape"]
-        if p.get("anim") in ANIMS:
+        if p.get("anim") in ANIM_IDS:
             entry["anim"] = p["anim"]
         # …and the two things that say *how* that entrance plays. Both are read
         # with the same tolerance at both levels, because a photo that carries a
@@ -2304,6 +2399,10 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         spd = _speed_val(p.get("animSpeed"))
         if spd is not None:
             entry["animSpeed"] = spd
+        if p.get("animLock") is True:
+            # "this photo's entrance survives the shuffle" — editor state, kept by
+            # both engines so it does not vanish on save
+            entry["animLock"] = True
         if p.get("exit") in EXITS:
             entry["exit"] = p["exit"]
         if p.get("motion") in MOTIONS:
@@ -2339,7 +2438,9 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     if not photos:
         return None
     layout = raw.get("layout") if raw.get("layout") in LAYOUTS else "stack"
-    animation = raw.get("animation") if raw.get("animation") in ANIMS else "drop"
+    # a bridged name (FFmpeg's own transition name) is as valid a choice here as
+    # one of ours — `photo_anim` resolves it for everything downstream
+    animation = raw.get("animation") if raw.get("animation") in ANIM_IDS else "drop"
     anim_dir = 1 if raw.get("animDir") in (1, True) else 0
     anim_speed = _speed_val(raw.get("animSpeed"))
     exit_ = raw.get("exit") if raw.get("exit") in EXITS[1:] else None
@@ -2391,6 +2492,29 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
         spec["animDir"] = 1
     if anim_speed is not None:
         spec["animSpeed"] = anim_speed
+    # The random shuffle's memory: which seed rolled this set, which families it
+    # drew from, and whether it avoided repeats. The entrances themselves are
+    # stored as concrete ids on the photos, so the render never needs any of this —
+    # it is here so a project reopens with the same roll, and so a shuffle the
+    # save dropped is a shuffle the *editor* would silently undo.
+    seed_in = raw.get("animSeed")
+    if seed_in is not None and not isinstance(seed_in, bool):
+        # float() first, then truncate: `int("7.5")` would raise while TypeScript's
+        # Number() truncates it to 7, and a field one engine keeps and the other
+        # drops is the divergence class that costs the most to find
+        try:
+            as_num = float(seed_in)
+        except (TypeError, ValueError):
+            as_num = None
+        if as_num is not None and math.isfinite(as_num):
+            spec["animSeed"] = int(as_num) & 0x7FFFFFFF
+    fams = raw.get("animFamilies")
+    if isinstance(fams, list):
+        keep = [f for f in fams if f in ANIM_FAMILIES]
+        if keep:
+            spec["animFamilies"] = keep
+    if raw.get("animOneOfEach") is True:
+        spec["animOneOfEach"] = True
     if hold is not None:
         spec["hold"] = hold
     if raw.get("beatSync") is True:

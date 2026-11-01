@@ -28,7 +28,11 @@ for (const c of input.cases) {
     // The three lanes per photo: what it enters with, what it does while it is
     // on screen, and how it leaves — plus the timings those imply.
     lanes: {
-      anim: pls.map((_, i) => core.photoAnim(spec, i)),
+      // the animation that *runs*, not the name stored: a spec may hold one of
+      // FFmpeg's transition names, and python's photo_anim() resolves those
+      // already, so this lane has to be the resolved id or every bridge case
+      // would fail on a name that is doing nothing wrong.
+      anim: pls.map((_, i) => core.resolveAnim(core.photoAnim(spec, i))),
       pin: pls.map((_, i) => core.pinAnchor(spec, i)),
       motion: pls.map((_, i) => core.photoMotion(spec, i)),
       // A motion's own duration and target: where `move` travels to, what

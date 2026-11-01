@@ -17,7 +17,8 @@ from pathlib import Path
 
 
 from app.collage_reveal import REVEALS, REVEAL_LENGTH  # noqa: E402
-from app.collage import GEOM, LOOK_ENTRANCE, base_duration, exit_fly_length  # noqa: E402
+from app.collage import (BRIDGE, GEOM, LOOK_ENTRANCE, base_duration,  # noqa: E402
+                         entrance_length, exit_fly_length)
 from app.collage import (
     COLLAGE_TEMPLATES,
     ENTRANCE_LENGTH,
@@ -666,6 +667,18 @@ def _cases() -> list[dict]:
         deep = {**_spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1), "depth": True}
         cases.append({"id": f"geom-{kind}-depth", "spec": deep, "aspect": 16 / 9, "leadIn": 0.0,
                       "times": times, "hashArgs": [7, 3, 4], "matW": 30})
+    # the transition bridge: 41 names from FFmpeg's own `xfade` list, each of
+    # which resolves to one animation this app already draws. The names are what a
+    # spec stores, so the two engines have to resolve them to the same entrance,
+    # the same length and the same state — a bridge that meant one thing to the
+    # preview and another to the MP4 would be invisible in every other test.
+    for name in BRIDGE:
+        length = entrance_length({"animation": name, "photos": [{}]}, 0)
+        times = [0.0, round(length * 0.35, 3), round(length * 0.8, 3), length, length + 0.5, 2.9]
+        cases.append({"id": f"bridge-{name}",
+                      "spec": _spec("stack", name, "4:3", 3, 4, delays=[0.0, 0.25, 0.5], hold=1),
+                      "aspect": 16 / 9, "leadIn": 0.0, "times": times,
+                      "hashArgs": [5, 4, 3], "matW": 30})
     # per-photo mask reveals: the sweep's progress is the one number the render's
     # mask ladder and the preview's CSS mask both sample, so every kind is
     # compared across its own entrance — and again mirrored, because `animDir`
