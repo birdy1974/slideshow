@@ -20,7 +20,7 @@
 // the MP4 will not do. Times are clip-local seconds like `textStart`/`textEnd`,
 // which is why re-trimming the movie takes the words along with the picture.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlignLeft, Check, ChevronLeft, ChevronRight, FileMusic, Import, Pause, Play, RotateCcw, Scissors, Wand2, X } from 'lucide-react'
+import { AlignLeft, Check, ChevronLeft, ChevronRight, Copy, FileMusic, Import, Pause, Play, RotateCcw, Scissors, Wand2, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { PopupBackdrop } from './layers'
 import { TimeField } from './ui'
 import { formatClockPrecise } from './time'
@@ -29,8 +29,9 @@ import type { MediaItem } from './mediaItem'
 import { KaraokeStage } from './KaraokeStage'
 import { FontPicker } from './FontPicker'
 import {
-  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, autoTime, followSentence,
-  karaokePaintStyle, karaokeTextStyleTouched, makeContinuous, parseAssKaraoke, parseLrc,
+  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, KARAOKE_ZOOM_MAX, autoTime,
+  clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
+  karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
   timeFromImport, tokenize, wordsPerSecond,
   type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
@@ -38,6 +39,80 @@ import {
 } from './karaokeCore'
 
 const round3 = (v: number) => Math.round(v * 1000) / 1000
+/**
+ * A worked example of every file the importer reads, shown in the popup instead
+ * of a sentence *about* the format. Each snippet below is something
+ * `parseLrc` / `parseSubtitles` / `parseAssKaraoke` accept as written, because
+ * the fastest way to lose an hour is to hand a parser a file you described to
+ * yourself rather than one you can see.
+ */
+const KARAOKE_IMPORT_EXAMPLES: { id: string; label: string; hint: string; body: string; note: string }[] = [
+  {
+    id: 'lrc',
+    label: '.lrc',
+    hint: 'song lyrics — one line per sentence',
+    body: `[ti:Never Gonna Give You Up]
+[00:12.34]Never gonna give you up
+[00:15.10]Never gonna let you down
+[00:18.00][00:52.45]Give you up, give you up`,
+    note: 'mm:ss.x, mm:ss:xx and mm:ss:xxx all parse, several stamps on one line repeat that line, and a bracketed tag that is not a time is dropped. No end times: a line runs until the next one starts.',
+  },
+  {
+    id: 'srt',
+    label: '.srt',
+    hint: 'subtitles — sentence windows',
+    body: `1
+00:00:12,340 --> 00:00:15,000
+Never gonna give you up
+
+2
+00:00:15,100 --> 00:00:18,000
+Never gonna let you down
+Run around and hurt you`,
+    note: 'A blank line between blocks, the number optional, h:mm:ss,mmm or mm:ss.mmm. Every word of a block shares its start, so the sweep inside it is spread by word length: this times sentences, not syllables.',
+  },
+  {
+    id: 'vtt',
+    label: '.vtt',
+    hint: 'WebVTT — same, with dots',
+    body: `WEBVTT
+
+00:00:12.340 --> 00:00:15.000
+Never gonna give you up
+
+cue-2
+00:00:15.100 --> 00:00:18.000
+Never gonna let you down`,
+    note: 'The WEBVTT header and a cue id on its own line are ignored, <i> tags and {\k} leftovers are stripped, and the times use a dot instead of a comma.',
+  },
+  {
+    id: 'ass',
+    label: '.ass / .ssa',
+    hint: 'per-word and per-syllable times',
+    body: `[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:12.34,0:00:15.00,FX,,0,0,0,,{\k40}Never {\k35}gonna {\k40}give {\k25}you {\k40}up
+Dialogue: 0,0:00:15.10,0:00:18.00,FX,,0,0,0,,{\kf30}N{\kf12}ev{\kf10}er {\k40}gonna`,
+    note: 'The only format that times every word: \k is a word, \kf the sweep inside it, and the number is centiseconds (40 = 0.40 s). A Dialogue line needs its ten comma-separated fields. The render writes these same tags, so a file this app exported comes back almost exactly.',
+  },
+]
+
+/**
+ * The strip's zoom lives in `localStorage`, not in `KaraokeData`: it says how
+ * wide *this person* wants the ruler, and the render reads `KaraokeData`. A view
+ * setting that got saved into the slide would be a change to the project that
+ * the MP4 has to ignore anyway.
+ */
+const ZOOM_KEY = 'slideshow.karaoke.zoom'
+function readZoomPref (): number {
+  try {
+    if (typeof localStorage === 'undefined') return 1
+    return clampKaraokeZoom(Number(localStorage.getItem(ZOOM_KEY)) || 1)
+  } catch { return 1 }
+}
+function writeZoomPref (zoom: number): void {
+  try { localStorage.setItem(ZOOM_KEY, String(zoom)) } catch { /* private mode: it just does not stick */ }
+}
 /** How far apart two words must be for the sweep to be visible at all. */
 const MIN_WORD_GAP = 0.06
 
@@ -99,14 +174,23 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const [rate, setRate] = useState(1)
   const [loopLine, setLoopLine] = useState(false)
   const [showImport, setShowImport] = useState(false)
+  /** Which example the import panel is showing — the tab you last read. */
+  const [importExample, setImportExample] = useState(KARAOKE_IMPORT_EXAMPLES[0].id)
   const [notice, setNotice] = useState<Notice | null>(seeded.current.fresh
     ? (tokens.length ? { kind: 'info', text: 'Spread evenly for now — press play and tap along, or drag the blocks, and it becomes yours.' } : { kind: 'warn', text: 'Nothing to time yet: write the words first.' })
     : null)
   const [peaks, setPeaks] = useState<{ values: number[]; duration: number } | null>(null)
+  /** How wide the strip is drawn, × its box. 1 is "the whole clip fits". */
+  const [zoom, setZoom] = useState(readZoomPref)
   const [onsets, setOnsets] = useState<number[]>([])
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const stripRef = useRef<HTMLDivElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const zoomRef = useRef(zoom)
+  /** The time the pointer was on when the strip changed width: re-placed on the
+   *  next paint, so zooming never slides the ruler out from under the cursor. */
+  const anchor = useRef<{ t: number; at: number } | null>(null)
   const dragRef = useRef<DragState | null>(null)
   const pendingRef = useRef<KaraokeData | null>(null)
   const flushTimer = useRef<number | null>(null)
@@ -117,6 +201,14 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const [tapMode, setTapMode] = useState<'line' | 'word'>('line')
 
   const span = Math.max(1, clipSeconds)
+  useEffect(() => {
+    zoomRef.current = zoom
+  }, [zoom])
+  const zoomTo = useCallback((value: number) => {
+    const next = clampKaraokeZoom(value)
+    setZoom(next)
+    writeZoomPref(next)
+  }, [])
   const plan = useMemo(() => planOf(draftText, data, { from: windowStart, to: windowEnd }), [draftText, data, windowStart, windowEnd])
   const groups = useMemo(() => sentenceGroups(tokens, data.words, data.maxWords), [tokens, data.words, data.maxWords])
   // What the subtitle editors do: while the movie plays, the panel and the strip
@@ -473,6 +565,17 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
         case 'B':
           snapPass()
           return
+        case '+':
+        case '=':
+          zoomTo(zoomRef.current * 1.4)
+          return
+        case '-':
+        case '_':
+          zoomTo(zoomRef.current / 1.4)
+          return
+        case '0':
+          zoomTo(1)
+          return
         default:
           if (/^[1-4]$/.test(event.key)) {
             const mode = KARAOKE_EDITORS[Number(event.key) - 1]
@@ -485,7 +588,12 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   })
 
   // ---- strip geometry: one mapping, every lane ----
+  // Zooming is only ever making that one mapping wider inside a scroller: the
+  // blocks, dividers, handles and the playhead are percentages, and
+  // `pointerTime` measures the wide strip's own rect, so drag maths stays exact
+  // at any width and no lane needs a second coordinate system.
   const toPercent = (t: number) => `${Math.max(0, Math.min(100, (t / span) * 100))}%`
+  const stripWidth = zoom > 1.001 ? { width: `${zoom * 100}%` } : undefined
   const pointerTime = (clientX: number) => {
     const rect = stripRef.current?.getBoundingClientRect()
     if (!rect || rect.width < 8) return 0
@@ -540,6 +648,56 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     if (!dragRef.current) return
     dragRef.current = null
     flush()
+  }
+  // ⌘/Ctrl+wheel over the strip is the zoom gesture every map and audio editor
+  // has taught people; a plain wheel just scrolls along the clip. It goes on as a
+  // native listener because React's `onWheel` is passive and so cannot keep the
+  // browser from zooming the whole page instead.
+  useEffect(() => {
+    const box = scrollRef.current
+    if (!box) return
+    const onWheel = (event: WheelEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return
+      event.preventDefault()
+      const strip = stripRef.current
+      const rect = box.getBoundingClientRect()
+      const width = Math.max(1, strip?.offsetWidth || rect.width)
+      anchor.current = { t: ((box.scrollLeft + event.clientX - rect.left) / width) * span, at: event.clientX - rect.left }
+      zoomTo(zoomRef.current * Math.exp(-event.deltaY * 0.0016))
+    }
+    box.addEventListener('wheel', onWheel, { passive: false })
+    return () => box.removeEventListener('wheel', onWheel)
+  }, [span, zoomTo])
+  // Re-place the anchored time once the strip has been redrawn at its new width.
+  useEffect(() => {
+    const box = scrollRef.current
+    const strip = stripRef.current
+    const held = anchor.current
+    if (!box || !strip || !held) return
+    anchor.current = null
+    box.scrollLeft = Math.max(0, (held.t / span) * strip.offsetWidth - held.at)
+  }, [zoom, span])
+  // Zoomed in, the playhead has to stay in the box while the movie runs: a strip
+  // that scrolls the beat you are timing off the edge is worse than no zoom.
+  useEffect(() => {
+    if (!playing || zoom <= 1.001) return
+    const box = scrollRef.current
+    const strip = stripRef.current
+    if (!box || !strip) return
+    const pad = 28
+    const x = (position / span) * strip.offsetWidth
+    if (x < box.scrollLeft + pad) box.scrollLeft = Math.max(0, x - pad)
+    else if (x > box.scrollLeft + box.clientWidth - pad) box.scrollLeft = x - box.clientWidth + pad
+  }, [position, playing, zoom, span])
+  /** Alt-click puts the clicked time in the middle of the box — the reach for a
+   *  divider you can only hit once you are zoomed in. The seek still happens. */
+  const onStripPointerDown = (event: React.PointerEvent) => {
+    if (event.altKey && zoom > 1.001) {
+      const box = scrollRef.current
+      const strip = stripRef.current
+      if (box && strip) box.scrollLeft = Math.max(0, (pointerTime(event.clientX) / span) * strip.offsetWidth - box.clientWidth / 2)
+    }
+    beginDrag('seek', -1)(event)
   }
 
   // ---- import a file that already knows the times ----
@@ -651,12 +809,13 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     const points = top.map((y, x) => `${x},${y}`).concat(bottom.map((y, i) => `${width - 1 - i},${y}`))
     return `M${points.join(' L')} Z`
   }, [peaks])
+  // A tick every ~55 px of the *drawn* strip: what the strip's own heuristic drew
+  // at zoom 1, one finer rung for each step in, down to a hundredth of a second at
+  // the top of the range — which is the whole point of zooming in.
   const ticks = useMemo(() => {
-    const step = span > 240 ? 30 : span > 120 ? 15 : span > 45 ? 5 : span > 15 ? 2 : 1
-    const out: number[] = []
-    for (let t = 0; t <= span + 0.001; t += step) out.push(round3(t))
-    return out
-  }, [span])
+    const step = karaokeTickStep(span, zoom)
+    return { step, at: karaokeTicks(span, zoom) }
+  }, [span, zoom])
 
   return <PopupBackdrop className="dark-backdrop karaoke-backdrop" onDismiss={cancel}>
     <div className="karaoke-editor" onMouseDown={event => event.stopPropagation()}>
@@ -696,25 +855,33 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
               <button type="button" className={tapMode === 'line' ? 'active' : ''} onClick={() => setTapMode('line')}>Lines</button>
               <button type="button" className={tapMode === 'word' ? 'active' : ''} onClick={() => setTapMode('word')}>Words</button>
             </div>
+            <div className="kara-zoom">
+              <button type="button" onClick={() => zoomTo(zoom / 1.4)} title="Zoom out — more of the clip in view"><ZoomOut size={13}/></button>
+              <input type="range" min={1} max={KARAOKE_ZOOM_MAX} step={0.05} value={zoom} aria-label="Karaoke timeline zoom" onChange={event => zoomTo(Number(event.target.value))}/>
+              <b>{Math.round(zoom * 100)}%</b>
+              <button type="button" onClick={() => zoomTo(zoom * 1.4)} title="Zoom in — a divider per syllable"><ZoomIn size={13}/></button>
+              <button type="button" className={zoom > 1.001 ? '' : 'on'} onClick={() => zoomTo(1)} title="Fit the whole clip in the box (0)">Fit</button>
+            </div>
           </div>
 
-          <div className={`kara-strip${data.editor === 'wave' ? ' wave' : ''}`} ref={stripRef}
-               onPointerDown={beginDrag('seek', -1)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+          <div className="kara-strip-scroll" ref={scrollRef}>
+          <div className={`kara-strip${data.editor === 'wave' ? ' wave' : ''}`} ref={stripRef} style={stripWidth}
+               onPointerDown={onStripPointerDown} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
             {data.editor === 'wave' ? <div className="kara-wave">
               {wavePath ? <svg viewBox="0 0 1000 100" preserveAspectRatio="none"><path d={wavePath}/></svg>
                 : <span className="kara-wave-note">{analyzable ? 'reading the movie’s audio…' : 'this file has no audio to read'}</span>}
               {onsets.slice(0, 400).map((t, i) => <i key={i} style={{ left: toPercent(t) }}/>)}
             </div> : null}
 
-            <div className="kara-ruler">{ticks.map(t => <b key={t} style={{ left: toPercent(t) }}><s>{t}</s></b>)}</div>
+            <div className="kara-ruler">{ticks.at.map(t => <b key={t} style={{ left: toPercent(t) }}><s>{karaokeTickLabel(ticks.step, t)}</s></b>)}</div>
 
             <div className="kara-lane">
               {plan.sentences.map((line, i) => <div
                 key={`${line.from}-${i}`}
                 className={`kara-block${i === selected ? ' active' : ''}${line.end >= windowEnd - 0.001 ? ' clipped' : ''}`}
-                style={{ left: toPercent(line.start), width: `${Math.max(0.8, ((line.end - line.start) / span) * 100)}%` }}
+                style={{ left: toPercent(line.start), width: `${Math.max(karaokeBlockFloor(zoom), ((line.end - line.start) / span) * 100)}%` }}
                 onPointerDown={beginDrag('block', i)}
-                title={`Sentence ${i + 1}: ${draftText.slice(tokens[line.from]?.i0 ?? 0, tokens[line.to]?.i1 ?? 0)}`}
+                title={`Sentence ${i + 1}: ${draftText.slice(tokens[line.from]?.i0 ?? 0, tokens[line.to]?.i1 ?? 0)} · ${formatClockPrecise(line.start)} → ${formatClockPrecise(line.end)} (${round3(line.end - line.start)} s) · drag to move, Shift-click sets the start, Ctrl-click the end`}
               >
                 <span>{draftText.slice(tokens[line.from]?.i0 ?? 0, (tokens[line.from]?.i0 ?? 0) + 46)}</span>
                 <i className="kara-handle in" onPointerDown={beginDrag('start', i)}/>
@@ -743,11 +910,12 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
 
             <div className="kara-playhead" style={{ left: toPercent(position) }}/>
           </div>
+          </div>
 
           <div className="strip-legend">
             <span>{plan.sentences.length} sentences · {tokens.length} words{perSecond ? ` · ${perSecond.toFixed(2)} words/s` : ''}</span>
             <span className="kara-keys">
-              <kbd>Space</kbd> tap <kbd>Enter</kbd> next <kbd>⇧←/⇧→</kbd> ±100 ms <kbd>⌥←/⌥→</kbd> ±1 frame <kbd>I</kbd>/<kbd>O</kbd> line start/end <kbd>S</kbd> split <kbd>F</kbd> speed <kbd>1-4</kbd> surface
+              <kbd>Space</kbd> tap <kbd>Enter</kbd> next <kbd>⇧←/⇧→</kbd> ±100 ms <kbd>⌥←/⌥→</kbd> ±1 frame <kbd>I</kbd>/<kbd>O</kbd> line start/end <kbd>S</kbd> split <kbd>F</kbd> speed <kbd>1-4</kbd> surface <kbd>⌘</kbd>+scroll <kbd>+/-/0</kbd> zoom
             </span>
           </div>
         </section>
@@ -830,7 +998,31 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
             </div>
             {showImport ? <div className="kara-import">
               <input type="file" accept=".lrc,.srt,.vtt,.ass,.ssa,text/plain" onChange={event => void onImportFile(event.target.files?.[0])}/>
-              <small>.lrc, .srt and .vtt give the sentence times; an .ass with <kbd>\k</kbd> gives every word — and since the render writes those same tags, a fansub file comes back almost exactly.</small>
+              <div className="kara-import-tabs">
+                {KARAOKE_IMPORT_EXAMPLES.map(ex => <button key={ex.id} type="button" className={importExample === ex.id ? 'active' : ''} title={ex.hint} onClick={() => setImportExample(ex.id)}>{ex.label}</button>)}
+              </div>
+              {(() => {
+                const ex = KARAOKE_IMPORT_EXAMPLES.find(x => x.id === importExample) || KARAOKE_IMPORT_EXAMPLES[0]
+                return <>
+                  <pre className="kara-import-code"><code>{ex.body}</code>
+                    <button type="button" onClick={() => {
+                      // `navigator.clipboard` is missing outright over http://, and
+                      // `writeText` rejects in a locked-down browser: both are the
+                      // same dead end, so say so instead of throwing on undefined.
+                      const copied = navigator.clipboard?.writeText(ex.body)
+                      if (!copied) {
+                        setNotice({ kind: 'warn', text: 'This browser has no clipboard to hand over — select the example and copy it by hand.' })
+                        return
+                      }
+                      void copied.then(
+                        () => setNotice({ kind: 'info', text: `${ex.label} example copied — save it as a file, then pick it above.` }),
+                        () => setNotice({ kind: 'warn', text: 'The browser refused the clipboard — select the text and copy it by hand.' }))
+                    }} title="Copy this example"><Copy size={11}/> copy</button>
+                  </pre>
+                  <small>{ex.note}</small>
+                </>
+              })()}
+              <small>Times are <strong>media time</strong>, not slide time: the clip's own IN point is subtracted for you. If the file's words are exactly your text, every word gets its own time and the line breaks come from the file; otherwise each cue's first word is found by matching forward and the rest of the cue shares what is left.</small>
             </div> : null}
           </div>
 
