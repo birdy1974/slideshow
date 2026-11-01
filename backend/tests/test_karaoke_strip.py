@@ -161,9 +161,16 @@ class SungWordBoxTest(unittest.TestCase):
         rule = [part for part in css.split("}") if ".kara-word{" in part]
         self.assertEqual(len(rule), 1, "exactly one .kara-word rule, or the padding belongs somewhere unclear")
         body = rule[0][rule[0].index(".kara-word{"):]
-        self.assertIn("background-clip:text", body, "the sweep is clipped to the glyphs, so the box is the mask")
+        self.assertIn("position:relative", body, "the sung copy is placed against the word's own box")
         self.assertIn("padding:.04em 0", body, "the box needs the slack that pays for overshoot")
         self.assertIn("margin:-.04em 0", body, "…paid for, or the block moves and the MP4 does not")
+        self.assertNotIn("background-clip", body, "a gradient clipped to the text is what cut the letters off")
+
+    def test_the_sweep_is_a_clip_on_x_and_nothing_else(self) -> None:
+        stage = STAGE_TSX.read_text(encoding="utf-8")
+        self.assertRegex(stage, r"clipPath: `inset\(0 ", "the sung half must be cut on one vertical line")
+        self.assertNotIn("WebkitTextFillColor", stage, "transparent text needs a mask to be painted at all; a second copy does not")
+        self.assertNotIn("backgroundClip", stage, "same: the mask was the bug")
 
     def test_no_bundled_face_is_given_a_box_shorter_than_its_own(self) -> None:
         # karaokeCore.ts floors the box at 1.02 em. That is only safe while no face

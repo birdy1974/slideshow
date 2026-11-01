@@ -29,6 +29,12 @@ for (const c of input.cases) {
     offsets: spec.photos.map((_, i) => core.exitOffset(spec, i)),
     flies: spec.photos.map((_, i) => core.exitFlyLength(spec, i)),
     anims: spec.photos.map(p => p.anim ?? null),
+    // the timing lane's two authored fields, and the windows they add up to
+    windowAt: spec.photos.map(p => p.at ?? null),
+    windowUntil: spec.photos.map(p => p.until ?? null),
+    starts: spec.photos.map((_, i) => core.photoStart(spec, i, 0.5)),
+    exitStarts: spec.photos.map((_, i) => core.exitStart(spec, i, 0.5)),
+    base: core.baseDuration(spec),
   })
 }
 process.stdout.write(JSON.stringify(out))

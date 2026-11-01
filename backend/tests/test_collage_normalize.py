@@ -29,7 +29,8 @@ DRIVER = Path(__file__).resolve().parent / "collage_normalize.mjs"
 import sys
 
 sys.path.insert(0, str(REPO / "backend"))
-from app.collage import EXIT_LENGTH, EXIT_STAGGER, EXIT_SPEED_MAX, EXIT_SPEED_MIN  # noqa: E402
+from app.collage import (EXIT_LENGTH, EXIT_STAGGER, EXIT_SPEED_MAX, EXIT_SPEED_MIN,  # noqa: E402
+                         base_duration, exit_start, normalize_collage, photo_start)
 
 MODES = ("sweep", "deal", "shuffle", "fade")
 
@@ -154,6 +155,37 @@ class CollageNormalizeExitTest(unittest.TestCase):
         self.assertEqual(got[1]["exitModeFirst"], "fade")
         self.assertEqual(got[1]["exitModeLast"], "sweep")
         self.assertEqual(got[1]["exitMode"], "sweep")
+
+    def test_the_timing_lanes_two_fields_survive(self) -> None:
+        """The timing lane writes `at` and `until` — seconds the user typed, not a
+        schedule to be nudged. Both gates have to keep them, round them once and the
+        same way, and agree on the windows they add up to, because the popup draws
+        the block from these helpers while the render clips its overlays to them."""
+        photos = [
+            {"path": "a.jpg", "at": 1.23456, "until": 2.99999},   # ms-rounded, both sides
+            {"path": "b.jpg", "at": 0, "until": 0.0},             # `at: 0` is frame one
+            {"path": "c.jpg", "at": 900},                          # clamped, not dropped
+            {"path": "d.jpg", "until": "1s"},                      # junk is no time
+            {"path": "e.jpg"},                                     # untouched: no fields at all
+        ]
+        case = spec("sweep", photos=photos)
+        got = self._run([case])[0]
+        self.assertEqual(got["windowAt"], [1.235, 0.0, 600.0, None, None])
+        self.assertEqual(got["windowUntil"], [3.0, None, None, None, None],
+                         "a stop that is not after its start is not a stop")
+        want = normalize_collage({"collage": case})
+        self.assertEqual([p.get("at") for p in want["photos"]], got["windowAt"],
+                         "the render's gate has to keep exactly what the editor's kept")
+        self.assertEqual([p.get("until") for p in want["photos"]], got["windowUntil"])
+        n = len(photos)
+        for i in range(n):
+            self.assertAlmostEqual(got["starts"][i], photo_start(want, i, 0.5), places=6)
+            self.assertAlmostEqual(got["exitStarts"][i], exit_start(want, i, 0.5), places=6)
+        self.assertAlmostEqual(got["base"], base_duration(want), places=5)
+        # the photo whose authored stop falls inside the pile must not shorten the
+        # schedule of the one nobody touched
+        self.assertGreater(got["exitStarts"][4], got["exitStarts"][1],
+                           "an authored early departure must not pull the last photo out with it")
 
     def test_reversed_order_survives_too(self) -> None:
         got = self._run([spec("fade", exitReverse=True), spec("fade", exitReverse=False)])

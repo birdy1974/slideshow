@@ -167,23 +167,34 @@ remain exact to the millisecond.
 
 ## The box the words are painted in
 
-`sweep` colours a word by painting a gradient and clipping it to the glyphs
-(`background-clip:text`), which makes the word's own box the *mask*: anything the
-font draws outside that box is transparent. The preview used a constant line box
-of 1.28 em, and 76 of the 93 styles in the font registry want a taller line than
-that — Anton measures 1.73 em, so at a karaoke size of 120 px roughly 27 px of
-cap and 27 px of descender fell outside the mask and vanished. That is the whole
-"increase the font size and the letters get cut off top and bottom", and it was
-preview-only: libass paints the glyphs and the `\kf` colour, so the MP4 was never
-losing anything.
+`sweep` colours a word by painting it twice: the word in the look's unsung
+`colour`, then the same text again in the `fill`, laid over it and cut on one
+vertical line (`clip-path: inset(0 40% 0 0)` — the right edge is the only moving
+number, driven by the twin's `u`).
 
-`KaraokeStage` now measures the box from the font file (`winAscent + winDescent`
-over `upm`, floored at 1.02 em) — the same numbers `app/text_motion.py` uses to
-place a line, so the change moved the preview *towards* the render rather than
-inventing a second guess. `.kara-word` keeps 0.04 em of padding above and below,
-paid for by an equal negative margin, for the faces whose drawings overshoot the
-metrics recorded in their own table; the margin means the block's position, and
-so the twin's arithmetic, does not move.
+Before that it was a gradient behind the glyphs, clipped to them
+(`background-clip:text` with a transparent text fill), which makes the word's own
+box the *mask*: anything the font draws outside that box is transparent. The
+preview used a constant line box of 1.28 em, and 76 of the 93 styles in the font
+registry want a taller line than that — Anton measures 1.73 em, so at a karaoke
+size of 120 px roughly 27 px of cap and 27 px of descender fell outside the mask
+and vanished. That is the whole "increase the font size and the letters get cut
+off top and bottom", and it was preview-only: libass paints the glyphs and the
+`\kf` colour, so the MP4 was never losing anything. Measuring the box from the
+font file (`winAscent + winDescent` over `upm`, floored at 1.02 em — the same
+numbers `app/text_motion.py` uses to place a line) moved the preview *towards* the
+render, but it could not have stopped the clipping: a rectangular mask clips
+whatever rectangle it is given.
+
+So there is no mask any more, only a reveal, and a horizontal inset cannot touch a
+glyph's top or bottom at any size or any face. The two copies are `.kara-word` and
+`.kara-word-sung` in `src/styles.css`; the overlay copy keeps 0.04 em of padding
+above and below the line box, paid for by an equal negative margin, for the faces
+whose drawings overshoot the metrics recorded in their own table — the margin means
+the block's position, and so the twin's arithmetic, does not move. It also needs no
+`-webkit-` prefix, no `background-clip`, and no `color: transparent`, which is the
+combination that silently loses its paint in a browser that decides not to support
+it.
 
 ## Where the code is
 

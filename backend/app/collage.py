@@ -1126,6 +1126,11 @@ def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
     """When photo i starts its entrance: the sum of the delays of photos 0..i
     plus the lead-in handle — twin of photoStart() in collageCore.ts. With
     beat sync on, the nominal time rolls forward to the next stored beat."""
+    authored = photo_at(spec, i)
+    if authored is not None:
+        # An authored time is exact on purpose: beat snapping exists to rescue a
+        # schedule nobody looked at, not to move a number someone typed in.
+        return lead_in + authored
     hold = 0.0
     for k in range(i + 1):
         hold += photo_delay(spec, k)
@@ -1643,6 +1648,57 @@ def exit_schedule_mode(spec: dict[str, Any]) -> str:
     return "none"
 
 
+def photo_at(spec: dict[str, Any], i: int) -> float | None:
+    """Photo i's authored arrival, or None when the stagger schedule owns it.
+
+    `at` and `until` (seconds from the start of the collage's own content, after
+    the lead-in) are the only per-photo times a person can write. They exist
+    because the pile's model is a *sequence* — delay i sums the delays before it,
+    every photo then lingers until the end of the hold and leaves on its exit
+    offset — which is a good default and a bad way to say "this one only during
+    the second line". A photo with neither field is the old behaviour, to the
+    millisecond.
+    """
+    photos = spec.get("photos") or []
+    if i < 0 or i >= len(photos):
+        return None
+    value = photos[i].get("at")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def photo_until(spec: dict[str, Any], i: int) -> float | None:
+    """Photo i's authored departure: the instant it is *fully gone*, i.e. the end
+    of its exit fly rather than the start of it, because that is what the right
+    edge of a lane means to someone dragging it."""
+    photos = spec.get("photos") or []
+    if i < 0 or i >= len(photos):
+        return None
+    value = photos[i].get("until")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def exit_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
+    """When photo i starts leaving — the single place that answer is kept.
+
+    Normally the end of the hold, moved by the photo's own exit offset (every
+    photo lingers until the slide ends unless something pulls it out earlier).
+    An authored `until` wins, read back over the fly so the number in the UI and
+    the number in the graph are the same event seen from the same end; and it can
+    never pull a departure in front of the photo's own arrival, which would ask
+    the curves to run backwards."""
+    until = photo_until(spec, i)
+    if until is not None:
+        floor = photo_start(spec, i, lead_in) + entrance_length(spec, i)
+        return max(floor, lead_in + until - exit_fly_length(spec, i))
+    return lead_in + base_duration(spec) + exit_offset(spec, i)
+
+
 def exit_offset(spec: dict[str, Any], i: int) -> float:
     """When photo i starts leaving, relative to the end of the hold. 'deal'
     clears the top of the pile first (photo n-1 leaves first). exitReverse
@@ -1706,9 +1762,15 @@ def base_duration(spec: dict[str, Any]) -> float:
         if a != "none":
             animated = True
         last = max(last, photo_start(spec, i, 0.0) + entrance_length(spec, i))
-    if not animated:
-        return _round2(hold)
-    return _round2(last + hold)
+    base = hold if not animated else last + hold
+    # …and a photo authored to *leave* later than the pile drags the slide with
+    # it, or its own stop would fall past the end of the frame. Only authored
+    # departures are consulted, so there is no loop: exit_start() reads
+    # base_duration() only when the photo has no `until` of its own.
+    for i in range(len(photos)):
+        if photo_until(spec, i) is not None:
+            base = max(base, exit_start(spec, i, 0.0) + exit_fly_length(spec, i))
+    return _round2(base)
 
 
 def collage_duration(spec: dict[str, Any]) -> float:
@@ -1977,7 +2039,7 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     # Mirroring the sample rather than writing an exit for each animation is what
     # keeps 41 ids and 41 departures from being 82 things to keep in step.
     ex_mode = exit_mode(spec, i)
-    ex_start = lead_in + base_duration(spec) + exit_offset(spec, i)
+    ex_start = exit_start(spec, i, lead_in)
     ex_q = 0.0 if ex_mode == "none" else _clamp01((t - ex_start) / (exit_fly_length(spec, i) or 0.001))
     ti = t0 + ent * (1 - ex_q) if ex_mode == "reverse" and ex_q > 0 else t
     st = _entrance_state(spec, i, anim, t0, ent, fade, spd, ti, push)
@@ -2075,6 +2137,12 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     if t < t0:
         st["alpha"] = 0.0
     elif ex_mode != "none" and t >= ex_start + exit_fly_length(spec, i):
+        st["alpha"] = 0.0
+    elif ex_mode == "none" and photo_until(spec, i) is not None and t >= ex_start:
+        # An authored stop is a stop even when nothing was picked to leave with:
+        # the photo is simply not composited after it. A cut rather than a fade,
+        # because "no exit" plus a dragged lane edge is the lane saying *gone*, and
+        # inventing a fade here is a look nobody asked for.
         st["alpha"] = 0.0
     return st
 
@@ -2490,6 +2558,19 @@ def _speed_val(raw: Any) -> float | None:
     return max(ENTRANCE_SPEED_MIN, min(ENTRANCE_SPEED_MAX, v))
 
 
+def _authored_seconds(value: Any) -> float | None:
+    """A per-photo timing field the user wrote: finite seconds, 0..600, to the
+    millisecond (the same rounding the TS normaliser does, so a saved project and
+    a preview agree without either one rounding twice)."""
+    try:
+        v = float(value) if value is not None and not isinstance(value, bool) else None
+    except (TypeError, ValueError):
+        return None
+    if v is None or not math.isfinite(v):
+        return None
+    return math.floor(max(0.0, min(600.0, v)) * 1000 + 0.5) / 1000
+
+
 def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     """The item's valid collage spec, or None when it has no usable photos.
 
@@ -2520,9 +2601,17 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             delay = None
         else:
             delay = max(0.0, min(30.0, delay))
+        at = _authored_seconds(p.get("at"))
+        until = _authored_seconds(p.get("until"))
+        if until is not None and at is not None and until <= at:
+            until = None  # a stop that is not after its start is not a stop
         entry = {"path": path, "name": str(p.get("name") or "")}
         if delay is not None:
             entry["delay"] = delay
+        if at is not None:
+            entry["at"] = at
+        if until is not None:
+            entry["until"] = until
         size = p.get("size")
         try:
             size = float(size) if size is not None and not isinstance(size, bool) else None
@@ -3089,7 +3178,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         fade_out = ""
         t_end = None
         if ex_mode != "none":
-            te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
+            te0 = exit_start(spec, i, lead_in)
             fly = exit_fly_length(spec, i)
             t_end = te0 + fly
             qe = f"min(max((t-{_n(te0)})/{_n(fly)},0),1)"
@@ -3121,6 +3210,11 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 ex_dx = 75 * math.cos(a) / 100 * width
                 ex_dy = 55 * math.sin(a) / 100 * height
                 ex_rot = (hash01(seed, i, 75) - 0.5) * 40
+        elif photo_until(spec, i) is not None:
+            # Same rule as photo_state's envelope: the authored stop ends the
+            # overlay window even with no exit chosen, or the last baked level of
+            # that photo would hold on screen for the rest of the slide.
+            t_end = lead_in + float(photo_until(spec, i))
 
         def fly_term(value: float, expr: str) -> str:
             # Sign-aware term so generated expressions never contain '+-'.
