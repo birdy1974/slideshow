@@ -14,11 +14,14 @@ import {
 } from './renderEstimate'
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
-import { ENTRANCE_LENGTH, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
+import { animHasDirection, animLabelOf, animSpeed, ANIM_FAMILIES, COLLAGE_GEOM_CHOICES,
+  COLLAGE_LOOK_ENTRANCE_CHOICES, collageAnimRows, collageShuffle, entranceLength, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageAnimFamily, type CollageAnimation,
+  type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
 import { FILMSTRIP_CELLS, captureFilmstrip, movieFilmstripUrl, moviePreviewUrl, serverMovieDuration } from './filmstrip'
 import { PictureLookDefs, PictureLookEditor } from './PictureLookEditor'
+import { AnimPicker } from './AnimPicker'
 import { CropSpriteVideo } from './PictureCropEditor'
 import { LOOK_GROUPS, LOOK_PRESETS, hasLook, lookLabel, lookSummary, pictureFilterStyle, type Lookish } from './pictureFilters'
 import { cropLabel, cropSummary, hasCrop, type CropRect } from './pictureCrop'
@@ -40,6 +43,9 @@ import {
 import { TextMotionEditor, TextMotionTimeline, presetForRandom } from './TextMotionEditor'
 import { TextEffectBrowser, type BrowserCaption } from './TextEffectBrowser'
 import { MotionStage, useMotionClock } from './TextMotionStage'
+import { KaraokeStage, useKaraokeClockTime } from './KaraokeStage'
+import { KaraokeEditor } from './KaraokeEditor'
+import { sanitizeKaraoke, tokenize } from './karaokeCore'
 import { FRAME_H, FRAME_W, type Prepared, type SceneInput } from './textMotionScene'
 import type { BgChange } from './textMotionCore'
 import { FontPicker } from './FontPicker'
@@ -1539,6 +1545,10 @@ function App() {
   const [storyPreviewId, setStoryPreviewId] = useState<number | null>(null)
   // Movie cut/crop editor, stacked on top of the media lightbox.
   const [editingMovieId, setEditingMovieId] = useState<number | null>(null)
+  // Karaoke timing has its own popup: the strip needs the playing clip and a
+  // keyboard, and the caption editor stays open underneath it (same stacked
+  // layer pattern as the transition gallery).
+  const [karaokeItemId, setKaraokeItemId] = useState<number | null>(null)
   // Which clip's "Edit picture" (filters) popup is open, if any.
   const [lookItemId, setLookItemId] = useState<number | null>(null)
   // The "Edit picture" popup has two tabs; the lightbox button you pressed
@@ -2853,10 +2863,13 @@ function App() {
       }} onClose={() => setCollageLook(null)} />
     })()}
     {editingPictureText != null && (() => { const target = media.find(x => x.id === editingPictureText); return target && target.type !== 'title'
-      ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} />
+      ? <TextEditor mode="picture" item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, underline: textUnderline, outline: textOutline, textX: defaultTextX, textY: defaultTextY, textFx: defaultStack }} onSave={change => { patch(target.id, change); setEditingPictureText(null) }} onClose={() => setEditingPictureText(null)} onOpenKaraoke={() => setKaraokeItemId(target.id)} />
       : null })()}
     {showTextStyles && <TextStyleModal fontFamily={fontFamily} setFontFamily={setFontFamily} fontSize={fontSize} setFontSize={setFontSize} fontColor={fontColor} setFontColor={setFontColor} bold={textBold} setBold={setTextBold} italic={textItalic} setItalic={setTextItalic} underline={textUnderline} setUnderline={setTextUnderline} outline={textOutline} setOutline={setTextOutline} textX={defaultTextX} setTextX={setDefaultTextX} textY={defaultTextY} setTextY={setDefaultTextY} defaultStack={defaultStack} setDefaultStack={setDefaultStack} onClose={()=>setShowTextStyles(false)}/>} 
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)} onPickBackground={()=>setTextBgPickerFor(editingTextFrame)}/>}
+    {karaokeItemId !== null && (() => { const target = media.find(x => x.id === karaokeItemId); return target ? <KaraokeEditor
+      item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, outline: textOutline }}
+      onChange={change => patch(target.id, change)} onClose={() => setKaraokeItemId(null)}/> : null })()}
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)} onPickBackground={()=>setTextBgPickerFor(editingTextFrame)} onOpenKaraoke={() => setKaraokeItemId(editingTextFrame)}/>}
     {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onEditPhoto={index => setCollageLook({ id: editingCollageFrame, index, tab: 'filters' })} onEditBackground={() => setCollageLook({ id: editingCollageFrame, index: 'bg', tab: 'filters' })} onOpenCaption={() => {
       // Switching to the caption editor is not a cancel: a brand-new collage
       // must survive the handover (closeCollageEditor(false) deletes pending
@@ -3338,6 +3351,20 @@ function sceneInputFor(item: MediaItem, defaults?: Partial<CaptionDefaults> | nu
 function FrameMotionPreview({ item, defaults, playing = true, className = '' }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; className?: string }) {
   const clock = useMotionClock(Math.max(0.2, Number(item.duration) || 5), playing)
   const input = useMemo(() => sceneInputFor(item, defaults), [item, defaults])
+  // Karaoke replaces the caption rather than sitting next to it: the words are
+  // the same, only timed, and `sceneInputFor` is what resolves the font, size,
+  // colour, position and outline for both — so a karaoke slide keeps the look
+  // the caption settings give it. backend/app/karaoke.py reads the same plan.
+  const karaoke = sanitizeKaraoke(item.karaoke, tokenize(item.text || '').length)
+  const at = useKaraokeClockTime(karaoke ? clock : null)
+  if (karaoke && (item.text || '').trim()) {
+    return <KaraokeStage
+      className={`stage-fill ${className}`} text={item.text || ''} karaoke={karaoke} at={at}
+      from={input.start} to={input.end} family={input.family} bold={input.bold} italic={input.italic}
+      underline={input.underline} colour={input.colour} fontSize={input.fontSize} x={input.x} y={input.y}
+      align={input.align} outline={input.outline}
+    />
+  }
   return <MotionStage className={`stage-fill ${className}`} input={input} clock={clock} background={item.type === 'title' ? item.frameBackground : undefined} bg={item.type === 'title' ? bgChangeFor(item) : null} />
 }
 
@@ -3509,6 +3536,26 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
   // arrangement) and the Free rotate knob that rides it.
   const selectIndex = selectedIndex != null && geo[selectedIndex] ? selectedIndex : null
   const rotateIndex = onRotatePhoto ? selectIndex : null
+  // One place to put a reveal mask on a mat element: clearing it matters as much
+  // as setting it, because the same nodes are reused for every frame of the
+  // preview and a stale mask would sit on a photo that has finished arriving.
+  const setMatMask = (el: HTMLElement, style?: { [key: string]: string }) => {
+    const url = style?.maskImage ?? ''
+    el.style.setProperty('mask-image', url)
+    el.style.setProperty('-webkit-mask-image', url)
+    if (url) {
+      el.style.setProperty('mask-size', '100% 100%')
+      el.style.setProperty('-webkit-mask-size', '100% 100%')
+      el.style.setProperty('mask-repeat', 'no-repeat')
+      el.style.setProperty('-webkit-mask-repeat', 'no-repeat')
+    } else {
+      el.style.removeProperty('mask-size')
+      el.style.removeProperty('-webkit-mask-size')
+      el.style.removeProperty('mask-repeat')
+      el.style.removeProperty('-webkit-mask-repeat')
+    }
+  }
+
   // Where the selected photo's motion ends up: a dashed ghost at the position
   // `move` travels to (draggable, because that is how you pick it) or turned to
   // the angle `turn` reaches. The ghost is drawn from the photo's RESTING place,
@@ -3532,6 +3579,11 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
         el.style.transform = `translate(-50%, ${g.pin ? '0' : '-50%'}) rotate(${g.rot + st.rot}deg) scale(${st.scale}) scaleX(${st.scaleX})`
         el.style.opacity = String(st.alpha)
         el.style.filter = matFilterCss(st.dim, photoLookState(spec, i, t, 0))
+        // A mask reveal uncovers this mat instead of moving it, so the sweep is
+        // a mask on the same element the transform rides — and it is the same
+        // sampled 0/1 grid the render's `geq` mask holds for that step of the
+        // ladder (src/collageCore.ts → revealMaskStyle).
+        setMatMask(el, st.revealKind ? revealMaskStyle(st.revealKind, st.revealP ?? 0, st.revealDir ?? 0) : undefined)
       })
       // Virtual camera over the whole scene (background + photos): the same
       // window maths the render's crop/zoompan chain uses.
@@ -3984,7 +4036,7 @@ function TitleClipFace({ item }: { item: MediaItem }) {
 // Picture mode keeps a local draft and writes on "Save"; frame mode patches the
 // storyline item live (so a stacked lightbox behind the editor updates as you
 // type) and "Cancel" reverts to the original.
-function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery, onPickBackground }: {
+function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery, onPickBackground, onOpenKaraoke }: {
   mode: 'picture' | 'frame'
   item: MediaItem
   defaults?: CaptionDefaults
@@ -3996,6 +4048,8 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   onClose: () => void
   onOpenGallery?: () => void
   onPickBackground?: () => void
+  /** Open the karaoke timing popup for this slide's caption. */
+  onOpenKaraoke?: () => void
 }) {
   const isFrame = mode === 'frame'
   const dd: CaptionDefaults = defaults ?? { fontFamily: 'Montserrat', fontSize: 48, fontColor: '#ffffff', bold: true, italic: false, underline: false, outline: true, textX: 50, textY: 72, textFx: defaultTextFx() }
@@ -4179,7 +4233,7 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
       </div>
       <aside>
         <div className="below-grid">
-          <div><FieldLabel>{isFrame ? 'Frame text' : 'Caption'}</FieldLabel><textarea value={draft.text} placeholder={isFrame ? 'Add title text…' : 'Add a caption…'} onChange={e => apply({ text: e.target.value })}/></div>
+          <div className="text-field-with-karaoke"><FieldLabel>{isFrame ? 'Frame text' : 'Caption'}</FieldLabel><textarea value={draft.text} placeholder={isFrame ? 'Add title text…' : 'Add a caption…'} onChange={e => apply({ text: e.target.value })}/>{onOpenKaraoke && <button type="button" className="btn ghost karaoke-open" onClick={onOpenKaraoke} title="Time the sentences and the words: which line shows when, and which word is sung under it"><Music2 size={13}/> Karaoke timing{item.karaoke ? ' · timed' : '…'}</button>}</div>
           {isFrame && <label className="check-label" title="Centre the whole text block on its position and centre every line on the others — at position 50 / 50 the text sits in the middle of the frame"><input type="checkbox" checked={centeredText} onChange={e => apply({ textCentered: e.target.checked } as any)}/><span><Check size={11}/></span> Centre text in frame <small style={{ marginLeft: 6, opacity: .7 }}>lines &amp; block centre on the position</small></label>}
           {!isFrame && <label className="check-label picture-text-enabled"><input type="checkbox" checked={draft.textEnabled !== false} onChange={e => apply({ textEnabled: e.target.checked })}/><span>{draft.textEnabled === false ? <EyeOff size={11}/> : <Eye size={11}/>}</span>Show text on this picture</label>}
           <TypeControls fontFamily={family} setFontFamily={v => apply({ fontFamily: v })} fontSize={size} setFontSize={v => apply({ fontSize: v })} fontColor={color} setFontColor={v => apply({ fontColor: v })} bold={bold} setBold={v => apply({ textBold: v })} italic={italic} setItalic={v => apply({ textItalic: v })} underline={underline} setUnderline={v => apply({ textUnderline: v })} sample={isFrame ? draft.text.split('\n')[0] : (draft.text || 'Caption sample')} />
@@ -4399,22 +4453,19 @@ const ARRANGEMENT_FAMILIES: { id: 'generated' | 'magazine' | 'polaroid'; label: 
   { id: 'magazine', label: 'Magazine mosaics', note: 'fixed pages of straight tiles, 2–6 slots' },
   { id: 'polaroid', label: 'Polaroid wall', note: 'fixed pages of tilted, overlapping mats, 5–6 slots' },
 ]
-const COLLAGE_ANIMS: { id: CollageSpec['animation']; label: string; hint: string }[] = [
-  { id: 'drop', label: 'Drop in', hint: 'Photos fall in from above, straightening as they land' },
-  { id: 'pop', label: 'Pop in', hint: 'Photos pop up from 55% with a springy overshoot' },
-  { id: 'swing', label: 'Swing', hint: 'Photos hang from a pin at the top of the mat and swing to rest' },
-  { id: 'flip', label: 'Flip in', hint: 'Cards flip open edge-on with a springy overshoot' },
-  { id: 'fade', label: 'Fade in', hint: 'Photos dissolve in place' },
-  { id: 'slide', label: 'Slide in', hint: 'Photos slide in from the left' },
-  { id: 'rise', label: 'Rise', hint: 'Photos rise from below' },
-  { id: 'tumble', label: 'Tumble', hint: 'Photos tumble in with a spin' },
-  { id: 'zoom', label: 'Zoom in', hint: 'Photos scale up from a small origin' },
-  { id: 'fold', label: 'Origami', hint: 'Cards fold open like origami around the vertical axis' },
-  { id: 'glitch', label: 'Glitch', hint: 'A Canva-style digital glitch settle' },
-  { id: 'ink', label: 'Ink', hint: 'An ink-blot mask that grows to reveal the photo' },
-  { id: 'brush', label: 'Brush', hint: 'A brush-stroke wipe from the left' },
-  { id: 'none', label: 'None', hint: 'Photos appear with the slide — no entrance animation' },
-]
+// The entrance rows come from collageCore's catalogue — the same 90 rows the
+// browser lists, the per-photo picker offers and both engines' validators accept,
+// so a label here cannot drift from the animation it names.
+const COLLAGE_ANIMS = collageAnimRows()
+/** What each family is called in the shuffle's pool row — the same five groups
+ *  the browser tabs, and the only wording a user sees for them. */
+const ANIM_FAMILY_LABEL: Record<CollageAnimFamily, string> = {
+  classic: 'classic', paper: 'paper', colour: 'colour', mask: 'reveals', ffmpeg: 'FFmpeg',
+}
+
+/** The entrance as a label, for the hints that name the collage's own choice. */
+const animLabel = (id: string | undefined): string =>
+  COLLAGE_ANIMS.find(a => a.id === id)?.label ?? 'Drop'
 const COLLAGE_FRAMES: { id: CollageFrameShape; label: string; hint: string }[] = [
   { id: 'polaroid', label: 'Polaroid', hint: 'Classic white mat with a caption strip' },
   { id: 'none', label: 'None', hint: 'No border — the photo is the cell' },
@@ -4444,6 +4495,10 @@ const COLLAGE_EXITS: { id: NonNullable<CollageSpec['exit']>; label: string; hint
   { id: 'deal', label: 'Deal off', hint: 'The pile is dealt away one card at a time — top card first, off to the right' },
   { id: 'shuffle', label: 'Scatter off', hint: 'The photos scatter off in seeded random directions' },
   { id: 'fade', label: 'Fade out', hint: 'The photos fade away where they stand — no travel, no turn, the whole exit is the fade' },
+  // Not a new motion but the photo's own entrance played backwards, so every
+  // animation in the catalogue — all 41 — has a departure without anyone writing
+  // one, and a wipe that opened the way it closes.
+  { id: 'reverse', label: 'Back the way it came', hint: 'Each photo re-runs its own entrance in reverse: a wipe wipes shut, a pop shrinks back, an iris closes' },
 ]
 /** The per-photo "while" lane: what one photo keeps doing once it has
  *  landed. They are grouped by what the motion needs from you and from the
@@ -4481,7 +4536,10 @@ const COLLAGE_LOOK_ANIMS_UI: { id: CollageLookAnim; label: string; hint: string 
 /** Does this photo carry any of its own lanes? */
 const hasPhotoLanes = (photo: CollagePhoto | undefined): boolean =>
   !!photo && (photo.anim !== undefined || photo.exit !== undefined
-    || photo.motion !== undefined || photo.lookAnim !== undefined)
+    || photo.motion !== undefined || photo.lookAnim !== undefined
+    // …and the three knobs that qualify an entrance: without them the "Inherit"
+    // button would hide while a photo still carried a reversed or locked arrival
+    || photo.animDir !== undefined || photo.animSpeed !== undefined || photo.animLock === true)
 const COLLAGE_CAMERAS: { id: NonNullable<CollageSpec['camera']>; label: string; hint: string }[] = [
   { id: 'none', label: 'Still', hint: 'A fixed camera on the whole collage' },
   { id: 'pan', label: 'Pan', hint: 'A gentle drift across a slightly zoomed frame — the wall-gallery look' },
@@ -4544,6 +4602,22 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const setSpec = (change: Partial<CollageSpec>) => livePatch({ collage: { ...spec, ...change } })
   const defFr = photoFrame(spec, null)
   const setFrame = (change: Partial<NonNullable<CollageSpec['frame']>>) => setSpec({ frame: { ...defFr, ...change } })
+  // The random entrance roll. `collageShuffle` returns concrete ids, so the spec
+  // that goes to the render carries no "random" marker and nothing has to agree
+  // about a random number generator across the two engines; `fresh` decides
+  // whether a new seed is drawn or the stored one replays the same set.
+  const shuffleAnims = (fresh: boolean) => {
+    if (!photos.length) return
+    const res = collageShuffle(spec, photos.length, {
+      families: spec.animFamilies ?? ANIM_FAMILIES as unknown as CollageAnimFamily[],
+      oneOfEach: spec.animOneOfEach,
+      seed: fresh ? undefined : spec.animSeed,
+    })
+    setSpec({
+      animSeed: res.seed,
+      photos: photos.map((photo, i) => ({ ...photo, anim: res.anims[i] ?? photo.anim })),
+    })
+  }
   const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => {
     setSpec({ photos: photos.map((p, i) => i === index ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
   }
@@ -4553,12 +4627,20 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   /** One photo's enter / while / exit lane. An empty value means "inherit the
    *  collage's setting" and removes the override again, so a photo follows
    *  later changes to the collage-wide animation. */
-  const setPhotoLane = (index: number, lane: 'anim' | 'exit' | 'motion' | 'lookAnim', value: string) => {
+  const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim', value: string) => {
     setSpec({
       photos: photos.map((p, i) => {
         if (i !== index) return p
         const next: CollagePhoto = { ...p }
-        if (lane === 'anim') { if (value === '') delete next.anim; else next.anim = value as CollageAnim }
+        if (lane === 'anim') { if (value === '') delete next.anim; else next.anim = value as CollageAnimation }
+        else if (lane === 'animDir') { if (value === '1') next.animDir = 1; else delete next.animDir }
+        else if (lane === 'animSpeed') {
+          // stored as a plain multiplier; 1 is the default, so it is not written
+          const v = Math.round(Number(value)) / 100
+          if (Number.isFinite(v) && v > 0 && v !== 1) next.animSpeed = Math.max(0.05, Math.min(2, v))
+          else delete next.animSpeed
+        }
+        else if (lane === 'animLock') { if (value === '1') next.animLock = true; else delete next.animLock }
         else if (lane === 'exit') { if (value === '') delete next.exit; else next.exit = value as CollageExit }
         else if (lane === 'lookAnim') { if (value === 'none') delete next.lookAnim; else next.lookAnim = value as CollageLookAnim }
         else if (value === 'none') {
@@ -4615,6 +4697,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       if (i !== index) return p
       const next: CollagePhoto = { ...p }
       delete next.anim
+      delete next.animDir
+      delete next.animSpeed
+      delete next.animLock
       delete next.exit
       delete next.motion
       delete next.motionAmount
@@ -4778,7 +4863,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   // what the wait and beat controls hang off: a collage whose photos all just
   // appear has no arrivals to time, even if one photo was given its own.
   const lastLanded = photos.length
-    ? Math.max(...photos.map((_, i) => photoStart(spec, i, 0) + (ENTRANCE_LENGTH[photoAnim(spec, i)] ?? 0)))
+    ? Math.max(...photos.map((_, i) => photoStart(spec, i, 0) + entranceLength(spec, i)))
     : 0
   const anyEntrance = photos.some((_, i) => photoAnim(spec, i) !== 'none')
   // The duration slider stops at the slide's own length: a motion that plays
@@ -4915,11 +5000,42 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           <div className="collage-selected-lanes" role="group" aria-label={`Photo ${selectedPhoto + 1} entrance, motion and exit`}>
             <label title="How this photo appears — its own entrance instead of the collage's. A slower entrance here holds the whole slide up until it has finished.">
               <span>entrance</span>
-              <select value={photos[selectedPhoto].anim ?? ''} aria-label={`Entrance of photo ${selectedPhoto + 1}`} onChange={e => setPhotoLane(selectedPhoto, 'anim', e.target.value)}>
-                <option value="">{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label ?? 'Drop'} · collage</option>
-                {COLLAGE_ANIMS.map(a => <option key={a.id} value={a.id} title={a.hint}>{a.label}</option>)}
-              </select>
+              <AnimPicker
+                value={photos[selectedPhoto].anim}
+                ariaLabel={`Entrance of photo ${selectedPhoto + 1}`}
+                inherit={{
+                  label: `${animLabel(spec.animation)} · the collage's choice`,
+                  pick: () => setPhotoLane(selectedPhoto, 'anim', ''),
+                }}
+                onChange={a => setPhotoLane(selectedPhoto, 'anim', a)}
+              />
             </label>
+            <span className="collage-lane-anim-opts">
+              {/* The same two knobs the collage row has, per photo: which way the
+                  mask runs and how long the arrival takes. Direction only shows
+                  for an entrance with an axis to flip, and not at all for a name
+                  that carries its own — `slideleft` means what it means. */}
+              {animHasDirection(photos[selectedPhoto].anim ?? spec.animation) && <label className="check-label tiny" title="Mirror this photo's reveal on its own axis — a wipe up becomes a wipe down, a curtain opens from the other side.">
+                <input type="checkbox" checked={photos[selectedPhoto].animDir === 1}
+                  aria-label={`Reverse the entrance of photo ${selectedPhoto + 1}`}
+                  onChange={e => setPhotoLane(selectedPhoto, 'animDir', e.target.checked ? '1' : '0')} />
+                <span>reversed</span>
+              </label>}
+              <label className="collage-lane-amount" title="How fast this photo arrives, on top of the collage's entrance speed.">
+                <span>speed</span>
+                <input type="range" min={5} max={200} step={5}
+                  value={Math.round((photos[selectedPhoto].animSpeed ?? 1) * 100)}
+                  aria-label={`Entrance speed of photo ${selectedPhoto + 1}`}
+                  onChange={e => setPhotoLane(selectedPhoto, 'animSpeed', e.target.value)} />
+                <b>{((photos[selectedPhoto].animSpeed ?? 1) * 1).toFixed(2)}×</b>
+              </label>
+              <label className="check-label tiny" title="Keep this photo's entrance when the shuffle rolls the others.">
+                <input type="checkbox" checked={photos[selectedPhoto].animLock === true}
+                  aria-label={`Lock the entrance of photo ${selectedPhoto + 1}`}
+                  onChange={e => setPhotoLane(selectedPhoto, 'animLock', e.target.checked ? '1' : '0')} />
+                <span>lock</span>
+              </label>
+            </span>
             <label title={COLLAGE_MOTIONS_UI.find(m => m.id === photoMotion(spec, selectedPhoto).id)?.hint ?? 'What this photo keeps doing once it has landed'}>
               <span>motion</span>
               <select value={photos[selectedPhoto].motion ?? 'none'} aria-label={`Motion of photo ${selectedPhoto + 1}`} onChange={e => setPhotoLane(selectedPhoto, 'motion', e.target.value)}>
@@ -5059,8 +5175,54 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           </div>}
         </div>
         <div className={`collage-choices-group${closedSections['photo-animation'] ? ' closed' : ''}`}><CollageGroupHead id="photo-animation" open={!closedSections['photo-animation']} onToggle={toggleSection}>Photo animation</CollageGroupHead>
-          <div className="collage-choices">{COLLAGE_ANIMS.map(a => <button key={a.id} type="button" className={spec.animation === a.id ? 'active' : ''} title={a.hint} onClick={() => setSpec({ animation: a.id })}>{a.label}</button>)}</div>
+          <div className="collage-anim-pick">
+            <AnimPicker value={spec.animation} ariaLabel="Photo entrance"
+              onChange={a => setSpec({ animation: a })} />
+            <button type="button" className="btn ghost small" disabled={!photos.length}
+              title="Give every unlocked photo its own entrance, picked at random from the families ticked below. The names are written onto the photos, so what you see is what the MP4 renders — and a photo you locked keeps its own."
+              onClick={() => shuffleAnims(true)}><Shuffle size={12} /> Random</button>
+          </div>
           <small>{COLLAGE_ANIMS.find(a => a.id === spec.animation)?.hint}</small>
+          <div className="collage-shuffle-scope">
+            <span className="scope-lead">Random picks from</span>
+            {ANIM_FAMILIES.map(f => {
+              const on = (spec.animFamilies ?? ANIM_FAMILIES).includes(f)
+              return <label key={f} className={`check-label tiny${on ? ' on' : ''}`}
+                title={`${COLLAGE_ANIMS.filter(a => collageAnimRows().find(r => r.id === a.id)?.family === f).length} entrances`}>
+                <input type="checkbox" checked={on} aria-label={`Include the ${f} entrances in the random pick`}
+                  onChange={e => {
+                    const cur = spec.animFamilies ?? [...ANIM_FAMILIES]
+                    const next = e.target.checked ? [...new Set([...cur, f])] : cur.filter(x => x !== f)
+                    // all four on is the default, so it is not written at all
+                    setSpec({ animFamilies: next.length === ANIM_FAMILIES.length ? undefined : next })
+                  }} />
+                <span>{ANIM_FAMILY_LABEL[f]}</span>
+              </label>
+            })}
+            <label className={`check-label tiny${spec.animOneOfEach ? ' on' : ''}`} title="No two photos arrive the same way, as long as the pool has enough names for them.">
+              <input type="checkbox" checked={spec.animOneOfEach === true} aria-label="Random pick without repeats"
+                onChange={e => setSpec({ animOneOfEach: e.target.checked || undefined })} />
+              <span>no repeats</span>
+            </label>
+            {spec.animSeed !== undefined && <button type="button" className="btn ghost tiny"
+              title={`The roll that made this set used seed ${spec.animSeed}. Replay repeats exactly that one; Random picks a new seed.`}
+              onClick={() => shuffleAnims(false)}>seed {spec.animSeed} · replay</button>}
+          </div>
+          <label className={`collage-exit-speed${anyEntrance ? '' : ' disabled'}`} title="How fast the photos arrive: one multiplier for the whole entrance — the sweep, the fade-in, a pendulum's swing and the export's step-by-step masks together. The slide length follows.">
+            <span>Entrance speed</span>
+            <input type="range" min={0.05} max={2} step={0.05} disabled={!anyEntrance} value={animSpeed(spec)} aria-label="Photo entrance speed" onChange={e => { const v = Math.round(Number(e.target.value) * 20) / 20; setSpec({ animSpeed: v === 1 ? undefined : v }) }} />
+            <b>{animSpeed(spec).toFixed(2)}×</b>
+          </label>
+          {animHasDirection(spec.animation) &&
+            <label className="collage-check">
+              {/* Only kinds with an axis to mirror get the choice. An iris or a
+                  diamond is round: a checkbox that changed nothing would be a lie
+                  about what the render does, so the round ones simply do not show
+                  one — and `revealGeom` is the file that decides which is which,
+                  for the preview and the export alike. */}
+              <input type="checkbox" checked={spec.animDir === 1} onChange={e => setSpec({ animDir: e.target.checked ? 1 : undefined })} />
+              <span>From the other side — {COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label} reversed</span>
+            </label>}
           <label className={`collage-check${spec.animation === 'drop' || spec.animation === 'pop' || spec.animation === 'flip' ? '' : ' disabled'}`}>
             <input type="checkbox" checked={spec.depth === true} disabled={spec.animation !== 'drop' && spec.animation !== 'pop' && spec.animation !== 'flip'} onChange={e => setSpec({ depth: e.target.checked })} />
             <span>Depth push-back — photos already landed shrink back and dim a little as each new one lands</span>

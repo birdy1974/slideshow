@@ -21,6 +21,7 @@ A self-hosted photo and video slideshow maker for Synology NAS. Projects are edi
   - The browser is aligned with the transition browser: search, ★ favourites, recent, presets, hover previews on top of your stack, a full gallery, a mini timeline and saved presets
   - The editor preview runs a twin of the render engine; the MP4 is burnt in with libass
   - See [docs/text-motion.md](docs/text-motion.md)
+- Karaoke timing on a caption: the same text, split into sentences that each know when they are on screen, with the words inside them coloured left to right — four timing surfaces (sentence strip, tap-along, word chips, waveform with onsets) chosen per movie in the popup, a weight-based first pass with onset snapping plus `.lrc`/`.srt`/`.vtt`/`.ass` import, and a preview that runs the render's own model (`src/karaokeCore.ts` ↔ `backend/app/karaoke.py`) — see [docs/karaoke-timing-editor.md](docs/karaoke-timing-editor.md)
 - Multiple ordered MP3 tracks, volume/fade policies, AAC output, and looping/trimming
 - Resilient media validation: 0-byte cloud-synced files are retried before failing a render, and slow NAS volumes get a generous (retryable) ffprobe timeout
 - Real 480p proxy previews streamed from the backend

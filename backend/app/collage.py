@@ -19,6 +19,8 @@ from typing import Any
 from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, source_path
 from .picture_crop import crop_filters, normalize_crop
 from .picture_filters import picture_look
+from .collage_reveal import (REVEALS, REVEAL_LENGTH, REVEAL_STEPS, geq_alpha, is_reveal, reveal_alpha,
+                             reveal_length, reveal_progress, reveal_quantise)
 
 MAX_COLLAGE_PHOTOS = 12
 
@@ -1136,24 +1138,247 @@ def photo_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
     return lead_in + hold
 
 
+# ---------------------------------------------------------------------------
+# The paper family — geometry entrances, one row each
+# ---------------------------------------------------------------------------
+
+# The same twelve rows as `COLLAGE_GEOM` in src/collageCore.ts, and the ONLY
+# place the render gets its motion from as well: `photo_state` evaluates these
+# curves as numbers and the filter graph builds the same curve as FFmpeg text,
+# so an entrance cannot be a different move in the MP4 than in the editor. A
+# curve is (kind, amplitude[, base]); the value is `base + amp × curve(q)`, with
+# base 0 for the offsets and 1 for the scales. `hinge`/`recip` carry a floor of
+# their own because the width a hinge leaves you is the sine of the angle it
+# travelled, and it must not reach 0 in the first frames.
+# The hand-written entrances whose sprite changes size while they arrive, and so
+# need the render's size ladder rather than one static scale. The geometry rows
+# report their own scales (`GEOM_SCALES`, derived from the table), but these are
+# expressions inside photo_state(), so this is the list a new hand-written
+# entrance has to be added to — tests/test_collage_speed.py checks that anyone who
+# forgets is caught, because a size the ladder does not sample is a size the MP4
+# never shows.
+SCALE_ANIMS = ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble")
+
+# The eight look-based entrances, the same rows as `COLLAGE_LOOK_ENTRANCE` in
+# src/collageCore.ts. A channel is a curve on the look's own scale — 1 is
+# untouched for `sat`/`bright`, degrees for `hue` — and `inv` has no amount,
+# because FFmpeg's `negate` is on or off and so is the preview's CSS invert().
+LOOK_ENTRANCE: dict[str, dict[str, Any]] = {
+    "develop": {"length": 0.75, "fade": 0.3, "label": "Develop", "bright": ("one-smooth", -0.88, 1),
+                "sat": ("one-smooth", -0.75, 1)},
+    "flashIn": {"length": 0.4, "fade": 0.12, "label": "Flash", "bright": ("one-smooth", 1.2, 1)},
+    "colourFlood": {"length": 0.6, "fade": 0.2, "label": "Colour flood", "sat": ("one-smooth", -0.95, 1)},
+    "hueSwing": {"length": 0.65, "fade": 0.18, "label": "Hue swing", "hue": ("one-smooth", 120)},
+    "negative": {"length": 0.45, "fade": 0.15, "label": "Negative", "inv": True},
+    "shadowLift": {"length": 0.6, "fade": 0.25, "label": "Out of shadow",
+                   "bright": ("one-smooth", -0.85, 1)},
+    "glowIn": {"length": 0.5, "fade": 0.16, "label": "Glow", "bright": ("one-smooth", 0.45, 1),
+               "sat": ("one-smooth", -0.3, 1)},
+    "xerox": {"length": 0.6, "fade": 0.18, "label": "Photocopy", "bright": ("one-back", -0.35, 1.35),
+              "sat": ("one-smooth", -0.95, 1)},
+}
+LOOK_ENTRANCE_ANIMS = tuple(LOOK_ENTRANCE)
+
+
+def look_entrance(anim: str) -> dict[str, Any] | None:
+    """The row for a look-based entrance id, or None for any other animation."""
+    return LOOK_ENTRANCE.get(anim)
+
+
+def is_look_entrance(anim: str) -> bool:
+    return anim in LOOK_ENTRANCE
+
+
+GEOM: dict[str, dict[str, Any]] = {
+    "cube": {"length": 0.5, "dx": ("settle3", 18), "scaleX": ("hinge", 0.25, 0),
+             "dim": ("settle3", 0.15), "fade": 0.14},
+    "book": {"length": 0.55, "dx": ("one-smooth", -12), "rot": ("one-smooth", -5),
+             "scaleX": ("hinge", 0.06, 1), "dim": ("one-smooth", 0.12), "fade": 0.12},
+    "door": {"length": 0.55, "dx": ("one-smooth", -9), "scaleX": ("hinge", 0.1, 1),
+             "dim": ("one-smooth", 0.25), "fade": 0.1},
+    # Only the height changes, which this model can express exactly: width is
+    # scale × scaleX and height is scale, so height k at width 1 is scale k and
+    # scaleX 1/k.
+    "unfold": {"length": 0.5, "scale": ("hinge", 0.08, 0), "scaleX": ("recip", 0.08, 0), "fade": 0.12},
+    "rollover": {"length": 0.6, "dy": ("settle3", 28), "rot": ("settle3", -28),
+                 "scale": ("settle3", -0.18), "fade": 0.16},
+    "spiral": {"length": 0.65, "rot": ("settle3", 90), "scale": ("one-back", -0.9, 1), "fade": 0.18},
+    "swish": {"length": 0.5, "dx": ("one-back", -30), "rot": ("settle2", -14), "fade": 0.1},
+    "glide": {"length": 0.7, "dx": ("one-smooth", 16), "dy": ("one-smooth", 12),
+              "rot": ("one-smooth", 3), "fade": 0.28},
+    # four straight travels, no tilt and no scale — see the note in COLLAGE_GEOM
+    "fromLeft": {"length": 0.5, "dx": ("one-smooth", -34), "fade": 0.16},
+    "fromRight": {"length": 0.5, "dx": ("one-smooth", 34), "fade": 0.16},
+    "fromTop": {"length": 0.5, "dy": ("one-smooth", -26), "fade": 0.16},
+    "fromBottom": {"length": 0.5, "dy": ("one-smooth", 26), "fade": 0.16},
+    "peek": {"length": 0.5, "dy": ("settle3", 16), "rot": ("settle3", 7),
+             "scaleX": ("settle3", -0.1), "fade": 0.14},
+    "boomerang": {"length": 0.7, "dx": ("one-back", -20), "dy": ("one-back", -9),
+                  "rot": ("settle3", 24), "scale": ("one-back", -0.38, 1), "fade": 0.16},
+    # The bow of the path is a half-sine of the part still to travel, so it starts
+    # and ends on the straight line and is only ever in between.
+    "sling": {"length": 0.55, "dx": ("one-smooth", 24), "dy": ("bow", -18),
+              "rot": ("settle2", -16), "fade": 0.12},
+    "thread": {"length": 0.7, "dx": ("settle3", -16), "dy": ("settle3", -13),
+               "rot": ("settle3", -55), "scale": ("settle3", -0.3), "fade": 0.14},
+}
+GEOM_ANIMS = tuple(GEOM)
+# Which of them change a size, and therefore have to ride the render's size
+# ladder. Derived from the rows, so adding one with a scale cannot forget it.
+GEOM_SCALES = frozenset(a for a, r in GEOM.items() if "scale" in r or "scaleX" in r)
+
+
+def _geom_curve(kind: str, q: float, smooth: bool = False) -> float:
+    """One curve of the shared vocabulary, at `q`. `_geom_expr` below is the same
+    list as FFmpeg text; the two are checked against each other by
+    tests/test_collage_twin.py."""
+    if kind == "settle3":
+        return (1 - q) ** 3
+    if kind == "settle2":
+        return (1 - q) ** 2
+    if kind == "smooth":
+        return q * q * (3 - 2 * q)
+    if kind == "one-smooth":
+        return 1 - q * q * (3 - 2 * q)
+    if kind == "one-back":
+        return 1 - (1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2)
+    if kind == "bow":
+        return math.sin(math.pi * (1 - q))
+    if kind in ("hinge", "recip"):
+        inner = q * q * (3 - 2 * q) if smooth else q
+        fold = max(0.0, math.sin(math.pi / 2 * inner))
+        return fold
+    raise ValueError(f"unknown entrance curve: {kind}")
+
+
+def _geom(spec_curve: Any, q: float, base: float) -> float:
+    """`base + amp × curve(q)`, and a `hinge`/`recip` floor instead."""
+    if not spec_curve:
+        return base
+    kind = spec_curve[0]
+    if kind == "hinge":
+        return max(spec_curve[1], _geom_curve("hinge", q, bool(spec_curve[2])))
+    if kind == "recip":
+        return 1 / max(spec_curve[1], _geom_curve("hinge", q, bool(spec_curve[2])))
+    amp = spec_curve[1] if len(spec_curve) > 1 else 1.0
+    # a row may name its own base (`xerox` starts at 1.35 brightness, not at the
+    # 1 a scale channel rests at); when it does not, the caller's default stands
+    b = spec_curve[2] if len(spec_curve) > 2 else base
+    return b + amp * _geom_curve(kind, q)
+
+
+def _geom_expr(spec_curve: Any, q: str, span: float, base: float = 0.0, signed: bool = True) -> str:
+    """A curve as an FFmpeg expression, for the overlay's x/y. `span` converts
+    the percent-of-frame unit the preview works in into pixels, exactly as the
+    hand-written `drop`/`slide` terms above do; `rot` passes span=1 because
+    degrees are already the unit."""
+    if not spec_curve:
+        return ""
+    kind = spec_curve[0]
+    if kind in ("hinge", "recip"):
+        raise ValueError("hinge curves belong on the size ladder, not on an offset")
+    amp = spec_curve[1] if len(spec_curve) > 1 else 1.0
+    b = spec_curve[2] if len(spec_curve) > 2 else base
+    mag = abs(amp) * span
+    head = _n(b) if b else ""
+    if not mag:
+        return head
+    sign = "+" if amp > 0 else "-"
+    if kind == "settle3":
+        c = f"pow(1-{q},3)"
+    elif kind == "settle2":
+        c = f"pow(1-{q},2)"
+    elif kind == "smooth":
+        c = f"pow({q},2)*(3-2*{q})"
+    elif kind == "one-smooth":
+        c = f"(1-pow({q},2)*(3-2*{q}))"
+    elif kind == "one-back":
+        c = f"(1-(1+2.70158*pow({q}-1,3)+1.70158*pow({q}-1,2)))"
+    elif kind == "bow":
+        c = f"sin(PI*(1-{q}))"
+    else:
+        raise ValueError(f"no FFmpeg form for entrance curve {kind!r}")
+    if not head:
+        # a term that starts an expression needs no leading `+`; one that is
+        # appended to the overlay's x= or to another term does
+        return f"{_n(mag)}*{c}" if not signed else f"+{_n(mag)}*{c}"
+    return f"{head}{sign}{_n(mag)}*{c}"
+
+
 # How long an entrance runs until the photo is fully at rest.
 ENTRANCE_LENGTH = {
     "drop": 0.55, "pop": 0.5, "swing": 2.0, "flip": 0.45, "none": 0.0,
     "fade": 0.45, "slide": 0.5, "rise": 0.5, "tumble": 0.6, "zoom": 0.55,
     "fold": 0.55, "glitch": 0.5, "ink": 0.55, "brush": 0.5,
+    # …and the reveals take theirs from the shared table, exactly like
+    # ENTRANCE_LENGTH in src/collageCore.ts does: one source for how long a
+    # sweep takes, so the slide's length and the ladder's sampling cannot use two
+    # different numbers for the same reveal.
+    **{a: r["length"] for a, r in GEOM.items()},
+    **{a: r["length"] for a, r in LOOK_ENTRANCE.items()},
+    **REVEAL_LENGTH,
 }
+# One entrance's alpha ramp in seconds, at speed 1 — `ENTRANCE_FADE` in
+# src/collageCore.ts. `photo_state` reads it as the divisor of a ramp and
+# `collage_graph` emits it as `fade=t=in:d=`, from this table, so the two cannot
+# fade a photo in at different rates; `fade` and `ink` are the two whose preview
+# alpha is an eased curve, and the export keeps the linear ramp on purpose.
+ENTRANCE_FADE = {
+    "drop": 0.22, "pop": 0.18, "swing": 0.15, "flip": 0.15, "none": 0.0, "fade": 0.45,
+    "slide": 0.18, "rise": 0.18, "tumble": 0.16, "zoom": 0.16, "fold": 0.14, "glitch": 0.12,
+    "ink": 0.4, "brush": 0.16,
+    **{a: r["fade"] for a, r in GEOM.items()},
+    **{a: r["fade"] for a, r in LOOK_ENTRANCE.items()},
+    **{a: 0.0 for a in REVEALS},
+}
+# The same range the exits use: one slider grammar for arriving and for leaving.
+ENTRANCE_SPEED_MIN, ENTRANCE_SPEED_MAX = 0.05, 2.0
+
+
+def anim_speed(spec: dict[str, Any], i: int | None = None) -> float:
+    """The speed multiplier on photo i's entrance (twin of `animSpeed`)."""
+    raw = spec.get("animSpeed") if i is None else (
+        (spec.get("photos") or [])[i].get("animSpeed")
+        if 0 <= i < len(spec.get("photos") or []) else None)
+    if raw is None:
+        raw = spec.get("animSpeed")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(v) or v <= 0:
+        return 1.0
+    return max(ENTRANCE_SPEED_MIN, min(ENTRANCE_SPEED_MAX, v))
+
+
+def entrance_length(spec: dict[str, Any], i: int) -> float:
+    """Seconds photo i's entrance takes at its speed. Every length read in the
+    engine goes through here, so a speed that scaled the sweep but not the alpha
+    ramp, the pendulum or the size ladder cannot happen."""
+    return ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0) / anim_speed(spec, i)
+
+
+def entrance_fade(spec: dict[str, Any], i: int) -> float:
+    """…and the same for the alpha ramp."""
+    return ENTRANCE_FADE.get(photo_anim(spec, i), 0.0) / anim_speed(spec, i)
+
+
 LAYOUTS = ("stack", "grid", "scatter", "filmstrip", "fan", "masonry", "free", "template",
            "honeycomb", "zigzag", "arc", "photowall", "booth", "silhouette", "cube")
+# The mask reveals are animations too: one list, so a photo can be given a wipe
+# wherever an entrance is chosen, and `photo_anim` cannot forget one.
 ANIMS = ("drop", "pop", "swing", "flip", "none", "fade", "slide", "rise", "tumble",
-         "zoom", "fold", "glitch", "ink", "brush")
+         "zoom", "fold", "glitch", "ink", "brush", *GEOM_ANIMS, *LOOK_ENTRANCE_ANIMS, *REVEALS)
 FRAME_SHAPES = ("polaroid", "none", "rect", "rounded", "circle", "oval", "heart", "star",
                 "diamond", "hexagon", "triangle", "octagon", "cloud", "arch", "ticket")
 
 # Exits - how the photos leave after the hold. Twin of collageCore.ts.
-EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4, "fade": 0.5}
-EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1, "fade": 0.08}
+EXIT_LENGTH = {"sweep": 0.45, "deal": 0.32, "shuffle": 0.4, "fade": 0.5, "reverse": 0.5}
+EXIT_STAGGER = {"sweep": 0.05, "deal": 0.22, "shuffle": 0.1, "fade": 0.08, "reverse": 0.08}
 # Every exit mode, "none" (stay until the transition) first.
-EXITS = ("none", "sweep", "deal", "shuffle", "fade")
+# …and "reverse", which is not a new motion but the photo's own entrance played
+# backwards over the exit window: 41 arrivals and 41 departures from one table.
+EXITS = ("none", "sweep", "deal", "shuffle", "fade", "reverse")
 
 # Motion one photo keeps doing while it is on screen — the "while" lane of the
 # three-lane model the text layers use (enter / while / exit). Twin of MOTION
@@ -1372,7 +1597,7 @@ def base_duration(spec: dict[str, Any]) -> float:
         a = photo_anim(spec, i)
         if a != "none":
             animated = True
-        last = max(last, photo_start(spec, i, 0.0) + ENTRANCE_LENGTH.get(a, 0.0))
+        last = max(last, photo_start(spec, i, 0.0) + entrance_length(spec, i))
     if not animated:
         return _round2(hold)
     return _round2(last + hold)
@@ -1433,7 +1658,7 @@ def push_depth(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> 
         tj = photo_start(spec, j, lead_in)
         # The push follows the ARRIVING photo's landing, so a photo with its
         # own entrance pushes back on its own clock.
-        e = ENTRANCE_LENGTH.get(photo_anim(spec, j), 0.0)
+        e = entrance_length(spec, j)
         q = _clamp01((t - (tj + DEPTH["delay"] * e)) / DEPTH["span"])
         p += q * q * (3 - 2 * q)
     return min(DEPTH["max"], p)
@@ -1533,69 +1758,103 @@ def camera_filter(spec: dict[str, Any], width: int, height: int, fps: float, lea
     )
 
 
-def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, float]:
+def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, aspect: float = 16 / 9, ratios=None) -> dict[str, Any]:
     """Animated offsets of photo i at segment time t — twin of photoState()."""
     t0 = photo_start(spec, i, lead_in)
     push = push_depth(spec, i, t, lead_in)
     anim = photo_anim(spec, i)
-    ent = ENTRANCE_LENGTH.get(anim, 0.0)
+    spd = anim_speed(spec, i)
+    ent = ENTRANCE_LENGTH.get(anim, 0.0) / spd
+    fade = ENTRANCE_FADE.get(anim, 0.0) / spd
+    # A 'reverse' exit re-runs the entrance backwards over the exit window, so the
+    # time the curves below are sampled at is the arrival's, read in reverse.
+    # Mirroring the sample rather than writing an exit for each animation is what
+    # keeps 41 ids and 41 departures from being 82 things to keep in step.
+    ex_mode = exit_mode(spec, i)
+    ex_start = lead_in + base_duration(spec) + exit_offset(spec, i)
+    ex_q = 0.0 if ex_mode == "none" else _clamp01((t - ex_start) / (exit_fly_length(spec, i) or 0.001))
+    ti = t0 + ent * (1 - ex_q) if ex_mode == "reverse" and ex_q > 0 else t
     if anim == "drop":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((ti - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1 - DEPTH["scale"] * push, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.22), "dim": DEPTH["dim"] * push}
+        st = {"dx": 0.0, "dy": -26 * settle, "rot": -7 * settle, "scale": 1 - DEPTH["scale"] * push, "scaleX": 1.0, "alpha": _clamp01((ti - t0) / fade), "dim": DEPTH["dim"] * push}
     elif anim == "pop":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((ti - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": (0.55 + 0.45 * back) * (1 - DEPTH["scale"] * push), "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": DEPTH["dim"] * push}
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": (0.55 + 0.45 * back) * (1 - DEPTH["scale"] * push), "scaleX": 1.0, "alpha": _clamp01((ti - t0) / fade), "dim": DEPTH["dim"] * push}
     elif anim == "flip":
         # A card flipping open around its vertical axis: edge-on (4% width)
         # with an outBack overshoot, straightening as it settles.
-        q = _clamp01((t - t0) / 0.45)
+        q = _clamp01((ti - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": -4 * (1 - q), "scale": 1 - DEPTH["scale"] * push, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / 0.15), "dim": DEPTH["dim"] * push}
+        st = {"dx": 0.0, "dy": 0.0, "rot": -4 * (1 - q), "scale": 1 - DEPTH["scale"] * push, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((ti - t0) / fade), "dim": DEPTH["dim"] * push}
     elif anim == "swing":
-        tau = max(0.0, t - t0)
+        # The pendulum is the one entrance measured in raw seconds, so speed
+        # compresses the clock it runs on rather than a divisor.
+        tau = max(0.0, t - t0) * spd
         rot = 14 * math.exp(-1.3 * tau) * math.cos(2 * math.pi * tau / 1.6)
         st = {"dx": 0.0, "dy": 0.0, "rot": rot, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01(tau / 0.15), "dim": 0.0}
     elif anim == "fade":
-        q = _clamp01((t - t0) / 0.45)
+        q = _clamp01((ti - t0) / ent)
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": q * q * (3 - 2 * q), "dim": 0.0}
     elif anim == "slide":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((ti - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": -28 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": 0.0}
+        st = {"dx": -28 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((ti - t0) / fade), "dim": 0.0}
     elif anim == "rise":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((ti - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": 0.0, "dy": 22 * settle, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.18), "dim": 0.0}
+        st = {"dx": 0.0, "dy": 22 * settle, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": _clamp01((ti - t0) / fade), "dim": 0.0}
     elif anim == "tumble":
-        q = _clamp01((t - t0) / 0.6)
+        q = _clamp01((ti - t0) / ent)
         settle = (1 - q) ** 3
-        st = {"dx": 10 * settle, "dy": -18 * settle, "rot": 28 * settle, "scale": 1 - 0.15 * settle, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+        st = {"dx": 10 * settle, "dy": -18 * settle, "rot": 28 * settle, "scale": 1 - 0.15 * settle, "scaleX": 1.0, "alpha": _clamp01((ti - t0) / fade), "dim": 0.0}
     elif anim == "zoom":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((ti - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.2 + 0.8 * back, "scaleX": 1.0, "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.2 + 0.8 * back, "scaleX": 1.0, "alpha": _clamp01((ti - t0) / fade), "dim": 0.0}
     elif anim == "fold":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((ti - t0) / ent)
         back = 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2
-        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((t - t0) / 0.14), "dim": 0.0}
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.04, 0.04 + 0.96 * back), "alpha": _clamp01((ti - t0) / fade), "dim": 0.0}
     elif anim == "glitch":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((ti - t0) / ent)
         j = (1 - q) * (1 - q)
         seed = int(spec.get("seed") or 1)
         st = {"dx": (hash01(seed, i, 61) - 0.5) * 10 * j, "dy": (hash01(seed, i, 63) - 0.5) * 6 * j,
               "rot": (hash01(seed, i, 65) - 0.5) * 8 * j, "scale": 1.0,
-              "scaleX": 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, "alpha": _clamp01((t - t0) / 0.12), "dim": 0.15 * j}
+              "scaleX": 1 + (hash01(seed, i, 67) - 0.5) * 0.18 * j, "alpha": _clamp01((ti - t0) / fade), "dim": 0.15 * j}
     elif anim == "ink":
-        q = _clamp01((t - t0) / 0.55)
+        q = _clamp01((ti - t0) / ent)
         blob = q * q * (3 - 2 * q)
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 0.35 + 0.65 * blob, "scaleX": 1.0, "alpha": blob, "dim": 0.0}
     elif anim == "brush":
-        q = _clamp01((t - t0) / 0.5)
+        q = _clamp01((ti - t0) / ent)
         settle = (1 - q) ** 3
         st = {"dx": -36 * settle, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": max(0.12, 1 - 0.55 * settle),
-              "alpha": _clamp01((t - t0) / 0.16), "dim": 0.0}
+              "alpha": _clamp01((ti - t0) / fade), "dim": 0.0}
+    elif anim in LOOK_ENTRANCE:
+        # The photo does not move: its colour arrives, so every transform field is
+        # at rest and only the alpha ramp belongs here. The eight channels live in
+        # `photo_look_state`, which is where the preview's CSS filter and the
+        # render's `hue`/`eq`/`negate` chain both read them from.
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1 - DEPTH["scale"] * push, "scaleX": 1.0,
+              "alpha": _clamp01((ti - t0) / (fade or 0.001)), "dim": 0.0}
+    elif anim in GEOM:
+        row = GEOM[anim]
+        q = _clamp01((ti - t0) / (ent or 0.001))
+        st = {"dx": _geom(row.get("dx"), q, 0.0), "dy": _geom(row.get("dy"), q, 0.0),
+              "rot": _geom(row.get("rot"), q, 0.0),
+              "scale": _geom(row.get("scale"), q, 1.0) * (1 - DEPTH["scale"] * push),
+              "scaleX": _geom(row.get("scaleX"), q, 1.0),
+              "alpha": _clamp01((ti - t0) / (fade or 0.001)), "dim": _geom(row.get("dim"), q, 0.0)}
+    elif is_reveal(anim):
+        # A mask reveal: the photo never moves, it is uncovered, so every
+        # transform field rests and `alpha` stays 1 — the mask is the opacity.
+        # `revealP` is the eased progress both engines turn into a shape.
+        st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0,
+              "revealKind": anim, "revealP": reveal_progress(anim, _clamp01((ti - t0) / ent)),
+              "revealDir": float(photo_reveal_dir(spec, i))}
     else:
         st = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "scale": 1.0, "scaleX": 1.0, "alpha": 1.0, "dim": 0.0}
     if spec.get("kenBurns") is True:
@@ -1611,14 +1870,20 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
     add_motion(spec, i, t, st, t0, ent, lead_in)
     # Exit: after the hold (and every entrance) the photos leave the frame —
     # each one its own way when it has an override.
-    mode = exit_mode(spec, i)
+    mode = ex_mode
     if mode != "none":
         seed = int(spec.get("seed") or 1)
-        te0 = lead_in + base_duration(spec) + exit_offset(spec, i)
-        qe = _clamp01((t - te0) / exit_fly_length(spec, i))
+        te0 = ex_start
+        qe = ex_q
         if qe > 0:
             ease = qe * qe
-            if mode == "fade":
+            if mode == "reverse":
+                # Nothing to add: the mirror above is the departure. An entrance
+                # that never touched its alpha still has to leave somehow, so
+                # those fade over the fly — linearly, because `fade=t=out` is.
+                if not is_reveal(anim) and st["alpha"] > 0.999:
+                    st["alpha"] = 1 - qe
+            elif mode == "fade":
                 # It leaves by fading where it stands: no travel, no turn, and
                 # the whole fly is the fade — the movers fade over their last
                 # quarter. Linear, because that is what `fade=t=out` does.
@@ -1654,15 +1919,125 @@ def pin_anchor(spec: dict[str, Any], i: int | None = None) -> bool:
     return anim == "swing"
 
 
-def photo_anim(spec: dict[str, Any], i: int) -> str:
-    """The entrance photo i actually performs: its own override when it has
-    one, the collage's animation otherwise (twin of photoAnim())."""
+def st_dir(spec: dict[str, Any], i: int) -> int:
+    """`photo_reveal_dir` under the short name the graph builder uses."""
+    return photo_reveal_dir(spec, i)
+
+
+def photo_reveal_dir(spec: dict[str, Any], i: int | None = None) -> int:
+    """Which way a mask reveal runs: 0 is the direction its kind is named for,
+    1 mirrors it on the axis that kind declares (twin of `photoRevealDir`)."""
+    if i is not None:
+        # A bridged name carries its own direction: FFmpeg's `slideleft` means the
+        # new frame comes in from the right, so the wipe has to run the way the
+        # name says rather than the way the collage was set to.
+        row = bridge_row(photo_anim_name(spec, i))
+        if row and row.get("dir") is not None:
+            return int(row["dir"])
+        photos = spec.get("photos") or []
+        if 0 <= i < len(photos) and photos[i].get("animDir") in (0, 1):
+            return int(photos[i]["animDir"])
+    return 1 if spec.get("animDir") == 1 else 0
+
+
+# ---------------------------------------------------------------------------
+# The transition bridge — FFmpeg's own names, as per-photo reveals
+# ---------------------------------------------------------------------------
+
+# The same 41 rows as `COLLAGE_BRIDGE` in src/collageCore.ts. Most of FFmpeg's
+# `xfade` names are something the collage can build more cheaply than a mask, so
+# the row says which animation the name *runs*: the name is what the spec stores
+# and what the picker lists, and the animation is what both engines evaluate.
+# `dir` is the direction the name carries with it — `slideleft` pushes the new
+# frame in from the right, and a name that silently meant the other way round
+# would be a lie about the MP4.
+BRIDGE: dict[str, dict[str, Any]] = {
+    "wiperight": {"label": "Wipe right", "target": "wipeRight"},
+    "wipeleft": {"label": "Wipe left", "target": "wipeLeft"},
+    "wipeup": {"label": "Wipe up", "target": "wipeUp"},
+    "wipedown": {"label": "Wipe down", "target": "wipeDown"},
+    "wipetl": {"label": "Wipe to top-left", "target": "diagDownLeft", "dir": 1},
+    "wipetr": {"label": "Wipe to top-right", "target": "diagDownRight", "dir": 1},
+    "wipebl": {"label": "Wipe to bottom-left", "target": "diagDownLeft"},
+    "wipebr": {"label": "Wipe to bottom-right", "target": "diagDownRight"},
+    "slideleft": {"label": "Slide left", "target": "fromRight"},
+    "slideright": {"label": "Slide right", "target": "fromLeft"},
+    "slideup": {"label": "Slide up", "target": "fromBottom"},
+    "slidedown": {"label": "Slide down", "target": "fromTop"},
+    "circleopen": {"label": "Circle open", "target": "iris"},
+    "circleclose": {"label": "Circle close", "target": "irisOut"},
+    "vertopen": {"label": "Vertical open", "target": "curtain"},
+    "vertclose": {"label": "Vertical close", "target": "curtain", "dir": 1},
+    "horzopen": {"label": "Horizontal open", "target": "curtain", "dir": 1},
+    "horzclose": {"label": "Horizontal close", "target": "curtain"},
+    "squeezeh": {"label": "Squeeze horizontal", "target": "fold"},
+    "squeezev": {"label": "Squeeze vertical", "target": "unfold"},
+    "zoomin": {"label": "Zoom in", "target": "zoom"},
+    "fadegrays": {"label": "Fade from grey", "target": "colourFlood"},
+    "fadewhite": {"label": "Fade from white", "target": "flashIn"},
+    "fadeblack": {"label": "Fade from black", "target": "shadowLift"},
+    "fadefast": {"label": "Fade (fast)", "target": "fade"},
+    "fadeslow": {"label": "Fade (slow)", "target": "fade"},
+    "radial": {"label": "Radial", "target": "clock"},
+    "rectcrop": {"label": "Rect crop", "target": "diamond"},
+    # …and the ten the collage cannot build: the render runs FFmpeg's own
+    # transition between two solid layers and uses the result as the photo's
+    # alpha mask, and the preview draws the nearest shape it has.
+    "smoothleft": {"label": "Smooth left", "target": "wipeLeft", "bridge": True, "soft": 0.22},
+    "smoothright": {"label": "Smooth right", "target": "wipeRight", "bridge": True, "soft": 0.22},
+    "smoothup": {"label": "Smooth up", "target": "wipeUp", "bridge": True, "soft": 0.22},
+    "smoothdown": {"label": "Smooth down", "target": "wipeDown", "bridge": True, "soft": 0.22},
+    "hlslice": {"label": "Slices in from left", "target": "blindsRight", "bridge": True},
+    "hrslice": {"label": "Slices in from right", "target": "blindsRight", "dir": 1, "bridge": True},
+    "vuslice": {"label": "Slices from above", "target": "blindsDown", "bridge": True},
+    "vdslice": {"label": "Slices from below", "target": "blindsDown", "dir": 1, "bridge": True},
+    "dissolve": {"label": "Dissolve", "target": "mosaic", "bridge": True},
+    "pixelize": {"label": "Pixelize", "target": "mosaic", "bridge": True},
+}
+BRIDGE_NAMES = tuple(BRIDGE)
+# The families an entrance belongs to — the shuffle's pools and the picker's tabs
+# in both languages, so a name cannot be in a group in one and not the other.
+ANIM_FAMILIES = ("classic", "paper", "colour", "mask", "ffmpeg")
+ANIM_FAMILY = {
+    **{k: "mask" for k in REVEALS},
+    **{k: "paper" for k in GEOM},
+    **{k: "colour" for k in LOOK_ENTRANCE},
+    **{name: ("ffmpeg" if row.get("bridge") else str(row.get("family", "mask")))
+       for name, row in BRIDGE.items()},
+}
+# Every id a spec may carry: our own animations and the bridged names.
+ANIM_IDS = ANIMS + BRIDGE_NAMES
+
+
+def resolve_anim(name: Any) -> str:
+    """The animation a stored name runs. One place, so the state, the lengths and
+    the graph cannot each resolve a bridge a little differently."""
+    row = BRIDGE.get(str(name))
+    return str(row["target"]) if row else str(name)
+
+
+def bridge_row(name: Any) -> dict[str, Any] | None:
+    """The bridge row for a name, or None for an animation of our own."""
+    return BRIDGE.get(str(name))
+
+
+def photo_anim_name(spec: dict[str, Any], i: int) -> str:
+    """The entrance of photo i as it is *stored* — a bridged name stays itself, so
+    the picker and the direction rules can see what the user picked."""
     photos = spec.get("photos") or []
     if i < len(photos) and isinstance(photos[i], dict):
         own = photos[i].get("anim")
-        if own in ANIMS:
-            return own
+        if own in ANIM_IDS:
+            return str(own)
     return str(spec.get("animation") or "drop")
+
+
+def photo_anim(spec: dict[str, Any], i: int) -> str:
+    """The entrance photo i performs: its own override when it has one, the
+    collage's animation otherwise, and either way resolved through the bridge, so
+    a stored FFmpeg name arrives as the animation standing behind it (twin of
+    photoAnim() + resolveAnim())."""
+    return resolve_anim(photo_anim_name(spec, i))
 
 
 def photo_motion(spec: dict[str, Any], i: int) -> tuple[str, float]:
@@ -1760,8 +2135,14 @@ def photo_look_anim(spec: dict[str, Any], i: int) -> str:
 
 
 def photo_look_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0) -> dict[str, float]:
-    """How the animated look tints photo i at time t: a saturation multiplier
-    and a brightness multiplier, 1.0 = untouched (twin of photoLookState()).
+    """How the photo is tinted at time t: the animated look *and* any look-based
+    entrance, composed into one set of channels (twin of `photoLookState`).
+
+    Multiplying saturation and brightness and adding hue is not a convenience:
+    the preview applies one CSS filter string, so if the two lanes were applied as
+    two filters in one engine and one string in the other, a photo with both a
+    `flicker` look and a `develop` entrance would be tinted in a different order
+    on each side. One composed answer, read by both, cannot disagree.
 
     The preview applies them as CSS saturate() / brightness() on the mat. The
     render drives saturation with a per-frame `hue=s='...'` expression — hue
@@ -1769,13 +2150,29 @@ def photo_look_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.
     measured on the render binary — and brightness with a sendcmd ladder into a
     second eq, the same machinery the depth dim uses.
     """
+    out = _look_anim_state(spec, i, t, lead_in)
+    row = LOOK_ENTRANCE.get(photo_anim(spec, i))
+    if row is not None:
+        ent = entrance_length(spec, i) or 0.001
+        q = _clamp01((t - photo_start(spec, i, lead_in)) / ent)
+        out = dict(out)
+        out["sat"] *= _geom(row.get("sat"), q, 1.0)
+        out["bright"] *= _geom(row.get("bright"), q, 1.0)
+        out["hue"] += _geom(row.get("hue"), q, 0.0)
+        if row.get("inv"):
+            out["inv"] = max(out["inv"], 1.0 if q < 1 else 0.0)
+    return out
+
+
+def _look_anim_state(spec: dict[str, Any], i: int, t: float, lead_in: float) -> dict[str, float]:
+    """The "while" lane on its own: what the photo's animated look does at t."""
     lid = photo_look_anim(spec, i)
     plain = {"sat": 1.0, "bright": 1.0, "inv": 0.0, "hue": 0.0}
     if lid == "none":
         return dict(plain)
     look = LOOK_ANIM[lid]
     t0 = photo_start(spec, i, lead_in)
-    ent = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0)
+    ent = entrance_length(spec, i)
     land = t0 + ent
     if lid == "toBw":
         # colour drains away across the hold, at Ken Burns' pace
@@ -1830,7 +2227,7 @@ def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
     if mid in TARGET_MOTIONS:
         a = 1.0
     start = photo_start(spec, i, lead_in) if t0 is None else t0
-    e0 = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0) if ent is None else ent
+    e0 = entrance_length(spec, i) if ent is None else ent
     u = max(0.0, t - (start + e0))
     g = _clamp01(u / MOTION_RAMP)
     dur = photo_motion_duration(spec, i)
@@ -1909,6 +2306,22 @@ def add_motion(spec: dict[str, Any], i: int, t: float, st: dict[str, float],
     return st
 
 
+def _speed_val(raw: Any) -> float | None:
+    """A speed multiplier as saved: finite, positive and clamped to the slider's
+    range, or None when it is missing or malformed — which means 1. Both engines
+    clamp here rather than trusting the UI, so a hand-edited 9001 cannot make a
+    photo arrive in a single frame."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v) or v <= 0:
+        return None
+    return max(ENTRANCE_SPEED_MIN, min(ENTRANCE_SPEED_MAX, v))
+
+
 def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     """The item's valid collage spec, or None when it has no usable photos.
 
@@ -1981,8 +2394,20 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
             entry["frame"] = photo_frame({"frame": p["frame"]}, None)
         if p.get("shape") in SHAPES:
             entry["shape"] = p["shape"]
-        if p.get("anim") in ANIMS:
+        if p.get("anim") in ANIM_IDS:
             entry["anim"] = p["anim"]
+        # …and the two things that say *how* that entrance plays. Both are read
+        # with the same tolerance at both levels, because a photo that carries a
+        # direction the save dropped is a photo that wipes the wrong way.
+        if p.get("animDir") in (0, 1) or p.get("animDir") in (False, True):
+            entry["animDir"] = 1 if p["animDir"] else 0
+        spd = _speed_val(p.get("animSpeed"))
+        if spd is not None:
+            entry["animSpeed"] = spd
+        if p.get("animLock") is True:
+            # "this photo's entrance survives the shuffle" — editor state, kept by
+            # both engines so it does not vanish on save
+            entry["animLock"] = True
         if p.get("exit") in EXITS:
             entry["exit"] = p["exit"]
         if p.get("motion") in MOTIONS:
@@ -2018,7 +2443,11 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     if not photos:
         return None
     layout = raw.get("layout") if raw.get("layout") in LAYOUTS else "stack"
-    animation = raw.get("animation") if raw.get("animation") in ANIMS else "drop"
+    # a bridged name (FFmpeg's own transition name) is as valid a choice here as
+    # one of ours — `photo_anim` resolves it for everything downstream
+    animation = raw.get("animation") if raw.get("animation") in ANIM_IDS else "drop"
+    anim_dir = 1 if raw.get("animDir") in (1, True) else 0
+    anim_speed = _speed_val(raw.get("animSpeed"))
     exit_ = raw.get("exit") if raw.get("exit") in EXITS[1:] else None
     try:
         speed_in = float(raw.get("exitSpeed")) if raw.get("exitSpeed") is not None and not isinstance(raw.get("exitSpeed"), bool) else None
@@ -2064,6 +2493,33 @@ def normalize_collage(item: dict[str, Any]) -> dict[str, Any] | None:
     bg = raw.get("backgroundImage")
     bg = bg if isinstance(bg, str) and bg else None
     spec = {"photos": photos, "layout": layout, "animation": animation, "shape": shape, "seed": seed}
+    if anim_dir:
+        spec["animDir"] = 1
+    if anim_speed is not None:
+        spec["animSpeed"] = anim_speed
+    # The random shuffle's memory: which seed rolled this set, which families it
+    # drew from, and whether it avoided repeats. The entrances themselves are
+    # stored as concrete ids on the photos, so the render never needs any of this —
+    # it is here so a project reopens with the same roll, and so a shuffle the
+    # save dropped is a shuffle the *editor* would silently undo.
+    seed_in = raw.get("animSeed")
+    if seed_in is not None and not isinstance(seed_in, bool):
+        # float() first, then truncate: `int("7.5")` would raise while TypeScript's
+        # Number() truncates it to 7, and a field one engine keeps and the other
+        # drops is the divergence class that costs the most to find
+        try:
+            as_num = float(seed_in)
+        except (TypeError, ValueError):
+            as_num = None
+        if as_num is not None and math.isfinite(as_num):
+            spec["animSeed"] = int(as_num) & 0x7FFFFFFF
+    fams = raw.get("animFamilies")
+    if isinstance(fams, list):
+        keep = [f for f in fams if f in ANIM_FAMILIES]
+        if keep:
+            spec["animFamilies"] = keep
+    if raw.get("animOneOfEach") is True:
+        spec["animOneOfEach"] = True
     if hold is not None:
         spec["hold"] = hold
     if raw.get("beatSync") is True:
@@ -2260,10 +2716,9 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             return None
         # The push follows each ARRIVING photo's own landing, so a photo that
         # enters on its own clock pushes back on that clock.
-        first = (photo_start(spec, i + 1, lead_in)
-                 + DEPTH["delay"] * ENTRANCE_LENGTH.get(photo_anim(spec, i + 1), 0.0))
+        first = (photo_start(spec, i + 1, lead_in) + DEPTH["delay"] * entrance_length(spec, i + 1))
         last = (photo_start(spec, len(pls) - 1, lead_in)
-                + DEPTH["delay"] * ENTRANCE_LENGTH.get(photo_anim(spec, len(pls) - 1), 0.0)
+                + DEPTH["delay"] * entrance_length(spec, len(pls) - 1)
                 + DEPTH["span"])
         cmds: list[str] = []
         prev_m: float | None = None
@@ -2298,35 +2753,64 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         the flip.
         """
         lid = photo_look_anim(spec, i)
-        if lid == "none":
+        row = LOOK_ENTRANCE.get(photo_anim(spec, i))
+        if lid == "none" and row is None:
             return ""
         t0 = photo_start(spec, i, lead_in)
-        ent = ENTRANCE_LENGTH.get(photo_anim(spec, i), 0.0)
+        ent = entrance_length(spec, i)
         land = t0 + ent
         segs: list[str] = []
         span = max(0.8, collage_duration(spec) * 0.7)
+        # Each channel is collected from whichever lanes ask for it, then merged
+        # into the one `hue` instance — because `photo_look_state` multiplied and
+        # added them for the preview, and a second filter would apply the two
+        # lanes in the other order.
+        s_terms: list[str] = []
+        h_terms: list[str] = []
+        inv_until: float | None = None
         if lid == "toBw":
-            segs.append(f"hue=s='1-min(max((t-{_n(land)})/{_n(span)},0),1)'")
+            s_terms.append(f"1-min(max((t-{_n(land)})/{_n(span)},0),1)")
         elif lid == "toColor":
-            segs.append(f"hue=s='min(max((t-{_n(t0)})/{_n(max(0.45, ent))},0),1)'")
+            s_terms.append(f"min(max((t-{_n(t0)})/{_n(max(0.45, ent))},0),1)")
         elif lid == "hueFlip":
             # `hue=H=` takes RADIANS — the filter multiplies the expression by
             # 180/pi itself — while the twin's hue is in degrees, which is what
             # the preview's CSS hue-rotate() wants. So the turn is converted
             # once, here, and the ramp stays a plain 0…1 progress.
             turn = LOOK_ANIM[lid]["hue"] * math.pi / 180
-            segs.append(f"hue=H='{_n(turn)}*min(max((t-{_n(t0)})/{_n(span)},0),1)'")
+            h_terms.append(f"{_n(turn)}*min(max((t-{_n(t0)})/{_n(span)},0),1)")
         elif lid == "invert":
             # It arrives as a negative and flips to its real colours once it has
             # landed; a photo with no entrance still gets INVERT_MIN seconds of
             # negative, or the flip would happen before it is visible.
-            segs.append(f"negate=enable='lt(t,{_n(t0 + max(ent, INVERT_MIN))})'")
-        else:
-            look = LOOK_ANIM[lid]
+            inv_until = t0 + max(ent, INVERT_MIN)
+        if row is not None:
+            q_look = f"min(max((t-{_n(t0)})/{_n(ent or 0.001)},0),1)"
+            sat = _geom_expr(row.get("sat"), q_look, 1.0, signed=False)
+            if sat:
+                s_terms.append(sat)
+            hue = _geom_expr(row.get("hue"), q_look, math.pi / 180, signed=False)
+            if hue:
+                h_terms.append(hue)
+            if row.get("inv"):
+                # The flip is at the end of the entrance — `q < 1` is the whole
+                # negative stretch in the twin, and the same instant here.
+                inv_until = max(inv_until or 0.0, land)
+        if s_terms:
+            segs.append("hue=s='" + (s_terms[0] if len(s_terms) == 1
+                                    else "*".join(f"({t})" for t in s_terms)) + "'")
+        if h_terms:
+            segs.append("hue=H='" + (h_terms[0] if len(h_terms) == 1
+                                    else "+".join(f"({t})" for t in h_terms)) + "'")
+        if inv_until is not None:
+            segs.append(f"negate=enable='lt(t,{_n(inv_until)})'")
+        if lid == "flicker" or (row is not None and row.get("bright")):
             r1 = hash01(seed, i, 87)
             r2 = hash01(seed, i, 89)
             tau = math.pi * 2
-            first = land
+            # A look entrance brightens from its first frame; a flicker look only
+            # jitters after the photo has landed.
+            first = t0 if row is not None else land
             last = lead_in + duration
             cmds: list[str] = []
             prev_b: float | None = None
@@ -2352,6 +2836,12 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # This photo's three lanes: how it enters, how it leaves, and what it
         # keeps doing in between. A missing override inherits the collage's.
         anim = photo_anim(spec, i)
+        # The entrance's own clock for this photo: every term the graph builds
+        # from here (offsets, rotation, the size ladder's sampling, the fade)
+        # divides by `ent` so that one number — the table's length over the
+        # speed — is what the whole arrival is measured in.
+        ent = entrance_length(spec, i)
+        spd = anim_speed(spec, i)
         ex_mode = exit_mode(spec, i)
         pin = pin_anchor(spec, i)
         mo_id, mo_amt = photo_motion(spec, i)
@@ -2443,6 +2933,11 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 ex_rot = 25.0
             elif ex_mode == "fade":
                 pass                            # it leaves where it stands
+            elif ex_mode == "reverse":
+                # The mirror in photo_state() is the whole departure: no fly, no
+                # turn of its own, and the alpha below follows the entrance's ramp
+                # backwards. Anything added here would be a second exit.
+                pass
             else:
                 a = hash01(seed, i, 73) * 2 * math.pi
                 ex_dx = 75 * math.cos(a) / 100 * width
@@ -2469,7 +2964,7 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             if mo_id == "none":
                 return "", "", ""
             m = MOTION[mo_id]
-            land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+            land = t0 + ent
             u = f"max(t-{_n(land)},0)"                  # seconds since it landed
             ramp = f"min({u}/{_n(MOTION_RAMP)},1)"      # eases in from rest
             r1 = hash01(seed, idx, 81)
@@ -2537,12 +3032,21 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
 
         # Time-varying rotation: the entrance's settle plus the exit spin,
         # one expression per animation (empty when the photo never rotates).
-        q_drop = f"min(max((t-{_n(t0)})/0.55,0),1)"
-        q_flip = f"min(max((t-{_n(t0)})/0.45,0),1)"
-        q_slide = f"min(max((t-{_n(t0)})/0.5,0),1)"
-        q_tumble = f"min(max((t-{_n(t0)})/0.6,0),1)"
-        q_brush = f"min(max((t-{_n(t0)})/0.5,0),1)"
-        q_glitch = f"min(max((t-{_n(t0)})/0.5,0),1)"
+        # One entrance progress, shared by every animation's terms — and read
+        # from the scaled length, so a faster entrance is a shorter fade, a
+        # tighter pendulum and a shorter size ladder in the MP4 as well as in the
+        # editor. The per-animation literals this replaces (0.55, 0.45, …) were
+        # each the table's own number, so nothing about an unchanged slide moves.
+        q_ent = f"min(max((t-{_n(t0)})/{_n(ent or 0.001)},0),1)"
+        if ex_mode == "reverse":
+            # …and read backwards from the moment it leaves. Taking the *minimum*
+            # of the two is what makes one expression serve both directions:
+            # before the exit the mirrored term is 1 and the arrival's own value
+            # wins, after it the arrival has settled at 1 and the mirror wins.
+            # `gt`, not `gte`, because that is the comparison photo_state() uses.
+            q_rev = f"1-min(max((t-{_n(te0)})/{_n(fly or 0.001)},0),1)"
+            q_ent = f"min({q_ent},{q_rev})"
+        q_drop = q_flip = q_slide = q_tumble = q_brush = q_glitch = q_ent
         extra_x = extra_y = extra_r = ""
         if anim == "slide":
             extra_x = f"-{_n(0.28 * width)}*pow(1-{q_slide},3)"
@@ -2554,13 +3058,22 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             extra_r = f"+28*pow(1-{q_tumble},3)"
         elif anim == "brush":
             extra_x = f"-{_n(0.36 * width)}*pow(1-{q_brush},3)"
+        elif anim in GEOM:
+            # The paper family's offsets, straight out of the row the preview
+            # evaluates — no second copy of the numbers here, which is how the
+            # hand-written terms above drifted from the curves once already.
+            row = GEOM[anim]
+            qg = q_ent
+            extra_x = _geom_expr(row.get("dx"), qg, width)
+            extra_y = _geom_expr(row.get("dy"), qg, height)
+            extra_r = _geom_expr(row.get("rot"), qg, 1.0)
         elif anim == "glitch":
             jg = f"pow(1-{q_glitch},2)"
             extra_x = fly_term((hash01(seed, i, 61) - 0.5) * 0.10 * width, jg)
             extra_y = fly_term((hash01(seed, i, 63) - 0.5) * 0.06 * height, jg)
             extra_r = fly_term((hash01(seed, i, 65) - 0.5) * 8, jg)
         if spec.get("kenBurns") is True:
-            land = t0 + ENTRANCE_LENGTH.get(anim, 0.0)
+            land = t0 + ent
             span = max(0.8, collage_duration(spec) * 0.7)
             kb = f"min(max((t-{_n(land)})/{_n(span)},0),1)"
             extra_x = (extra_x or "") + fly_term((hash01(seed, i, 51) - 0.5) * 0.05 * width, kb)
@@ -2575,7 +3088,14 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # same angle instead of straightening it.
             ang = f"({_n(pl['rot'])}-4*(1-{q_flip}){ex_r}{extra_r}{sway_r}{mo_r})*PI/180"
         elif anim == "swing":
-            tau = f"max(t-{_n(t0)},0)"
+            # the same compressed clock photo_state() uses
+            # at speed 1 the clock is the clock: no factor to carry around
+            tau = (f"max(t-{_n(t0)},0)*{_n(anim_speed(spec, i))}"
+                   if anim_speed(spec, i) != 1.0 else f"max(t-{_n(t0)},0)")
+            if ex_mode == "reverse":
+                # the same clock, run back from where the swing settled
+                tau = (f"if(gt(t,{_n(te0)}),{_n(ent)}*(1-min(max((t-{_n(te0)})/{_n(fly or 0.001)},0),1)),"
+                       f"{tau})")
             # Keep every component in degrees until the final conversion.
             # The old expression converted the 14° swing amplitude twice,
             # leaving only ~0.24° of motion in the rendered MP4 even though
@@ -2594,9 +3114,23 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # static scales whose overlay enable windows partition time. The
         # sizes are sampled from the twin's photoState() at frame resolution,
         # so the MP4 shows what the preview shows, frame for frame.
-        fade_d_in = {"drop": 0.22, "pop": 0.18, "flip": 0.15, "swing": 0.15,
-                     "fade": 0.45, "slide": 0.18, "rise": 0.18, "tumble": 0.16, "zoom": 0.16,
-                     "fold": 0.14, "glitch": 0.12, "ink": 0.4, "brush": 0.16}.get(anim)
+        # …and the alpha ramp, which every geometry entrance keeps linear so the
+        # filter's own `fade` is the same curve the preview computes.
+        fade_d_in = entrance_fade(spec, i) or None
+        if ex_mode == "reverse":
+            # The exit's alpha is the entrance's, backwards: a photo that spent
+            # the first 0.16 s of a 0.6 s arrival becoming visible spends the last
+            # 0.16/0.6 of its fly disappearing, and sits invisible after that.
+            # A mask reveal needs none of it — its mask is closing — and an
+            # entrance that never faded ('none') leaves over the whole fly.
+            fd = entrance_fade(spec, i)
+            if is_reveal(anim):
+                fade_out = ""
+            elif fd and fd < ent:
+                d_out = fly * (fd / ent)
+                fade_out = f",fade=t=out:st={_n(te0 + fly - d_out)}:d={_n(d_out)}:alpha=1"
+            else:
+                fade_out = f",fade=t=out:st={_n(te0)}:d={_n(fly)}:alpha=1"
         mid = (f"fade=t=in:st={_n(t0)}:d={_n(fade_d_in)}:alpha=1" if fade_d_in else "null") + fade_out
 
         # The anchor: the canvas centre lands on the mat centre (or the pin
@@ -2607,19 +3141,29 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         fall = f"-{_n(0.26 * height)}*pow(1-{q_drop},3)" if anim == "drop" else ""
 
         # --- size ladder ---------------------------------------------------
-        def size_levels() -> list[tuple[int, int, list[list[float]]]]:
-            """Distinct (W, H) sprite sizes photo i shows, each with the
-            [start, end) frame windows it is on screen. The last window is
-            open-ended (end=None)."""
-            varies = (anim in ("pop", "flip", "zoom", "fold", "ink", "brush", "glitch", "tumble")
-                      or depth_on or spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS)
+        def size_levels() -> list[tuple[int, int, float | None, list[list[float]]]]:
+            """Distinct (W, H, mask step) sprite variants photo i shows, each with
+            the [start, end) frame windows it is on screen. The last window is
+            open-ended (end=None).
+
+            The mask step is part of the key because a reveal needs the same
+            treatment as a changing size: FFmpeg's `geq` would otherwise evaluate a
+            whole clip per pixel per frame, while here each step of the sweep is
+            ONE baked still that is held for its window — which is why a NAS can
+            render a mosaic in about what a wipe costs."""
+            reveal = is_reveal(anim)
+            varies = (anim in SCALE_ANIMS or anim in GEOM_SCALES
+                      or depth_on or spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS or reveal
+                      # a mirrored exit re-runs the same size changes, so the
+                      # levels have to be sampled across the fly as well
+                      or (ex_mode == "reverse" and (reveal or anim in SCALE_ANIMS or anim in GEOM_SCALES)))
             if not varies:
-                return [(cw, ch, [[0.0, None]])]
+                return [(cw, ch, None, [[0.0, None]])]
             # the timeline only moves during the entrance and the depth push
             # windows — sample the twin at frame resolution up to there
-            last_var = t0 + ENTRANCE_LENGTH[anim]
+            last_var = t0 + ent
             if depth_on:
-                e = ENTRANCE_LENGTH[anim]
+                e = ent
                 for j in range(i + 1, len(pls)):
                     tj = photo_start(spec, j, lead_in)
                     last_var = max(last_var, tj + DEPTH["delay"] * e + DEPTH["span"])
@@ -2634,16 +3178,21 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # one per frame, and a photo that does not scale after its entrance
             # emits exactly the sizes it always did.
             tail = spec.get("kenBurns") is True or mo_id in SCALE_MOTIONS
+            ex_win = (te0, te0 + fly) if ex_mode == "reverse" else None
             end_var = last_var
             if tail:
                 end_var = max(last_var, t_end if t_end is not None else lead_in + duration)
+            if ex_win:
+                end_var = max(end_var, ex_win[1])
             buckets = ladder_buckets(cw, ch)
             n_frames = max(1, math.ceil(end_var * fps))
-            runs: list[list] = []           # [start_frame, end_frame, W, H]
+            runs: list[list] = []           # [start_frame, end_frame, W, H, mask step]
             for k in range(n_frames + 1):
                 t = k / fps
                 st = photo_state(spec, i, t, lead_in, aspect, ratios)
-                if tail and t > last_var:
+                # the exit window is motion, sampled like the entrance is —
+                # quantising it would step a photo that is leaving in one hop
+                if tail and t > last_var and not (ex_win and ex_win[0] <= t <= ex_win[1]):
                     s_h = round(st["scale"] * buckets) / buckets
                     s_w = round(st["scale"] * st["scaleX"] * buckets) / buckets
                     w_ = max(2, int(round(cw * s_w)))
@@ -2652,14 +3201,21 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                     # the entrance window, sampled exactly as before
                     w_ = max(2, int(round(cw * st["scale"] * st["scaleX"])))
                     h_ = max(2, int(round(ch * st["scale"])))
-                if runs and runs[-1][2] == w_ and runs[-1][3] == h_:
+                # …and the sweep's step, quantised with the SAME constant the
+                # preview's mask cache uses, so frame k shows the same shape here
+                # as it does on screen. 1.0 means "no mask left to apply".
+                mp: float | None = None
+                if reveal:
+                    rp = st.get("revealP")
+                    mp = 1.0 if rp is None or rp >= 1.0 else reveal_quantise(REVEAL_STEPS, float(rp))
+                if runs and runs[-1][2] == w_ and runs[-1][3] == h_ and runs[-1][4] == mp:
                     runs[-1][1] = k
                 else:
-                    runs.append([k, k, w_, h_])
-            levels: dict[tuple[int, int], list[list[float]]] = {}
-            order: list[tuple[int, int]] = []
-            for k0, k1, w_, h_ in runs:
-                key = (w_, h_)
+                    runs.append([k, k, w_, h_, mp])
+            levels: dict[tuple[int, int, float | None], list[list[float]]] = {}
+            order: list[tuple[int, int, float | None]] = []
+            for k0, k1, w_, h_, mp in runs:
+                key = (w_, h_, mp)
                 if key not in levels:
                     levels[key] = []
                     order.append(key)
@@ -2671,7 +3227,28 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 a = max(0.0, k0 / fps - 0.003)
                 b = None if k1 == n_frames else k1 / fps + 0.5 / fps + 0.003
                 levels[key].append([a, b])
-            return [(w_, h_, levels[(w_, h_)]) for w_, h_ in order]
+            return [(w_, h_, mp, levels[(w_, h_, mp)]) for w_, h_, mp in order]
+
+        def select_expr(windows: list[list[float]]) -> str:
+            """The same windows as `enable_expr`, as a bare `select` condition.
+
+            A masked level is a still image with the sweep's step burned in, so
+            the frames outside its window are worth nothing — but FFmpeg does not
+            know that and would evaluate the mask for every frame of the slide,
+            for every level. Dropping them first costs one geq per frame of the
+            entrance instead of one per frame of the whole slide, which is the
+            difference between a NAS exporting a mosaic in seconds and in
+            minutes."""
+            parts = []
+            for a, b in windows:
+                if b is None:
+                    parts.append(f"gte(t,{_n(a - 0.003)})" if t_end is None else
+                                 f"between(t,{_n(a)},{_n(t_end + 0.003)})")
+                else:
+                    if t_end is not None:
+                        b = min(b, t_end + 0.003)
+                    parts.append(f"between(t,{_n(a)},{_n(b)})")
+            return "+".join(parts)
 
         def enable_expr(windows: list[list[float]]) -> str:
             # Any level can carry the open-ended window: the entrance's
@@ -2754,16 +3331,31 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # only for its frame windows. Later levels overlay earlier ones, and
         # the windows partition time, so exactly one size per photo is ever
         # on screen.
-        for k, (W, H, windows) in enumerate(levels):
+        for k, (W, H, mp, windows) in enumerate(levels):
             is_last = k == len(levels) - 1
             src = f"sp{i}f" if len(levels) == 1 else f"b{i}_{k}"
             # the final level closes photo i's chain, so its output keeps the
             # short label the camera/caption chains consume
             out = f"o{i}" if is_last else f"o{i}_{k}"
-            lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
             x_expr = f"{_n(ax_px - W / 2)}{ex_x}{extra_x}{mo_x}"
             y_expr = f"{_n(ay_px - H / 2)}{fall}{ex_y}{extra_y}{mo_y}"
             enable = enable_expr(windows)
+            # The reveal mask, with this level's step of the sweep baked in. It
+            # rides on the sprite's own box — the same box the preview masks —
+            # which is why the two agree without any coordinate translation, and
+            # before the rotate, because a CSS mask turns with the element.
+            a_expr = geq_alpha(anim, mp, int(st_dir(spec, i))) if (
+                mp is not None and mp < 1.0) else ""
+            if a_expr:
+                # `select` first: a step is a still image, so the frames outside
+                # its window are worth nothing, and dropping them before the mask
+                # is the difference between one geq per frame of the entrance and
+                # one per frame of the whole slide, per level.
+                lines.append(f"[{src}]select='{select_expr(windows)}',setpts=N/FRAME_RATE/TB,"
+                             f"scale={W}:{H},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{a_expr}'"
+                             f"{rot_seg}[lv{i}_{k}];")
+            else:
+                lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
             lines.append(f"[{prev}][lv{i}_{k}]overlay=x='{x_expr}':y='{y_expr}'{enable}[{out}];")
             prev = out
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from . import karaoke as karaoke_mod
 from .filter_values import quote_filter_value
 
 log = logging.getLogger(__name__)
@@ -2323,6 +2324,53 @@ def overlay_plan(item: dict[str, Any]) -> FxPlan | None:
 def plan_engine(plan: FxPlan) -> str:
     engines = {str(plan.enter.get("engine")), str(plan.while_.get("engine")), str(plan.exit_.get("engine"))}
     return "dt" if engines <= {"dt", "none"} else "ass"
+
+def karaoke_document(item: dict[str, Any], defaults: dict[str, Any], width: int, height: int,
+                     lead_in: float = 0.0) -> str | None:
+    """The complete ``.ass`` for a karaoke caption, or None when it is unusable.
+
+    Karaoke is the caption itself with a per-word clock: the words stay in
+    ``text``, ``karaoke.words`` only says when each is sung, and this writes one
+    ``Dialogue`` event per sentence with ``\\kf`` per character. The caption's
+    font, size, colour, outline and position all come from the ordinary text
+    settings through :func:`_geometry`, so a karaoke slide keeps looking like
+    the slide the user styled and the karaoke only adds the timing.
+
+    The style/geometry helpers here are reused rather than duplicated: the same
+    ``Style: FX`` line, the same ``WrapStyle: 2`` (which is what stops libass
+    re-wrapping the line as words change colour), the same outline width and the
+    same ``\\an5\\pos`` anchoring as every other effect on this path.
+    """
+    data = karaoke_mod.data_for(item, lead_in)
+    if data is None:
+        return None
+    g = _geometry(item, defaults, width, height)
+    if g is None:
+        return None
+    plan = karaoke_mod.plan_of(g.text, data, g.start, g.end, 0.0)
+    if not plan["sentences"]:
+        return None
+    fade_in = min(g.di if g.di > 0 else 0.2, max(0.05, float(data.get("leadIn") or 0.0)))
+    fade_out = min(g.do if g.do > 0 else 0.25, max(0.05, float(data.get("tail") or 0.0)))
+    events = karaoke_mod.build_karaoke_events(
+        g.text, plan,
+        style=str(data.get("style") or "sweep"), fill=str(data.get("fill") or "#ffd166"),
+        base_colour=g.colour, cx=g.cx, cy=g.cy, fade_in=fade_in, fade_out=fade_out,
+    )
+    return _header(g) + "\n" + "\n".join(events) + "\n"
+
+
+def karaoke_overlay_filter(ass_path: Path) -> str:
+    """The ``ass=`` filter for a karaoke overlay, quoted like every other one.
+
+    Same two-pass quoting as the drawtext and effect paths: a work directory
+    with an apostrophe would otherwise close the quoted section early.
+    """
+    def posix(path: Path | str) -> str:
+        return str(path).replace("\\", "/")
+
+    return f"ass=filename={quote_filter_value(posix(ass_path))}"
+
 
 def build_text_overlay(
     item: dict[str, Any],

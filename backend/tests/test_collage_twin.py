@@ -16,6 +16,9 @@ import sys
 from pathlib import Path
 
 
+from app.collage_reveal import REVEALS, REVEAL_LENGTH  # noqa: E402
+from app.collage import (BRIDGE, GEOM, LOOK_ENTRANCE, base_duration,  # noqa: E402
+                         entrance_length, exit_fly_length)
 from app.collage import (
     COLLAGE_TEMPLATES,
     ENTRANCE_LENGTH,
@@ -252,7 +255,9 @@ def _cases() -> list[dict]:
         "hashArgs": [6, 3, 11], "matW": 30,
     })
     # exits: the photos leave after the hold — every entrance × every exit
-    for exit_mode_name in ("sweep", "deal", "shuffle"):
+    # every mode in the list the chips build from, so a mode cannot be added to
+    # the UI and left out of a validator again (see test_collage_normalize.py)
+    for exit_mode_name in ("sweep", "deal", "shuffle", "fade"):
         for animation in ("drop", "pop", "none", "flip"):
             cases.append({
                 "id": f"exit-{exit_mode_name}-{animation}",
@@ -578,7 +583,7 @@ def _cases() -> list[dict]:
         "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 0.5, 1.0], "hashArgs": [1, 1, 41], "matW": 30,
     })
     # reversed exit order: the last (top) photo leaves first
-    for mode in ("sweep", "deal", "shuffle"):
+    for mode in ("sweep", "deal", "shuffle", "fade"):
         rev = _spec("stack", "drop", "4:3", 4, 6, delays=[0.2, 0.2, 0.2, 0.2], hold=1, exit=mode)
         rev["exitReverse"] = True
         cases.append({
@@ -587,6 +592,109 @@ def _cases() -> list[dict]:
             "aspect": 16 / 9, "leadIn": 0.0, "times": [0.0, 1.5, 2.0, 2.4, 2.8, 3.4],
             "hashArgs": [6, 4, 71], "matW": 30,
         })
+    # entrance speed as a parameter: the multiplier has to reach every part of an
+    # arrival at once — the sweep, the alpha ramp, a pendulum measured in raw
+    # seconds, and the size ladder's sampling window. Half and double of it, on
+    # the collage and on one photo inside it, because a speed that only scaled the
+    # preview would be a slider that lies about the MP4.
+    for mult in (2.0, 0.5):
+        for kind in ("drop", "swing", "pop", "brush", "wipeUp", "mosaicOut", "cube", "boomerang", "sling"):
+            base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1)
+            length = base and {"drop": 0.55, "swing": 2.0, "pop": 0.5, "brush": 0.5,
+                              "wipeUp": 0.5, "mosaicOut": 0.75, "cube": 0.5,
+                              "boomerang": 0.7, "sling": 0.55}[kind] / mult
+            times = [0.0] + [round(length * f, 3) for f in (0.25, 0.5, 0.8)] + [length, length + 0.3, 2.6]
+            cases.append({"id": f"speed{mult}-{kind}", "spec": {**base, "animSpeed": mult},
+                          "aspect": 16 / 9, "leadIn": 0.0, "times": times,
+                          "hashArgs": [2, 9, 3], "matW": 30})
+        mixed = _spec("stack", "drop", "4:3", 4, 11, delays=[0.0, 0.3, 0.6, 0.9], hold=1)
+        mixed["photos"] = [dict(x, animSpeed=(2.0 if k % 2 else None)) for k, x in enumerate(mixed["photos"])]
+        mixed["photos"][1]["anim"] = "iris"
+        mixed["photos"][2]["anim"] = "thread"
+        cases.append({"id": f"speed{mult}-per-photo", "spec": {**mixed, "animSpeed": 1.5},
+                      "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": [0.0, 0.15, 0.3, 0.55, 0.9, 1.4, 2.2, 3.1], "hashArgs": [4, 2, 6], "matW": 30})
+    # mirrored exits: every arrival gets a departure by playing its own curves
+    # backwards, so the states across the exit window are the ones to compare —
+    # including the mask progress, which closes instead of fading, and a photo
+    # that reverses while its neighbours sweep out.
+    for kind in ("drop", "pop", "fade", "none", "wipeUp", "mosaicOut", "cube", "unfold", "spiral", "swing"):
+        base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1.5, exit="reverse")
+        te0 = base_duration(base)
+        fly = exit_fly_length(base, 0)
+        times = [0.0, te0 - 0.2, te0] + [round(te0 + fly * f, 3) for f in (0.2, 0.45, 0.7, 0.95)] + [te0 + fly, te0 + fly + 0.2]
+        cases.append({"id": f"exit-reverse-{kind}", "spec": base, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [3, 7, 2], "matW": 30})
+    mixed = _spec("stack", "drop", "4:3", 4, 8, delays=[0.0, 0.25, 0.5, 0.75], hold=1.5, exit="sweep")
+    mixed["photos"][1]["exit"] = "reverse"
+    mixed["photos"][1]["anim"] = "clock"
+    mixed["photos"][3]["exit"] = "reverse"
+    mixed["photos"][3]["anim"] = "book"
+    te0m = base_duration(mixed)
+    cases.append({"id": "exit-reverse-mixed", "spec": mixed, "aspect": 16 / 9, "leadIn": 0.0,
+                  "times": [0.0, te0m - 0.1, te0m, round(te0m + 0.15, 3), round(te0m + 0.3, 3),
+                            round(te0m + 0.45, 3), round(te0m + 0.6, 3), te0m + 0.75],
+                  "hashArgs": [5, 5, 5], "matW": 30})
+    # the look-based entrances: eight ids that arrive as colour rather than as
+    # motion. `photo_look_state` is the single place the preview's CSS string and
+    # the render's hue/eq/negate chain read from, so these cases are the whole
+    # parity proof for the family — and one of them also carries a "while" look,
+    # because the two lanes have to multiply and add rather than fight.
+    for kind in LOOK_ENTRANCE:
+        length = LOOK_ENTRANCE[kind]["length"]
+        times = [0.0] + [round(length * f, 3) for f in (0.2, 0.5, 0.8, 0.99)] + [length, length + 0.35, 2.4]
+        base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1)
+        cases.append({"id": f"look-{kind}", "spec": base, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [9, 2, 4], "matW": 30})
+    both = _spec("stack", "develop", "4:3", 3, 4, delays=[0.0, 0.3, 0.6], hold=1)
+    both["lookAnim"] = "flicker"
+    both["photos"][1]["lookAnim"] = "toColor"
+    both["photos"][2]["lookAnim"] = "invert"
+    cases.append({"id": "look-entrance-plus-while", "spec": both, "aspect": 16 / 9, "leadIn": 0.0,
+                  "times": [0.0, 0.12, 0.3, 0.5, 0.75, 1.1, 1.6, 2.2], "hashArgs": [6, 6, 6], "matW": 30})
+    # the paper family: twelve geometry entrances, compared at the moments a
+    # hinge, a bow and an overshoot actually differ — the first frame (a size of
+    # zero would show up here), the middle of the sweep, the settle, and at rest.
+    for kind in GEOM:
+        length = GEOM[kind]["length"]
+        times = [0.0] + [round(length * f, 3) for f in (0.2, 0.45, 0.7, 0.95)] + [length, length + 0.4, 2.6]
+        cases.append({"id": f"geom-{kind}", "spec": _spec("stack", kind, "4:3", 3, 5,
+                                                           delays=[0.0, 0.3, 0.6], hold=1),
+                      "aspect": 16 / 9, "leadIn": 0.0, "times": times,
+                      "hashArgs": [7, 3, 4], "matW": 30})
+        # depth push-back multiplies the scale of these too, so one row is
+        # checked with it on: that is where a forgotten `push` would hide.
+        deep = {**_spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1), "depth": True}
+        cases.append({"id": f"geom-{kind}-depth", "spec": deep, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [7, 3, 4], "matW": 30})
+    # the transition bridge: 41 names from FFmpeg's own `xfade` list, each of
+    # which resolves to one animation this app already draws. The names are what a
+    # spec stores, so the two engines have to resolve them to the same entrance,
+    # the same length and the same state — a bridge that meant one thing to the
+    # preview and another to the MP4 would be invisible in every other test.
+    for name in BRIDGE:
+        length = entrance_length({"animation": name, "photos": [{}]}, 0)
+        times = [0.0, round(length * 0.35, 3), round(length * 0.8, 3), length, length + 0.5, 2.9]
+        cases.append({"id": f"bridge-{name}",
+                      "spec": _spec("stack", name, "4:3", 3, 4, delays=[0.0, 0.25, 0.5], hold=1),
+                      "aspect": 16 / 9, "leadIn": 0.0, "times": times,
+                      "hashArgs": [5, 4, 3], "matW": 30})
+    # per-photo mask reveals: the sweep's progress is the one number the render's
+    # mask ladder and the preview's CSS mask both sample, so every kind is
+    # compared across its own entrance — and again mirrored, because `animDir`
+    # flips the geometry on both sides of that sample.
+    for kind in REVEALS:
+        length = REVEAL_LENGTH[kind]
+        times = [0.0] + [round(length * f, 3) for f in (0.15, 0.35, 0.5, 0.65, 0.85)] + [length, length + 0.35, 2.6]
+        base = _spec("stack", kind, "4:3", 3, 5, delays=[0.0, 0.3, 0.6], hold=1)
+        cases.append({"id": f"reveal-{kind}", "spec": base, "aspect": 16 / 9, "leadIn": 0.0,
+                      "times": times, "hashArgs": [2, 3, 5], "matW": 30})
+        cases.append({"id": f"reveal-{kind}-mirrored", "spec": {**base, "animDir": 1}, "aspect": 16 / 9,
+                      "leadIn": 0.0, "times": times, "hashArgs": [2, 3, 5], "matW": 30})
+    one_each = _spec("stack", "wipeUp", "4:3", 4, 7, delays=[0.0, 0.25, 0.5, 0.75], hold=1)
+    one_each["photos"] = [dict(p, anim=REVEALS[k], animDir=k % 2) for k, p in enumerate(one_each["photos"])]
+    cases.append({"id": "reveal-one-of-each", "spec": one_each, "aspect": 16 / 9, "leadIn": 0.0,
+                  "times": [0.0, 0.2, 0.45, 0.7, 1.1, 1.6, 2.4], "hashArgs": [4, 4, 9], "matW": 30})
     # the editor's track→slide beat mapping, evaluated in the TS twin
     for i, mb in enumerate([
         {"beats": [0.0, 0.5, 1.0, 1.5, 2.0], "trackStart": 0.0, "trimStart": 0.0, "trimEnd": 0.0, "holdStart": 1.25},
@@ -803,8 +911,14 @@ class CollageTwinTest(unittest.TestCase):
                 for i in range(len(spec["photos"])):
                     py = photo_state(spec, i, t, lead_in, aspect)
                     ts = got["states"][ti][i]
-                    for key in ("dx", "dy", "rot", "scale", "scaleX", "alpha", "dim"):
-                        assert abs(ts[key] - py[key]) < TOL, f"{where} t={t} photo {i} {key}: {ts[key]} != {py[key]}"
+                    for key in ("dx", "dy", "rot", "scale", "scaleX", "alpha", "dim", "revealP", "revealDir"):
+                        # A photo with no mask reveal has no reveal fields at all:
+                        # missing and 0.0 are the same answer, and both engines say
+                        # "nothing to mask" that way.
+                        a, b = ts.get(key, 0.0), py.get(key, 0.0)
+                        assert abs(a - b) < TOL, f"{where} t={t} photo {i} {key}: {a} != {b}"
+                    assert ts.get("revealKind") == py.get("revealKind"), \
+                        f"{where} t={t} photo {i} reveal kind: {ts.get('revealKind')} != {py.get('revealKind')}"
             # virtual camera: same window, same clamps
             if case.get("camera"):
                 for ti, t in enumerate(case["times"]):
