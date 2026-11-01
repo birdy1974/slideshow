@@ -19,7 +19,26 @@ HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "collage_shuffle.mjs"
 HAVE_NODE = shutil.which("node") is not None
 
+from app.collage import collage_duration, collage_graph
+
 _N = [0]
+
+
+def _graph(anim: str, anim_dir: int = 0) -> str:
+    """The whole filter graph for a one-photo collage running `anim`.
+
+    Sized at 640x360 with no frame: big enough that the mask ladder's buckets do
+    not collapse into one step, small enough that the strings compare without
+    normalising anything away."""
+    item = {"collage": {
+        "layout": "grid", "animation": anim, "shape": "4:3", "seed": 1, "hold": 1.5,
+        "animDir": anim_dir, "frame": {"shape": "none", "shadow": False},
+        "photos": [{"path": "/a.jpg", "anim": anim, "animDir": anim_dir}],
+    }}
+    spec = normalize_collage(item)
+    assert spec is not None
+    lines, _last = collage_graph(item, 640, 360, 25, collage_duration(spec), 0, 1, "cb")
+    return "".join(lines)
 
 
 def _photo(**kw):
@@ -70,6 +89,33 @@ class BridgeSpecTest(unittest.TestCase):
         # a name without its own meaning inherits as usual
         self.assertEqual(photo_reveal_dir(both, 1), 0)
 
+    def test_a_bridge_renders_exactly_like_its_target(self) -> None:
+        """An alias is a *name*, not a second implementation.
+
+        Every bridged entry must emit the same filter graph as the animation it
+        resolves to — same mask, same translate, same colour chain — because the
+        moment the two differ the name is a different feature with a friendlier
+        label, and the label is what the user picked."""
+        for name, row in BRIDGE.items():
+            # a name that states a direction is that direction: the target with the
+            # mirroring it asks for, which is the only way `wipetl` can mean what
+            # it says on a system where nobody has to remember the flag
+            dir_forced = int(row.get("dir") or 0)
+            mine = _graph(name)
+            theirs = _graph(row["target"], anim_dir=dir_forced)
+            self.assertEqual(mine, theirs, f"{name} does not render like {row['target']}")
+
+    def test_a_direction_forcing_name_lands_on_the_mirrored_target(self) -> None:
+        # `wipetl` is the diagonal wipe *towards the top-left*: the graph has to
+        # come out as the mirrored target, which is the whole content of the
+        # promise the label makes.
+        forced = {n: r for n, r in BRIDGE.items() if r.get("dir") == 1}
+        self.assertTrue(forced, "no name forces a direction any more? update these tests")
+        for name, row in forced.items():
+            self.assertEqual(_graph(name), _graph(row["target"], anim_dir=1), f"{name} is not its target mirrored")
+            self.assertNotEqual(_graph(name), _graph(row["target"], anim_dir=0),
+                                f"{name} ignores the direction its own name states")
+
     def test_an_unusable_seed_is_dropped_rather_than_guessed(self) -> None:
         for junk in ("", None, [], {}, "0x10"):
             self.assertNotIn("animSeed", _norm([_photo()], animSeed=junk), repr(junk))
@@ -99,6 +145,10 @@ class ShuffleBookkeepingTest(unittest.TestCase):
         # and the seed is read the same way here as TypeScript reads it
         self.assertNotIn("animSeed", _norm([_photo()], animSeed="0x10"), "hex is not a number here")
         self.assertEqual(_norm([_photo()], animSeed="7.9")["animSeed"], 7)
+        # …and folded into the 31 bits TypeScript's validator folds to, so a roll
+        # replayed after a save uses the same seed it was made with
+        self.assertEqual(_norm([_photo()], animSeed=3000000000)["animSeed"], 3000000000 & 0x7FFFFFFF)
+        self.assertEqual(_norm([_photo()], animSeed=-5)["animSeed"], (-5) & 0x7FFFFFFF)
         self.assertEqual(list(ANIM_FAMILIES), ["classic", "paper", "colour", "mask", "ffmpeg"])
 
 

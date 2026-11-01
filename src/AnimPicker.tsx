@@ -13,8 +13,8 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, Clock3, Search, Sparkles, Star, X } from 'lucide-react'
 import { useEscapeToClose, useLayer } from './layers'
 import {
-  animFamily, animHasDirection, animLabelOf, collageAnimRows, entranceLength, matFilterCss,
-  photoLookState, photoState, revealMaskStyle,
+  animFamily, animHasDirection, animLabelOf, collageAnimRows, entranceLength, isApproxBridge,
+  matFilterCss, photoLookState, photoState, revealMaskStyle,
   type CollageAnimFamily, type CollageAnimation, type CollageAnimRow, type CollageSpec,
 } from './collageCore'
 
@@ -78,11 +78,15 @@ function tileStyle (row: CollageAnimRow, t: number | null): React.CSSProperties 
   return style
 }
 
-function AnimTile ({ row, active, playing, favourite, onPick, onFavourite, onEnter }: {
+function AnimTile ({ row, active, playing, favourite, approx, onPick, onFavourite, onEnter }: {
   row: CollageAnimRow
   active: boolean
   playing: boolean
   favourite: boolean
+  /** the name whose edge comes from FFmpeg's transition rather than from a shape
+   *  this app draws — badge it, because the tile is the one place a viewer decides
+   *  what they are about to get, and an approximation they cannot see is a bug */
+  approx: boolean
   onPick: () => void
   onFavourite: () => void
   onEnter: () => void
@@ -116,6 +120,7 @@ function AnimTile ({ row, active, playing, favourite, onPick, onFavourite, onEnt
         <span className="anim-tile-art" />
       </span>
     </span>
+    {approx && <span className="tile-flag approx" title="Rendered with FFmpeg's own transition; the tile shows the nearest shape">approx</span>}
     <span className="tile-name">{row.label}</span>
     <button type="button"
       className={`tile-star ${favourite ? 'on' : ''}`}
@@ -256,6 +261,7 @@ export function AnimPicker ({ value, onChange, ariaLabel, inherit, id }: {
             {shown.length === 0 && <p className="browser-empty">Nothing matches “{query}”. Try a feeling
               instead:{' '}<em>springy</em>, <em>soft</em>, <em>tile</em>, <em>colour</em>.</p>}
             {shown.map(r => <AnimTile key={r.id} row={r}
+              approx={isApproxBridge(r.id)}
               active={r.id === value}
               playing={hover === r.id}
               favourite={favourites.includes(r.id)}

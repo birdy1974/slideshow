@@ -69,5 +69,14 @@ const saved = core.normalizeCollage({
 out.tsNormalizesTheSame = saved.animSeed === 7 && JSON.stringify(saved.animFamilies) === '["mask","paper"]'
   && saved.animOneOfEach === true && saved.photos[0].animLock === true
   && saved.photos[1].animLock === undefined
+// the seed fold both engines must apply, or a roll replayed after a save is not
+// the roll that made the file
+const big = core.normalizeCollage({ layout: 'grid', cols: 1, rows: 1, photos: [{ path: '/a.jpg' }], animSeed: 3000000000 })
+const neg = core.normalizeCollage({ layout: 'grid', cols: 1, rows: 1, photos: [{ path: '/a.jpg' }], animSeed: -5 })
+out.tsSeedFold = big.animSeed === (3000000000 & 0x7fffffff) && neg.animSeed === ((-5) & 0x7fffffff)
+// every bridge target must be a real animation *and* the geometry/mask/colour row
+// the state reads, or the name renders as plain 'drop' and the label is decoration
+out.tsBridgeTargetsHaveLengths = core.COLLAGE_BRIDGE_NAMES
+  .every(n => (core.ENTRANCE_LENGTH[core.resolveAnim(n)] ?? 0) > 0)
 
 console.log(JSON.stringify(out))

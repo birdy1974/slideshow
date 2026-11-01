@@ -251,6 +251,13 @@ export function bridgeDir (anim: string | undefined): 0 | 1 | null {
   return isCollageBridge(anim) ? COLLAGE_BRIDGE[anim].dir ?? null : null
 }
 
+/** Whether a name's edge belongs to FFmpeg's transition rather than to a shape
+ *  this app draws — the set the tile badges and the hints qualify. Named after the
+ *  deferred mask builder so the gap is a thing the code points at, not a comment. */
+export function isApproxBridge (anim: CollageAnimation | undefined): boolean {
+  return isCollageBridge(anim) && COLLAGE_BRIDGE[anim].via === 'bridge'
+}
+
 /** Names this app draws with FFmpeg's own transition as the alpha mask — the set
  *  the render sends through `xfade` and the preview can only approximate. */
 export const COLLAGE_BRIDGE_XFADE: CollageBridgeName[] =
@@ -2696,7 +2703,11 @@ export function normalizeCollage (raw: unknown): CollageSpec | undefined {
       ? c.animation as CollageAnimation : 'drop',
     exit: COLLAGE_EXIT_MODES.includes(c.exit as CollageExit) ? c.exit as CollageExit : undefined,
     animDir: c.animDir === 1 ? 1 : undefined,
-    animSeed: intField(c.animSeed),
+    // the same 31-bit fold python's validator applies (`& 0x7FFFFFFF`): a seed one
+    // engine clamps and the other does not is a roll that replays differently
+    // after a round trip through the API, which is the one thing a seed is for
+    animSeed: intField(c.animSeed) === undefined ? undefined
+      : (intField(c.animSeed) as number) & 0x7fffffff,
     animFamilies: Array.isArray(c.animFamilies)
       ? (c.animFamilies.filter(f => ANIM_FAMILIES.includes(f as CollageAnimFamily)) as CollageAnimFamily[])
       : undefined,
