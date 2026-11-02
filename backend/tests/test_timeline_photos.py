@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -56,9 +57,12 @@ class TimelinePicturesTest(unittest.TestCase):
         self.assertEqual([p["photo"] for p in got], [0, 1, 2, 0],
                          "the number inside the slide, 0 when the slide is itself one picture")
         self.assertEqual([p["name"] for p in got], ["a.jpg", "b.jpg", "c.jpg", "d.jpg"])
-        self.assertEqual([p["path"] for p in got], ["x/a.jpg", "y/b.jpg", "y/c.jpg", "u/d.jpg"],
-                         "mount-relative, which is the shape a stored background path already has")
-        self.assertEqual(row["roots"], ["photos|x/a.jpg", "photos|y/b.jpg", "photos|y/c.jpg", "uploads|u/d.jpg"],
+        self.assertEqual([p["path"] for p in got],
+                         ["/photos/x/a.jpg", "/photos/y/b.jpg", "/photos/y/c.jpg", "/uploads/u/d.jpg"],
+                         "whole and mount-first, which is the only shape the backend resolves")
+        self.assertEqual(row["roots"],
+                         ["photos|/photos/x/a.jpg", "photos|/photos/y/b.jpg",
+                          "photos|/photos/y/c.jpg", "uploads|/uploads/u/d.jpg"],
                          "the mount comes along, or the thumbnail cannot be requested at all")
         self.assertEqual(row["labels"], ["Slide 1", "Slide 3 · photo 1 of 2", "Slide 3 · photo 2 of 2", "Slide 5"],
                          "every row says where its picture came from")
@@ -69,8 +73,9 @@ class TimelinePicturesTest(unittest.TestCase):
             {"media": [{"id": 1, "name": "m.mp4", "path": "/videos", "type": "image"}]},
             {"media": []},
         ])
-        self.assertEqual(row[0]["pictures"][0]["path"], "x/a.jpg", "older snapshots keep the folder in `path`")
-        self.assertEqual(row[1]["pictures"][0]["path"], "m.mp4")
+        self.assertEqual(row[0]["pictures"][0]["path"], "/photos/x/a.jpg",
+                         "older snapshots keep the folder in `path`; the entry is still a whole path")
+        self.assertEqual(row[1]["pictures"][0]["path"], "/videos/m.mp4")
         self.assertEqual(row[1]["pictures"][0]["rootName"], "videos")
         self.assertEqual(row[2]["pictures"], [], "an empty storyline offers nothing, which is not an error")
 
@@ -87,7 +92,9 @@ class TimelinePicturesTest(unittest.TestCase):
             {"id": 3, "name": "Again", "path": "", "type": "title", "collage": {"photos": [{"path": "/photos/x/a.jpg"}]}},
         ]
         row = self._run([{"media": media}])[0]
-        self.assertEqual(row["reuse"], {"photos|x/a.jpg": 2, "photos|x/b.jpg": 1})
+        self.assertEqual(row["reuse"],
+                         {"photos|/photos/x/a.jpg": 2, "photos|/photos/x/b.jpg": 1},
+                         "keyed by the whole path, so the same file on two mounts is two entries")
         self.assertEqual(len(row["pictures"]), 3, "the module lists the timeline; the picker decides to collapse it")
 
     def test_a_missing_file_never_becomes_a_row(self) -> None:
@@ -145,6 +152,76 @@ class CountLabelTest(unittest.TestCase):
         self.assertNotIn("entries.length?", label)
 
 
+
+class StoredShapeTest(unittest.TestCase):
+    """What a pick writes has to be what a project already stores, or the save fails.
+
+    A background is only ever a path string, and the save endpoint resolves it with
+    `source_path`, which reads the mount from the first segment. A picker that hands
+    over `Holiday/x.jpg` instead of `/photos/Holiday/x.jpg` therefore does not look a
+    picture up — it breaks the slide: the project can be saved, rendered, nor opened
+    without a 422. These tests take the entry the popup writes straight into the
+    resolver, so the two halves are measured against each other instead of against
+    each author's idea of what a path looks like.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node or not DRIVER.exists():
+            raise unittest.SkipTest("needs node and the timeline pictures driver")
+
+    def _run(self, cases: list[dict]) -> list[dict]:
+        proc = subprocess.run(
+            [self.node, "--experimental-strip-types", str(DRIVER)],
+            input=json.dumps({"cases": cases}), capture_output=True, text=True, timeout=180,
+        )
+        if proc.returncode != 0:
+            self.fail(f"timeline photos driver failed: {proc.stderr.strip()[:2000]}")
+        return json.loads(proc.stdout)
+
+    def test_an_entry_is_a_path_the_browser_itself_would_have_listed(self) -> None:
+        # `/api/media/list` builds an entry's path as f"/{root}/{relative}" — see the
+        # line asserted below. The timeline list is built out of stored paths instead,
+        # so it has to put the mount back on exactly the same way: one shape, both
+        # doors. If the listing ever changes shape, this fails and says so.
+        listing = (REPO / "backend" / "app" / "media.py").read_text(encoding="utf-8")
+        self.assertIn('"path": f"/{root_name}/{rel}"', listing, "the shape the listing emits")
+        got = self._run([{"media": [
+            {"id": 1, "name": "x.jpg", "path": "/photos/Holiday/x.jpg", "type": "image"},
+            {"id": 2, "name": "Collage", "path": "", "type": "title",
+             "collage": {"photos": [{"path": "Holiday/y.jpg", "name": "y.jpg"}]}},
+        ]}])[0]["pictures"]
+        self.assertEqual([p["path"] for p in got], ["/photos/Holiday/x.jpg", "/photos/Holiday/y.jpg"])
+        for picture in got:
+            self.assertRegex(picture["path"], r"^/(photos|videos|music|uploads)/",
+                             "a stored path that names no mount is a rejected project")
+
+    def test_a_picked_background_resolves_to_the_file_on_disk(self) -> None:
+        from app.config import Settings
+        from app.media import source_path
+
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name in ("config", "photos", "videos", "music", "output"):
+                (base / name).mkdir()
+            settings = Settings(base / "config", base / "photos", base / "videos", base / "music", base / "output")
+            folder = settings.photos_dir / "Holiday 2026"
+            folder.mkdir(parents=True)
+            target = folder / "x.jpg"
+            target.write_bytes(b"jpg")
+
+            entry = self._run([{"media": [
+                {"id": 1, "name": "x.jpg", "path": "/photos/Holiday 2026/x.jpg", "type": "image"},
+            ]}])[0]["pictures"][0]
+            self.assertEqual(source_path(settings, {"path": entry["path"], "name": ""}), target,
+                             "the value the strip stores is the value the save resolves")
+            # …and the shorter shape a project saved from the released picker holds is
+            # no longer fatal: it is looked for under the mounts until it is found.
+            self.assertEqual(source_path(settings, {"path": "Holiday 2026/x.jpg", "name": ""}), target,
+                             "a prefix-less background still finds its file")
+
+
 class BackgroundSurfaceTest(unittest.TestCase):
     """The two places the option appears, and the value each writes.
 
@@ -162,6 +239,19 @@ class BackgroundSurfaceTest(unittest.TestCase):
         self.assertIn("backgroundImage: p.path", self.app,
                       "the strip writes the same field, in the same shape, as the browser does")
         self.assertIn("frameBackgroundImage: p.path", self.app)
+
+    def test_the_strip_stores_what_the_browser_stores(self) -> None:
+        """The strip is a shortcut to the same value, never a second scheme."""
+        strip = (REPO / "src" / "TimelinePhotoStrip.tsx").read_text(encoding="utf-8")
+        self.assertIn("onPick={p => setSpec({ backgroundImage: p.path })}", self.app)
+        self.assertIn("onPick={p => apply({ frameBackgroundImage: p.path } as any)}", self.app)
+        self.assertIn("current === picture.path || afterMount(current) === afterMount(picture.path)", strip,
+                      "a background stored the short way is still shown as the one in use")
+        self.assertIn(r"replace(/^\/(photos|videos|music|uploads)\//", strip,
+                      "the mount is the only difference between the two shapes, so it is what is ignored")
+        core = (REPO / "src" / "timelinePhotos.ts").read_text(encoding="utf-8")
+        self.assertIn("return `/${root}/${String(relative", core,
+                      "the list puts the mount back on rather than passing the short part through")
 
     def test_the_browser_grows_a_timeline_location(self) -> None:
         self.assertIn("timeline?: TimelinePicture[]", self.app, "the picker takes the list, it does not rebuild it")

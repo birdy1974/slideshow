@@ -37,15 +37,20 @@ export interface TimelinePicture {
   /** 1-based number inside that slide's collage, or 0 for a slide's own picture. */
   photo: number
   name: string
-  /** Mount-relative path — the shape the browser's thumbnails and `/api/media/*`
-   *  want, and the shape a stored `backgroundImage` already holds. */
+  /** The whole path, mount first: `/photos/Holiday/x.jpg`. Not a detail — it is the
+   *  shape `/api/media/list` emits for the very same file, the shape a storyline
+   *  item's `path` holds, and the only shape `mounted_path` will resolve: a path
+   *  that names no mount is refused with "Invalid … path" by the save endpoint, so
+   *  a picker that stored the mount-relative part would break the slide it touched.
+   *  `/api/media/file` wants the relative part instead, and `mediaFileUrl` strips
+   *  the mount itself, so this value is right for both doors. */
   path: string
   rootName: TimelinePictureRoot
   /** What the row says under the name: where this picture came from. */
   note: string
 }
 
-/** Split a stored path into mount + mount-relative path, accepting both shapes an
+/** The mount + mount-relative parts of a stored path, accepting both shapes an
  *  item's `path` has ever had (see the module comment). */
 export function pictureRootAndPath (path: string, name: string): { root: TimelinePictureRoot; relative: string } {
   const full = String(path || '').replace(/\\/g, '/')
@@ -57,6 +62,14 @@ export function pictureRootAndPath (path: string, name: string): { root: Timelin
     : normalized.startsWith('/videos') ? 'videos' : 'photos'
   const relative = normalized.replace(/^\/(photos|videos|uploads)\//, '').replace(/^\/+/, '')
   return { root, relative }
+}
+
+/** The path as the app stores it, from the parts `pictureRootAndPath` found. Every
+ *  writer that puts a picture somewhere (`backgroundImage`, a replaced photo, a
+ *  new slide) stores this shape, so a list built out of stored paths hands back
+ *  exactly what a stored path looked like. */
+export function mountPath (root: TimelinePictureRoot, relative: string): string {
+  return `/${root}/${String(relative || '').replace(/^\/+/, '')}`
 }
 
 /** The file name a row should show, without ever inventing one: the item's own, or
@@ -89,7 +102,7 @@ export function timelinePictures (media: TimelinePictureSource[] | undefined | n
         const name = pictureName(raw, String(photo?.name || ''))
         out.push({
           key: `${item.id ?? index}:${k}:${raw}`,
-          slide, photo: k + 1, name, path: relative, rootName: root,
+          slide, photo: k + 1, name, path: mountPath(root, relative), rootName: root,
           note: `Slide ${slide} · photo ${k + 1} of ${photos.length}`,
         })
       })
@@ -104,7 +117,7 @@ export function timelinePictures (media: TimelinePictureSource[] | undefined | n
     out.push({
       key: `${item.id ?? index}:0:${raw}`,
       slide, photo: 0, name: pictureName(raw, String(item.name || '')),
-      path: relative, rootName: root, note: `Slide ${slide}`,
+      path: mountPath(root, relative), rootName: root, note: `Slide ${slide}`,
     })
   })
   return out

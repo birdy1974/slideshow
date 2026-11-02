@@ -92,6 +92,18 @@ def mounted_path(settings: Settings, value: str, name: str = "") -> Path:
     raise UnsafePath(f"Path must start with one of: {', '.join('/'+x for x in settings.media_roots)}")
 
 
+def mount_relative(value: str) -> str:
+    """The part of a path below its mount, with no mount to say which one."""
+    return str(value or "").replace("\\", "/").strip().lstrip("/")
+
+
+def _file_under(root: Path, relative: str, filename: str) -> Path:
+    base = safe_path(root, relative)
+    if filename and not base.is_file():
+        base = safe_path(base, filename)
+    return base
+
+
 def source_path(settings: Settings, item: dict[str, Any]) -> Path:
     """Resolve a media/soundtrack item to a file on a mounted root.
 
@@ -100,16 +112,39 @@ def source_path(settings: Settings, item: dict[str, Any]) -> Path:
     Folder names that contain a dot (e.g. ``holiday.2024``) must not be treated
     as files just because ``Path.suffix`` is non-empty — if `path` is a
     directory, `name` is always joined.
+
+    A path that names no mount at all (``Holiday/x.jpg``) used to be refused
+    outright, which turned one dropped prefix into a project that could not be
+    saved or rendered at all — and the message said the *path* was invalid, which
+    is not something a person can act on. Anything reaching this function was
+    picked out of a listing of those mounts, so the file it names is real even
+    when the mount segment went missing on the way into storage: the value is
+    then looked for under each configured root in turn, in configuration order,
+    and the first file that exists wins. Traversal stays refused, because every
+    candidate still goes through `safe_path`.
     """
     path = str(item.get("path", "") or "").replace("\\", "/")
     name = str(item.get("name", "") or "")
     filename = Path(name).name
-    if filename and Path(path.rstrip("/")).name == filename:
-        return mounted_path(settings, path)
-    base = mounted_path(settings, path)
-    if not filename or base.is_file():
-        return base
-    return mounted_path(settings, path, filename)
+    try:
+        if filename and Path(path.rstrip("/")).name == filename:
+            return mounted_path(settings, path)
+        base = mounted_path(settings, path)
+        if not filename or base.is_file():
+            return base
+        return mounted_path(settings, path, filename)
+    except UnsafePath as exc:
+        relative = mount_relative(path)
+        if not relative:
+            raise
+        for root in settings.media_roots.values():
+            candidate = _file_under(root, relative, filename)
+            if candidate.is_file():
+                return candidate
+        raise UnsafePath(
+            f"\u201c{path}\u201d names no media mount and no file under "
+            f"{', '.join('/' + key for key in settings.media_roots)}"
+        ) from exc
 
 
 def _is_denied(exc: BaseException) -> bool:
