@@ -1593,6 +1593,23 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-window-head{display:flex;align-items:baseline;gap:8px;margin:11px 0 3px;flex-wrap:wrap}
 .collage-window-head>span{font:800 8px Manrope;letter-spacing:1.1px;color:#9b9f95;text-transform:uppercase}
 .collage-window-head small{font-size:8px;color:#8f948b}
+/* Every picture the storyline already holds, offered as a background without a
+   dialog: 40 px thumbs on a row that scrolls sideways, each one labelled with the
+   slide it came from. The same list is a source inside the browser; this is the
+   reach for the case where the answer is already on the timeline. */
+.timeline-photos-wrap{margin:6px 0 2px}
+.timeline-photos-head{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;margin-bottom:2px}
+.timeline-photos-head>span{font:800 8px Manrope;letter-spacing:1.1px;color:#9b9f95;text-transform:uppercase}
+.timeline-photos-head small{font-size:8px;color:#8f948b;flex:1 1 160px}
+.timeline-photos{display:flex;align-items:flex-end;gap:6px;overflow-x:auto;padding:5px 2px 7px;scrollbar-width:thin}
+.timeline-photos-empty{font-size:9px;color:#8f948b;padding:4px 2px}
+.timeline-photos button{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:3px;width:56px;padding:0;border:0;background:transparent;cursor:pointer;color:#a7ada0}
+.timeline-photos button i{display:grid;place-items:center;width:56px;height:38px;border:1px solid #454b40;border-radius:4px;overflow:hidden;background:#161812;box-sizing:border-box}
+.timeline-photos button img{width:100%;height:100%;object-fit:cover;display:block}
+.timeline-photos button b{font:800 7px Manrope;letter-spacing:.3px;color:#7f857a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:56px}
+.timeline-photos button:hover i{border-color:#a3cd63}
+.timeline-photos button.on i{border-color:#d9b35d;box-shadow:0 0 0 1px #d9b35d}
+.timeline-photos button span{font-size:7px;color:#6f756a}
 .collage-window{display:flex;flex-direction:column;gap:3px;border:1px solid #3d423a;border-radius:6px;background:#1d2019;padding:6px 7px 7px;user-select:none;touch-action:none}
 .collage-window-ruler,.collage-window-row{display:grid;grid-template-columns:minmax(0,128px) minmax(0,1fr) 96px;gap:7px;align-items:center}
 .collage-window-ruler{height:13px}
@@ -1602,11 +1619,24 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-window-ruler .collage-window-track{height:13px;border-bottom:1px solid #31352c}
 .collage-window-ruler b{position:absolute;top:0;bottom:0;width:1px;background:#3d423a}
 .collage-window-ruler b s{position:absolute;left:2px;top:0;font:700 7px Manrope;color:#7f857a;text-decoration:none}
+/* The selection lives in the lane because the lane is where you say *which* photos
+   you are editing: a checkbox takes a row into the group, the number alone selects
+   just that photo, and `Select all` is the header's box rather than a button nobody
+   finds. The block stays the drag handle it was, so the checkbox is the only extra
+   thing a row has to dodge — hence 11 px and no padding of its own. */
 .collage-window-row{height:22px;border-radius:4px;cursor:grab}
 .collage-window-row:hover{background:#23261f}
 .collage-window-row.active{background:#272c20}
+/* The photo the panel reads its numbers from, inside a bigger selection: `pinned`
+   already spends its inset shadow on the gold stripe, so the lead is ringed instead
+   of shaded — an outline costs the row no layout either way. */
+.collage-window-row.lead{outline:1px solid #a3cd63;outline-offset:-1px}
 .collage-window-row.pinned{box-shadow:inset 2px 0 0 #d9b35d}
 .collage-window-key{display:flex;align-items:center;gap:5px;min-width:0;font-size:8px;color:#b8bcb2}
+.collage-window-key input[type=checkbox]{flex:0 0 auto;width:11px;height:11px;margin:0;padding:0;cursor:pointer;accent-color:#a3cd63;background:#23261f}
+.collage-window-key i{cursor:pointer}
+.collage-window-key i:hover{outline:1px solid #a3cd63;outline-offset:1px}
+.collage-window-all em{font-style:normal}
 .collage-window-key i{flex:0 0 auto;width:14px;height:14px;border-radius:3px;background:#3a4035;color:#dfe2da;font:800 8px Manrope;display:grid;place-items:center;font-style:normal}
 .collage-window-row.pinned .collage-window-key i{background:#d9b35d;color:#231c07}
 .collage-window-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1649,6 +1679,11 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 .collage-rotate-handle svg{pointer-events:none}
 .collage-selected-size{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:7px 10px;border:1px solid #d9dbd3;border-radius:8px;background:#f4f5ef;font-size:10px;color:#4c5445;flex-wrap:wrap}
 .collage-selected-size input{flex:1;min-width:120px;accent-color:#718f46}
+/* Selected photos are ringed with dots on the preview, so the group you are editing
+   is visible while you edit it. An outline, never a border: the mat's box *is* the
+   photo's frame, and a border would move the picture by its own width. */
+.collage-mat.marked{outline:2px dashed #d9b35d;outline-offset:3px}
+.collage-selected-which{font:800 8px Manrope;letter-spacing:.5px;color:#d9b35d}
 .collage-selected-size b{font-variant-numeric:tabular-nums}
 /* The selected photo's own three lanes: entrance / motion / exit. Drawn as the
    second half of the size panel so "this photo" reads as one block. */

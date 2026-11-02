@@ -27,6 +27,8 @@ for (const c of input.cases) {
     pinStop: has ? m.pinStop(rect, span, c.x ?? 0, c.at) : null,
     edgeStart: has ? m.dragEdge(rect, span, c.from ?? 0, c.to ?? 0, c.at, c.until, 'start') : null,
     edgeEnd: has ? m.dragEdge(rect, span, c.from ?? 0, c.to ?? 0, c.at, c.until, 'end') : null,
+    selection: m.nextSelection(c.sel ?? [], c.index ?? 0, c.mode ?? 'single', c.count ?? 0),
+    group: c.anchor ? m.groupShift(rect, span, c.from ?? 0, c.to ?? 0, c.anchor, c.others ?? []) : null,
   })
 }
 process.stdout.write(JSON.stringify(out))

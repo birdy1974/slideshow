@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CollageSpec } from './collageCore'
 import { entranceLength, exitChoice, exitFlyLength, exitMode, exitStart, photoAt, photoDelay, photoStart, photoUntil } from './collageCore'
-import { MIN_WINDOW, dragEdge, moveWindow, pinStart, pinStop } from './CollageLaneMath'
+import { MIN_WINDOW, dragEdge, groupShift, moveWindow, nextSelection, pinStart, pinStop } from './CollageLaneMath'
 import type { LaneRect } from './CollageLaneMath'
 
 
@@ -26,14 +26,23 @@ export interface CollageTimingLanesProps {
   /** Seconds the ruler spans: the slide's own duration when that is longer than
    *  what the timings imply, so a stop written past the end is still on screen. */
   duration: number
-  selected: number | null
-  onSelect: (index: number) => void
+  /** Every photo the popup is currently editing, in index order. One row is the
+   *  ordinary case; more than one is how a group gets the same entrance, the same
+   *  exit, and the same shift along the ruler. */
+  selected: number[]
+  /** The lane computes the next set (checkbox, number, Shift-range) and hands it
+   *  over whole, so the modifier rules live in one tested function. */
+  onSelected: (next: number[]) => void
   /** '' clears the field, which is the same thing as "the schedule owns it". */
   onChange: (index: number, lane: 'at' | 'until', seconds: string) => void
 }
 
 interface Drag {
   index: number
+  /** The rest of the selection, snapshotted the same way as the row being held —
+   *  `index` plus its own `at`/`until` — so a body drag shifts the group by the
+   *  distance the anchor actually moved instead of re-reading rows mid-flight. */
+  group: { index: number; at: number; until: number }[]
   /** Which edge, or the body (both edges together). */
   kind: 'start' | 'end' | 'both'
   /** Pointer position and both times when the drag began, so the maths is always
@@ -69,7 +78,7 @@ export function photoWindow (spec: CollageSpec, i: number): { from: number; to: 
   return { from, to: Math.max(to, from + MIN_WINDOW) }
 }
 
-export function CollageTimingLanes({ spec, duration, selected, onSelect, onChange }: CollageTimingLanesProps) {
+export function CollageTimingLanes({ spec, duration, selected, onSelected, onChange }: CollageTimingLanesProps) {
   const photos = spec.photos ?? []
   const span = Math.max(0.5, Number(duration) || 0.5)
   const lanes = useRef<HTMLDivElement | null>(null)
@@ -87,6 +96,25 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
     return { left: rect.left, width: rect.width }
   }
 
+  /** One click's worth of selection: the pure rules live in `nextSelection`, and the
+   *  number cell is the affordance the row is clicked on. */
+  const click = (index: number) => (event: React.MouseEvent) => {
+    event.stopPropagation()
+    event.preventDefault()
+    const mode = event.shiftKey ? 'range' : event.ctrlKey || event.metaKey ? 'toggle' : 'single'
+    onSelected(nextSelection(selected, index, mode, photos.length))
+  }
+  const check = (index: number) => (event: React.ChangeEvent<HTMLInputElement>) => {
+    event.stopPropagation()
+    onSelected(nextSelection(selected, index, 'toggle', photos.length))
+  }
+  /** Handing photos back to the schedule is a group act when the row you touched is
+   *  part of a group: five photos pinned to one window are undone together. */
+  const clearWindows = (index: number) => {
+    const list = selected.includes(index) && selected.length > 1 ? selected : [index]
+    for (const i of list) { onChange(i, 'at', ''); onChange(i, 'until', '') }
+  }
+
   const begin = (index: number, kind: Drag['kind']) => (event: React.PointerEvent) => {
     // The edge handles are inside the track, and a pointerdown there would also
     // start a body drag; the first handler wins and the track's guard below keeps
@@ -95,13 +123,25 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
     event.preventDefault()
     event.stopPropagation()
     const win = photoWindow(spec, index)
+    // A group drag is only for the body of a block: two edges have nothing sensible
+    // to share, since every photo's window ends where its own exit does.
+    const group = kind === 'both' && selected.length > 1 && selected.includes(index)
+      ? selected.filter(i => i !== index).map(i => {
+          const w = photoWindow(spec, i)
+          return { index: i, at: photoAt(spec, i) ?? w.from, until: photoUntil(spec, i) ?? w.to }
+        })
+      : []
     drag.current = {
       index, kind, x0: event.clientX, rect: trackOf(event.currentTarget),
       at: photoAt(spec, index) ?? win.from,
       until: photoUntil(spec, index) ?? win.to,
+      group,
     }
     setMoving(true)
-    onSelect(index)
+    // Touching a row that is already in the group leaves the group alone; touching
+    // one outside it makes it the new subject. Clearing a selection by dragging a
+    // handle nobody selected is how a group edit silently becomes a single edit.
+    if (!selected.includes(index)) onSelected([index])
   }
 
   const end = useCallback(() => {
@@ -125,6 +165,14 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
         const next = moveWindow(held.rect, span, held.x0, to, held.at, held.until)
         onChange(held.index, 'at', String(next.at))
         onChange(held.index, 'until', String(next.until))
+        if (held.group.length) {
+          // Same shift, own width, own clamp — see `groupShift`.
+          const moved = groupShift(held.rect, span, held.x0, to, { at: held.at, until: held.until }, held.group)
+          held.group.forEach((g, k) => {
+            onChange(g.index, 'at', String(moved[k].at))
+            onChange(g.index, 'until', String(moved[k].until))
+          })
+        }
         return
       }
       // One edge at a time: the other end is left exactly where it is, which is
@@ -154,7 +202,7 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
     } else {
       onChange(index, 'until', String(pinStop(rect, span, event.clientX, win.from)))
     }
-    onSelect(index)
+    if (!selected.includes(index)) onSelected([index])
     event.preventDefault()
     return true
   }
@@ -167,7 +215,20 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
   return (
     <div className={`collage-window${moving ? ' moving' : ''}`} ref={el => { lanes.current = el }}>
       <div className="collage-window-ruler">
-        <span className="collage-window-key">photo</span>
+        {/* The lane is the only place a photo's whole window is set, so it is also
+            the natural place to say *which* photos you are setting: the box on the
+            left of each number is the selection, and the number itself picks just
+            that one. Everything the popup edits — size, tilt, shape, frame,
+            entrance, motion, exit, and a body drag along the ruler — goes to every
+            checked row at once. */}
+        <span className="collage-window-key collage-window-all">
+          <input type="checkbox" checked={selected.length >= photos.length}
+                 ref={el => { if (el) el.indeterminate = selected.length > 0 && selected.length < photos.length }}
+                 aria-label="Select every photo"
+                 title={selected.length >= photos.length ? 'Take the selection off all the photos' : `Select all ${photos.length} photos`}
+                 onChange={() => onSelected(selected.length >= photos.length ? [] : photos.map((_, i) => i))}/>
+          <em>photo</em>
+        </span>
         <div className="collage-window-track ruler">{ticks.map(t => <b key={t} style={{ left: percent(t) }}><s>{Math.round(t)}</s></b>)}</div>
         <span className="collage-window-values">window</span>
       </div>
@@ -177,12 +238,17 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
         const until = photoUntil(spec, i)
         const authored = at !== undefined || until !== undefined
         const ent = entranceLength(spec, i)
+        const on = selected.includes(i)
+        const lead = selected[0] === i && selected.length > 1
         return (
-          <div key={`${photo.path}-${i}`} className={`collage-window-row${selected === i ? ' active' : ''}${authored ? ' pinned' : ''}`}
-               onDoubleClick={() => { onChange(i, 'at', ''); onChange(i, 'until', '') }}
+          <div key={`${photo.path}-${i}`} className={`collage-window-row${on ? ' active' : ''}${lead ? ' lead' : ''}${authored ? ' pinned' : ''}`}
+               onDoubleClick={() => clearWindows(i)}
                title={`Photo ${i + 1} — ${authored ? 'its own window; double-click to hand it back to the schedule' : 'the stagger schedule owns this one; drag the block or its edges to pin a window'}`}>
             <span className="collage-window-key">
-              <i>{i + 1}</i>
+              <input type="checkbox" checked={on} onChange={check(i)} onClick={e => e.stopPropagation()}
+                     aria-label={`Select photo ${i + 1} to edit it with the others`}
+                     title={on ? `Photo ${i + 1} is in the selection (${selected.length} photo${selected.length > 1 ? 's' : ''}) — uncheck to leave it out` : 'Check to edit this photo together with the others'} />
+              <i onClick={click(i)} title="Click to select only this photo · Ctrl/⌘ adds it to the selection · Shift extends from the last one">{i + 1}</i>
               <span className="collage-window-name">{photo.name || photo.path.split('/').pop() || 'photo'}</span>
             </span>
             <div className="collage-window-track"
@@ -208,8 +274,8 @@ export function CollageTimingLanes({ spec, duration, selected, onSelect, onChang
               <em title={authored ? `Pinned: appears at ${win.from.toFixed(2)}s, gone at ${win.to.toFixed(2)}s` : `The schedule's own: lands ${win.from.toFixed(2)}s, ${win.to.toFixed(2)}s total · ${photoDelay(spec, i).toFixed(2)}s wait`}>
                 {win.from.toFixed(2)}→{win.to.toFixed(2)}
               </em>
-              {authored ? <button type="button" className="collage-window-auto" title="Give this photo back to the stagger schedule"
-                                  onPointerDown={event => event.stopPropagation()} onClick={() => { onChange(i, 'at', ''); onChange(i, 'until', '') }}>auto</button> : null}
+              {authored ? <button type="button" className="collage-window-auto" title={selected.length > 1 && on ? 'Give every selected photo back to the stagger schedule' : 'Give this photo back to the stagger schedule'}
+                                  onPointerDown={event => event.stopPropagation()} onClick={() => clearWindows(i)}>auto</button> : null}
             </span>
           </div>
         )

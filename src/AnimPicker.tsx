@@ -178,7 +178,7 @@ function AnimTile ({ row, active, playing, favourite, approx, out, onPick, onFav
 // The chip + popover
 // ---------------------------------------------------------------------------
 
-export function AnimPicker ({ value, onChange, onChangeExit, ariaLabel, inherit, id, phase = 'in' }: {
+export function AnimPicker ({ value, onChange, onChangeExit, ariaLabel, inherit, id, phase = 'in', mixed = false }: {
   value: CollageAnimation | undefined
   onChange: (anim: CollageAnimation) => void
   /** the exit phase's writer: a departure may be an entrance id *or* one of the five
@@ -193,6 +193,10 @@ export function AnimPicker ({ value, onChange, onChangeExit, ariaLabel, inherit,
    *  its departure. One browser for both because one table is the whole point: a
    *  new entrance is immediately also a new exit, in the preview and in the MP4. */
   phase?: 'in' | 'out'
+  /** Several photos are being edited at once and they do not agree: the chip says
+   *  "Mixed" rather than naming one of them, which would be a claim about the
+   *  others. Picking something anyway writes it to every one of them. */
+  mixed?: boolean
 }) {
   const out = phase === 'out'
   const [open, setOpen] = useState(false)
@@ -290,10 +294,10 @@ export function AnimPicker ({ value, onChange, onChangeExit, ariaLabel, inherit,
   return <>
     <button type="button" id={id} ref={triggerRef} aria-label={ariaLabel}
       className={`transition-chip anim-chip ${open ? 'open' : ''}`}
-      title={value === undefined ? PHASE.pick : `${label}${out ? ' — backwards, as a departure' : ''} — ${rows.find(r => r.id === value)?.hint ?? ''}`}
+      title={mixed ? `The selected photos do not agree yet — pick one and they all do` : value === undefined ? PHASE.pick : `${label}${out ? ' — backwards, as a departure' : ''} — ${rows.find(r => r.id === value)?.hint ?? ''}`}
       onClick={() => setOpen(o => !o)}>
       <i className="chip-symbol"><Sparkles size={11} /></i>
-      <span className="chip-name">{value === undefined ? PHASE.choose : label}{out && value !== undefined && <em className="chip-phase">backwards</em>}</span>
+      <span className="chip-name">{mixed ? 'Mixed' : value === undefined ? PHASE.choose : label}{out && value !== undefined && !mixed && <em className="chip-phase">backwards</em>}</span>
       {familyOf && <i className="chip-kind">{FAMILIES.find(f => f.id === familyOf)?.label ?? familyOf}</i>}
       <ChevronDown size={13} />
     </button>

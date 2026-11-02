@@ -177,6 +177,55 @@ waveform: 700 buckets are fetched for the kept cut and stay 700 buckets, so at 1
 the peaks stretch (they do not lie — they just get soft) while the onset marks
 remain exact to the millisecond.
 
+## The clip the strip runs on
+
+A movie can be cut to an IN/OUT pair, and every time in `karaokeData` is a second
+*inside the kept region* — never a second of the file. That is what lets a re-cut
+leave the words where they are, and it means the popup has to agree with the render
+about where its zero is and where its picture ends.
+
+It did not, in two ways. The strip's whole width came from `item.duration`, which for
+a cut movie is the *rounded* kept length and for a hand-edited hold is not the clip at
+all; and `trimEnd` appeared nowhere in `KaraokeEditor`, so playback ran past the OUT
+point — the strip's last seconds showed a movie that is not in the render, which is
+what "it still shows the complete movie" was. The movie editor's own karaoke popup
+passed an exact `kept`; opened from the timeline, nothing did.
+
+Now the window is computed once, in `karaokeCore.ts`:
+
+```ts
+karaokeClipWindow(item, kept) → { start, span, cutAt }
+karaokeClipClock(videoTime, win) → { position, ended }
+```
+
+Three rules, deliberately the renderer's own:
+
+* `start` is the IN point. The `<video>` is seeked to `start + position`, the waveform
+  is fetched for `start … span`, and the beats the magnet offers are shifted by
+  `start` and then thrown away if they fall outside the strip.
+* `span` is the kept region: `trimEnd - trimStart`, or — when only an IN point was
+  ever written, which means "to the end of the file" — the item's length minus it.
+  `duration` is *not* the bound, because for a movie it is only a floor: a short hold
+  does not shorten the clip, and the render proves it (`hold = max(hold, native)`).
+* `cutAt` is `null` unless the item was actually cut. An untrimmed movie has no OUT
+  point, so the popup must not stop it; that case behaves exactly as it always did.
+
+`ended` pauses the element and parks the playhead at the end of the strip; pressing
+play there means *again*, from the IN point, rather than resuming on a frame that is
+not in the movie. Reaching the end of the *strip* is a different thing and only clamps
+the playhead — which is why the position clamp and the pause are two rules in one pure
+function rather than one condition.
+
+The final result was checked at the level where a mismatch would hurt: the strip's
+numbers and the renderer's are the same numbers. `video_trim_window(item, probed)` is
+the authority on the segment (`{start, end, kept}`), the segment is cut with `-ss`
+before `-i` so its output PTS start at zero, karaoke times are laid out from zero
+(`karaoke_document` receives `duration = hold + lead_in`, `textStart/End` shifted by
+the same `lead_in`), and `test_karaoke_strip.py`'s `KaraokeClipWindowTest` compares
+the TypeScript window against `video_trim_window` for every case it can, so a future
+change to one side has to meet the other.
+
+
 ## The box the words are painted in
 
 Two things cut the tops and bottoms off the sung words in the preview, and they
@@ -341,7 +390,10 @@ fades rather than failing the job.
   single `CaptionStage` branch every preview shares, the popup's adopt-not-overwrite
   merge, and the panel following the playhead.
 * `backend/tests/test_karaoke_strip.py` + `karaoke_strip.mjs` — the strip's zoom as
-  the editor draws it: the clamp (1 is "the clip already fits", nothing narrower;
+  the editor draws it, and the clip window it draws it on (the IN point, the kept
+  span, the `null` that means "nothing to stop at", the clock that parks the
+  playhead, and `karaokeClipWindow` measured against `renderer.video_trim_window`);
+  the clamp (1 is "the clip already fits", nothing narrower;
   12 is twelve screens and the ceiling the ruler can still express; a NaN from a
   hand-written project file is just "fit"), the centre-follow scroll (the middle of
   the box stands on the playhead whenever there is film to scroll, and the scroller

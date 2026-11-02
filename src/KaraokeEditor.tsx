@@ -29,7 +29,8 @@ import type { MediaItem } from './mediaItem'
 import { KaraokeStage } from './KaraokeStage'
 import { FontPicker } from './FontPicker'
 import {
-  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, KARAOKE_ZOOM_MAX, autoTime, karaokeFollowScroll,
+  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, KARAOKE_ZOOM_MAX, autoTime,
+  karaokeClipClock, karaokeClipWindow, karaokeFollowScroll,
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
@@ -157,7 +158,15 @@ function bootstrap(item: MediaItem, tokens: KaraokeToken[], from: number, to: nu
 /** The karaoke popup. `item.text` owns the words; this owns when. */
 export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: KaraokeEditorProps) {
   const windowStart = Math.max(0, Number(item.textStart) || 0)
-  const clipSeconds = Math.max(0.5, Number(kept ?? item.duration) || Number(item.duration) || 5)
+  // Where the strip's zero is and how wide it is: the kept region of the file, not
+  // the file. `MovieEditor` hands the exact length (it has the decoder's `total`);
+  // opened from anywhere else the item's own IN/OUT pair says the same thing, which
+  // is why the popup used to keep showing the whole movie after a cut.
+  const clip = useMemo(() => karaokeClipWindow(
+    { trimStart: item.trimStart, trimEnd: item.trimEnd, duration: item.duration },
+    kept
+  ), [item.trimStart, item.trimEnd, item.duration, kept])
+  const clipSeconds = clip.span
   const windowEnd = Math.max(windowStart + 0.5, Math.min(clipSeconds, Number(item.textEnd) || clipSeconds))
 
   const [draftText, setDraftText] = useState(item.text || '')
@@ -195,7 +204,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const pendingRef = useRef<KaraokeData | null>(null)
   const flushTimer = useRef<number | null>(null)
   const original = useRef({ text: item.text || '', karaoke: item.karaoke })
-  const trimStart = Math.max(0, Number(item.trimStart) || 0)
+  const trimStart = clip.start
   const tapIndex = useRef(0)
   const [tapArmed, setTapArmed] = useState(false)
   const [tapMode, setTapMode] = useState<'line' | 'word'>('line')
@@ -265,21 +274,35 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   }, [])
 
   // ---- the clip's own clock ----
+  // The movie is only ever *shown* from IN to OUT, so the clock has to say so too:
+  // the element's time is offset by the IN point, and reaching the OUT point parks
+  // the playhead at the end of the strip and stops the picture. Without the second
+  // half the strip ended and the movie kept running — "the karaoke editor still
+  // shows the complete movie", which is a bug in this mapping and not in the file.
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const onTime = () => setPosition(round3(video.currentTime - trimStart))
+    const onTime = () => {
+      const clock = karaokeClipClock(video.currentTime, clip)
+      setPosition(clock.position)
+      if (!clock.ended || clip.cutAt === null) return
+      video.pause()
+      if (video.currentTime > clip.cutAt + 0.001) video.currentTime = clip.cutAt
+    }
+    const onEnded = () => { setPosition(clip.span); setPlaying(false) }
     const onPlay = () => setPlaying(true)
     const onPause = () => setPlaying(false)
     video.addEventListener('timeupdate', onTime)
+    video.addEventListener('ended', onEnded)
     video.addEventListener('play', onPlay)
     video.addEventListener('pause', onPause)
     return () => {
       video.removeEventListener('timeupdate', onTime)
+      video.removeEventListener('ended', onEnded)
       video.removeEventListener('play', onPlay)
       video.removeEventListener('pause', onPause)
     }
-  }, [trimStart])
+  }, [clip])
   useEffect(() => {
     const video = videoRef.current
     if (video) {
@@ -296,9 +319,15 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const togglePlay = useCallback(() => {
     const video = videoRef.current
     if (!video) return
-    if (video.paused) void video.play().catch(() => setNotice({ kind: 'warn', text: 'The browser would not play this file — the strip, the keys and the import still time the words.' }))
-    else video.pause()
-  }, [])
+    if (!video.paused) { video.pause(); return }
+    // Playing from the end of the cut means "again": back to the IN point rather
+    // than a frame that is not in the movie at all.
+    if (video.currentTime >= (clip.cutAt ?? clip.start + clip.span) - 0.05 || video.currentTime < clip.start - 0.05) {
+      video.currentTime = clip.start
+      setPosition(0)
+    }
+    void video.play().catch(() => setNotice({ kind: 'warn', text: 'The browser would not play this file — the strip, the keys and the import still time the words.' }))
+  }, [clip])
   // The A–B micro-loop: "play a second and back", the verify gesture every
   // subtitle editor has, here around the whole selected sentence.
   useEffect(() => {
