@@ -30,6 +30,9 @@ for (const c of input.cases || []) {
     ticks: core.karaokeTicks(span, zoom),
     labels: core.karaokeTicks(span, zoom).map(t => core.karaokeTickLabel(step, t)),
     floor: Math.round(core.karaokeBlockFloor(zoom) * 10000) / 10000,
+    x: Number(c.x ?? 0),
+    box: Number(c.box ?? 0),
+    follow: core.karaokeFollowScroll(Number(c.x ?? 0), Number(c.box ?? 0)),
     min: core.KARAOKE_ZOOM_MIN,
     max: core.KARAOKE_ZOOM_MAX,
   })

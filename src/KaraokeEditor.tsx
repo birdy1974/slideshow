@@ -29,7 +29,7 @@ import type { MediaItem } from './mediaItem'
 import { KaraokeStage } from './KaraokeStage'
 import { FontPicker } from './FontPicker'
 import {
-  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, KARAOKE_ZOOM_MAX, autoTime,
+  KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, KARAOKE_ZOOM_MAX, autoTime, karaokeFollowScroll,
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
@@ -677,17 +677,27 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     anchor.current = null
     box.scrollLeft = Math.max(0, (held.t / span) * strip.offsetWidth - held.at)
   }, [zoom, span])
-  // Zoomed in, the playhead has to stay in the box while the movie runs: a strip
-  // that scrolls the beat you are timing off the edge is worse than no zoom.
+  // Zoomed in, the strip scrolls and the playhead does not: each frame of playback
+  // puts the line back under the centre of the box, so what you are hearing is
+  // always in the middle of your view instead of flicking between its two edges.
+  // (The line is drawn inside the strip, so centring the *scroll* is what pins it;
+  // at the ends of the clip the clamp lets it walk to the edge, which is the only
+  // honest answer when there is no film left to slide.) Only while the movie runs:
+  // a scrub drives the position from the pointer, and centring the view under a
+  // pointer that is itself moving through it is a feedback loop — that case has the
+  // held-offset rule above instead. Nothing fights a manual scroll either, since
+  // that does not move the position. Below fit-zoom there is nothing to scroll, and
+  // the line rides its own percentage as it always did.
   useEffect(() => {
-    if (!playing || zoom <= 1.001) return
     const box = scrollRef.current
     const strip = stripRef.current
     if (!box || !strip) return
-    const pad = 28
-    const x = (position / span) * strip.offsetWidth
-    if (x < box.scrollLeft + pad) box.scrollLeft = Math.max(0, x - pad)
-    else if (x > box.scrollLeft + box.clientWidth - pad) box.scrollLeft = x - box.clientWidth + pad
+    // Coming back out to fit, the answer is "nowhere to scroll": a stale offset
+    // from a deeper zoom would otherwise be left where the browser's own clamp
+    // happens to have landed it, which is not the same as being at the start.
+    if (zoom <= 1.001) { box.scrollLeft = 0; return }
+    if (!playing) return
+    box.scrollLeft = karaokeFollowScroll((position / span) * strip.offsetWidth, box.clientWidth)
   }, [position, playing, zoom, span])
   /** Alt-click puts the clicked time in the middle of the box — the reach for a
    *  divider you can only hit once you are zoomed in. The seek still happens. */
@@ -695,7 +705,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     if (event.altKey && zoom > 1.001) {
       const box = scrollRef.current
       const strip = stripRef.current
-      if (box && strip) box.scrollLeft = Math.max(0, (pointerTime(event.clientX) / span) * strip.offsetWidth - box.clientWidth / 2)
+      if (box && strip) box.scrollLeft = karaokeFollowScroll((pointerTime(event.clientX) / span) * strip.offsetWidth, box.clientWidth)
     }
     beginDrag('seek', -1)(event)
   }
