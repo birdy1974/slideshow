@@ -1425,14 +1425,53 @@ class Renderer:
         except Exception as exc:  # pragma: no cover - defensive only
             log.warning("Could not clean work dir %s: %s", work, exc)
 
+    # The most files `preview_dir` ever holds. A 640x360 proxy is a few MB, so a
+    # handful costs nothing on any NAS, while a cap that does not depend on how
+    # many jobs exist is the only reason pruning stays a *bound* and not just a
+    # cleanup — see :meth:`_prune_previews`.
+    PREVIEW_KEEP = 6
+
+    def _previews_in_use(self) -> set[Path]:
+        """The preview files job rows still point at — pruning must never delete these.
+
+        A job row is the only record of which file the GUI was handed: ``GET
+        /api/jobs/{id}`` builds ``fileUrl`` from ``output_path``, and the preview
+        popup plays exactly that URL (cache-busted with ``?v=``, so opening it
+        really refetches the file). Pruning by mtime alone cannot see that link.
+        And the accurate transition sample (``POST /api/transitions/preview``)
+        renders through the very same preview path, so its clip lands in this same
+        directory and becomes "the newest file" every time the user nudges a
+        transition — silently deleting the proxy the popup was about to open. The
+        ``<video>`` then paints a broken frame with no message while the final MP4
+        in /output, which is never pruned, plays perfectly: the "preview is
+        garbled, the render is fine" report this method exists to prevent.
+        """
+        try:
+            jobs = self.db.list_jobs()
+        except Exception as exc:  # pragma: no cover - defensive only
+            log.warning("Could not list jobs before pruning previews: %s", exc)
+            return set()
+        paths: set[Path] = set()
+        for job in jobs:
+            if str(job.get("kind") or "") != "preview":
+                continue
+            raw = str(job.get("output_path") or "")
+            if not raw:
+                continue
+            paths.add(Path(raw))
+            if len(paths) >= self.PREVIEW_KEEP:
+                break
+        return paths
+
     def _prune_previews(self) -> int:
-        """Delete stale preview MP4s, keeping only the most recent one.
+        """Delete stale preview MP4s, keeping the newest plus every in-use proxy.
 
         Previews are regenerated constantly and are real disk users on the low
-        storage DS918+, so each finished generation prunes everything older than
-        the newest file. The newest is preserved so the preview the user is
-        watching (or just generated) still works; render MP4s in /output are
-        never touched here.
+        storage DS918+, so each finished job prunes the directory down to the
+        newest file and the ``PREVIEW_KEEP`` most recent job outputs. Render MP4s
+        in /output are never touched here, and neither is anything a job still
+        references. Files no job owns — transition samples, proxies whose project
+        row was cleared by /api/cleanup — are exactly the clutter this removes.
         """
         preview_dir = self.settings.preview_dir
         if not preview_dir.exists():
@@ -1440,10 +1479,18 @@ class Renderer:
         files = [p for p in preview_dir.iterdir() if p.is_file()]
         if not files:
             return 0
-        newest = max(files, key=lambda p: p.stat().st_mtime)
+        ranked = sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)
+        newest = ranked[0]
+        in_use = {path.resolve() for path in self._previews_in_use()}
+        # The cap is applied to the files on disk, not to the job rows: a project
+        # cleared by /api/cleanup leaves rows whose output is already gone, and a
+        # user who renders previews all afternoon would otherwise grow the volume
+        # one file per click. The newest file is always kept, so the proxy this
+        # very job just produced — and the URL its row advertises — survives.
+        keep = {newest.resolve()} | {path.resolve() for path in ranked[: self.PREVIEW_KEEP] if path.resolve() in in_use}
         removed = 0
         for path in files:
-            if path.resolve() == newest.resolve():
+            if path.resolve() in keep:
                 continue
             try:
                 path.unlink()

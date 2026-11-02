@@ -1386,6 +1386,66 @@ class TemporaryCleanupTest(unittest.TestCase):
         self.renderer._prune_previews()
         self.assertTrue(output.exists())
 
+    def _preview_job(self, filename: str, job_id: str) -> Path:
+        """A finished preview job whose row points at a file in `preview_dir`."""
+        import os
+        path = self.settings.preview_dir / filename
+        path.write_bytes(b"x")
+        os.utime(path, (1_600_000_000, 1_600_000_000))
+        self.renderer.db.initialize()   # this class builds a bare Database
+        project_id = self.renderer.db.save_project({"project": {"name": f"prune {job_id}"}})["id"]
+        self.renderer.db.create_job({"id": job_id, "project_id": project_id, "kind": "preview", "settings": {}})
+        self.renderer.db.update_job(job_id, status="complete", progress=100, output_path=str(path))
+        return path
+
+    def test_prune_previews_keeps_a_proxy_a_job_row_still_points_at(self) -> None:
+        # The report this prevents: a proxy preview is generated, then an
+        # unrelated render (the accurate transition sample goes through the same
+        # preview path into the same directory) becomes "newest" and used to
+        # delete the file the popup's URL points at — a broken <video> in the
+        # preview while the final MP4 in /output plays fine.
+        import os
+        watched = self._preview_job("project-7-preview-watched.mp4", "job-watched")
+        stray = self.settings.preview_dir / "project-transition-preview-stray.mp4"
+        stray.write_bytes(b"x")
+        os.utime(stray, (1_700_000_000, 1_700_000_000))
+        stale = self.settings.preview_dir / "project-7-preview-stale.mp4"
+        stale.write_bytes(b"x")
+        os.utime(stale, (1_500_000_000, 1_500_000_000))
+
+        removed = self.renderer._prune_previews()
+
+        self.assertEqual(1, removed)
+        self.assertTrue(watched.exists(), "a file a job row advertises as its output is in use")
+        self.assertTrue(stray.exists(), "the newest file is kept, whatever it is")
+        self.assertFalse(stale.exists())
+
+    def test_prune_previews_is_bounded_even_with_many_job_rows(self) -> None:
+        # Retention is a cap on the volume, not on the rows: a user generating
+        # preview after preview must not grow preview_dir one file per click.
+        import os
+        paths = []
+        for index in range(9):
+            path = self._preview_job(f"project-7-preview-{index}.mp4", f"job-{index}")
+            os.utime(path, (1_600_000_000 + index * 60, 1_600_000_000 + index * 60))
+            paths.append(path)
+
+        removed = self.renderer._prune_previews()
+
+        self.assertEqual(9 - Renderer.PREVIEW_KEEP, removed)
+        self.assertTrue(paths[-1].exists())
+        self.assertTrue(paths[8 - Renderer.PREVIEW_KEEP + 1].exists())
+        self.assertFalse(paths[0].exists())
+
+    def test_prune_previews_tolerates_rows_whose_file_is_already_gone(self) -> None:
+        # /api/cleanup wipes previews and job rows independently of this method.
+        path = self._preview_job("project-7-preview-gone.mp4", "job-gone")
+        path.unlink()
+        here = self.settings.preview_dir / "project-7-preview-here.mp4"
+        here.write_bytes(b"x")
+        self.assertEqual(0, self.renderer._prune_previews())
+        self.assertTrue(here.exists())
+
 
 class TestGLRegistry(unittest.TestCase):
     """The shared registry/transitions.json is the single source of truth for the

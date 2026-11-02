@@ -2525,7 +2525,13 @@ function App() {
       const completed=await waitForJob(jobId)
       if(completed.cancelled){notify(`${kind==='preview'?'Preview':'Render'} stopped`);return}
       rememberRenderRate(kind)
-      if(kind==='preview'){setPreviewUrl(`${completed.fileUrl}?v=${Date.now()}`);setShowPreview(true);notify('Real FFmpeg preview is ready')}
+      if(kind==='preview'){
+        // The row outlives its file whenever a preview is pruned or /api/cleanup
+        // runs between the job finishing and this popup opening. `fileAvailable`
+        // is that check, so a dead URL is never handed to a <video> at all.
+        if(completed.fileAvailable === false){notify('Preview finished, but its file is no longer on the volume — generate it again');return}
+        setPreviewUrl(`${completed.fileUrl}?v=${Date.now()}`);setShowPreview(true);notify('Real FFmpeg preview is ready')
+      }
       else{
         notify(`MP4 render complete · ${outputFilename}.mp4`)
         setFinishedRender({ url: completed.fileUrl || `/api/jobs/${jobId}/file`, name: `${outputFilename}.mp4`, bytes: Number(completed.size_bytes) || null })
@@ -6010,6 +6016,14 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   const [current, setCurrent] = useState(0)
   const [stageFailed, setStageFailed] = useState(false)
   const stageRef = useRef<HTMLDivElement | null>(null)
+  // The real proxy render is a file on the preview volume, not a stream the
+  // backend owns: /api/cleanup wipes it and pruning keeps only a handful of the
+  // newest clips. A <video> pointed at such a gone file painted an empty black
+  // box (or a half-decoded blocky frame) with no word about it, which reads as
+  // "the preview rendered wrong" while the final MP4 is fine — so say what
+  // happened instead, and only for the frame that is genuinely missing.
+  const [previewMissing, setPreviewMissing] = useState(false)
+  useEffect(() => { setPreviewMissing(false) }, [previewUrl])
 
   useEffect(() => {
     if (!playing || media.length === 0) return
@@ -6046,7 +6060,7 @@ function Preview({ media, projectName, previewUrl, previewScope = 'all', preview
   const defaults = captionDefaults || null
   const showCaption = currentItem && (currentItem.type === 'title' || (currentItem.textEnabled !== false && String(currentItem.text || '').trim() !== ''))
 
-  if(previewUrl)return <PopupBackdrop className="dark-backdrop" onDismiss={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div><video className="real-preview-video" src={previewUrl} controls autoPlay/><div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}<a className="btn dark" href={previewUrl} download>Download preview</a></div></div></PopupBackdrop>
+  if(previewUrl)return <PopupBackdrop className="dark-backdrop" onDismiss={onClose}><div className="preview-modal" onMouseDown={e=>e.stopPropagation()}><div className="preview-top"><div><strong>FFmpeg preview{previewScope !== 'all' ? ` · ${previewScope} selected slide${previewScope === 1 ? '' : 's'}` : ''}</strong><span>REAL PROXY RENDER · 640 × 360{previewScope !== 'all' ? ' · SELECTION ONLY' : ''}{previewMode === 'fast' ? ' · FAST TEXT + TRANSITIONS' : ''}</span></div><button type="button" onClick={onClose} aria-label="Close preview"><X size={20}/></button></div>{previewMissing ? <div className="lightbox-error"><ImageOff size={30}/><strong>This preview file is no longer on the volume</strong><span>The FFmpeg render finished, but its 640 × 360 proxy has since been pruned or cleaned. Nothing is wrong with the slideshow — generate the preview again.</span><button type="button" className="btn dark" onClick={onClose}>Close</button></div> : <video className="real-preview-video" src={previewUrl} controls autoPlay onError={() => setPreviewMissing(true)}/>}<div className="preview-note"><Info size={14}/> {previewMode === 'fast' ? 'Fast diagnostic: text-bearing holds and configured transitions are rendered; static holds without text and soundtrack are skipped.' : 'This file is streamed through the backend project API from the mounted preview volume.'}{previewMissing ? null : <a className="btn dark" href={previewUrl} download>Download preview</a>}</div></div></PopupBackdrop>
 
   const advance = () => setCurrent(c => (c + 1) % Math.max(1, media.length))
 

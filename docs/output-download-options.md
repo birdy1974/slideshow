@@ -23,10 +23,17 @@ path** to a phone/tablet/computer and where the GUI surfaces it.
   preview** in the FFmpeg preview modal. The review panel ("Ready to render")
   has *no* post-render CTA — after completion the user must know to look in
   the queue. The Output panel (step 04) shows only an **estimated** size.
-- Lifetimes: `/output` persists (volume); **proxy previews are pruned to the
-  newest one** (`Renderer._prune_previews`), and `/api/cleanup` wipes previews
-  *and* job rows. So old links can 404 — clicking one today shows the
-  browser's bare error page; the GUI has no "file missing" state.
+- Lifetimes: `/output` persists (volume); `preview_dir` is capped at
+  `Renderer.PREVIEW_KEEP` files by `Renderer._prune_previews`, which keeps the
+  newest one **and every proxy a recent preview job row still advertises**. That
+  second half is the point: a row's `fileUrl` is exactly what the preview popup
+  plays, while the accurate transition sample (`POST /api/transitions/preview`)
+  renders through the same preview path into the same directory — so pruning by
+  mtime alone deleted the clip the popup was about to open, and the report that
+  came back was "the preview is garbled but the final MP4 is fine".
+  `/api/cleanup` still wipes previews *and* job rows, so a link can 404: the
+  queue row marks **File missing** with a Re-render button, and the preview
+  popup now says it in words instead of painting an empty black frame.
 - Deployment posture: trusted LAN, **no authentication** (README). The NAS
   context means the MP4 is often *already* reachable outside the app via DSM
   File Station / SMB / Synology Drive, because `/output` is a mounted share.
