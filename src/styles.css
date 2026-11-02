@@ -1682,7 +1682,7 @@ main{max-width:1680px;margin:auto;padding:34px 36px 70px}.project-heading{displa
 /* Selected photos are ringed with dots on the preview, so the group you are editing
    is visible while you edit it. An outline, never a border: the mat's box *is* the
    photo's frame, and a border would move the picture by its own width. */
-.collage-mat.marked{outline:2px dashed #d9b35d;outline-offset:3px}
+.collage-select-ring:not(.lead){border-width:3px;border-style:dashed;border-color:#d9b35d}
 .collage-selected-which{font:800 8px Manrope;letter-spacing:.5px;color:#d9b35d}
 .collage-selected-size b{font-variant-numeric:tabular-nums}
 /* The selected photo's own three lanes: entrance / motion / exit. Drawn as the
