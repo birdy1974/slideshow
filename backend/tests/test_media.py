@@ -251,3 +251,83 @@ class MainEndpointsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MountlessPathTest(unittest.TestCase):
+    """A picture path that lost its mount is a prefix away from working, not a broken project.
+
+    `source_path` used to answer "Path must start with one of: …" for anything that
+    did not name a mount — which is a message nobody can act on, and it fired on save
+    as ``Invalid collage background path`` for a project whose file is sitting right
+    there in the library. The value is now looked for under each configured mount, so
+    a path that was stored short still resolves; the refusal is reserved for a path
+    that is not a file anywhere, and for one that tries to leave its root.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        for name in ("config", "photos", "videos", "music", "output"):
+            (base / name).mkdir()
+        self.settings = Settings(base / "config", base / "photos", base / "videos",
+                                 base / "music", base / "output")
+        (self.settings.photos_dir / "Holiday").mkdir()
+        (self.settings.videos_dir / "raw").mkdir()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def resolve(self, path: str, name: str = "") -> Path:
+        return source_path(self.settings, {"path": path, "name": name})
+
+    def test_a_short_path_finds_the_file_under_the_mount_it_lives_in(self) -> None:
+        photo = self.settings.photos_dir / "Holiday" / "x.jpg"
+        photo.write_bytes(b"jpg")
+        self.assertEqual(self.resolve("Holiday/x.jpg"), photo)
+
+    def test_the_search_is_not_an_assumption_about_photos(self) -> None:
+        clip = self.settings.videos_dir / "raw" / "b.jpg"
+        clip.write_bytes(b"jpg")
+        self.assertEqual(self.resolve("raw/b.jpg"), clip,
+                         "the mount that holds the file wins, whichever one the config says it is")
+
+    def test_folder_plus_name_still_works_without_a_mount(self) -> None:
+        photo = self.settings.photos_dir / "Holiday" / "x.jpg"
+        photo.write_bytes(b"jpg")
+        self.assertEqual(self.resolve("Holiday", "x.jpg"), photo)
+
+    def test_a_whole_path_is_unaffected(self) -> None:
+        photo = self.settings.photos_dir / "Holiday" / "x.jpg"
+        photo.write_bytes(b"jpg")
+        self.assertEqual(self.resolve("/photos/Holiday/x.jpg"), photo)
+
+    def test_nothing_anywhere_is_still_refused_by_name(self) -> None:
+        with self.assertRaises(UnsafePath) as caught:
+            self.resolve("Holiday/missing.jpg")
+        message = str(caught.exception)
+        self.assertIn("Holiday/missing.jpg", message, "the value it was given")
+        self.assertIn("/photos", message, "and where it looked, so the next step is obvious")
+
+    def test_leaving_the_root_is_still_refused(self) -> None:
+        secret = Path(self.temp.name) / "outside.jpg"
+        secret.write_bytes(b"no")
+        with self.assertRaises(UnsafePath):
+            self.resolve("../outside.jpg")
+        with self.assertRaises(UnsafePath):
+            self.resolve("/etc/passwd")
+
+    def test_the_collage_background_the_popup_stored_is_the_one_the_render_opens(self) -> None:
+        """The exact path of this bug: a slide whose background was picked from the
+        storyline. `collage_background` is what the renderer resolves, and the save
+        endpoint validates with the same call, so one answer covers both."""
+        from app.collage import collage_background
+
+        photo = self.settings.photos_dir / "Holiday" / "x.jpg"
+        photo.write_bytes(b"jpg")
+        photo_entry = {"path": "/photos/Holiday/x.jpg", "name": "x.jpg"}
+        item = {"type": "collage", "collage": {"photos": [photo_entry], "backgroundImage": "Holiday/x.jpg"}}
+        self.assertEqual(collage_background(self.settings, item), photo)
+        item["collage"]["backgroundImage"] = "/photos/Holiday/x.jpg"
+        self.assertEqual(item["collage"]["photos"], [photo_entry], "the photo is untouched by resolving the bed")
+        self.assertEqual(collage_background(self.settings, item), photo,
+                         "and the shape the picker writes today resolves the same file")

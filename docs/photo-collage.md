@@ -577,10 +577,27 @@ place the rules live: a photo slide contributes its file, a collage contributes 
 of its photos, a movie contributes nothing, an item with no path contributes nothing,
 and both shapes a stored `path` has ever had are accepted (a whole `/photos/a/b.jpg`,
 or a folder in `path` with the file in `name`). What the pickers write is
-`picture.path` — the mount-relative form the browser's own pick writes into
-`collage.backgroundImage` / `frameBackgroundImage` — because the only requirement a
-background has is that `source_path` can open it, and a strip that invented its own
-path shape would look right in the popup and fail in the MP4. A file that sits on two
+`picture.path`, and that is a **whole path with the mount first** —
+`/photos/Holiday/x.jpg` — because a background *is* that string: `source_path` opens
+it, and it reads the mount off the first segment. The browser's own listing emits the
+same shape (`f"/{root}/{relative}"`), so a timeline entry is not a second kind of
+thing to the popup, and `StoredShapeTest` hands the value a pick writes straight into
+`source_path`, so the two ends are measured against each other instead of against
+each author's idea of a path.
+
+Getting that shape wrong is worth recording, because nothing in the editor showed it.
+The first version stored the mount-relative part (`Holiday/x.jpg`) and the popup
+looked *fine*: the thumbnail URL builder strips the mount either way, so the picture
+appeared behind the photos as asked. The save endpoint then refused the whole project —
+a background that names no mount cannot be resolved — with a message that called the
+*path* invalid instead of naming the prefix that was missing, so neither the preview
+nor the wording pointed at the cause. Both halves are fixed: the pickers write the
+whole shape, and `source_path` resolves a prefix-less value by looking for the file
+under each configured mount in turn (in config order, first hit wins), so a project
+that already holds the short form opens, saves and renders again rather than staying
+broken. Traversal is still refused: every candidate goes through `safe_path`.
+
+A file that sits on two
 slides is one row in the browser (the same picture offered twice to a background
 picker is a mistake, not a choice) and still counts as used twice in the strip's
 label, since the count is taken from the timeline before that collapsing.
