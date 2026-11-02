@@ -101,6 +101,15 @@ fades and flies out with the photo. Its opacity never drops below 0.5, so a
 photo picked from the strip before it has landed still shows where it will
 appear.
 
+There is one ring per **selected** photo, not one per selection: `marks` is the
+whole `photoSelection` (a stage that only knows a single `selectedIndex` falls
+back to that), and the loop positions each ring off its own mat's geometry, so a
+group of six shows six boxes. The lead — the photo the panel reads its numbers
+from — keeps the heavier lime line and the rest take the lanes' gold dashes,
+which is the same colour the ticked rows use. Marking the *selection* rather than
+the lead is the point: a group is edited as one thing, and the preview is the only
+place that says which photos a change will touch.
+
 The line itself is **screen-constant**, which is the part that is easy to get
 wrong: the ring lives in the 1920×1080 layer that the stage scales down to a
 quarter of that or less, and the camera zoom and the entrance's own scale shrink
@@ -515,14 +524,39 @@ it stands, because a group given one absolute angle loses the tilt each was give
 hand), and a slider that is *absolute* sets everybody to that value, which is what
 dragging it means.
 
-The selection is never invisible and never a lie: the chosen photos are ringed with
-dots on the preview (`.collage-mat.marked`, an outline so the photo's own frame box
-does not move), the panel's title says `3 photos` with `1 · 4 · 6` beside it, the
+The selection is never invisible and never a lie: every chosen photo is ringed with
+dots on the preview — as a sibling of the mats rather than a mark on them, because
+a photo that has not arrived yet is transparent and a mask reveal clips anything
+drawn on it, so a ring on the mat disappears exactly when it is needed — the
+panel's title says `3 photos` with `1 · 4 · 6` beside it, the
 lead photo — the one the numbers are read from — is ringed in the lane too, and
 where the members disagree an entrance or exit chip says **Mixed** rather than
 naming one photo's answer as if it were everybody's. A `<select>` cannot show a
 value it does not have, so motion and look get a disabled `Mixed — pick one to give
 it to all 3` row instead.
+
+### Why the panel writes one photo at a time on top of what it just wrote
+
+Fanning a change out over the selection is easy. Making it *land* is the part that
+broke the first time: every writer builds its new `photos` array out of what the
+popup was handed, React does not re-render in the middle of an event handler, and
+`livePatch` applies the patches in order — so four writes meant four whole arrays
+computed from one snapshot, and the last one won. A group edit looked like it had
+been ignored, because three of the four photos were quietly written back to what
+they were.
+
+The popup therefore keeps a write-ahead slot (`beginWrite` / `recordWrite` in
+`src/CollageLaneMath.ts`, small enough and mean enough to be tested where it
+lives). `specNow()` is what this popup last wrote while the item has not caught up
+to it, and `spec` is what the item carries — reads keep using `spec`, so the panel
+shows a coherent snapshot, and *writers* use `photosNow()`, so each write composes
+on the one before it. The slot is dropped the moment `item.collage` is a different
+object, which is what keeps an untouched slide byte-identical (nothing is written
+at all) and stops a stale buffer from resurrecting a value that was edited away
+elsewhere. `GroupWriteBurstTest` replays a burst — three lane writes, then both
+edges of one window, then a render that arrives before and after the item catches
+up — against the module itself, so the composition is measured rather than
+assumed.
 
 ## The background picture, from the timeline
 
@@ -724,7 +758,16 @@ measured rather than assumed:
   through node and measures the pointer↔seconds mapping itself: the same place on a
   track answers the same second wherever the lane sits on the page; a body drag keeps
   the window's width and stops at both ends of the lane; a pinned start cannot pass
-  its stop; and one edge moves without moving the other.
+  its stop; and one edge moves without moving the other. Its later classes measure
+  the group rather than the geometry: `nextSelection` for the checkbox, the number,
+  the chip and Shift from the same rules; `groupShift` for a body drag that moves a
+  whole selection by the lead's clamped delta; `beginWrite`/`recordWrite` for the
+  burst of writes a group edit turns into (three photos, then both edges of one
+  window, with a render arriving in between), which is what makes an edit aimed at
+  a selection land on all of it instead of on the last photo only; and source
+  checks for what the user has to see — the checkbox and Select-all markup, the
+  panel's `forSelected` fan-out, and one dotted ring per selected photo on the
+  preview.
 - `backend/tests/test_collage_animation_ffmpeg.py` — real FFmpeg renders, pixels
   measured. `CollageFreeTiltRenderTest` renders one red photo on a grey bed at
   0°, ±45°, ±90°, 135°, 180° and checks the bounding box turns the right way and

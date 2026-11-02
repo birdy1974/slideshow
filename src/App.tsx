@@ -58,7 +58,8 @@ import { THUMB_STALL_MS, isThumbnailFile, reserveThumbnailSlot, watchViewportOnc
 import { PopupBackdrop, useEscapeToClose, useLayer } from './layers'
 import { CollageArrangementThumb } from './CollageArrangementThumb'
 import { CollageTimingLanes } from './CollageTimingLanes'
-import { nextSelection } from './CollageLaneMath'
+import { beginWrite, nextSelection, recordWrite } from './CollageLaneMath'
+import type { BurstSlot } from './CollageLaneMath'
 import { TimelinePhotoStrip } from './TimelinePhotoStrip'
 import { timelinePictures, type TimelinePicture } from './timelinePhotos'
 
@@ -3442,7 +3443,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
   const targetDragRef = useRef<{ pointerId: number; index: number; startX: number; startY: number; x: number; y: number } | null>(null)
   const turnHandleRef = useRef<HTMLButtonElement | null>(null)
   const turnDragRef = useRef<{ pointerId: number; index: number; startAngle: number; startTurn: number } | null>(null)
-  const ringRef = useRef<HTMLDivElement | null>(null)
+  const ringRefs = useRef<(HTMLDivElement | null)[]>([])
   // The 1920×1080 layer is scaled down to the host; the rotate knob counters
   // that scale so it stays the same size on screen whatever the stage width.
   const layerScaleRef = useRef(1)
@@ -3565,6 +3566,14 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
   // arrangement) and the Free rotate knob that rides it.
   const selectIndex = selectedIndex != null && geo[selectedIndex] ? selectedIndex : null
   const rotateIndex = onRotatePhoto ? selectIndex : null
+  // Every photo in the selection is ringed, not only the lead: a group is edited as
+  // one, so the preview has to show which photos a change will touch — including the
+  // ones that have not arrived or have already left, which is why the mark is a
+  // sibling of the mats rather than a border on them. A mat fades to 0 before its
+  // entrance and a mask reveal clips the element's own outline away, so a ring drawn
+  // on the photo itself would vanish exactly when it is most useful.
+  const markKey = (selectedIndices && selectedIndices.length ? selectedIndices : (selectIndex != null ? [selectIndex] : [])).join(',')
+  const marks = useMemo(() => (markKey ? markKey.split(',').map(Number).filter(i => i >= 0 && i < geo.length) : []), [markKey, geo.length])
   // One place to put a reveal mask on a mat element: clearing it matters as much
   // as setting it, because the same nodes are reused for every frame of the
   // preview and a stale mask would sit on a photo that has finished arriving.
@@ -3620,21 +3629,25 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
       if (camRef.current) {
         camRef.current.style.transform = `translate(${((50 - cs.cx) * cs.z).toFixed(3)}%, ${((50 - cs.cy) * cs.z).toFixed(3)}%) scale(${cs.z.toFixed(5)})`
       }
-      // The selected photo's dotted ring. A mat cannot draw its own marker on
-      // top of the photos stacked over it, so this is a sibling after all the
-      // mats, following the selected mat's box and transform — grown by a gap
-      // that stays the same size on screen whatever the stage width.
-      const ring = ringRef.current
-      if (ring && selectIndex !== null) {
-        const g = geo[selectIndex]
-        const st = photoState(spec, selectIndex, t, 0, aspect, ratios)
+      // The dotted rings marking the selection. A mat cannot draw its own
+      // marker on top of the photos stacked over it, and it fades and is masked
+      // as it arrives, so these are siblings after all the mats, each following
+      // its own mat's box and transform — grown by a gap that stays the same
+      // size on screen whatever the stage width.
+      for (const mark of marks) {
+        const ring = ringRefs.current[mark]
+        const g = geo[mark]
+        if (!ring || !g) continue
+        const st = photoState(spec, mark, t, 0, aspect, ratios)
+        const lead = mark === selectIndex
         // Everything the layer does to the photo — the stage's scale-down, the
         // camera zoom, the entrance's own scale — also shrinks a border drawn
         // around it, so the line and its gap are compensated back to screen px.
         const k = Math.max(0.05, layerScaleRef.current * cs.z * st.scale)
         // Capped so a tiny photo mid-entrance cannot get a border wider than
         // itself (box-sizing is border-box: it would collapse into a blob).
-        const line = Math.min(SELECT_RING_LINE / k, Math.max(2, Math.min(g.wPx, g.matH) / 3))
+        // The lead — the photo the panel reads its numbers from — is the heavier line.
+        const line = Math.min((lead ? SELECT_RING_LINE : SELECT_RING_LINE - 1.5) / k, Math.max(2, Math.min(g.wPx, g.matH) / 3))
         const gap = SELECT_RING_GAP / k
         ring.style.left = `${(g.ax + st.dx / 100 * FRAME_W).toFixed(2)}px`
         // A pin-hung mat starts at its anchor instead of being centred on it,
@@ -3721,7 +3734,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
         target.style.transform = `translate(-50%, -50%) scale(${(1 / k).toFixed(4)})`
       }
     })
-  }, [spec, geo, clock, ratios, selectIndex, rotateIndex, targetKind, onMoveTarget, onTurnTarget])
+  }, [spec, geo, clock, ratios, selectIndex, marks, rotateIndex, targetKind, onMoveTarget, onTurnTarget])
 
   // Where a mat turns around, in client coordinates: its animated anchor
   // (left/top — the mat centre, or the pin point while a swing hangs from the
@@ -3801,7 +3814,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
           const stickers = spec?.stickers
           const tape = stickers === 'tape' || stickers === 'mix'
           const pinDot = stickers === 'pin' || stickers === 'mix'
-          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${selectedIndex === i ? ' selected' : ''}${selectedIndices?.includes(i) ? ' marked' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
+          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${selectedIndex === i ? ' selected' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
             onClick={onSelectPhoto ? e => { e.stopPropagation(); onSelectPhoto(i, e.ctrlKey || e.metaKey || e.shiftKey) } : undefined}
             style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom, background: g.fr.shape === 'none' ? 'transparent' : g.fr.color, borderRadius: g.fr.shape === 'rounded' ? `${g.fr.radius}%` : g.fr.shape === 'circle' ? '50%' : undefined, boxShadow: g.fr.shadow === false ? 'none' : undefined, clipPath: clip, cursor: onMovePhoto ? 'grab' : undefined }}
             onPointerDown={onMovePhoto ? e => {
@@ -3843,7 +3856,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
             {pinDot && <span className="collage-pin" aria-hidden />}
           </div>
         })}
-        {selectIndex !== null && <div ref={ringRef} className="collage-select-ring" aria-hidden style={{ left: -9999, top: -9999 }} />}
+        {marks.map(i => <div key={`ring-${i}`} ref={el => { ringRefs.current[i] = el }} className={`collage-select-ring${i === selectIndex ? ' lead' : ''}`} aria-hidden style={{ left: -9999, top: -9999 }} />)}
         {rotateIndex !== null && spec && <button type="button" ref={rotHandleRef} className="collage-rotate-handle"
           style={{ left: -9999, top: -9999 }}
           title={`Turn photo ${rotateIndex + 1}: drag around it (Shift snaps to 15°), or use ← → for 1° steps`}
@@ -4679,9 +4692,31 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   holdStart?: number
   audioLoop?: boolean
 }) {
-  const spec: CollageSpec = item.collage ?? { photos: [], layout: 'stack', animation: 'drop', shape: 'native', seed: 1 }
+  // The spec this popup edits. Usually the item's own; but while a burst of writes is
+  // in flight — a group edit walks the selection photo by photo, a lane drag writes the
+  // entrance and then the exit, a slider patches on every pointer move — React has not
+  // re-rendered yet, so `item.collage` still holds what the *first* of those writes
+  // replaced. Building each patch from it would let the last write win and revert the
+  // others, which is how "apply to the selected photos" ends up applying to one photo.
+  // `burstRef` is what this popup last wrote; it is dropped the moment the item catches
+  // up to it, so an untouched slide is never rewritten and never grows a field.
+  const burstRef = useRef<BurstSlot<CollageSpec> | null>(null)
+  const incoming: CollageSpec = item.collage ?? { photos: [], layout: 'stack', animation: 'drop', shape: 'native', seed: 1 }
+  const opened = beginWrite(burstRef.current, incoming, incoming)
+  burstRef.current = opened.slot
+  const spec = opened.spec
   const photos = spec.photos ?? []
-  const setSpec = (change: Partial<CollageSpec>) => livePatch({ collage: { ...spec, ...change } })
+  // What a *writer* has to build on. `spec` and `photos` are what this render was
+  // drawn with and stay right for everything the panel shows; `specNow` and
+  // `photosNow` are what the last write in the same burst left, which is the only
+  // base that survives being edited several times in one go.
+  const specNow = (): CollageSpec => burstRef.current?.spec ?? spec
+  const photosNow = (): CollagePhoto[] => specNow().photos ?? []
+  const setSpec = (change: Partial<CollageSpec>) => {
+    const written = recordWrite(burstRef.current ?? opened.slot, incoming, { ...specNow(), ...change })
+    burstRef.current = written.slot
+    livePatch({ collage: written.spec })
+  }
   const defFr = photoFrame(spec, null)
   const setFrame = (change: Partial<NonNullable<CollageSpec['frame']>>) => setSpec({ frame: { ...defFr, ...change } })
   // What the exit group is showing: the stored name, whether that is one of the five
@@ -4722,17 +4757,17 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     })
   }
   const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => forSelected(index, i => {
-    setSpec({ photos: photos.map((p, k) => k === i ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
+    setSpec({ photos: photosNow().map((p, k) => k === i ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
   })
   const setPhotoShape = (index: number, shape: CollageShape | 'default') => forSelected(index, i => {
-    setSpec({ photos: photos.map((p, k) => k === i ? { ...p, shape: shape === 'default' ? undefined : shape } : p) })
+    setSpec({ photos: photosNow().map((p, k) => k === i ? { ...p, shape: shape === 'default' ? undefined : shape } : p) })
   })
   /** One photo's enter / while / exit lane. An empty value means "inherit the
    *  collage's setting" and removes the override again, so a photo follows
    *  later changes to the collage-wide animation. */
   const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim' | 'at' | 'until', value: string) => forSelected(index, target => {
     setSpec({
-      photos: photos.map((p, i) => {
+      photos: photosNow().map((p, i) => {
         if (i !== target) return p
         const next: CollagePhoto = { ...p }
         if (lane === 'anim') { if (value === '') delete next.anim; else next.anim = value as CollageAnimation }
@@ -4769,21 +4804,21 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     })
   })
   const setPhotoMotionAmount = (index: number, v: number) => setSpec({
-    photos: photos.map((p, i) => i === index
+    photos: photosNow().map((p, i) => i === index
       ? { ...p, motionAmount: v === 1 ? undefined : Math.max(MOTION_AMOUNT_MIN, Math.min(MOTION_AMOUNT_MAX, v)) }
       : p),
   })
   /** Dragging the dashed box on the preview: where this photo's `move` motion
    *  travels to, in % of the frame from its resting spot. */
   const movePhotoTarget = (index: number, x: number, y: number) => setSpec({
-    photos: photos.map((p, i) => i === index
+    photos: photosNow().map((p, i) => i === index
       ? { ...p, moveX: x === 0 ? undefined : x, moveY: y === 0 ? undefined : y }
       : p),
   })
   /** Dragging the knob on the dashed ghost: the angle this photo's `turn`
    *  motion reaches, in degrees from its resting tilt. */
   const turnPhotoTarget = (index: number, degrees: number) => setSpec({
-    photos: photos.map((p, i) => i === index
+    photos: photosNow().map((p, i) => i === index
       ? { ...p, turnTo: degrees === 0 ? undefined : degrees }
       : p),
   })
@@ -4791,7 +4826,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
    *  what angle it turns to. 0 (or empty) drops the field, which is the default
    *  — the rest of the slide, and no travel of its own. */
   const setPhotoMotionField = (index: number, field: 'motionDuration' | 'moveX' | 'moveY' | 'turnTo', value: number | undefined) => forSelected(index, photo => setSpec({
-    photos: photos.map((p, i) => {
+    photos: photosNow().map((p, i) => {
       if (i !== photo) return p
       const next: CollagePhoto = { ...p }
       const v = value !== undefined && Number.isFinite(value) ? value : 0
@@ -4804,7 +4839,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   }))
   /** Back to the collage's own choreography: drop every lane at once. */
   const clearPhotoLanes = (index: number) => forSelected(index, target => setSpec({
-    photos: photos.map((p, i) => {
+    photos: photosNow().map((p, i) => {
       if (i !== target) return p
       const next: CollagePhoto = { ...p }
       delete next.anim
@@ -4867,13 +4902,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   // photo's own `rot`, the same number the render's rotate filter uses — one
   // value, both engines, so the MP4 comes back turned exactly like this.
   const rotateFreePhoto = (index: number, degrees: number) => forSelected(index, i => {
-    setSpec({ photos: setPhotoRot(photos, i, degrees) })
+    setSpec({ photos: setPhotoRot(photosNow(), i, degrees) })
   })
   /** The two turn buttons, and the one control in the panel that must *not* be an
    *  absolute value: a group given the same angle loses the tilt each photo was
    *  given by hand, so they turn by the same amount from where they stand instead. */
   const turnSelectedPhoto = (index: number, delta: number) => forSelected(index, i => {
-    setSpec({ photos: setPhotoRot(photos, i, photoTilt(photos[i]) + delta) })
+    setSpec({ photos: setPhotoRot(photosNow(), i, photoTilt(photosNow()[i]) + delta) })
   })
   // A chip dropped on the preview: that photo lands with its centre on the
   // drop point, in the render as in the preview. Any other arrangement turns
@@ -4909,7 +4944,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   const setSelectedPhoto = (index: number | null) => setPhotoSelection(index === null ? [] : [index])
   /** The expansion every per-photo writer below runs through: a value aimed at a
    *  photo that belongs to a bigger selection is written to the whole selection, so
-   *  no call site has to know that the group exists and none can forget it. */
+   *  no call site has to know that the group exists and none can forget it. Each
+   *  photo is still written on its own turn — which only works because `setSpec`
+   *  accumulates (see above): the second write reads the list the first one left. */
   const forSelected = (index: number, run: (i: number) => void) => {
     const list = photoSelection.length > 1 && photoSelection.includes(index) ? photoSelection : [index]
     for (const i of list) run(i)
@@ -5002,7 +5039,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     setSpec({ photos: photos.map((photo, k) => ({ ...photo, delay: k === i ? Math.max(0, Math.min(30, v)) : (photo.delay ?? defaultDelay(n, k)) })) })
   }
   const spreadEvenly = () => setSpec({ photos: photos.map(photo => { const { delay, ...rest } = photo; return rest }) })
-  const setSize = (i: number, v: number) => forSelected(i, k => setSpec({ photos: setPhotoSize(photos, k, v) }))
+  const setSize = (i: number, v: number) => forSelected(i, k => setSpec({ photos: setPhotoSize(photosNow(), k, v) }))
   const setAllSizes = (v: number) => setSpec({ photos: scaleAllPhotoSizes(spec, v), randomSize: undefined })
   const toggleRandomSizes = (enabled: boolean) => setSpec({
     randomSize: enabled ? true : undefined,

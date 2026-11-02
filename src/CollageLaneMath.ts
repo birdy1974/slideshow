@@ -140,3 +140,33 @@ export function dragEdge (
   if (edge === 'start') return Math.max(0, Math.min(snapSeconds(at + delta), until - MIN_WINDOW))
   return Math.min(span, Math.max(snapSeconds(until + delta), at + MIN_WINDOW))
 }
+/**
+ * One write-ahead slot, for a popup that patches a spec it was *handed*.
+ *
+ * React does not re-render in the middle of an event handler, so a burst of
+ * writes — a group edit that visits every selected photo, a lane drag that
+ * writes the entrance and then the exit, a slider that patches on each move —
+ * would otherwise compute every one of those patches from the same snapshot. The
+ * parent applies them in order, each carrying a whole `photos` array, so the last
+ * write wins and every earlier one is silently reverted: "apply to the selection"
+ * ends up applying to one photo. A popup that keeps its writes in this slot
+ * instead lets the next write build on the previous one, and drops the slot as
+ * soon as the item carries what was written (a new `source` identity), which is
+ * also what keeps an untouched slide from being rewritten at all.
+ */
+export interface BurstSlot<T> { source: unknown; spec: T }
+
+/** The spec to edit right now, and the slot to keep for the next write. */
+export function beginWrite<T> (
+  slot: BurstSlot<T> | null, source: unknown, spec: T,
+): { slot: BurstSlot<T>; spec: T } {
+  if (slot && slot.source === source) return { slot, spec: slot.spec }
+  return { slot: { source, spec }, spec }
+}
+
+/** Fold one write in, so the next write in the same burst builds on it. */
+export function recordWrite<T> (
+  slot: BurstSlot<T>, source: unknown, spec: T,
+): { slot: BurstSlot<T>; spec: T } {
+  return { slot: { source, spec }, spec }
+}

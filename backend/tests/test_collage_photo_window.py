@@ -351,11 +351,26 @@ class LaneSelectionSurfaceTest(unittest.TestCase):
                       "the panel says how many it is editing")
 
     def test_the_selected_photos_are_dotted_on_the_preview(self) -> None:
-        self.assertIn("selectedIndices?.includes(i) ? ' marked' : ''", self.app)
+        """A ring for every photo in the group — not only for the lead, and not on the mat.
+
+        A mat rides its own entrance: it is transparent before it arrives, gone after
+        its exit, and a mask reveal clips away anything drawn on it. A ring that lives
+        on the mat is therefore invisible exactly when a person is deciding which
+        photos to group, so the marks are siblings of the mats and loop over the whole
+        selection.
+        """
+        self.assertIn("for (const mark of marks)", self.app, "one ring per selected photo, not one per selection")
+        self.assertIn("const marks = useMemo(", self.app, "a stable list, so the clock subscription does not rebuild every frame")
+        self.assertIn("ringRefs.current[mark]", self.app, "the ring is a sibling of the mats, never a border on them")
+        self.assertIn("ringRefs.current[i] = el", self.app)
+        self.assertIn("{marks.map(i => <div key={`ring-${i}`}", self.app)
+        self.assertIn("i === selectIndex ? ' lead'", self.app,
+                      "the photo the panel reads its numbers from keeps the heavier ring")
         self.assertIn("collage-selected-which", self.app, "and which ones, in words, beside the panel's title")
+        self.assertNotIn("' marked' : ''", self.app, "the mat's own outline was dropped rather than doubling up with the ring")
         css = (REPO / "src" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn(".collage-mat.marked{outline:2px dashed #d9b35d;outline-offset:3px}", css,
-                      "an outline, never a border: the mat's box is the photo's frame")
+        self.assertIn(".collage-select-ring:not(.lead){border-width:3px;border-style:dashed;border-color:#d9b35d}", css,
+                      "the rest of the group in the lanes' gold, so a row and its picture match")
         self.assertIn(".collage-window-row.lead{outline:", css)
 
     def test_the_mixed_state_is_told_rather_than_guessed(self) -> None:
@@ -364,6 +379,104 @@ class LaneSelectionSurfaceTest(unittest.TestCase):
         picker = (REPO / "src" / "AnimPicker.tsx").read_text(encoding="utf-8")
         self.assertIn("mixed ? 'Mixed' : value === undefined ? PHASE.choose : label", picker,
                       "the chip says the photos disagree instead of naming one of them")
+
+
+class GroupWriteBurstTest(unittest.TestCase):
+    """Several writes in one interaction must add up instead of replacing each other.
+
+    A group edit walks the selection photo by photo, a lane drag writes the entrance and
+    then the exit, and React does not re-render in between — so every write in the burst
+    starts from the same snapshot unless the popup keeps what it last wrote. The driver
+    replays a burst against `beginWrite`/`recordWrite`, which is the code the popup's
+    `setSpec` runs, so this measures the composition rather than the intention.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node or not DRIVER.exists():
+            raise unittest.SkipTest("needs node and the lane math driver")
+        cls.app = (REPO / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    def _run(self, cases: list[dict]) -> list[dict]:
+        proc = subprocess.run(
+            [self.node, "--experimental-strip-types", str(DRIVER)],
+            input=json.dumps({"cases": cases}), capture_output=True, text=True, timeout=180,
+        )
+        if proc.returncode != 0:
+            self.fail(f"lane math driver failed: {proc.stderr.strip()[:2000]}")
+        return json.loads(proc.stdout)
+
+    def test_a_group_edit_lands_on_every_photo_it_visited(self) -> None:
+        got = self._run([{
+            "script": [
+                {"render": {"token": "A", "spec": {"photos": [{}, {}, {}]}}},
+                {"lane": {"index": 0, "key": "anim", "value": "fade"}},
+                {"lane": {"index": 1, "key": "anim", "value": "fade"}},
+                {"lane": {"index": 2, "key": "anim", "value": "fade"}},
+            ]
+        }])[0]["burst"]
+        self.assertEqual(got[0]["seen"], {"photos": [{}, {}, {}]}, "the burst starts where the item stands")
+        sent = got[-1]["sent"]
+        self.assertEqual([photo.get("anim") for photo in sent["photos"]], ["fade", "fade", "fade"],
+                         "one write per photo, and the last one must not undo the first two")
+
+    def test_both_edges_of_a_window_survive_one_another(self) -> None:
+        got = self._run([{
+            "script": [
+                {"render": {"token": "A", "spec": {"photos": [{"anim": "fade"}]}}},
+                {"write": {"at": 2}},
+                {"write": {"until": 4}},
+            ]
+        }])[0]["burst"]
+        sent = got[-1]["sent"]
+        self.assertEqual(sent, {"photos": [{"anim": "fade"}], "at": 2, "until": 4},
+                         "the field written first is still there, and so is the photo list")
+
+    def test_the_buffer_is_dropped_once_the_item_catches_up(self) -> None:
+        got = self._run([{
+            "script": [
+                {"render": {"token": "A", "spec": {"photos": [{"anim": "fade"}]}}},
+                {"write": {"at": 2}},
+                {"render": {"token": "B", "spec": {"photos": [{"anim": "fade"}], "at": 2, "duration": 9}}},
+                {"write": {"until": 4}},
+            ]
+        }])[0]["burst"]
+        self.assertEqual(got[2]["seen"]["duration"], 9, "a new item's value is the truth, buffer or not")
+        self.assertEqual(got[-1]["sent"], {"photos": [{"anim": "fade"}], "at": 2, "until": 4, "duration": 9},
+                         "and the next write builds on it instead of resurrecting what was dropped")
+
+    def test_a_render_that_arrives_first_keeps_the_write_in_flight(self) -> None:
+        # A re-render from something else (another field, a clock tick) must not roll a
+        # drag back to where it started while the pointer is still down.
+        got = self._run([{
+            "script": [
+                {"render": {"token": "A", "spec": {"photos": [{"n": 1}]}}},
+                {"write": {"at": 2}},
+                {"render": {"token": "A", "spec": {"photos": [{"n": 1}]}}},
+            ]
+        }])[0]["burst"]
+        self.assertEqual(got[2]["seen"], {"photos": [{"n": 1}], "at": 2})
+
+    def test_a_popup_that_writes_nothing_reads_the_item(self) -> None:
+        got = self._run([{
+            "script": [{"render": {"token": "A", "spec": {"photos": [{"n": 1}], "layout": "grid"}}}]
+        }])[0]["burst"]
+        self.assertEqual(got[0]["seen"], {"photos": [{"n": 1}], "layout": "grid"})
+        self.assertNotIn("livePatch({ collage: { ...spec", self.app,
+                        "no write may compose on the render's snapshot again")
+
+    def test_every_group_writer_builds_on_the_live_list(self) -> None:
+        for name in ("setPhotoFrame", "setPhotoShape", "setPhotoLane", "setPhotoMotionField",
+                     "setPhotoMotionAmount", "clearPhotoLanes", "rotateFreePhoto", "turnSelectedPhoto",
+                     "setSize", "movePhotoTarget", "turnPhotoTarget"):
+            start = self.app.index(f"const {name} = (")
+            body = self.app[start:start + 1400]
+            self.assertIn("photosNow()", body, f"{name} reads the list the last write left")
+        self.assertIn("const hasExit = exitChosen !== 'none' || photos.some(", self.app,
+                      "a read for the panel keeps reading what this render was drawn with")
+        self.assertIn("const photos = spec.photos ?? []", self.app)
+        self.assertIn("const photosNow = (): CollagePhoto[] => specNow().photos ?? []", self.app)
 
 
 class LaneMathTest(unittest.TestCase):
