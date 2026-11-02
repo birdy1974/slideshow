@@ -2368,16 +2368,29 @@ def karaoke_document(item: dict[str, Any], defaults: dict[str, Any], width: int,
     return _header(g) + "\n" + "\n".join(events) + "\n"
 
 
-def karaoke_overlay_filter(ass_path: Path) -> str:
+def karaoke_overlay_filter(ass_path: Path, fonts_dir: Path | str | None = None) -> str:
     """The ``ass=`` filter for a karaoke overlay, quoted like every other one.
 
     Same two-pass quoting as the drawtext and effect paths: a work directory
     with an apostrophe would otherwise close the quoted section early.
+
+    ``fonts_dir`` is not decoration. The fonts this app renders with are shipped
+    in the container's own directory (``settings.fonts_dir``), not installed into
+    the image, so libass only learns the caption's family name exists when it is
+    pointed there. The ordinary caption path has always done that; karaoke used to
+    hand FFmpeg a bare ``ass=filename=``, and on a build without system fonts
+    libass then found no face for the karaoke document and drew *nothing* — a
+    movie that renders fine except that the sung words are simply absent, in the
+    MP4 and in no way visible as an error. Left optional so the twin and the
+    tests can still ask for the plain filter.
     """
     def posix(path: Path | str) -> str:
         return str(path).replace("\\", "/")
 
-    return f"ass=filename={quote_filter_value(posix(ass_path))}"
+    chain = f"ass=filename={quote_filter_value(posix(ass_path))}"
+    if fonts_dir:
+        chain += f":fontsdir={quote_filter_value(posix(fonts_dir))}"
+    return chain
 
 
 def build_text_overlay(
