@@ -1076,14 +1076,36 @@ export function planEnd (plan: KaraokePlan): number {
 
 /** Narrowest the strip can be: its own box, which already shows the whole clip. */
 export const KARAOKE_ZOOM_MIN = 1
-/** Widest: a 3-minute clip becomes 8 screens wide, enough to land on a frame. */
-export const KARAOKE_ZOOM_MAX = 8
+/**
+ * Widest: a 3-minute clip becomes 12 screens wide. The ceiling is set by the
+ * ruler, not by the eye — `karaokeTickStep` has to stay on its ladder (0.01 s is
+ * one frame at 25 fps), and past ~12× a 1-second clip would want a finer ladder
+ * than the render can even express. backend/tests/test_karaoke_strip.py pins both
+ * halves: the clamp, and 40–140 px between ticks across the whole range.
+ */
+export const KARAOKE_ZOOM_MAX = 12
 
 /** 1 = the whole clip fits the box; the strip's width is this × its container. */
 export function clampKaraokeZoom (zoom: number): number {
   const value = Number(zoom)
   if (!Number.isFinite(value)) return KARAOKE_ZOOM_MIN
   return Math.min(KARAOKE_ZOOM_MAX, Math.max(KARAOKE_ZOOM_MIN, Math.round(value * 1000) / 1000))
+}
+
+/**
+ * Where the scroller has to sit for the playhead to stand under the fixed centre
+ * line of the box. The strip used to scroll only when the playhead reached an edge,
+ * which meant the thing being timed — the beat just hit — was against the glass
+ * while the middle of the box stayed empty; a timeline that follows a transport is
+ * read from a line that does not move, with the film slipping under it. So the
+ * centre is the target, and `max(0, …)` is not a nicety: below one screenful of
+ * content there is nothing to scroll and the scroller refuses a negative offset.
+ */
+export function karaokeFollowScroll(playheadPx: number, viewportPx: number): number {
+  const x = Number(playheadPx)
+  const box = Number(viewportPx)
+  if (!Number.isFinite(x) || x <= 0 || !Number.isFinite(box) || box <= 0) return 0
+  return Math.max(0, x - Math.max(0, box) / 2)
 }
 
 /**
@@ -1097,6 +1119,8 @@ const KARAOKE_TICK_STEPS = [0.01, 0.02, 0.04, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10,
 /** Roughly how wide the strip's box is, and how much room one tick wants. */
 const KARAOKE_BOX_PX = 700
 const KARAOKE_TICK_PX = 55
+/** Labels the ruler is allowed to draw at once, whatever the zoom says it wants. */
+const KARAOKE_MAX_TICKS = 139
 
 /**
  * Seconds between ruler ticks for `span` seconds of clip at `zoom`.
@@ -1115,8 +1139,19 @@ export function karaokeTickStep (span: number, zoom: number): number {
   // Scanned from the short end, so this returns the *finest* rung at least as
   // wide as the spacing we want — the other order answers with 300 to everything.
   const want = KARAOKE_TICK_PX / pxPerSecond
-  for (const step of KARAOKE_TICK_STEPS) if (step >= want) return step
-  return KARAOKE_TICK_STEPS[KARAOKE_TICK_STEPS.length - 1]
+  let chosen = KARAOKE_TICK_STEPS[KARAOKE_TICK_STEPS.length - 1]
+  for (const step of KARAOKE_TICK_STEPS) if (step >= want) { chosen = step; break }
+  // Every label is a node in a strip that is already `zoom` screens wide, so the
+  // ladder gets a ceiling as well as a floor: past ~140 labels the ruler is a bill
+  // the browser pays on every frame. Escalating a rung costs legibility nothing —
+  // the ticks just stand further apart — so it wins over the pixel target.
+  for (let guard = 0; guard < KARAOKE_TICK_STEPS.length; guard += 1) {
+    if (seconds / chosen <= KARAOKE_MAX_TICKS) break
+    const next = KARAOKE_TICK_STEPS.indexOf(chosen) + 1
+    if (next >= KARAOKE_TICK_STEPS.length) break
+    chosen = KARAOKE_TICK_STEPS[next]
+  }
+  return chosen
 }
 
 /** Where to put a tick, in percent of the strip — `toPercent` at any zoom. */

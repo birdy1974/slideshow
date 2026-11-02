@@ -137,7 +137,7 @@ Merging is one function per engine, and both are trivial:
 
 A three-minute song squeezed into a 700 px box is 0.26 seconds per pixel: the
 ruler is honest and a divider is un-hittable. So the strip zooms, 100 % (the whole
-clip, as it always was) to 800 %, by the slider in the transport row, `+`/`-`, or
+clip, as it always was) to 1200 %, by the slider in the transport row, `+`/`-`, or
 ⌘/Ctrl+wheel over the strip itself; `0` or *Fit* comes back out, and Alt-click
 puts the time you clicked in the middle of the box.
 
@@ -146,10 +146,12 @@ stores its geometry as a percent of the clip, so zooming is drawing that one
 mapping wider inside a scroller (`width: zoom × 100 %`). Blocks, handles,
 dividers, the playhead and the waveform all follow without a second coordinate
 system, and `pointerTime()` keeps inverting the strip's own `getBoundingClientRect()`,
-so a drag is as exact at 8× as at 1×. Three things are measured in screen pixels
+so a drag is as exact at 12× as at 1×. Three things are measured in screen pixels
 rather than in time, and only those three had to learn about the zoom — the ruler's
 step (a tick every ~55 px, from a 300 s clip down to 0.01 s, which is why one
-frame at 25 fps is reachable), the tick's label (written with the step's own
+frame at 25 fps is reachable — then capped at 139 labels however deep the zoom goes,
+because a label is a DOM node in a strip that is already twelve screens wide), the
+tick's label (written with the step's own
 decimals, or a ruler reading `10.3` above the tick at 10.25 would point at a time
 that is not there), and the floor under a one-word sentence's block (0.8 % of the
 *box*, divided by the zoom, so it stays ~6 px grabbable instead of stretching a
@@ -158,10 +160,20 @@ that is not there), and the floor under a one-word sentence's block (0.8 % of th
 
 Zooming is deliberately not part of `karaokeData`: it says how wide this person
 wants the ruler, and the render reads the data. It rides in `localStorage` under
-`slideshow.karaoke.zoom` and never reaches a project file. While the movie plays
-the scroller keeps the playhead inside itself, so zoomed-in playback is not a
-strip you watch disappear. The one thing the zoom cannot do is sharpen the
-waveform: 700 buckets are fetched for the kept cut and stay 700 buckets, so at 8×
+`slideshow.karaoke.zoom` and never reaches a project file. While the movie runs the
+strip scrolls and the playhead does not: each frame drives the scroller so that the
+line stands under the *centre* of the box (`karaokeFollowScroll`), which is how a
+transport is read — a head that stays put while the film slips under it — instead of
+the line flicking from one edge of the box to the other, which is what the earlier
+keep-it-in-view rule did. At the top and bottom of the clip the clamp lets the line
+walk to the edge, the only honest answer when there is no film left to slide, and
+below fit-zoom there is nothing to scroll at all so it rides its own percentage as it
+always did. A *scrub* deliberately does not re-centre: the pointer is driving the
+position there, and sliding the view under a pointer that is sliding through it is a
+feedback loop, so that case keeps its own held-offset rule. Alt-click uses the same
+arithmetic, which is what `KaraokeFollowScrollTest` measures. The one thing the zoom
+cannot do is sharpen the
+waveform: 700 buckets are fetched for the kept cut and stay 700 buckets, so at 12×
 the peaks stretch (they do not lie — they just get soft) while the onset marks
 remain exact to the millisecond.
 
@@ -185,6 +197,18 @@ class of its own (`.kara-lyric`: positioning, the fade, nothing else), and
 `StageBoxCollisionTest` keeps the two apart — it asserts the stage never uses the
 strip's class, that exactly one rule owns `.kara-block`, and that the lyric rule
 carries no height, background, border or clip.
+
+*The space between the words.* Losing that row also lost the one thing that had been
+spacing the words for free: its `gap`. `tokenize` matches `\S+`, so a token carries
+its letters and never the separator behind them, and the stage was painting
+`<span>word</span>` runs with nothing between them — "all the spaces are gone",
+reported as a font bug. The gap is now a real space written *between* the spans, not
+a `margin-right` on them: `app/karaoke.py` puts a literal `" "` between the `\kf`
+runs, so only a space the face itself measures matches the render, scales with the
+font, and — the part a margin or a `gap` can never do — is a line-break opportunity.
+None in front of the first word of a line, because the block is centred on its own
+text and a leading space would slide the line sideways; and after a token flagged
+`nl` a `\n`, so a break the render writes as `\N` is visible here too.
 
 *The mask, and the clip that replaced it.* The sweep used to colour a word by
 painting a gradient and clipping it to the glyphs (`background-clip: text` with a
@@ -318,10 +342,13 @@ fades rather than failing the job.
   merge, and the panel following the playhead.
 * `backend/tests/test_karaoke_strip.py` + `karaoke_strip.mjs` — the strip's zoom as
   the editor draws it: the clamp (1 is "the clip already fits", nothing narrower;
-  8 is eight screens; a NaN from a hand-written project file is just "fit"), the
-  ruler's step (always a rung of the ladder, never coarser for a longer clip,
+  12 is twelve screens and the ceiling the ruler can still express; a NaN from a
+  hand-written project file is just "fit"), the centre-follow scroll (the middle of
+  the box stands on the playhead whenever there is film to scroll, and the scroller
+  never goes off its own left edge), the ruler's step (always a rung of the ladder,
+  never coarser for a longer clip,
   never finer for a bigger one, 40–140 px of room per tick at every span from 1 s
-  to an hour, ticks unique and reaching the end, and labels that say the time they
+  to an hour, at most 139 labels, ticks unique and reaching the end, and labels that say the time they
   stand on), the block's floor in box-percent, and — with no Node required, because
   they are the parts a CSS tidy-up could silently undo — that the sung words' box
   is measured from the font rather than assumed, that `.kara-word` still carries its

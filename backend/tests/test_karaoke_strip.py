@@ -56,7 +56,7 @@ from app import font_registry as FR  # noqa: E402
 BOX_PX = 700
 LADDER = [0.01, 0.02, 0.04, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
 SPANS = [1, 4, 10, 20, 45, 60, 100, 150, 240, 300, 900, 1800, 3600]
-ZOOMS = [1, 1.5, 2, 3, 4, 6, 8]
+ZOOMS = [1, 1.5, 2, 3, 4, 6, 8, 10, 12]
 
 
 def _node() -> str | None:
@@ -77,6 +77,46 @@ def _run(cases: list[dict]) -> list[dict]:
     return json.loads(proc.stdout)
 
 
+class KaraokeFollowScrollTest(unittest.TestCase):
+    """The strip scrolls; the playhead stands under the centre of the box."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _node():
+            raise unittest.SkipTest("node is not installed, so the strip's geometry helpers cannot be run")
+        cases = []
+        for span, zoom in [(20, 2), (20, 12), (1800, 12)]:
+            width = BOX_PX * zoom
+            for frac in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0):
+                cases.append({"span": span, "zoom": zoom, "x": width * frac, "box": BOX_PX})
+        cases += [
+            {"span": 20, "zoom": 2, "x": 400, "box": 0},        # a box that is not there yet
+            {"span": 20, "zoom": 2, "x": -5, "box": 700},       # before the clip
+            {"span": 20, "zoom": 2, "x": "nan", "box": 700},
+        ]
+        cls.rows = _run(cases)
+
+    def test_the_playhead_is_centred_when_there_is_film_to_scroll(self) -> None:
+        for row in self.rows:
+            # `JSON.stringify` writes null for a NaN, which is exactly what the
+            # hand-written-project-file case is meant to look like.
+            x, box, follow = float(row["x"] or 0), float(row["box"] or 0), row["follow"]
+            self.assertGreaterEqual(follow, 0, "a scroller never scrolls backwards off its own left edge")
+            self.assertLessEqual(follow, max(x, 0), "the strip may not scroll past its own playhead")
+            if box <= 0:
+                self.assertEqual(follow, 0, "no box, no centre to aim at")
+                continue
+            if x - box / 2 > 0:
+                self.assertAlmostEqual(follow + box / 2, x, places=6, msg=f"{row['span']}s x{row['zoom']}: the centre line must stand on the playhead, not beside it")
+            elif x > 0:
+                self.assertEqual(follow, 0, f"{row['span']}s x{row['zoom']}: near the clip's start the line walks from the left edge, it cannot be centred")
+
+    def test_a_box_of_nothing_and_a_time_before_zero_both_scroll_nowhere(self) -> None:
+        self.assertEqual(self.rows[-1]["follow"], 0, "a NaN playhead is not a reason to move")
+        self.assertEqual(self.rows[-3]["follow"], 0, "no box, no centring")
+        self.assertEqual(self.rows[-2]["follow"], 0, "the clip's IN point is at the left edge, not off it")
+
+
 class KaraokeStripZoomTest(unittest.TestCase):
     """The clamp, the ruler's density and the block's floor, as the strip sees them."""
 
@@ -94,11 +134,11 @@ class KaraokeStripZoomTest(unittest.TestCase):
 
     def test_zoom_clamps_to_the_screens_it_can_span(self) -> None:
         row = self.by_key[(20.0, 1.0)]
-        self.assertEqual((row["min"], row["max"]), (1, 8), "1 = the clip already fits the box; 8 = eight screens")
+        self.assertEqual((row["min"], row["max"]), (1, 12), "1 = the clip already fits the box; 12 = twelve screens")
         clamped = {r["requested"]: r["zoom"] for r in self.rows if r["span"] == 30.0 and r["requested"] not in ZOOMS}
         self.assertEqual(clamped[-3], 1.0, "nothing is narrower than the whole clip")
         self.assertEqual(clamped[0.2], 1.0, "below fit the strip would be a shrunken lie")
-        self.assertEqual(clamped[99], 8.0)
+        self.assertEqual(clamped[99], 12.0, "the ceiling is 1200 %, and past it the ruler has no rung")
         self.assertEqual(clamped[1.23456], 1.235, "three decimals, or the slider and the ruler disagree")
         self.assertEqual(clamped[None], 1.0, "a NaN from a hand-written project file is just 'fit'")
 
@@ -275,6 +315,27 @@ class StageBoxCollisionTest(unittest.TestCase):
         word = re.findall(r"\.kara-word\{[^}]*\}", self.css)[0]
         for shift in ("padding:", "margin:", "top:", "translate"):
             self.assertNotIn(shift, word, f"a {shift} on the word offsets the overlay from the letters")
+
+    def test_the_words_are_separated_by_a_real_space(self) -> None:
+        """The gap between words has to be text, not layout.
+
+        `tokenize` matches `\\S+`, so a token never carries the space that followed it.
+        While the lyric line was the strip's flex row, that row's `gap` was spacing the
+        words; the row became a text line and the words ran together. A margin on
+        `.kara-word` would look the same and be wrong twice — it does not scale with
+        the font and it is not a break opportunity — while the render (`app/karaoke.py`)
+        writes a literal `" "` between the `\\kf` runs. So: a text node between the
+        spans, never inside one, because the box a `clip-path` reveals is the word's.
+        """
+        emit = re.search(r"\{shown\.map[\s\S]*?\n {12}\}\)", self.stage)
+        assert emit, "the word loop is where the separation has to live"
+        body = emit.group(0)
+        self.assertIn("index > 0 ? ' ' : null", body,
+                      "a space before every word but the first of the line")
+        self.assertNotIn("gap:", body, "a flex gap is a substitute for the space, not the space")
+        self.assertIn(r"token.nl ? '\n' : null", body,
+                      "a break the render writes as \\N has to show up here as well")
+        self.assertIn("<Fragment key={w.i}>", body, "the space is a sibling of the word, not its child")
 
     def test_a_word_never_ellipsises_itself(self) -> None:
         word = [b for b in re.findall(r"\.kara-word\{[^}]*\}", self.css)]

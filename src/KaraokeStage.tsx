@@ -7,7 +7,7 @@
 // browser and by libass respectively — exactly the situation the caption
 // preview has always had (docs/text-motion.md), where the *timing* is pinned by
 // twin tests and the wrapping is left to the renderer.
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { effectiveFontStyle, fontMetrics } from './fonts'
 import { FRAME_H, FRAME_W, ensureFont, fontCssFor } from './textMotionScene'
@@ -190,14 +190,29 @@ export function KaraokeStage(props: KaraokeStageProps) {
               // one the sweep is made of. `word-break` never needs a clip; the
               // -webkit- aliases are gone because nothing is clipped to text any more.
               return (
-                <span
-                  key={w.i}
-                  className={`kara-word kara-${state}${look.underline ? ' u' : ''}`}
-                  style={{ color: colour }}
-                >
-                  {token.w}
-                  {sweeping ? <span className="kara-word-sung" style={{ color: fill, clipPath: `inset(-100% ${(100 - Math.max(0, Math.min(1, frame.u)) * 100).toFixed(2)}% -100% 0)` }} aria-hidden="true">{token.w}</span> : null}
-                </span>
+                <Fragment key={w.i}>
+                  {/* The gap between two words is a space the face itself measures,
+                      written *between* the spans and never inside one. `tokenize`
+                      matches `\S+`, so a token carries only its letters; the strip's
+                      row used to be a flex line with a `gap`, and that gap was doing
+                      the words' spacing for them — once the line was its own box the
+                      words ran together. A `margin-right` on `.kara-word` would look
+                      the same and be wrong twice: it does not scale with the font, and
+                      it cannot wrap, while the render (`karaoke.py`) writes a literal
+                      `" "` between the `\kf` runs. So: a text node, which the browser
+                      spaces like the MP4's libass does and breaks a line on. No space
+                      in front of the first word of the line — the block is centred on
+                      its own text, and a leading space would shift the line sideways. */}
+                  {index > 0 ? ' ' : null}
+                  <span
+                    className={`kara-word kara-${state}${look.underline ? ' u' : ''}`}
+                    style={{ color: colour }}
+                  >
+                    {token.w}
+                    {sweeping ? <span className="kara-word-sung" style={{ color: fill, clipPath: `inset(-100% ${(100 - Math.max(0, Math.min(1, frame.u)) * 100).toFixed(2)}% -100% 0)` }} aria-hidden="true">{token.w}</span> : null}
+                  </span>
+                  {token.nl ? '\n' : null}
+                </Fragment>
               )
             })}
           </div>
