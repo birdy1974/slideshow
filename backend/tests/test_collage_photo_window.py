@@ -308,6 +308,64 @@ class PopupWiringTest(unittest.TestCase):
 
 
 
+class LaneSelectionSurfaceTest(unittest.TestCase):
+    """The group is chosen in the lane, edits everything, and is visible on the preview.
+
+    These are the three ways the feature could be half-built, so each is pinned against
+    the source of the component that has to do it: a checkbox that only highlights a
+    row, an entrance picker that writes to the lead photo alone, or a selection nobody
+    can see while they are changing it.
+    """
+
+    def setUp(self) -> None:
+        self.lanes = (REPO / "src" / "CollageTimingLanes.tsx").read_text(encoding="utf-8")
+        self.app = (REPO / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    def test_the_lane_offers_a_checkbox_a_number_and_a_select_all(self) -> None:
+        self.assertIn('aria-label="Select every photo"', self.lanes, "the header's box is the only Select all")
+        self.assertIn('type="checkbox" checked={on}', self.lanes)
+        self.assertIn("<i onClick={click(i)}", self.lanes, "the number itself selects that photo alone")
+        self.assertIn("el.indeterminate", self.lanes, "a partly checked column must not read as 'all'")
+        self.assertIn("selected: number[]", self.lanes)
+        self.assertNotIn("onSelect:", self.lanes, "the lane no longer owns a single index")
+
+    def test_a_group_drag_and_a_group_reset_go_to_every_member(self) -> None:
+        self.assertIn("if (!selected.includes(index)) onSelected([index])", self.lanes,
+                      "dragging a row that is in the group must not dissolve the group")
+        self.assertIn("const moved = groupShift(", self.lanes)
+        self.assertIn("held.group.forEach", self.lanes)
+        self.assertIn("const clearWindows = (index: number) => {", self.lanes)
+        self.assertIn("const list = selected.includes(index) && selected.length > 1 ? selected : [index]", self.lanes,
+                      "auto and double-click undo the group you are in, not just the row you touched")
+
+    def test_every_panel_writer_expands_through_the_selection(self) -> None:
+        for name in ("setPhotoFrame", "setPhotoShape", "setPhotoMotionField", "clearPhotoLanes",
+                     "rotateFreePhoto", "setSize", "setPhotoLane"):
+            self.assertIn(f"const {name} = (", self.app, name)
+        wrapped = [line for line in self.app.splitlines() if "=> forSelected(" in line]
+        self.assertGreaterEqual(len(wrapped), 7,
+                               "each writer takes the same signature it always had and fans out inside — so no call site can forget the group")
+        self.assertIn("const turnSelectedPhoto = (index: number, delta: number)", self.app,
+                      "the turn buttons turn each photo from where it stands, not to one angle")
+        self.assertIn("photoSelection.length > 1 ? `${photoSelection.length} photos`", self.app,
+                      "the panel says how many it is editing")
+
+    def test_the_selected_photos_are_dotted_on_the_preview(self) -> None:
+        self.assertIn("selectedIndices?.includes(i) ? ' marked' : ''", self.app)
+        self.assertIn("collage-selected-which", self.app, "and which ones, in words, beside the panel's title")
+        css = (REPO / "src" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".collage-mat.marked{outline:2px dashed #d9b35d;outline-offset:3px}", css,
+                      "an outline, never a border: the mat's box is the photo's frame")
+        self.assertIn(".collage-window-row.lead{outline:", css)
+
+    def test_the_mixed_state_is_told_rather_than_guessed(self) -> None:
+        self.assertIn("mixed={mixedOn(i => photos[i].anim)}", self.app)
+        self.assertIn("mixed={mixedOn(i => photos[i].exit)}", self.app)
+        picker = (REPO / "src" / "AnimPicker.tsx").read_text(encoding="utf-8")
+        self.assertIn("mixed ? 'Mixed' : value === undefined ? PHASE.choose : label", picker,
+                      "the chip says the photos disagree instead of naming one of them")
+
+
 class LaneMathTest(unittest.TestCase):
     """The lane's cursor↔second mapping, executed from the module the component
     uses — a pure function is only a promise until something outside it calls it."""
@@ -327,7 +385,60 @@ class LaneMathTest(unittest.TestCase):
             self.fail(f"lane math driver failed: {proc.stderr.strip()[:2000]}")
         return json.loads(proc.stdout)
 
-    def test_the_pointer_maps_across_the_track_only(self) -> None:
+    def test_the_selection_rules_are_one_thing_for_every_control(self) -> None:
+        """Checkbox, number and Shift-range: one implementation, four call sites.
+
+        The lane's checkbox, its number cell, the chip strip and the preview all let
+        a person pick which photos the panel edits. If any one of them decided its own
+        modifier rules, the popup would mean different things in different halves — so
+        they share `nextSelection`, and this measures the sharing.
+        """
+        got = self._run([
+            {"sel": [], "index": 2, "mode": "single", "count": 5},
+            {"sel": [2], "index": 2, "mode": "single", "count": 5},
+            {"sel": [2], "index": 4, "mode": "single", "count": 5},
+            {"sel": [1, 3], "index": 3, "mode": "toggle", "count": 5},
+            {"sel": [1, 3], "index": 2, "mode": "toggle", "count": 5},
+            {"sel": [1], "index": 4, "mode": "range", "count": 5},
+            {"sel": [], "index": 3, "mode": "range", "count": 5},
+            {"sel": [1], "index": 9, "mode": "toggle", "count": 5},
+            {"sel": [1, 7, -2, 1.5], "index": 2, "mode": "toggle", "count": 5},
+            {"sel": [0], "index": 1, "mode": "toggle", "count": 0},
+        ])
+        self.assertEqual(got[0]["selection"], [2], "a click on nothing selected picks that one")
+        self.assertEqual(got[1]["selection"], [], "clicking the only selected photo again lets it go")
+        self.assertEqual(got[2]["selection"], [4], "a plain click means this one only")
+        self.assertEqual(got[3]["selection"], [1], "the checkbox unchecks: it removes, it does not replace")
+        self.assertEqual(got[4]["selection"], [1, 2, 3], "and adds in index order, so the lead photo stays the lead")
+        self.assertEqual(got[5]["selection"], [1, 2, 3, 4], "Shift extends from the last thing clicked")
+        self.assertEqual(got[6]["selection"], [3], "with nothing to extend from, Shift is just a click")
+        self.assertEqual(got[7]["selection"], [1], "an index outside the pile is not a photo")
+        self.assertEqual(got[8]["selection"], [1, 2], "stored junk drops out rather than reaching the spec")
+        self.assertEqual(got[9]["selection"], [], "a collage with no photos has no selection")
+
+    def test_a_group_drag_shifts_every_member_by_what_the_anchor_moved(self) -> None:
+        """A body drag moves the selection together: same shift, own width, own clamp."""
+        track = {"left": 0.0, "width": 600.0}
+        span = 60.0
+        got = self._run([
+            {"rect": track, "span": span, "from": 100.0, "to": 130.0,
+             "anchor": {"at": 10.0, "until": 20.0}, "others": [{"at": 0.0, "until": 5.0}, {"at": 55.0, "until": 58.0}]},
+            {"rect": track, "span": span, "from": 100.0, "to": 20.0,
+             "anchor": {"at": 10.0, "until": 20.0}, "others": [{"at": 2.0, "until": 6.0}]},
+            {"rect": track, "span": span, "from": 100.0, "to": 700.0,
+             "anchor": {"at": 40.0, "until": 50.0}, "others": [{"at": 12.0, "until": 14.0}]},
+            {"rect": track, "span": span, "from": 100.0, "to": 130.0,
+             "anchor": {"at": 10.0, "until": 20.0}, "others": []},
+        ])
+        self.assertEqual(got[0]["group"], [{"at": 3.0, "until": 8.0}, {"at": 57.0, "until": 60.0}],
+                         "3 s right: the short window keeps its 5 s, the far one stops at the end of the lane")
+        self.assertEqual(got[1]["group"], [{"at": 0.0, "until": 4.0}],
+                         "the group stops with the anchor instead of sliding into negative time")
+        self.assertEqual(got[2]["group"], [{"at": 22.0, "until": 24.0}],
+                         "and at the far end the anchor was clamped to 50, so the group shifts by 10 and no further")
+        self.assertEqual(got[3]["group"], [], "one photo selected is exactly the old single drag")
+
+
         span = 60.0
         track = {"left": 140.0, "width": 660.0}
         got = self._run([

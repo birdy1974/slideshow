@@ -1074,6 +1074,69 @@ export function planEnd (plan: KaraokePlan): number {
 // backend/tests/test_karaoke_twin.py can pin them.
 // ---------------------------------------------------------------------------
 
+/**
+ * The piece of the *file* the karaoke clock runs on. A movie can be cut to an
+ * IN/OUT pair, and every timing in `karaokeData` is a second inside the kept
+ * region (never a second of the file) — which is what lets a re-cut leave the words
+ * where they are. `renderer.video_trim_window` applies the same rules to the
+ * segment it builds, so reading them here too is what keeps the strip, the video
+ * element and the MP4 telling one story; `backend/tests/test_karaoke_twin.py`
+ * measures the pair against each other.
+ */
+export interface KaraokeClipWindow {
+  /** Where the strip's zero is, in file seconds: the IN point. */
+  start: number
+  /** The strip's whole width: the kept region, or the item's length if it was never cut. */
+  span: number
+    /** File time at which the media element has to stop, or `null` when the movie was
+   *  never cut and so plays to the end of the file. */
+  cutAt: number | null
+}
+
+export function karaokeClipWindow (
+  item: { trimStart?: number; trimEnd?: number; duration?: number },
+  kept?: number
+): KaraokeClipWindow {
+  const start = Math.max(0, Number(item?.trimStart) || 0)
+  const out = Number(item?.trimEnd) || 0
+  const stored = Number(item?.duration) || 0
+  const cut = start > 0.01 || out > 0.01
+  // Three shapes, in the renderer's order: both handles, an OUT point alone, and an
+  // IN point alone. The last means "to the end of the file", and a movie's
+  // `duration` *is* the file's length when nobody shortened it — so what is left of
+  // it is what the strip has to show. Answering `duration` there would be the same
+  // mistake in miniature: seconds of movie that never reaches the screen, timed
+  // against anyway.
+  const visible = out > 0 ? Math.max(0.5, out - start) : start > 0 ? Math.max(0.5, stored - start) : 0
+  const span = Math.max(0.5, Number(kept) > 0 ? Number(kept) : (cut ? visible : (stored || visible || 5)))
+  // Only a *cut* movie has somewhere to stop. An untrimmed one plays to the end of
+  // the file — `duration` is a floor for a movie, never a cap — so `null` is the
+  // honest answer there, and the popup behaves exactly as it did before.
+  return { start, span, cutAt: cut ? start + span : null }
+}
+
+/**
+ * What the strip's playhead reads off a media element's clock, and whether the cut
+ * has run out. Split out of the effect because "the complete movie plays on after
+ * the strip ends" is a bug in this mapping, not in the movie.
+ */
+export function karaokeClipClock (
+  videoTime: number,
+  win: KaraokeClipWindow
+): { position: number; ended: boolean } {
+  const t = Number(videoTime)
+  const span = Math.max(0.5, Number(win?.span) || 0.5)
+  if (!Number.isFinite(t)) return { position: 0, ended: false }
+  const position = Math.min(span, Math.max(0, t - (Number(win?.start) || 0)))
+  // `ended` is the pause signal, and only a movie that was actually cut has an OUT
+  // point to pause at — `null` there is not zero, so it is tested as a type before
+  // it is read as a number. Running out of *strip* is the other thing, and that one
+  // parks the playhead at the right edge without touching the picture.
+  const cutAt = win?.cutAt
+  const ended = typeof cutAt === 'number' && Number.isFinite(cutAt) && t >= cutAt - 0.02
+  return { position, ended }
+}
+
 /** Narrowest the strip can be: its own box, which already shows the whole clip. */
 export const KARAOKE_ZOOM_MIN = 1
 /**

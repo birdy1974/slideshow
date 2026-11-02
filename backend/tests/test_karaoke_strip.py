@@ -51,6 +51,15 @@ import sys
 sys.path.insert(0, str(REPO / "backend"))
 from app import font_registry as FR  # noqa: E402
 
+# The karaoke strip has to span the *kept* region of a cut movie, and the only
+# authority on what that is lives in the renderer. Importing it is optional: the
+# sandbox image without ffmpeg deps falls back to the hand-computed numbers below,
+# which are the same numbers.
+try:
+    from app import renderer as RENDERER
+except Exception:  # pragma: no cover - depends on the image
+    RENDERER = None
+
 # What the 700 px box in karaokeCore.ts assumes, so the spacing checks below are
 # about the ruler the strip actually draws rather than about a magic number.
 BOX_PX = 700
@@ -115,6 +124,123 @@ class KaraokeFollowScrollTest(unittest.TestCase):
         self.assertEqual(self.rows[-1]["follow"], 0, "a NaN playhead is not a reason to move")
         self.assertEqual(self.rows[-3]["follow"], 0, "no box, no centring")
         self.assertEqual(self.rows[-2]["follow"], 0, "the clip's IN point is at the left edge, not off it")
+
+
+class KaraokeClipWindowTest(unittest.TestCase):
+    """The strip runs on the kept cut: where zero is, how wide it is, where it stops.
+
+    A movie can be cut to an IN/OUT pair and every karaoke time is a second inside
+    that region. When the popup was opened from the timeline it read only
+    `item.duration`, so the strip and the movie disagreed about the end: the playhead
+    ran off the right edge while the complete movie kept playing. `KaraokeEditor` now
+    takes its window from `karaokeClipWindow`, whose rules are the renderer's.
+    """
+
+    ITEMS: list[dict] = [
+        # untrimmed: the item's own length is the whole strip
+        {"item": {"duration": 12}, "t": 5.0},
+        {"item": {"duration": 12}, "t": 13.0},
+        # a hold longer than the file, never cut: the strip is the hold and the
+        # movie is allowed to run to the end of the file, as the render does
+        {"item": {"duration": 4, "trimStart": 0, "trimEnd": 0}, "t": 90.0},
+        # a cut with both handles: 35 s of a 47 s file, starting at 12
+        {"item": {"trimStart": 12, "trimEnd": 47, "duration": 35}, "t": 12.5},
+        {"item": {"trimStart": 12, "trimEnd": 47, "duration": 35}, "t": 46.9},
+        {"item": {"trimStart": 12, "trimEnd": 47, "duration": 35}, "t": 47.4},
+        # before the IN point (a hand-written project file): the strip reads 0
+        {"item": {"trimStart": 12, "trimEnd": 47, "duration": 35}, "t": 3.0},
+        # an exact `kept` from the movie editor wins over the rounded duration
+        {"item": {"trimStart": 12, "trimEnd": 47, "duration": 35}, "kept": 35.2, "t": 47.0},
+        # only an OUT point, only an IN point, and neither with junk in them
+        {"item": {"trimEnd": 20, "duration": 20}, "t": 19.0},
+        {"item": {"trimStart": 8, "duration": 30}, "t": 38.5},
+        {"item": {}, "t": 0},
+        {"item": {"trimStart": "x", "trimEnd": None, "duration": "0/0"}, "t": "nan"},
+    ]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _node():
+            raise unittest.SkipTest("node is not installed, so the strip's geometry helpers cannot be run")
+        cls.rows = _run([{"span": 20, "zoom": 1, **c} for c in cls.ITEMS])
+
+    @staticmethod
+    def _num(value):
+        # The TS side coerces junk to 0, so the test must not trip over it.
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def test_the_strip_spans_the_kept_region_and_stops_at_the_cut(self) -> None:
+        rows = list(zip(self.ITEMS, self.rows))
+        for (case, row) in rows:
+            clip, item = row["clip"], case["item"]
+            start = max(0.0, self._num(item.get("trimStart")))
+            out = self._num(item.get("trimEnd"))
+            duration = self._num(item.get("duration"))
+            cut = start > 0.01 or out > 0.01
+            from_item = max(0.5, out - start) if out > 0 else (max(0.5, duration - start) if start > 0 else 0.0)
+            expected = self._num(case.get("kept")) or (from_item if cut else 0.0) or duration or 5.0
+            cut = start > 0.01 or out > 0.01
+            self.assertAlmostEqual(clip["start"], start, places=6, msg=str(case))
+            self.assertAlmostEqual(clip["span"], expected, places=6, msg=str(case))
+            if cut:
+                self.assertAlmostEqual(clip["cutAt"], start + expected, places=6, msg=str(case))
+            else:
+                self.assertIsNone(clip["cutAt"], "an untrimmed movie has no OUT point to stop at")
+
+    def test_the_clock_is_offset_by_the_in_point_and_parks_at_the_end(self) -> None:
+        """The playhead reads media time relative to the IN point, never past the
+        strip, and the picture is only ever stopped by an OUT point that exists."""
+        for case, row in zip(self.ITEMS, self.rows):
+            clip, clock = row["clip"], row["clock"]
+            t = float(case.get("t") or 0)
+            if t != t:  # NaN from a hand-written project file: the clock says 0
+                self.assertEqual(clock["position"], 0, str(case))
+                self.assertFalse(clock["ended"], str(case))
+                continue
+            position = min(clip["span"], max(0.0, t - clip["start"]))
+            ended = clip["cutAt"] is not None and t >= clip["cutAt"] - 0.02
+            self.assertAlmostEqual(clock["position"], position, places=6, msg=str(case))
+            self.assertEqual(bool(clock["ended"]), ended, str(case))
+
+        def row_at(item: dict, t: float) -> dict:
+            for case, row in zip(self.ITEMS, self.rows):
+                if case["item"] == item and case["t"] == t:
+                    return row
+            raise AssertionError(f"case missing from ITEMS: {item} @ {t}")
+
+        cut = {"trimStart": 12, "trimEnd": 47, "duration": 35}
+        past = row_at(cut, 47.4)
+        self.assertTrue(past["clock"]["ended"], "past the OUT point the movie stops — that is the whole report")
+        self.assertAlmostEqual(past["clock"]["position"], past["clip"]["span"], places=6,
+                               msg="and the playhead parks at the end of the strip, not off its edge")
+        before = row_at(cut, 3.0)
+        self.assertEqual(before["clock"]["position"], 0, "a media time before the IN point is the clip's zero")
+        uncut = row_at({"duration": 12}, 13.0)
+        self.assertFalse(uncut["clock"]["ended"], "nothing was cut, so nothing may stop the movie")
+        self.assertAlmostEqual(uncut["clock"]["position"], uncut["clip"]["span"], places=6,
+                               msg="the playhead still stops at the end of the strip")
+        hold = row_at({"duration": 4, "trimStart": 0, "trimEnd": 0}, 90.0)
+        self.assertFalse(hold["clock"]["ended"],
+                         "a short hold on an untrimmed movie is a floor, not an OUT point: the render plays the file to its end")
+
+    @unittest.skipIf(RENDERER is None, "the renderer module needs ffmpeg's python deps")
+    def test_the_window_is_the_renderers_window(self) -> None:
+        """`karaokeClipWindow` may not invent its own idea of the kept cut."""
+        for item, native in [({"trimStart": 12, "trimEnd": 47}, 47.0), ({"trimEnd": 20}, 20.0),
+                             ({"trimStart": 8}, 38.0), ({"trimStart": 40, "trimEnd": 44}, 44.0)]:
+            window = RENDERER.video_trim_window(dict(item, type="video"), native)
+            row = _run([{"span": 20, "zoom": 1, "item": dict(item, duration=native)}])[0]
+            clip = row["clip"]
+            if window is None:
+                self.assertAlmostEqual(clip["span"], native, places=6, msg=f"{item}: nothing was cut")
+                self.assertAlmostEqual(clip["start"], 0.0, places=6, msg=str(item))
+                continue
+            self.assertAlmostEqual(clip["start"], window["start"], places=6, msg=str(item))
+            self.assertAlmostEqual(clip["span"], window["kept"], places=6, msg=f"{item}: the strip must be the segment")
+            self.assertAlmostEqual(clip["cutAt"], window["end"], places=6, msg=str(item))
 
 
 class KaraokeStripZoomTest(unittest.TestCase):
@@ -344,6 +470,41 @@ class StageBoxCollisionTest(unittest.TestCase):
         self.assertIn("text-overflow:clip", word[0])
         self.assertNotIn("background-clip", word[0])
         self.assertNotIn("white-space:nowrap", word[0], "a sung line wraps; it does not shorten")
+
+
+class KaraokeCutPlaybackTest(unittest.TestCase):
+    """The popup must not keep playing the movie past the cut.
+
+    `KaraokeClipWindowTest` measures the arithmetic; this checks that the editor is
+    the one that applies it — that the time it shows is offset by the IN point, that
+    reaching the OUT point pauses the element and parks the playhead, and that
+    pressing play at the end starts again at the IN point.
+    """
+
+    def setUp(self) -> None:
+        self.editor = (REPO / "src" / "KaraokeEditor.tsx").read_text(encoding="utf-8")
+
+    def test_the_editor_reads_its_window_from_the_clip(self) -> None:
+        self.assertIn("const clip = useMemo(() => karaokeClipWindow(", self.editor)
+        self.assertIn("const clipSeconds = clip.span", self.editor,
+                      "the strip's whole width is the kept region, not `item.duration`")
+        self.assertIn("const trimStart = clip.start", self.editor)
+
+    def test_the_picture_stops_at_the_cut(self) -> None:
+        self.assertIn("const clock = karaokeClipClock(video.currentTime, clip)", self.editor)
+        self.assertIn("if (!clock.ended || clip.cutAt === null) return", self.editor,
+                      "an untrimmed movie has no OUT point and must run on as it always did")
+        self.assertIn("video.pause()", self.editor)
+        self.assertIn("addEventListener('ended', onEnded)", self.editor,
+                      "and a file that simply ends parks the playhead rather than running off")
+        self.assertIn("video.currentTime = clip.start", self.editor,
+                      "playing from the end of the cut means again, from the IN point")
+
+    def test_the_waveform_and_the_beats_follow_the_same_window(self) -> None:
+        self.assertIn("&start=${trimStart.toFixed(2)}&length=${span.toFixed(2)}", self.editor,
+                      "the peaks are fetched for the strip they are drawn under")
+        self.assertIn(".filter(v => v >= 0 && v <= span)", self.editor,
+                      "and onsets outside the kept region are dropped, not offset onto it")
 
 
 if __name__ == "__main__":

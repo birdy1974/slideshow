@@ -81,6 +81,55 @@ export function pinStop (
   return Math.min(span, Math.max(t, at + MIN_WINDOW))
 }
 
+/**
+ * How a click changes the *selection*. Three verbs, one implementation, because the
+ * lane's checkbox, its number cell, the photo strip's number and the preview's
+ * picture all have to answer the same question the same way — a UI where one control
+ * toggles and another replaces is a riddle. `single` means "this one only", and
+ * clicking the photo that is already the only one selected lets it go again; `toggle`
+ * is the checkbox and Ctrl/⌘; `range` is Shift, measured from the last thing clicked.
+ *
+ * It lives here rather than in each component for the same reason the drag maths
+ * does: `backend/tests/collage_lane_math.mjs` can run it, so the modifier rules are
+ * a fact a test holds rather than a habit four call sites drift apart from. The
+ * module imports nothing on purpose, which is what makes it measurable under node.
+ */
+export type SelectionMode = 'single' | 'toggle' | 'range'
+
+export function nextSelection (current: number[], index: number, mode: SelectionMode, count: number): number[] {
+  const n = Math.max(0, Math.floor(Number(count) || 0))
+  const list = (current || []).filter(i => Number.isInteger(i) && i >= 0 && i < n)
+  if (!Number.isInteger(index) || index < 0 || index >= n) return list
+  if (mode === 'single') return list.length === 1 && list[0] === index ? [] : [index]
+  if (mode === 'toggle') return list.includes(index) ? list.filter(i => i !== index) : [...list, index].sort((a, b) => a - b)
+  const anchor = list.length ? list[list.length - 1] : index
+  const lo = Math.min(anchor, index)
+  const hi = Math.max(anchor, index)
+  const next = [...list]
+  for (let i = lo; i <= hi; i++) if (!next.includes(i)) next.push(i)
+  return next.sort((a, b) => a - b)
+}
+
+/**
+ * Every photo of the selection moved by the *same* shift as the one being dragged: a
+ * group is set against the ruler together, and each photo keeps its own width. The
+ * delta is taken from the dragged row *after* its own clamp, so pushing a group
+ * against the start of the lane stops the group — it does not let the other rows slide
+ * into negative time while the anchor stands still.
+ */
+export function groupShift (
+  rect: LaneRect | null | undefined, span: number, fromX: number, toX: number,
+  anchor: { at: number; until: number }, others: { at: number; until: number }[],
+): { at: number; until: number }[] {
+  const moved = moveWindow(rect, span, fromX, toX, anchor.at, anchor.until)
+  const delta = moved.at - anchor.at
+  return (others || []).map(o => {
+    const width = Math.max(MIN_WINDOW, o.until - o.at)
+    const from = snapSeconds(Math.max(0, Math.min(span - width, o.at + delta)))
+    return { at: from, until: from + width }
+  })
+}
+
 /** One edge, dragged: the same clamp as the pin, from a delta instead of a
  *  position, because grabbing an edge you cannot see the far end of. */
 export function dragEdge (

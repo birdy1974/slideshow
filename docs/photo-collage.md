@@ -494,6 +494,63 @@ survives a switch to `turn`. A chip whose photo has any lane of its own carries 
 number. Changing a lane never restarts the preview — the clock keeps running and
 only clamps when the slide's derived duration changes.
 
+### Several photos at once
+
+Selecting is a *set*, and the panel edits the set. The checkbox beside a photo's
+number in the timing lane adds it to the group (the lane's header box is Select all,
+and reads as indeterminate when only some rows are ticked); clicking a number, a
+chip or the picture on the preview means "this one only", with Ctrl/⌘ adding and
+Shift extending. Everything the panel writes then goes to every member: size, tilt,
+shape, frame, entrance, its direction and speed and lock, motion, look, exit, and
+the Inherit button. That is done by wrapping the writers, not the call sites —
+
+```ts
+const setPhotoLane = (index, lane, value) => forSelected(index, target => { … })
+```
+
+— so `setPhotoLane(selectedPhoto, 'anim', …)` reads exactly as it did when there was
+one photo, and no control can be added to the popup later and forget the group. Two
+deliberate edges: the **turn buttons are relative** (each photo turns 90° from where
+it stands, because a group given one absolute angle loses the tilt each was given by
+hand), and a slider that is *absolute* sets everybody to that value, which is what
+dragging it means.
+
+The selection is never invisible and never a lie: the chosen photos are ringed with
+dots on the preview (`.collage-mat.marked`, an outline so the photo's own frame box
+does not move), the panel's title says `3 photos` with `1 · 4 · 6` beside it, the
+lead photo — the one the numbers are read from — is ringed in the lane too, and
+where the members disagree an entrance or exit chip says **Mixed** rather than
+naming one photo's answer as if it were everybody's. A `<select>` cannot show a
+value it does not have, so motion and look get a disabled `Mixed — pick one to give
+it to all 3` row instead.
+
+## The background picture, from the timeline
+
+A collage (and a text frame) can lay any library picture behind the photos, and the
+second-most-asked question after "which file" is "can I use one of the pictures I
+already picked". So the timeline is a source of backgrounds in both places a
+background is chosen:
+
+* **a row of thumbnails under the background controls** — every picture on the
+  storyline, in slide order, each labelled with the slide it came from (`3.2` is
+  photo 2 of slide 3), one click and it is the background;
+* **a `timeline` location in the media browser**, beside `/photos`, `/videos` and
+  `uploads` — the same list as ordinary entries, so the preview, the checkboxes and
+  *Use as background* work on it without a second grid.
+
+`src/timelinePhotos.ts` builds the list from the items themselves and is the only
+place the rules live: a photo slide contributes its file, a collage contributes each
+of its photos, a movie contributes nothing, an item with no path contributes nothing,
+and both shapes a stored `path` has ever had are accepted (a whole `/photos/a/b.jpg`,
+or a folder in `path` with the file in `name`). What the pickers write is
+`picture.path` — the mount-relative form the browser's own pick writes into
+`collage.backgroundImage` / `frameBackgroundImage` — because the only requirement a
+background has is that `source_path` can open it, and a strip that invented its own
+path shape would look right in the popup and fail in the MP4. A file that sits on two
+slides is one row in the browser (the same picture offered twice to a background
+picker is a mistake, not a choice) and still counts as used twice in the strip's
+label, since the count is taken from the timeline before that collapsing.
+
 ## When each photo is on screen
 
 The pile is a *sequence*: photo i starts after the delays of photos 0..i, everybody
@@ -555,6 +612,20 @@ fields per photo.
   the window, because a 22 px lane loses the pointer inside one frame. Both are
   asserted where they can be measured: `LaneMathTest` runs that module under node
   (`backend/tests/collage_lane_math.mjs`).
+- **A body drag moves the group; an edge moves one photo.** Dragging the middle of a
+  block that belongs to a multi-selection shifts every selected window by the same
+  amount — `groupShift` takes the delta *after* the anchor's own clamp, so pushing a
+  group against the start of the lane stops the group instead of letting some rows
+  slide into negative time — while each photo keeps its own width. An edge drag stays
+  with one photo, because every window ends where its own exit finishes and two photos
+  have nothing sensible to share there. `auto` and double-click follow the same rule:
+  they hand back the group you are in.
+- **The modifier rules are one function.** `nextSelection` (single / toggle / range) is
+  the answer for the checkbox, the number cell, the chip strip and the preview, so
+  Ctrl and Shift cannot come to mean different things in two halves of the same popup;
+  it lives in `src/CollageLaneMath.ts` and is measured by `LaneSelectionSurfaceTest`
+  and the node driver, including what stored junk does (it drops out rather than
+  reaching the spec).
 - **The right edge is the exit timeline.** It ends the photo's departure, so the row
   says which: the out handle's tooltip names that photo's exit and its fly, and a
   photo whose exit is `none` reads "stays until the slide ends, unless you stop it
@@ -631,6 +702,12 @@ measured rather than assumed:
   sides must drop the same way. The lane cases also compare the **CSS filter
   string** each engine paints at each sampled moment (`matFilterCss`, emitted by
   the driver as `filters`): same parts, same order, same values.
+- `backend/tests/test_timeline_photos.py` + `timeline_photos.mjs` — which files the
+  storyline may offer as a background: slide order, a collage's photos expanded,
+  movies and empty items refused, the legacy folder-plus-name path, the mount each
+  row belongs to, `×2` counted before any deduping, and the two surface checks (both
+  popups render the strip and write the browser's own field; the browser takes the
+  list rather than rebuilding it).
 - `backend/tests/test_collage_photo_window.py` — the timing lane's two fields on
   their own: the accessors refuse junk but honour `at: 0`; an authored arrival is
   exact while the same photo unauthored is still snapped; a photo carrying only empty

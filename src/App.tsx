@@ -4,7 +4,7 @@ import {
   Clock3, Cpu, Download, Eraser, Eye, EyeOff, Film, FolderOpen, GripVertical, Image as ImageIcon,
   ImageOff, Info, LayoutGrid, List, ListVideo, Music2, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, RotateCw, Save,
   Scissors, Settings2, Shuffle, Sparkles, Square, FastForward, Rewind, Trash2, Video, X, Zap, ZoomIn, ZoomOut, Type, Move, Palette,
-  Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom, FolderUp, FolderPlus,
+  Timer, HardDrive, Crop as CropIcon, FileJson, Upload, HardDriveUpload, PanelRight, PanelBottom, FolderUp, FolderPlus, Clapperboard,
   Route,
 } from 'lucide-react'
 import { FieldLabel, Select, TimeField, useModalScrollLock } from './ui'
@@ -58,6 +58,9 @@ import { THUMB_STALL_MS, isThumbnailFile, reserveThumbnailSlot, watchViewportOnc
 import { PopupBackdrop, useEscapeToClose, useLayer } from './layers'
 import { CollageArrangementThumb } from './CollageArrangementThumb'
 import { CollageTimingLanes } from './CollageTimingLanes'
+import { nextSelection } from './CollageLaneMath'
+import { TimelinePhotoStrip } from './TimelinePhotoStrip'
+import { timelinePictures, type TimelinePicture } from './timelinePhotos'
 
 type MediaRoot = 'photos' | 'videos' | 'music' | 'uploads'
 type PreviewMode = 'fast' | 'standard'
@@ -141,6 +144,13 @@ function mediaRootFromPath(fullPath: string, fallback: MediaRoot = 'photos'): Me
   if (p === '/photos' || p.startsWith('/photos/')) return 'photos'
   if (p === '/uploads' || p.startsWith('/uploads/')) return 'uploads'
   return fallback
+}
+
+/** A picture already on the timeline, as a URL: the same helper the browser's own
+ *  cards use, so the thumbnail in the strip is the same bytes as the same file in
+ *  the browser beside it and cannot be rotated or fitted differently. */
+function timelinePictureUrl (picture: { rootName: string; path: string }) {
+  return mediaFileUrl(picture.rootName as MediaRoot, picture.path)
 }
 
 /** A title frame that carries photos: a collage slide. */
@@ -2870,8 +2880,8 @@ function App() {
     {karaokeItemId !== null && (() => { const target = media.find(x => x.id === karaokeItemId); return target ? <KaraokeEditor
       item={target} src={itemThumbUrl(target) || ''} defaults={{ fontFamily, fontSize: Number(fontSize) || 48, fontColor, bold: textBold, italic: textItalic, outline: textOutline }}
       onChange={change => patch(target.id, change)} onClose={() => setKaraokeItemId(null)}/> : null })()}
-    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)} onPickBackground={()=>setTextBgPickerFor(editingTextFrame)} onOpenKaraoke={() => setKaraokeItemId(editingTextFrame)}/>}
-    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onEditPhoto={index => setCollageLook({ id: editingCollageFrame, index, tab: 'filters' })} onEditBackground={() => setCollageLook({ id: editingCollageFrame, index: 'bg', tab: 'filters' })} onOpenCaption={() => {
+    {editingTextFrame !== null && media.find(x=>x.id===editingTextFrame) && <TextEditor mode="frame" item={media.find(x=>x.id===editingTextFrame)!} isNew={editingTextFrame===pendingTextFrame} stacked={storyPreviewId !== null} livePatch={change=>patch(editingTextFrame,change)} onSave={()=>closeTextFrameEditor(true)} onClose={()=>closeTextFrameEditor(false)} onOpenGallery={()=>setShowTransitionGallery(true)} onPickBackground={()=>setTextBgPickerFor(editingTextFrame)} timeline={timelinePictures(media)} onOpenKaraoke={() => setKaraokeItemId(editingTextFrame)}/>}
+    {editingCollageFrame !== null && media.find(x=>x.id===editingCollageFrame) && <CollageEditor item={media.find(x=>x.id===editingCollageFrame)!} isNew={editingCollageFrame===pendingCollageFrame} stacked={storyPreviewId !== null} livePatch={change=>patchCollageItem(editingCollageFrame,change)} onSave={()=>closeCollageEditor(true)} onClose={()=>closeCollageEditor(false)} onPickPhotos={()=>setCollagePickerFor(editingCollageFrame)} onPickBackground={()=>setBgPickerFor(editingCollageFrame)} timeline={timelinePictures(media)} onReplacePhoto={index => setReplacePickerFor({ id: editingCollageFrame, index })} onEditPhoto={index => setCollageLook({ id: editingCollageFrame, index, tab: 'filters' })} onEditBackground={() => setCollageLook({ id: editingCollageFrame, index: 'bg', tab: 'filters' })} onOpenCaption={() => {
       // Switching to the caption editor is not a cancel: a brand-new collage
       // must survive the handover (closeCollageEditor(false) deletes pending
       // ones), so clear the pending flag instead of routing through cancel.
@@ -2882,7 +2892,7 @@ function App() {
       setEditingCollageFrame(null)
       setEditingTextFrame(editingCollageFrame)
     }} audioTracks={audioTracks} audioLoop={audioPolicy === 'Loop & trim'} holdStart={(() => { const idx = media.findIndex(x => x.id === editingCollageFrame); if (idx <= 0) return 0; const { starts } = timelineModel(media); return starts[idx] })()}/>}
-    {collagePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setCollagePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+    {collagePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setCollagePickerFor(null)} timeline={timelinePictures(media)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
       // Merge the chosen photos into the collage (deduped, capped at 12);
       // order of picking is order on the pile — later photos on top. The
       // merged spec goes through patchCollageItem so the slide duration
@@ -2900,7 +2910,7 @@ function App() {
       }
       setCollagePickerFor(null)
     }}/>}
-    {bgPickerFor !== null && <MediaBrowser photoPick="background" aboveEditor onClose={()=>setBgPickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+    {bgPickerFor !== null && <MediaBrowser photoPick="background" aboveEditor onClose={()=>setBgPickerFor(null)} timeline={timelinePictures(media)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
       // One image becomes the collage's background picture.
       const id = bgPickerFor
       const target = media.find(x => x.id === id)
@@ -2908,13 +2918,13 @@ function App() {
       if (target && file) patchCollageItem(id, { collage: { ...(target.collage ?? { photos: [], layout: 'stack' as const, animation: 'drop' as const, shape: '4:3' as const, seed: 1 }), backgroundImage: String(file.path) } })
       setBgPickerFor(null)
     }}/>}
-    {textBgPickerFor !== null && <MediaBrowser photoPick="background" aboveEditor onClose={()=>setTextBgPickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+    {textBgPickerFor !== null && <MediaBrowser photoPick="background" aboveEditor onClose={()=>setTextBgPickerFor(null)} timeline={timelinePictures(media)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
       const id = textBgPickerFor
       const file = files.find((f:any) => f.kind === 'image' && !f.empty)
       if (file) patch(id, { frameBackgroundImage: String(file.path) } as any)
       setTextBgPickerFor(null)
     }}/>}
-    {replacePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setReplacePickerFor(null)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
+    {replacePickerFor !== null && <MediaBrowser photoPick aboveEditor onClose={()=>setReplacePickerFor(null)} timeline={timelinePictures(media)} reloadKey={browserReloadKey} onUploadFiles={(files, folder) => startUploads(files, folder, false)} uploadsStatus={uploadsStatus} onAdd={(files:any[])=>{
       const { id, index } = replacePickerFor
       const target = media.find(x => x.id === id)
       const file = files.find((f:any) => f.kind === 'image' && !f.empty)
@@ -3419,7 +3429,7 @@ function matRadiusCss (fr: { shape: string; radius?: number }): string {
  *  and `onRotatePhoto` (Free: drag the knob on the selected mat to turn it) —
  *  both write the same numbers the render reads (`cx`/`cy`/`rot`), so a hand
  *  arrangement on the preview is what the MP4 shows. */
-function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, onTurnTarget, showMotionTarget, selectedIndex, onSelectPhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; onTurnTarget?: (index: number, degrees: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
+function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, onTurnTarget, showMotionTarget, selectedIndex, selectedIndices, onSelectPhoto }: { item: MediaItem; clock: ReturnType<typeof useMotionClock>; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; onTurnTarget?: (index: number, degrees: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; selectedIndices?: number[]; onSelectPhoto?: (index: number, additive: boolean) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const layerRef = useRef<HTMLDivElement | null>(null)
   const camRef = useRef<HTMLDivElement | null>(null)
@@ -3791,8 +3801,8 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
           const stickers = spec?.stickers
           const tape = stickers === 'tape' || stickers === 'mix'
           const pinDot = stickers === 'pin' || stickers === 'mix'
-          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${selectedIndex === i ? ' selected' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
-            onClick={onSelectPhoto ? e => { e.stopPropagation(); onSelectPhoto(i) } : undefined}
+          return <div key={`${photo.path}-${i}`} ref={el => { matRefs.current[i] = el }} className={`collage-mat${onMovePhoto ? ' free' : ''}${selectedIndex === i ? ' selected' : ''}${selectedIndices?.includes(i) ? ' marked' : ''}${g.fr.shadow === false ? ' no-shadow' : ''} collage-mat-${g.fr.shape}`}
+            onClick={onSelectPhoto ? e => { e.stopPropagation(); onSelectPhoto(i, e.ctrlKey || e.metaKey || e.shiftKey) } : undefined}
             style={{ width: g.wPx, height: g.matH, padding: g.border, paddingBottom: g.border + g.bottom, background: g.fr.shape === 'none' ? 'transparent' : g.fr.color, borderRadius: g.fr.shape === 'rounded' ? `${g.fr.radius}%` : g.fr.shape === 'circle' ? '50%' : undefined, boxShadow: g.fr.shadow === false ? 'none' : undefined, clipPath: clip, cursor: onMovePhoto ? 'grab' : undefined }}
             onPointerDown={onMovePhoto ? e => {
               if (e.button !== 0) return
@@ -3971,7 +3981,7 @@ function CollagePhotos({ item, clock, onMovePhoto, onRotatePhoto, onMoveTarget, 
  *  the new result shows in place — paused exactly where you were, playing on
  *  from there. The transport controls and the timeline bar below the editor
  *  preview are how you go back to the first photo on purpose. */
-function CollageSlideStage({ item, defaults, playing = true, showPlaybackControls = false, onMovePhoto, onRotatePhoto, onMoveTarget, onTurnTarget, showMotionTarget, selectedIndex, onSelectPhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; showPlaybackControls?: boolean; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; onTurnTarget?: (index: number, degrees: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; onSelectPhoto?: (index: number) => void }) {
+function CollageSlideStage({ item, defaults, playing = true, showPlaybackControls = false, onMovePhoto, onRotatePhoto, onMoveTarget, onTurnTarget, showMotionTarget, selectedIndex, selectedIndices, onSelectPhoto }: { item: MediaItem; defaults?: Partial<CaptionDefaults> | null; playing?: boolean; showPlaybackControls?: boolean; onMovePhoto?: (index: number, cx: number, cy: number) => void; onRotatePhoto?: (index: number, degrees: number) => void; onMoveTarget?: (index: number, x: number, y: number) => void; onTurnTarget?: (index: number, degrees: number) => void; showMotionTarget?: boolean; selectedIndex?: number | null; selectedIndices?: number[]; onSelectPhoto?: (index: number, additive: boolean) => void }) {
   const [editorPlaying, setEditorPlaying] = useState(true)
   const [editorRate, setEditorRate] = useState(1)
   const clock = useMotionClock(
@@ -4006,7 +4016,7 @@ function CollageSlideStage({ item, defaults, playing = true, showPlaybackControl
     clock.seek(0)
   }
   return <>
-    <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} onRotatePhoto={onRotatePhoto} onMoveTarget={onMoveTarget} onTurnTarget={onTurnTarget} showMotionTarget={showMotionTarget} selectedIndex={selectedIndex} onSelectPhoto={onSelectPhoto} />
+    <CollagePhotos item={item} clock={clock} onMovePhoto={onMovePhoto} onRotatePhoto={onRotatePhoto} onMoveTarget={onMoveTarget} onTurnTarget={onTurnTarget} showMotionTarget={showMotionTarget} selectedIndex={selectedIndex} selectedIndices={selectedIndices} onSelectPhoto={onSelectPhoto} />
     <CaptionStage className={onMovePhoto ? 'collage-caption-stage' : ''} input={input} clock={clock}
       karaoke={sanitizeKaraoke(item.karaoke, tokenize(item.text || '').length)}/>
     {showPlaybackControls && <div className="collage-preview-controls" role="group" aria-label="Photo animation preview controls">
@@ -4056,7 +4066,7 @@ function TitleClipFace({ item }: { item: MediaItem }) {
 // Picture mode keeps a local draft and writes on "Save"; frame mode patches the
 // storyline item live (so a stacked lightbox behind the editor updates as you
 // type) and "Cancel" reverts to the original.
-function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery, onPickBackground, onOpenKaraoke }: {
+function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false, livePatch, onSave, onClose, onOpenGallery, onPickBackground, onOpenKaraoke, timeline = [] }: {
   mode: 'picture' | 'frame'
   item: MediaItem
   defaults?: CaptionDefaults
@@ -4068,6 +4078,8 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
   onClose: () => void
   onOpenGallery?: () => void
   onPickBackground?: () => void
+  /** The storyline's own pictures, offered as a background without a dialog. */
+  timeline?: TimelinePicture[]
   /** Open the karaoke timing popup for this slide's caption. */
   onOpenKaraoke?: () => void
 }) {
@@ -4353,6 +4365,9 @@ function TextEditor({ mode, item, defaults, src, isNew = false, stacked = false,
                     </div>
                   </div>
                 : <button type="button" className="btn ghost small" onClick={() => onPickBackground?.()}><ImageIcon size={12}/> Picture instead of colour…</button>}
+              {timeline.length > 0 && mode === 'frame' && <TimelinePhotoStrip pictures={timeline} current={draft.frameBackgroundImage} urlOf={timelinePictureUrl}
+                                                                               onBrowse={() => onPickBackground?.()} onPick={p => apply({ frameBackgroundImage: p.path } as any)}
+                                                                               label="Picture from the timeline"/>}
               {draft.frameBackgroundImage && <label className="collage-bg-blur" title="Blur the background picture behind the text — same control as the photo collage background">
                 <span>Blur</span>
                 <input type="range" min={0} max={100} step={1} value={Math.round(Math.max(0, Math.min(1, Number(draft.frameBackgroundBlur) || 0)) * 100)} aria-label="Blur background picture" onChange={e => apply({ frameBackgroundBlur: Number(e.target.value) / 100 } as any)} />
@@ -4645,7 +4660,7 @@ function CollageGroupHead({ id, open, onToggle, note, children }: { id: string; 
   </div>
 }
 
-function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, onReplacePhoto, onEditPhoto, onEditBackground, audioTracks = [], holdStart = 0, audioLoop = true }: {
+function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave, onClose, onPickPhotos, onPickBackground, onOpenCaption, onReplacePhoto, onEditPhoto, onEditBackground, audioTracks = [], holdStart = 0, audioLoop = true, timeline = [] }: {
   item: MediaItem
   isNew?: boolean
   stacked?: boolean
@@ -4654,6 +4669,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   onClose: () => void
   onPickPhotos: () => void
   onPickBackground: () => void
+  /** Every picture already on the storyline, for the background row below. */
+  timeline?: TimelinePicture[]
   onOpenCaption: () => void
   onReplacePhoto: (index: number) => void
   onEditPhoto?: (index: number) => void
@@ -4704,19 +4721,19 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       photos: photos.map((photo, i) => ({ ...photo, exit: res.anims[i] ?? photo.exit })),
     })
   }
-  const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => {
-    setSpec({ photos: photos.map((p, i) => i === index ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
-  }
-  const setPhotoShape = (index: number, shape: CollageShape | 'default') => {
-    setSpec({ photos: photos.map((p, i) => i === index ? { ...p, shape: shape === 'default' ? undefined : shape } : p) })
-  }
+  const setPhotoFrame = (index: number, shape: CollageFrameShape | 'default') => forSelected(index, i => {
+    setSpec({ photos: photos.map((p, k) => k === i ? { ...p, frame: shape === 'default' ? undefined : { ...defFr, shape } } : p) })
+  })
+  const setPhotoShape = (index: number, shape: CollageShape | 'default') => forSelected(index, i => {
+    setSpec({ photos: photos.map((p, k) => k === i ? { ...p, shape: shape === 'default' ? undefined : shape } : p) })
+  })
   /** One photo's enter / while / exit lane. An empty value means "inherit the
    *  collage's setting" and removes the override again, so a photo follows
    *  later changes to the collage-wide animation. */
-  const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim' | 'at' | 'until', value: string) => {
+  const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim' | 'at' | 'until', value: string) => forSelected(index, target => {
     setSpec({
       photos: photos.map((p, i) => {
-        if (i !== index) return p
+        if (i !== target) return p
         const next: CollagePhoto = { ...p }
         if (lane === 'anim') { if (value === '') delete next.anim; else next.anim = value as CollageAnimation }
         else if (lane === 'animDir') { if (value === '1') next.animDir = 1; else delete next.animDir }
@@ -4750,7 +4767,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         return next
       }),
     })
-  }
+  })
   const setPhotoMotionAmount = (index: number, v: number) => setSpec({
     photos: photos.map((p, i) => i === index
       ? { ...p, motionAmount: v === 1 ? undefined : Math.max(MOTION_AMOUNT_MIN, Math.min(MOTION_AMOUNT_MAX, v)) }
@@ -4773,9 +4790,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   /** A motion's own duration or target: how long it plays, where it ends up,
    *  what angle it turns to. 0 (or empty) drops the field, which is the default
    *  — the rest of the slide, and no travel of its own. */
-  const setPhotoMotionField = (index: number, field: 'motionDuration' | 'moveX' | 'moveY' | 'turnTo', value: number | undefined) => setSpec({
+  const setPhotoMotionField = (index: number, field: 'motionDuration' | 'moveX' | 'moveY' | 'turnTo', value: number | undefined) => forSelected(index, photo => setSpec({
     photos: photos.map((p, i) => {
-      if (i !== index) return p
+      if (i !== photo) return p
       const next: CollagePhoto = { ...p }
       const v = value !== undefined && Number.isFinite(value) ? value : 0
       if (v === 0) delete next[field]
@@ -4784,11 +4801,11 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       else next[field] = field === 'motionDuration' && v < MOTION_DURATION_MIN ? MOTION_DURATION_MIN : v
       return next
     }),
-  })
+  }))
   /** Back to the collage's own choreography: drop every lane at once. */
-  const clearPhotoLanes = (index: number) => setSpec({
+  const clearPhotoLanes = (index: number) => forSelected(index, target => setSpec({
     photos: photos.map((p, i) => {
-      if (i !== index) return p
+      if (i !== target) return p
       const next: CollagePhoto = { ...p }
       delete next.anim
       delete next.animDir
@@ -4804,7 +4821,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       delete next.lookAnim
       return next
     }),
-  })
+  }))
   // Settings start collapsed; explicit open/closed choices are remembered.
   // Merging stored values over the new defaults also migrates older `{}`
   // preferences to the requested collapsed-by-default layout.
@@ -4849,9 +4866,15 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   // Turning a Free photo: the preview's knob (or the tilt slider) writes the
   // photo's own `rot`, the same number the render's rotate filter uses — one
   // value, both engines, so the MP4 comes back turned exactly like this.
-  const rotateFreePhoto = (index: number, degrees: number) => {
-    setSpec({ photos: setPhotoRot(photos, index, degrees) })
-  }
+  const rotateFreePhoto = (index: number, degrees: number) => forSelected(index, i => {
+    setSpec({ photos: setPhotoRot(photos, i, degrees) })
+  })
+  /** The two turn buttons, and the one control in the panel that must *not* be an
+   *  absolute value: a group given the same angle loses the tilt each photo was
+   *  given by hand, so they turn by the same amount from where they stand instead. */
+  const turnSelectedPhoto = (index: number, delta: number) => forSelected(index, i => {
+    setSpec({ photos: setPhotoRot(photos, i, photoTilt(photos[i]) + delta) })
+  })
   // A chip dropped on the preview: that photo lands with its centre on the
   // drop point, in the render as in the preview. Any other arrangement turns
   // into Free first, seeded from exactly what it shows, so the other photos
@@ -4874,8 +4897,40 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   }
   const [dragChip, setDragChip] = useState<number | null>(null)
   const [dragOverChip, setDragOverChip] = useState<number | null>(null)
-  // The photo picked on the preview: its size slider appears under the preview.
-  const [selectedPhoto, setSelectedPhoto] = useState<number | null>(null)
+  // Every photo the popup edits at once. One is the ordinary case and behaves
+  // exactly as it always did; more than one is a group, and everything the panel
+  // below the preview changes — size, tilt, shape, frame, entrance, motion, look,
+  // exit, and a block dragged along the timing lane — goes to all of them. The
+  // checked rows are also ringed with dots on the preview, because a group you
+  // cannot see is a group you will edit wrong.
+  const [photoSelection, setPhotoSelection] = useState<number[]>([])
+  /** The photo the panel reads its numbers from, and the one the preview rings. */
+  const selectedPhoto = photoSelection[0] ?? null
+  const setSelectedPhoto = (index: number | null) => setPhotoSelection(index === null ? [] : [index])
+  /** The expansion every per-photo writer below runs through: a value aimed at a
+   *  photo that belongs to a bigger selection is written to the whole selection, so
+   *  no call site has to know that the group exists and none can forget it. */
+  const forSelected = (index: number, run: (i: number) => void) => {
+    const list = photoSelection.length > 1 && photoSelection.includes(index) ? photoSelection : [index]
+    for (const i of list) run(i)
+  }
+  /** Every way a photo joins or leaves the selection — the chip, its number, the
+   *  picture on the preview, the box in the timing lane — answers to this one line,
+   *  so Ctrl and Shift cannot come to mean different things in two halves of the
+   *  same popup. The rules themselves are `nextSelection`, which a test holds. */
+  const pickPhoto = (index: number, event: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean }) =>
+    setPhotoSelection(nextSelection(photoSelection, index, event.shiftKey ? 'range' : event.ctrlKey || event.metaKey ? 'toggle' : 'single', photos.length))
+  /** Do the selected photos disagree about this? Then the control says so instead of
+   *  naming one photo's answer as if it were everybody's. */
+  const mixedOn = (pick: (i: number) => unknown): boolean =>
+    photoSelection.length > 1 && new Set(photoSelection.map(pick)).size > 1
+  /** A reorder or a removal moves the whole group through collageCore's one-index
+   *  rules rather than restating them: `selectionAfterMove` is the answer to "where
+   *  did this index go", applied once per selected photo. */
+  const moveSelection = (list: number[], from: number, to: number) =>
+    [...new Set(list.map(i => selectionAfterMove(i, from, to) ?? i))].sort((a, b) => a - b)
+  const shrinkSelection = (list: number[], removed: number) =>
+    list.map(i => selectionAfterRemove(i, removed)).filter((i): i is number => i !== null)
   const chipRefs = useRef<(HTMLDivElement | null)[]>([])
   // Selection works both ways: clicking a chip rings that photo on the preview,
   // clicking a photo on the preview highlights its chip — and brings it into
@@ -4921,7 +4976,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
       const [moved] = next.splice(from, 1)
       next.splice(onto, 0, moved)
       setSpec({ photos: next })
-      setSelectedPhoto(sel => selectionAfterMove(sel, from, onto))
+      setPhotoSelection(sel => moveSelection(sel, from, onto))
     }
     setDragChip(null)
     setDragOverChip(null)
@@ -4933,11 +4988,11 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     const [moved] = next.splice(i, 1)
     next.splice(j, 0, moved)
     setSpec({ photos: next })
-    setSelectedPhoto(sel => selectionAfterMove(sel, i, j))
+    setPhotoSelection(sel => moveSelection(sel, i, j))
   }
   const removePhoto = (i: number) => {
     setSpec({ photos: photos.filter((_, k) => k !== i) })
-    setSelectedPhoto(sel => selectionAfterRemove(sel, i))
+    setPhotoSelection(sel => shrinkSelection(sel, i))
   }
   const full = photos.length >= MAX_COLLAGE_PHOTOS
   // Per-photo timing: editing one wait materialises every photo's delay
@@ -4947,7 +5002,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     setSpec({ photos: photos.map((photo, k) => ({ ...photo, delay: k === i ? Math.max(0, Math.min(30, v)) : (photo.delay ?? defaultDelay(n, k)) })) })
   }
   const spreadEvenly = () => setSpec({ photos: photos.map(photo => { const { delay, ...rest } = photo; return rest }) })
-  const setSize = (i: number, v: number) => setSpec({ photos: setPhotoSize(photos, i, v) })
+  const setSize = (i: number, v: number) => forSelected(i, k => setSpec({ photos: setPhotoSize(photos, k, v) }))
   const setAllSizes = (v: number) => setSpec({ photos: scaleAllPhotoSizes(spec, v), randomSize: undefined })
   const toggleRandomSizes = (enabled: boolean) => setSpec({
     randomSize: enabled ? true : undefined,
@@ -5063,7 +5118,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             placePhotoAt(dragChip, at.x, at.y)
             setDragChip(null); setDragOverChip(null); setDropAt(null)
           }}>
-          <CollageSlideStage item={item} showPlaybackControls onMovePhoto={freeLayout ? moveFreePhoto : undefined} onRotatePhoto={freeLayout ? rotateFreePhoto : undefined} onMoveTarget={movePhotoTarget} onTurnTarget={turnPhotoTarget} showMotionTarget selectedIndex={selectedPhoto} onSelectPhoto={setSelectedPhoto} />
+          <CollageSlideStage item={item} showPlaybackControls onMovePhoto={freeLayout ? moveFreePhoto : undefined} onRotatePhoto={freeLayout ? rotateFreePhoto : undefined} onMoveTarget={movePhotoTarget} onTurnTarget={turnPhotoTarget} showMotionTarget selectedIndex={selectedPhoto} selectedIndices={photoSelection} onSelectPhoto={(i, additive) => setPhotoSelection(nextSelection(photoSelection, i, additive ? 'toggle' : 'single', photos.length))} />
           {photos.length === 0 && <div className="collage-empty"><ImageIcon size={26}/><span>No photos yet — pick some from the library</span><button type="button" className="btn dark" onClick={onPickPhotos}><Plus size={14}/> Add photos…</button></div>}
           {dropAt && dragChip !== null && photos[dragChip] && shownPlacements[dragChip] && (() => {
             // Ghost of the mat at the drop point — the size and tilt it will
@@ -5079,8 +5134,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             ? <><Move size={11}/> Drop to place photo {dragChip + 1} here{spec.layout === 'free' ? '' : ' — the arrangement becomes Free'}</>
             : <><Move size={11}/> Drop the photo on the preview to place it yourself</>}</div>}
         </div>
-        {selectedPhoto !== null && photos[selectedPhoto] ? <><div className="collage-selected-size" role="group" aria-label="Selected photo size and tilt">
-          <b>Photo {selectedPhoto + 1}</b>
+        {selectedPhoto !== null && photos[selectedPhoto] ? <><div className="collage-selected-size" role="group" aria-label={photoSelection.length > 1 ? `${photoSelection.length} selected photos: size and tilt` : 'Selected photo size and tilt'}>
+          <b title={photoSelection.length > 1 ? `Editing ${photoSelection.map(i => i + 1).join(', ')} — every control here writes to all of them` : undefined}>{photoSelection.length > 1 ? `${photoSelection.length} photos` : `Photo ${selectedPhoto + 1}`}</b>
+          {photoSelection.length > 1 && <em className="collage-selected-which">{photoSelection.map(i => i + 1).join(' · ')}</em>}
           <span>size</span>
           <input type="range" min={50} max={300} step={1} value={Math.round(photoSize(spec, selectedPhoto) * 100)} aria-label={`Size of photo ${selectedPhoto + 1}`} onChange={e => setSize(selectedPhoto, Number(e.target.value) / 100)} />
           <b>{Math.round(photoSize(spec, selectedPhoto) * 100)}%</b>
@@ -5091,8 +5147,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <input type="range" min={-180} max={180} step={1} value={Math.round(photoTilt(photos[selectedPhoto]))} aria-label={`Tilt of photo ${selectedPhoto + 1}`} onChange={e => rotateFreePhoto(selectedPhoto, Number(e.target.value))} />
             <b>{Math.round(photoTilt(photos[selectedPhoto]))}°</b>
             <span className="collage-tilt-buttons">
-              <button type="button" title="Turn 90° counter-clockwise" aria-label={`Turn photo ${selectedPhoto + 1} 90° counter-clockwise`} onClick={() => rotateFreePhoto(selectedPhoto, photoTilt(photos[selectedPhoto]) - 90)}><RotateCcw size={12}/></button>
-              <button type="button" title="Turn 90° clockwise" aria-label={`Turn photo ${selectedPhoto + 1} 90° clockwise`} onClick={() => rotateFreePhoto(selectedPhoto, photoTilt(photos[selectedPhoto]) + 90)}><RotateCw size={12}/></button>
+              <button type="button" title={photoSelection.length > 1 ? 'Turn every selected photo 90° counter-clockwise, each from its own angle' : 'Turn 90° counter-clockwise'} aria-label={`Turn photo ${selectedPhoto + 1} 90° counter-clockwise`} onClick={() => turnSelectedPhoto(selectedPhoto, -90)}><RotateCcw size={12}/></button>
+              <button type="button" title={photoSelection.length > 1 ? 'Turn every selected photo 90° clockwise, each from its own angle' : 'Turn 90° clockwise'} aria-label={`Turn photo ${selectedPhoto + 1} 90° clockwise`} onClick={() => turnSelectedPhoto(selectedPhoto, 90)}><RotateCw size={12}/></button>
               <button type="button" title="Straighten this photo (0°)" aria-label={`Straighten photo ${selectedPhoto + 1}`} disabled={photoTilt(photos[selectedPhoto]) === 0} onClick={() => rotateFreePhoto(selectedPhoto, 0)}>0°</button>
             </span>
           </span>}
@@ -5101,8 +5157,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <label title="How this photo appears — its own entrance instead of the collage's. A slower entrance here holds the whole slide up until it has finished.">
               <span>entrance</span>
               <AnimPicker
-                value={photos[selectedPhoto].anim}
-                ariaLabel={`Entrance of photo ${selectedPhoto + 1}`}
+                value={mixedOn(i => photos[i].anim) ? undefined : photos[selectedPhoto].anim}
+                mixed={mixedOn(i => photos[i].anim)}
+                ariaLabel={photoSelection.length > 1 ? `Entrance of ${photoSelection.length} selected photos` : `Entrance of photo ${selectedPhoto + 1}`}
                 inherit={{
                   label: `${animLabel(spec.animation)} · the collage's choice`,
                   pick: () => setPhotoLane(selectedPhoto, 'anim', ''),
@@ -5138,7 +5195,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             </span>
             <label title={COLLAGE_MOTIONS_UI.find(m => m.id === photoMotion(spec, selectedPhoto).id)?.hint ?? 'What this photo keeps doing once it has landed'}>
               <span>motion</span>
-              <select value={photos[selectedPhoto].motion ?? 'none'} aria-label={`Motion of photo ${selectedPhoto + 1}`} onChange={e => setPhotoLane(selectedPhoto, 'motion', e.target.value)}>
+              <select value={mixedOn(i => photos[i].motion) ? 'mixed' : (photos[selectedPhoto].motion ?? 'none')} aria-label={photoSelection.length > 1 ? `Motion of ${photoSelection.length} selected photos` : `Motion of photo ${selectedPhoto + 1}`} onChange={e => e.target.value !== 'mixed' && setPhotoLane(selectedPhoto, 'motion', e.target.value)}>
+                {mixedOn(i => photos[i].motion) && <option value="mixed" disabled>Mixed — pick one to give it to all {photoSelection.length}</option>}
                 {COLLAGE_MOTION_GROUPS.map(grp => <optgroup key={grp.id} label={grp.label}>
                   {COLLAGE_MOTIONS_UI.filter(m => m.group === grp.id).map(m => <option key={m.id} value={m.id} title={m.hint}>{m.label}</option>)}
                 </optgroup>)}
@@ -5146,7 +5204,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             </label>
             <label title={COLLAGE_LOOK_ANIMS_UI.find(l => l.id === photoLookAnim(spec, selectedPhoto))?.hint ?? 'How the colour of this photo changes while it is on screen'}>
               <span>look</span>
-              <select value={photos[selectedPhoto].lookAnim ?? 'none'} aria-label={`Animated look of photo ${selectedPhoto + 1}`} onChange={e => setPhotoLane(selectedPhoto, 'lookAnim', e.target.value)}>
+              <select value={mixedOn(i => photos[i].lookAnim) ? 'mixed' : (photos[selectedPhoto].lookAnim ?? 'none')} aria-label={photoSelection.length > 1 ? `Animated look of ${photoSelection.length} selected photos` : `Animated look of photo ${selectedPhoto + 1}`} onChange={e => e.target.value !== 'mixed' && setPhotoLane(selectedPhoto, 'lookAnim', e.target.value)}>
+                {mixedOn(i => photos[i].lookAnim) && <option value="mixed" disabled>Mixed — pick one to give it to all {photoSelection.length}</option>}
                 {COLLAGE_LOOK_ANIMS_UI.map(l => <option key={l.id} value={l.id} title={l.hint}>{l.label}</option>)}
               </select>
             </label>
@@ -5195,9 +5254,10 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <label title="How this photo leaves. Anything in the browser is an arrival played backwards; the Departs tab holds the five departures of its own, and 'Stay on' keeps this photo on screen while the others go — the slide ends when the last photo is gone.">
               <span>exit</span>
               <AnimPicker
-                value={photos[selectedPhoto].exit as CollageAnimation | undefined}
+                value={mixedOn(i => photos[i].exit) ? undefined : photos[selectedPhoto].exit as CollageAnimation | undefined}
+                mixed={mixedOn(i => photos[i].exit)}
                 phase="out"
-                ariaLabel={`Exit of photo ${selectedPhoto + 1}`}
+                ariaLabel={photoSelection.length > 1 ? `Exit of ${photoSelection.length} selected photos` : `Exit of photo ${selectedPhoto + 1}`}
                 inherit={{
                   label: `${exitLabel(exitChosen)} · the collage's choice`,
                   pick: () => setPhotoLane(selectedPhoto, 'exit', ''),
@@ -5206,17 +5266,19 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 onChangeExit={a => setPhotoLane(selectedPhoto, 'exit', a)}
               />
             </label>
-            {hasPhotoLanes(photos[selectedPhoto]) && <button type="button" className="btn ghost small" title="Drop this photo's own entrance, motion and exit — it follows the collage's choreography again" onClick={() => clearPhotoLanes(selectedPhoto)}>Inherit</button>}
-            <small className="collage-lanes-hint"><Sparkles size={11}/> Only photo {selectedPhoto + 1} — the rest keep the collage's {COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label.toLowerCase() ?? 'drop'}. Motion and look are stored on the photo, so the rendered MP4 does the same.</small>
+            {photoSelection.some(i => hasPhotoLanes(photos[i])) && <button type="button" className="btn ghost small" title={photoSelection.length > 1 ? `Drop the ${photoSelection.length} selected photos' own entrance, motion and exit — they follow the collage's choreography again` : "Drop this photo's own entrance, motion and exit — it follows the collage's choreography again"} onClick={() => clearPhotoLanes(selectedPhoto)}>Inherit</button>}
+            <small className="collage-lanes-hint"><Sparkles size={11}/> {photoSelection.length > 1
+              ? `These ${photoSelection.length} photos, together — the other ${Math.max(0, photos.length - photoSelection.length)} keep the collage's ${COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label.toLowerCase() ?? 'drop'}.`
+              : `Only photo ${selectedPhoto! + 1} — the rest keep the collage's ${COLLAGE_ANIMS.find(a => a.id === spec.animation)?.label.toLowerCase() ?? 'drop'}.`} Motion and look are stored on the photo, so the rendered MP4 does the same.</small>
           </div></> : photos.length > 0 && <small className="collage-select-hint"><Info size={11}/> Click a photo on the preview to change its size{freeLayout ? ', or drag the knob above it to turn it' : ''}, and to give it its own entrance, motion and exit.</small>}
         <div className="collage-strip">
-          {photos.map((photo, i) => <div ref={el => { chipRefs.current[i] = el }} className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}${selectedPhoto === i ? ' selected' : ''}${hasPhotoLanes(photo) ? ' has-lanes' : ''}`} key={`${photo.path}-${i}`}
+          {photos.map((photo, i) => <div ref={el => { chipRefs.current[i] = el }} className={`collage-chip${dragOverChip === i ? ' over' : ''}${dragChip === i ? ' lifted' : ''}${photoSelection.includes(i) ? ' selected' : ''}${selectedPhoto === i && photoSelection.length > 1 ? ' lead' : ''}${hasPhotoLanes(photo) ? ' has-lanes' : ''}`} key={`${photo.path}-${i}`}
             draggable onDragStart={e => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move'; setDragChip(i) }} onDragEnd={() => { setDragChip(null); setDragOverChip(null); setDropAt(null) }}
             onDragOver={e => { e.preventDefault(); setDragOverChip(i) }}
             onDrop={e => { e.preventDefault(); dropChip(i) }}
-            onClick={() => setSelectedPhoto(i)}
+            onClick={e => pickPhoto(i, e)}
             title={`${photo.name || photo.path} — click to select it (the preview rings it and its size${freeLayout ? ', tilt' : ''} and motion controls appear below), drag to reorder, or drop it on the preview to place it yourself${hasPhotoLanes(photo) ? `. Its own lanes: ${[photo.anim ? `entrance ${photo.anim}` : '', photo.motion ? `motion ${photo.motion}${photo.motion === 'move' && (photo.moveX || photo.moveY) ? ` to ${photo.moveX ?? 0}%/${photo.moveY ?? 0}%` : ''}${photo.motion === 'turn' && photo.turnTo ? ` to ${photo.turnTo}°` : ''}${photo.motionDuration ? ` over ${photo.motionDuration}s` : ''}` : '', photo.lookAnim ? `look ${photo.lookAnim}` : '', photo.exit ? `exit ${photo.exit}` : ''].filter(Boolean).join(', ')}` : ''}`}>
-            <button type="button" className="chip-num" aria-pressed={selectedPhoto === i} title={selectedPhoto === i ? `Photo ${i + 1} is selected — its size${freeLayout ? ', tilt' : ''} and motion controls are below the preview` : `Select photo ${i + 1}`} onClick={e => { e.stopPropagation(); setSelectedPhoto(i) }}>{i + 1}{hasPhotoLanes(photo) && <em className="chip-lane-dot" aria-label="This photo has its own entrance, motion or exit" />}</button>
+            <button type="button" className="chip-num" aria-pressed={photoSelection.includes(i)} onClick={e => { e.stopPropagation(); pickPhoto(i, e) }} title={photoSelection.includes(i) ? `Photo ${i + 1} is in the selection of ${photoSelection.length} — click its number again to take it out, or click another photo's number to edit that one alone` : `Select photo ${i + 1} — Ctrl/⌘ adds it to the selection, Shift extends from the last one`}>{i + 1}{hasPhotoLanes(photo) && <em className="chip-lane-dot" aria-label="This photo has its own entrance, motion or exit" />}</button>
             <img src={collagePhotoUrl(photo)} alt="" draggable={false} loading="lazy" />
             <label className="chip-slot" title={freeLayout ? 'Free layout places photos by dragging them on the preview' : 'Arrangement position: where this photo sits in the final layout (1 = the first slot)'} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
               <span>pos</span>
@@ -5421,13 +5483,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 nobody touches writes nothing at all. */}
             <div className="collage-window-head">
               <span>When each photo is on screen</span>
-              <small>Drag a block to move it, its left edge to set when it appears, its right edge to set when its exit has finished · snapped to the render's 25 fps frames</small>
+              <small>Drag a block to move it, its left edge to set when it appears, its right edge to set when its exit has finished · snapped to the render's 25 fps frames · tick the box beside a number to edit several photos at once (their entrances, exits, size and windows all change together), or click the number for that photo alone</small>
             </div>
             <CollageTimingLanes
               spec={spec}
               duration={Math.max(total, Number(item.duration) || 0)}
-              selected={selectedPhoto}
-              onSelect={setSelectedPhoto}
+              selected={photoSelection}
+              onSelected={setPhotoSelection}
               onChange={(i, lane, value) => setPhotoLane(i, lane, value)}
             />
           </>}
@@ -5534,6 +5596,9 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 <label className="custom-bg"><input type="color" value={/^#[0-9a-fA-F]{6}$/.test(item.frameBackground) ? item.frameBackground : '#2e3138'} onChange={e => livePatch({ frameBackground: e.target.value })}/> {item.frameBackground.toUpperCase()}</label>
                 <button type="button" className="btn ghost small" onClick={onPickBackground} title="Fill the frame with a library picture — optionally blurred — behind the photos"><ImageIcon size={12}/> Picture…</button>
               </div>}
+          {timeline.length > 0 && <TimelinePhotoStrip pictures={timeline} current={spec.backgroundImage} urlOf={timelinePictureUrl}
+                                                       onBrowse={onPickBackground} onPick={p => setSpec({ backgroundImage: p.path })}
+                                                       label="Picture from the timeline"/>}
           <small>{spec.backgroundImage ? 'The picture fills the frame behind the photos. Blur keeps the polaroids readable on a busy picture; the colour and its change are unused while a picture is set.' : 'A flat colour behind the photos — or a library picture, optionally blurred.'}</small></div>
         <p><Info size={13}/> 6–10 photos per collage render best. Photos are fitted into {spec.shape === 'native' ? 'their native (landscape or portrait)' : spec.shape === '3:4' || spec.shape === '9:16' || spec.shape === '2:3' ? 'portrait' : spec.shape === 'square' ? 'square' : 'landscape'} mats with a frame and a soft shadow, exactly as the preview shows. Order matters: later photos land on top.</p>
       </aside>
@@ -5541,9 +5606,21 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
     <div className="modal-foot"><span>{photos.length} of {MAX_COLLAGE_PHOTOS} photos · seed {spec.seed}{total > 0 ? ` · ${total}s` : ''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!photos.length} onClick={onSave}><Check size={14}/> Done</button></div>
   </div></div>
 }
-function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloadKey = 0, audioOnly=false, photoPick=false, aboveEditor=false }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[], folder?: string) => void, uploadsStatus?: UploadsStatus|null, reloadKey?: number, audioOnly?:boolean, photoPick?:boolean | 'background', aboveEditor?:boolean }) {
+function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloadKey = 0, audioOnly=false, photoPick=false, aboveEditor=false, timeline=[] }: { onClose: () => void, onAdd: (files:any[]) => void, onUploadFiles?: (files: File[], folder?: string) => void, uploadsStatus?: UploadsStatus|null, reloadKey?: number, audioOnly?:boolean, photoPick?:boolean | 'background', aboveEditor?:boolean, timeline?: TimelinePicture[] }) {
   const [root,setRoot]=useState<MediaRoot>(audioOnly?'music':'photos')
   const [allMedia,setAllMedia]=useState(!audioOnly)
+  // The storyline's own pictures are a location of their own, next to /photos and
+  // uploads: "use one of the photos I already picked" is a different question from
+  // "find a file", and answering it with a folder tree hides the answer.
+  const [timelineView,setTimelineView]=useState(false)
+  // Shaped as browser entries on purpose — `path`, `rootName`, `kind` — so the
+  // thumbnails, the selection and the footer's own button work on them without a
+  // second copy of that machinery. A file that is on two slides is one row here:
+  // the same picture offered twice to a background picker is a mistake, not a choice.
+  const timelineEntries=useMemo(()=>{const seen=new Set<string>();const out:any[]=[]
+    for(const p of timeline||[]){const k=`${p.rootName}|${p.path}`;if(seen.has(k))continue;seen.add(k)
+      out.push({path:p.path,name:p.name,kind:'image',size:0,modified:0,rootName:p.rootName,note:p.note,empty:false,accessible:true})}
+    return out},[timeline])
   const [path,setPath]=useState('');const [entries,setEntries]=useState<any[]>([]);const [selected,setSelected]=useState<any[]>([]);const [error,setError]=useState('');const [loading,setLoading]=useState(false)
   const [lightbox,setLightbox]=useState<LightboxTarget|null>(null)
   const preview=useAudioPreview(message=>setError(message))
@@ -5602,6 +5679,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
   useEffect(()=>{
     let cancelled=false
     setLoading(true);setError('')
+    if(timelineView){setEntries(timelineEntries);setLoading(false);setError('');return}
     const roots:MediaRoot[]=allMedia&&!audioOnly?['photos','videos']:[root]
     type BrowseResult={root:MediaRoot,entries:any[]}|{root:MediaRoot,error:string}
     void Promise.all(roots.map(current=>fetch(`/api/media/browse?root=${current}&path=${encodeMediaRelative(path)}`)
@@ -5622,9 +5700,9 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
       if(failedRoots.length&&path)setError(`“${path}” was not found in: ${failedRoots.join(', ')} — showing the matches from ${loaded.map(r=>r.root).join(' and ')}.`)
     }).finally(()=>{if(!cancelled)setLoading(false)})
     return ()=>{cancelled=true}
-  },[root,path,allMedia,audioOnly,reloadKey])
-  const chooseRoot=(value:MediaRoot)=>{setAllMedia(false);setRoot(value);setPath('');setSelected([]);setDeleteSelection([]);setNewFolderOpen(false);setFolderError('');setNewFolderName('');setDeleteError('')}
-  const showAllMedia=()=>{setAllMedia(true);setPath('');setSelected([]);setDeleteSelection([]);setNewFolderOpen(false);setFolderError('');setNewFolderName('')}
+  },[root,path,allMedia,audioOnly,reloadKey,timelineView,timelineEntries])
+  const chooseRoot=(value:MediaRoot)=>{setTimelineView(false);setAllMedia(false);setRoot(value);setPath('');setSelected([]);setDeleteSelection([]);setNewFolderOpen(false);setFolderError('');setNewFolderName('');setDeleteError('')}
+  const showAllMedia=()=>{setTimelineView(false);setAllMedia(true);setPath('');setSelected([]);setDeleteSelection([]);setNewFolderOpen(false);setFolderError('');setNewFolderName('')}
   const fileRoot=(entry:any):MediaRoot=>(entry.rootName as MediaRoot)||mediaRootFromPath(entry.path,root)
   const open=(entry:any)=>{if(entry.kind==='directory'){if(entry.accessible===false){setError(`No permission to open “${entry.name}”. The container user cannot read this folder — check DSM share/ACL permissions and the PUID/PGID in your compose file.`);return}setPath(entry.relativePath);setDeleteSelection([])}else setSelected(items=>items.some(x=>x.path===entry.path)?items.filter(x=>x.path!==entry.path):[...items,entry])}
   const viewFile=(entry:any)=>{
@@ -5634,6 +5712,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
   const skippedEmpty = selected.filter((f:any)=>f.empty).length
   const addable = photoPick ? selected.filter((f:any)=>!f.empty && f.kind==='image') : selected.filter((f:any)=>!f.empty)
   const isUploadsView = !audioOnly && !allMedia && root==='uploads'
+  const shown=timelineView?timelineEntries:entries
   const toggleDeleteSelect=(entry:any)=>{
     setDeleteError('')
     setDeleteSelection(items=>items.some(x=>x.path===entry.path)?items.filter(x=>x.path!==entry.path):[...items,entry])
@@ -5676,13 +5755,13 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
   // so Escape closes them first and only then the browser.
   const layer = useLayer()
   useEscapeToClose(layer, onClose)
-  return <div className={`modal-backdrop${aboveEditor ? ' over-editor' : ''}`} style={{ zIndex: layer }} onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':photoPick==='background'?'Choose background picture':photoPick?'Select collage photos':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button><hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v,.wmv,.asf,.mpg,.mpeg,.ts,.mts,.m2ts,.flv,.f4v,.3gp,.3gpp,.vob,.dav,.mxf,.mod,.tod,.divx" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{allMedia&&!audioOnly?'photos & videos':root}/{path}</span><button onClick={()=>setSelected(entries.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div><div className="file-toolbar"><span className="file-count">{entries.length?`${entries.length} file${entries.length===1?'':'s'}${loading?' · reading…':''}`:loading?'Reading…':'Empty folder'}</span><div className="mode-toggle file-view-toggle" role="group" aria-label="File display"><button type="button" className={fileView==='thumbnails'?'active':''} aria-pressed={fileView==='thumbnails'} onClick={()=>setFileView('thumbnails')} title="Thumbnails — a grid of pictures. Only the rows near the viewport load, and selecting a file never waits for a thumbnail."><LayoutGrid size={13}/> Thumbnails</button><button type="button" className={fileView==='list'?'active':''} aria-pressed={fileView==='list'} onClick={()=>setFileView('list')} title="List — file names only. No pictures are requested at all, so a folder with hundreds of photos is ready and selectable at once."><List size={13}/> List</button></div></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className={fileView==='list'?'file-list':'file-grid'}>{entries.map(file=>{
+  return <div className={`modal-backdrop${aboveEditor ? ' over-editor' : ''}`} style={{ zIndex: layer }} onMouseDown={onClose}><div className="browser-modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">DOCKER-MOUNTED MEDIA</span><h2>{audioOnly?'Select MP3 soundtracks':photoPick==='background'?'Choose background picture':photoPick?'Select collage photos':'Select photos & videos'}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div><div className="browser-body"><div className="folder-tree"><strong>LOCATIONS</strong>{audioOnly?<button className="active" onClick={()=>chooseRoot('music')}><Music2 size={16}/> music</button>:<><button className={allMedia?'active':''} onClick={showAllMedia} title="List the photos and videos mounts together — every playable file, mixed"><Film size={16}/> All media</button><button className={!allMedia&&root==='photos'?'active':''} onClick={()=>chooseRoot('photos')} title="Browse the /photos mount (photos and videos inside it)"><ImageIcon size={16}/> photos</button><button className={!allMedia&&root==='videos'?'active':''} onClick={()=>chooseRoot('videos')} title="Browse the /videos mount (videos and photos inside it)"><Video size={16}/> videos</button><button className={!allMedia&&root==='uploads'?'active':''} onClick={()=>chooseRoot('uploads')} title="Files uploaded from this device — stored on the NAS in the uploads volume"><HardDriveUpload size={16}/> uploads</button>{(timeline?.length ?? 0) > 0 && <button className={timelineView?'active':''} onClick={()=>{setTimelineView(true);setSelected([]);setDeleteSelection([]);setError('')}} title="Every picture already on the storyline — its own slides and the photos inside its collages, in timeline order"><Clapperboard size={16}/> timeline</button>}<hr/><strong>UPLOAD FROM THIS DEVICE</strong><button type="button" className="upload-location" onClick={()=>uploadInputRef.current?.click()} title="Pick one or more photos or movies on this device (Ctrl/Cmd-click or Shift-click for several)"><Upload size={16}/> Choose files…</button><button type="button" className="upload-location" onClick={()=>folderInputRef.current?.click()} title="Pick a whole folder on this device — every photo and movie inside it (subfolders included) is uploaded"><FolderUp size={16}/> Choose folder…</button><input ref={uploadInputRef} type="file" accept="image/*,video/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.mp4,.mov,.mkv,.avi,.webm,.m4v,.wmv,.asf,.mpg,.mpeg,.ts,.mts,.m2ts,.flv,.f4v,.3gp,.3gpp,.vob,.dav,.mxf,.mod,.tod,.divx" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/><input ref={folderInputRef} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files||[]); e.target.value=''; if(files.length) stageFiles(files)}}/>{uploadsStatus&&!uploadsStatus.writable&&<p className="upload-warning"><AlertTriangle size={11}/> {uploadsStatus.reason}</p>}{(staged.length>0||stagedSkipped>0)&&<div className="upload-stage"><div className="upload-stage-head"><strong>{staged.length} file{staged.length===1?'':'s'} · {(stagedBytes/1048576).toFixed(1)} MB</strong><button type="button" onClick={()=>{setStaged([]);setStagedSkipped(0)}} aria-label="Clear selection"><X size={12}/></button></div><ul>{staged.slice(0,8).map(f=><li key={`${f.name}|${f.size}|${f.lastModified}`} className={tooLarge.includes(f)?'too-large':''} title={(f as any).webkitRelativePath||f.name}><span>{f.name}</span><small>{(f.size/1048576).toFixed(1)} MB</small><button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setStaged(c=>c.filter(x=>x!==f))}><X size={10}/></button></li>)}{staged.length>8&&<li className="more">… and {staged.length-8} more</li>}</ul>{stagedSkipped>0&&<small className="stage-note">{stagedSkipped} file{stagedSkipped===1?'':'s'} skipped — not a photo or movie</small>}{tooLarge.length>0&&<small className="stage-note warn">{tooLarge.length} file{tooLarge.length===1?'':'s'} over the {uploadsStatus?.maxMb} MB limit will be skipped</small>}<button type="button" className="btn dark upload-go" disabled={staged.length-tooLarge.length===0||uploadsStatus?.writable===false} onClick={uploadStaged}><Upload size={14}/> Upload {staged.length-tooLarge.length} file{staged.length-tooLarge.length===1?'':'s'}{uploadFolder?` to /uploads/${uploadFolder}`:' to /uploads'}</button><small className="stage-note">Files upload to the current /uploads folder. Browse there or create a new folder before pressing Upload.</small></div>}</>}<hr/><strong>SECURITY</strong><p>Only configured mounts are accessible: photos, videos and music are read-only, uploads is the writable volume files from this device land in. Folders the container user cannot read stay listed but cannot be opened. Spaces and punctuation in file names are allowed.</p><p>All playable formats are accepted everywhere — a video found under /photos and a photo found under /videos are both added with the mount they really live in.</p></div><div className="file-area"><div className="breadcrumbs"><button disabled={!path} onClick={()=>setPath(path.split('/').slice(0,-1).join('/'))}>← Parent</button><span>/{timelineView?'timeline':allMedia&&!audioOnly?'photos & videos':root}/{timelineView?'the storyline':path}</span><button onClick={()=>setSelected(shown.filter(x=>x.kind!=='directory'&&!x.empty&&x.accessible!==false))}>Select visible files</button></div><div className="file-toolbar"><span className="file-count">{shown.length?`${shown.length} ${timelineView ? `picture${shown.length===1?'':'s'}` : `file${shown.length===1?'':'s'}`}${loading?' · reading…':''}`:loading?'Reading…':'Empty folder'}</span><div className="mode-toggle file-view-toggle" role="group" aria-label="File display"><button type="button" className={fileView==='thumbnails'?'active':''} aria-pressed={fileView==='thumbnails'} onClick={()=>setFileView('thumbnails')} title="Thumbnails — a grid of pictures. Only the rows near the viewport load, and selecting a file never waits for a thumbnail."><LayoutGrid size={13}/> Thumbnails</button><button type="button" className={fileView==='list'?'active':''} aria-pressed={fileView==='list'} onClick={()=>setFileView('list')} title="List — file names only. No pictures are requested at all, so a folder with hundreds of photos is ready and selectable at once."><List size={13}/> List</button></div></div>{isUploadsView&&<div className="upload-folder-toolbar"><span><Upload size={12}/> Upload destination: <b>/uploads{path?`/${path}`:''}</b></span><button type="button" disabled={uploadsStatus?.writable===false} title={uploadsStatus?.writable===false?'The uploads volume is not writable':'Create a folder for local uploads'} onClick={()=>{setNewFolderOpen(true);setFolderError('')}}><FolderPlus size={13}/> New folder</button></div>}{newFolderOpen&&isUploadsView&&<form className="new-folder-form" onSubmit={createFolder}><FolderPlus size={15}/><input autoFocus value={newFolderName} aria-label="New folder name" placeholder="Folder name" onChange={event=>setNewFolderName(event.target.value)} disabled={creatingFolder}/><button type="submit" className="btn dark" disabled={creatingFolder||uploadsStatus?.writable===false}>{creatingFolder?<RefreshCw className="spin" size={13}/>:<Check size={13}/>} Create</button><button type="button" className="btn ghost" onClick={()=>{setNewFolderOpen(false);setFolderError('')}} disabled={creatingFolder}>Cancel</button>{folderError&&<small className="new-folder-error">{folderError}</small>}</form>}{isUploadsView&&<div className="upload-delete-toolbar"><div className="udt-left"><Trash2 size={13}/><strong>{deleteSelection.length?`${deleteSelection.length} selected for deletion`:'Select files/folders to delete'}</strong>{deleteSelection.length>0&&<><button type="button" className="btn ghost small" onClick={()=>setDeleteSelection([])}>Clear</button><button type="button" className="btn dark small delete-btn" disabled={deleting||uploadsStatus?.writable===false} onClick={()=>setShowDeleteConfirm(true)}>{deleting?<RefreshCw className="spin" size={12}/>:<Trash2 size={12}/>} Delete selected</button></>}</div><div className="udt-right"><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries)} title="Select every file and folder in this folder for deletion">Select all</button><button type="button" className="btn ghost small" disabled={!entries.length} onClick={()=>setDeleteSelection(entries.filter((e:any)=>e.kind!=='directory'))} title="Select only files, not folders">Select files</button></div></div>}{loading&&<div className="browser-info"><RefreshCw className="spin" size={15}/> Reading mounted folder…</div>}{error&&<div className="notice amber"><AlertTriangle size={15}/><span>{error}</span></div>}{deleteError&&<div className="notice red"><AlertTriangle size={15}/><span>{deleteError}</span></div>}<div className={fileView==='list'?'file-list':'file-grid'}>{shown.map(file=>{
   const isDelSelected=deleteSelection.some((x:any)=>x.path===file.path)
   const isSel=selected.some((x:any)=>x.path===file.path)
   if(fileView==='list'){
     // A row is text only: no <img>/<video> is mounted, so nothing is fetched
     // and the whole folder — even thousands of files — is selectable at once.
-    const rowInfo=file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`
+    const rowInfo=file.note?file.note:file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`
     const isFolder=file.kind==='directory'
     const playable=file.kind==='image'||file.kind==='video'
     // A collage and a background picture only ever take pictures, and a 0-byte
@@ -5719,7 +5798,7 @@ function MediaBrowser({ onClose, onAdd, onUploadFiles, uploadsStatus=null, reloa
       {(file.kind==='image'||file.kind==='video')&&!file.empty&&<span className="thumb-zoom"><ZoomIn size={13}/></span>}
       {isSel&&<span className="selected-check"><Check size={13}/></span>}
     </button>
-    <button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button>
+    <button type="button" className="file-card-meta" onClick={()=>file.empty?undefined:open(file)}><strong>{file.name}</strong><small>{file.note?file.note:file.kind==='directory'?(file.accessible===false?'No permission':'Folder'):file.empty?'0 B — unreadable':`${allMedia&&!audioOnly&&file.rootName?`${file.rootName} · `:''}${(file.size/1024/1024).toFixed(1)} MB`}</small></button>
     {isUploadsView&&<button type="button" className="file-card-delete" title={`Delete ${file.name}`} aria-label={`Delete ${file.name}`} disabled={uploadsStatus?.writable===false} onClick={(e)=>{e.stopPropagation();deleteSingle(file)}}><Trash2 size={13}/></button>}
   </div>
 })}</div><div className="browser-info"><Info size={15}/> Click a photo or video to preview it. Click the name to select it for the storyline — pictures and videos can be mixed freely. Thumbnails arrive as you scroll and never block you: pick files the moment the list is on screen, or switch the view to <b>List</b> for names only. Empty (0-byte) files are marked and skipped automatically. File names may include spaces, dashes and punctuation. {isUploadsView&&<>Use the checkboxes to select files/folders, then Delete selected. Deleting a folder removes everything inside it.</>}</div></div></div><div className="modal-foot"><span>{selected.length} files selected{skippedEmpty?` · ${skippedEmpty} empty file${skippedEmpty>1?'s':''} skipped`:''}{deleteSelection.length?` · ${deleteSelection.length} marked for deletion`:''}</span><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn dark" disabled={!addable.length} onClick={()=>onAdd(addable)}><Plus size={15}/> {photoPick==='background'?'Use as background':photoPick?`Add ${addable.length||''} photo${addable.length===1?'':'s'}`:'Add to storyline'}</button></div></div>{lightbox&&<MediaLightbox title={lightbox.title} src={lightbox.src} kind={lightbox.kind} onClose={()=>setLightbox(null)}/>}{showDeleteConfirm&&<PopupBackdrop onDismiss={()=>!deleting&&setShowDeleteConfirm(false)}><div className="confirm-modal" onMouseDown={e=>e.stopPropagation()}><div className="confirm-icon"><AlertTriangle size={24}/></div><h2>Delete from /uploads?</h2><p>{deleteSelection.length===1?`Are you sure you want to delete “${deleteSelection[0]?.name}”? ${deleteSelection[0]?.kind==='directory'?'The folder and everything inside it will be removed.':''} This cannot be undone.`:`Are you sure you want to delete ${deleteSelection.length} items from /uploads${path?`/${path}`:''}? ${deleteSelection.some((e:any)=>e.kind==='directory')?'Folders will be removed recursively.':''} This cannot be undone.`}</p>{deleteSelection.length>1&&deleteSelection.length<=12&&<ul className="delete-list">{deleteSelection.map((e:any)=><li key={e.path}>{e.kind==='directory'?'📁 ':'📄 '}{e.name}</li>)}</ul>}{deleteSelection.length>12&&<p><small>First 12: {deleteSelection.slice(0,12).map((e:any)=>e.name).join(', ')} …</small></p>}<div className="confirm-actions"><button className="btn ghost" disabled={deleting} onClick={()=>setShowDeleteConfirm(false)}>Cancel</button><button className="btn dark" disabled={deleting} onClick={()=>void confirmDelete()}>{deleting?<RefreshCw className="spin" size={14}/>:<Trash2 size={14}/>} {deleting?'Deleting…':'Delete'}</button></div></div></PopupBackdrop>}</div>
