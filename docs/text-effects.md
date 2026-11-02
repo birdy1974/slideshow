@@ -60,7 +60,8 @@ calls. Per item it picks one of:
    (`ass=filename=<work>/text-NNNN.ass:fontsdir=<fonts>`; the custom FFmpeg
    build has carried `--enable-libass` since the xfade-easing work, and the
    `fontsdir` points at the same TTFs the GUI uses, so typography parity is
-   preserved). One file per item, written into the job's work dir — concurrent
+   preserved — *every* `ass=` on this path passes it, karaoke included, because
+   without it libass renders nothing at all rather than complaining). One file per item, written into the job's work dir — concurrent
    renders never collide. Anything the drawtext filter cannot express lives
    here: typewriter karaoke `\k`, per-character stagger (`split`/`wave`/
    `shimmer`), `\t` transforms (pop/zoom/flip/rotate/glow), animated `\clip`

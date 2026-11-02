@@ -323,6 +323,17 @@ The document uses `WrapStyle: 2` and `\an*\pos()`, so a line cannot re-wrap when
 a word's colour changes underneath it — the same reason the per-word styles write
 one event per word instead of scaling inside `\k`.
 
+The `ass=` filter carries **`fontsdir=` too, and that is not decoration**: the TTFs
+this app renders with are shipped in their own directory rather than installed into
+the image, so libass learns the caption's family name exists only because it is
+pointed there (`karaoke_overlay_filter(ass_path, self.settings.fonts_dir)`, the same
+`settings.fonts_dir` the caption path has always passed). A missing `fontsdir` is not
+an error either — libass finds no face for the document, draws nothing, and the render
+succeeds with the sung words simply absent from the MP4. That is the one failure of
+this path no preview can show, so `TextStyleTest` pins the wiring on the call site and
+scans every `f"ass=filename=` in `text_effects.py`, `text_motion.py` and `renderer.py`
+for a `fontsdir` in the same expression: no libass overlay may be built without one.
+
 Two degradations, both deliberate: a caption whose words are all un-timed is
 plain text (`has_karaoke()` returns false, and `sanitizeKaraoke()` refuses to
 store an empty clock), and on an FFmpeg build without libass the karaoke branch

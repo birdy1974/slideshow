@@ -1609,7 +1609,7 @@ class Renderer:
             if doc is not None:
                 ass_path.parent.mkdir(parents=True, exist_ok=True)
                 ass_path.write_text(doc, encoding="utf-8")
-                return karaoke_overlay_filter(ass_path)
+                return karaoke_overlay_filter(ass_path, self.settings.fonts_dir)
         if has_stack(item):
             # Stacked effects (textFx): the channel compositor in text_motion.py.
             # It needs libass; without it the caption keeps its words, position

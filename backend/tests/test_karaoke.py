@@ -398,6 +398,25 @@ class DocumentTest(unittest.TestCase):
         self.assertTrue(got.startswith("ass=filename="), got)
         self.assertNotIn("/tmp/it's here", got)  # the apostrophe is escaped, not passed through
 
+    def test_overlay_filter_is_told_where_the_fonts_are(self) -> None:
+        """libass only knows the caption's font if it is pointed at the fonts dir.
+
+        The fonts this app renders with are shipped in their own directory rather than
+        installed into the image, so a document whose `Style:` names "Caveat" resolves
+        to nothing at all on a box without system fonts — and libass answering with no
+        face is not an error, it is an empty frame. Every caption path passes
+        `fontsdir=`; karaoke must not be the one that forgets.
+        """
+        from app.text_effects import karaoke_overlay_filter
+
+        plain = karaoke_overlay_filter(Path("/w/k.ass"))
+        self.assertNotIn("fontsdir", plain, "without a directory the filter stays as it was")
+        got = karaoke_overlay_filter(Path("/w/k.ass"), Path("/config/fonts"))
+        self.assertEqual(got, "ass=filename=/w/k.ass:fontsdir=/config/fonts", got)
+        odd = karaoke_overlay_filter(Path("/w's/k.ass"), "/con fig/foo's")
+        self.assertIn("fontsdir=", odd)
+        self.assertNotIn("/con fig/foo's", odd, "the same two-pass quoting as the path itself")
+
 
 class TextStyleTest(unittest.TestCase):
     """``karaoke.text``: the sung words wearing something other than the caption.
@@ -497,12 +516,33 @@ class TextStyleTest(unittest.TestCase):
         self.has(renderer, "karaoke_mod.has_karaoke(item)", "the branch is skipped for plain captions")
         self.has(renderer, "karaoke_document(", "the document is built for the item")
         self.has(renderer, "karaoke_overlay_filter(", "the ass= filter comes from text_effects")
+        # The filter is built with the fonts directory: `text_effects` could offer the
+        # option and the render could still forget to use it, which is how the sung
+        # words vanish only in the MP4.
+        call = renderer[renderer.index("return karaoke_overlay_filter("):]
+        self.has(call[:120], "self.settings.fonts_dir", "the karaoke ass= gets the fonts dir, like every caption ass=")
+
         # Without libass the branch is not entered at all, so the caption falls
         # through to the ordinary path: words shown, no sweep, no failed job.
         guard = "has_ass and ass_path is not None and karaoke_mod.has_karaoke(item)"
         self.has(renderer, guard, "libass is required for the karaoke branch")
         self.has(renderer[renderer.index(guard):renderer.index(guard) + 700], "if doc is not None:",
                  "an unusable document degrades instead of failing")
+
+    def test_no_ass_filter_in_the_backend_renders_without_a_fonts_dir(self) -> None:
+        """One rule for every libass overlay: point it at the fonts, or draw nothing.
+
+        Scanned on the lines that build the filter (an f-string starting the option),
+        not on every mention — prose in a docstring describes the filter, it does not
+        hand one to FFmpeg.
+        """
+        for name in ("text_effects.py", "text_motion.py", "renderer.py"):
+            lines = self.source(f"backend/app/{name}").splitlines()
+            for index, line in enumerate(lines):
+                if 'f"ass=filename=' not in line and "f'ass=filename=" not in line:
+                    continue
+                window = "\n".join(lines[index:index + 4])
+                self.assertIn("fontsdir", window, f"{name}: an ass= filter with no fontsdir")
 
     def test_both_engines_offer_the_same_style_fields(self) -> None:
         # The popup builds its controls from KARAOKE_TEXT_FIELDS and the render
