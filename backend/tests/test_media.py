@@ -230,6 +230,37 @@ class MainEndpointsTest(unittest.TestCase):
             # Should not raise any NameError or exception for valid mounts
             validate_mount_references(payload)
 
+    def test_a_background_outside_the_library_names_the_libraries(self) -> None:
+        """"Invalid collage background path" blamed a path nobody could inspect.
+
+        A missing mount prefix is invisible in the editor — the preview URL builder
+        strips it, the save endpoint needs it — so the only sign that anything is wrong
+        is the save failing with a message about validity. The message has to carry the
+        fix, because the file the person picked is really there.
+        """
+        from app.main import validate_mount_references
+        from fastapi import HTTPException
+        from unittest.mock import patch
+
+        (self.settings.photos_dir / "photo.jpg").write_bytes(b"jpg")
+        payload = {
+            "output": {"path": "/output"},
+            "media": [{
+                "name": "collage", "type": "collage", "path": "",
+                "collage": {
+                    "photos": [{"path": "/photos/photo.jpg", "name": "photo.jpg"}],
+                    "backgroundImage": "../elsewhere/photo.jpg",
+                },
+            }],
+            "soundtrack": {"tracks": []},
+        }
+        with patch("app.main.settings", self.settings):
+            with self.assertRaises(HTTPException) as caught:
+                validate_mount_references(payload)
+        detail = str(caught.exception.detail)
+        self.assertIn("../elsewhere/photo.jpg", detail, "the value it was given")
+        self.assertIn("/photos", detail, "and where a background may live at all")
+
     def test_clear_output_directory(self) -> None:
         from app.main import clear_output_directory
         from unittest.mock import patch

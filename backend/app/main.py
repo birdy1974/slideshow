@@ -113,7 +113,16 @@ def validate_mount_references(payload: dict[str, Any]) -> None:
                         if not src.is_file():
                             raise HTTPException(422, f"Collage background picture is missing: {bg}")
                     except UnsafePath as exc:
-                        raise HTTPException(422, f"Invalid collage background path: {bg}") from exc
+                        # Not "the shape is wrong": name the mounts and the fix, because
+                        # a missing prefix is invisible in the editor (the preview strips
+                        # it, the endpoint does not) and the old wording blamed the path.
+                        mounts = ", ".join(f"/{key}" for key in settings.media_roots)
+                        raise HTTPException(
+                            422,
+                            f"Collage background “{bg}” is not a picture in this library — it must "
+                            f"be a file under {mounts}. Open the slide's background picker and "
+                            f"choose the picture again.",
+                        ) from exc
             continue
         try:
             source_path(settings, item)
