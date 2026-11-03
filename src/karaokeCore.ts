@@ -1093,6 +1093,22 @@ export interface KaraokeClipWindow {
   cutAt: number | null
 }
 
+/** The window the sung words actually occupy: first tapped time to last + tail.
+ *
+ *  Twin of `speech_span` in `backend/app/karaoke.py`. The render widens the
+ *  caption window with it, because a line tapped by ear against a movie is the
+ *  only authority on when it has to be on screen: `textEnd` defaults to the
+ *  slide's `duration`, which for a movie is a floor and not a cap, so the words
+ *  past it used to be cut silently from the MP4 while this editor, bounded by
+ *  the clip length, kept showing every one of them.
+ */
+export function karaokeSpeechSpan (data: KaraokeData | null | undefined): [number, number] | null {
+  const times = (data?.words || []).map(w => num((w as Record<string, unknown>)?.t, NaN)).filter(t => Number.isFinite(t) && t >= 0)
+  if (!times.length) return null
+  const tail = clamp(num(data?.tail, KARAOKE_DEFAULTS.tail), 0, 10)
+  return [msRound(Math.min(...times)), msRound(Math.max(...times) + tail)]
+}
+
 export function karaokeClipWindow (
   item: { trimStart?: number; trimEnd?: number; duration?: number },
   kept?: number

@@ -1606,7 +1606,8 @@ class Renderer:
             return self._drawtext_supported
 
     def _text_filter(self, item: dict[str, Any], defaults: dict[str, Any], width: int, height: int, ass_path: Path | None = None, lead_in: float = 0.0,
-                     transform_blocked: bool = False, layer_fps: int = 30, layer_duration: float = 5.0) -> str | LayeredText | None:
+                     transform_blocked: bool = False, layer_fps: int = 30, layer_duration: float = 5.0,
+                     hold: float | None = None) -> str | LayeredText | None:
         """Dispatch to the dual text-effect engine (backend/app/text_effects.py).
 
         ``textStart``/``textEnd`` are what the storyline handles set: seconds
@@ -1660,7 +1661,7 @@ class Renderer:
             # from drawtext — and, like every other ASS feature, it degrades to
             # the plain caption (words shown, no sweep) on a build without
             # libass instead of failing the render.
-            doc = karaoke_document(item, defaults, width, height, lead_in)
+            doc = karaoke_document(item, defaults, width, height, lead_in, hold=hold)
             if doc is not None:
                 ass_path.parent.mkdir(parents=True, exist_ok=True)
                 ass_path.write_text(doc, encoding="utf-8")
@@ -2062,9 +2063,12 @@ class Renderer:
             bg_picture_spec = bool((collage_spec and collage_spec.get("backgroundImage")) or item.get("frameBackgroundImage"))
             if bg_picture_spec:
                 colour_change = None
+            # `hold` is this slide's visible hold, handles excluded: karaoke is
+             # timed by ear against the movie, so the render needs to know how long
+             # the picture is really on screen before it clips the sung line.
             text_filter = self._text_filter(item, defaults, width, height, work / f"text-{index:04d}.ass", lead_in=lead_in,
                                             transform_blocked=cut_out is not None or colour_change is not None,
-                                            layer_fps=fps, layer_duration=duration)
+                                            layer_fps=fps, layer_duration=duration, hold=durations[index])
             # Everything before the caption — a collage composites its photos
             # on this base, then the caption and the format tail close the graph.
             base_filters = list(filters)

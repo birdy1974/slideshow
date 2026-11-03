@@ -2326,7 +2326,7 @@ def plan_engine(plan: FxPlan) -> str:
     return "dt" if engines <= {"dt", "none"} else "ass"
 
 def karaoke_document(item: dict[str, Any], defaults: dict[str, Any], width: int, height: int,
-                     lead_in: float = 0.0) -> str | None:
+                     lead_in: float = 0.0, hold: float | None = None) -> str | None:
     """The complete ``.ass`` for a karaoke caption, or None when it is unusable.
 
     Karaoke is the caption itself with a per-word clock: the words stay in
@@ -2355,6 +2355,22 @@ def karaoke_document(item: dict[str, Any], defaults: dict[str, Any], width: int,
     g = _geometry({**item, **overrides} if overrides else item, defaults, width, height)
     if g is None:
         return None
+    # The sung line widens its own caption window, and stops where the slide ends.
+    #
+    # ``plan_of`` clamps the words into ``[g.start, g.end]``, so a line tapped
+    # longer than the caption window used to have its tail deleted silently: no
+    # event, no error, a finished MP4 without the words. ``hold`` is the slide's
+    # visible hold (transition handles excluded), which for a movie is its whole
+    # kept runtime — so widening up to ``hold + lead_in`` means exactly "as long
+    # as this picture is on screen", never longer.
+    span = karaoke_mod.speech_span(data)
+    if span is not None:
+        from dataclasses import replace as _replace
+        limit = float(hold) + max(0.0, float(lead_in)) if hold and float(hold) > 0 else float("inf")
+        start = min(float(g.start), max(0.0, float(span[0])))
+        end = min(max(float(g.end), float(span[1])), limit)
+        if end > start and (start != float(g.start) or end != float(g.end)):
+            g = _replace(g, start=start, end=end)
     plan = karaoke_mod.plan_of(g.text, data, g.start, g.end, 0.0)
     if not plan["sentences"]:
         return None
@@ -2378,11 +2394,13 @@ def karaoke_overlay_filter(ass_path: Path, fonts_dir: Path | str | None = None) 
     in the container's own directory (``settings.fonts_dir``), not installed into
     the image, so libass only learns the caption's family name exists when it is
     pointed there. The ordinary caption path has always done that; karaoke used to
-    hand FFmpeg a bare ``ass=filename=``, and on a build without system fonts
-    libass then found no face for the karaoke document and drew *nothing* — a
-    movie that renders fine except that the sung words are simply absent, in the
-    MP4 and in no way visible as an error. Left optional so the twin and the
-    tests can still ask for the plain filter.
+    hand FFmpeg a bare ``ass=filename=``. What that costs was measured against a
+    real FFmpeg rather than guessed: with fontconfig present the words still
+    appear, in whatever face the fallback offers — wrong metrics, so wrong width
+    and position, and the sweep colour comes out wrong too — while a build with no
+    usable fallback draws nothing at all. Neither is an error, which is why the
+    wiring is pinned by a test instead of by looking at the MP4. Left optional so
+    the twin and the tests can still ask for the plain filter.
     """
     def posix(path: Path | str) -> str:
         return str(path).replace("\\", "/")

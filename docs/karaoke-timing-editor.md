@@ -328,9 +328,13 @@ this app renders with are shipped in their own directory rather than installed i
 the image, so libass learns the caption's family name exists only because it is
 pointed there (`karaoke_overlay_filter(ass_path, self.settings.fonts_dir)`, the same
 `settings.fonts_dir` the caption path has always passed). A missing `fontsdir` is not
-an error either — libass finds no face for the document, draws nothing, and the render
-succeeds with the sung words simply absent from the MP4. That is the one failure of
-this path no preview can show, so `TextStyleTest` pins the wiring on the call site and
+an error either, and what it costs is measured rather than assumed (a real FFmpeg 9 with
+fontconfig, DejaVu on disk, Montserrat only in the app's own directory): libass falls back
+to *some* face, so the line is drawn in the wrong font — different metrics, so a different
+width and position, and the sweep colour comes out wrong as well. Only a build with no
+usable fallback draws nothing at all. So the symptom of a missing `fontsdir` is a caption
+that looks wrong, not a caption that is gone; when the words are *absent*, look at the
+window rule below first. `TextStyleTest` pins the wiring on the call site and
 scans every `f"ass=filename=` in `text_effects.py`, `text_motion.py` and `renderer.py`
 for a `fontsdir` in the same expression: no libass overlay may be built without one.
 
@@ -364,6 +368,41 @@ image) and `fonts` (the directory, whether it exists, how many font files are in
 it, and how many registry families have a file there). `familiesWithFile: 0`
 means no caption can find its face in any engine, and it is a deployment
 question, not a project one.
+
+## The window the line is sung in
+
+A karaoke caption has two clocks, and until now only one of them was honoured.
+`textStart`/`textEnd` are the storyline's caption handles; `karaoke.words` is the
+line the user tapped by ear against the movie. `plan_of` clamps the words into the
+handles, so **a line longer than the caption window had its tail deleted in
+silence**: no event, no FFmpeg error, a finished MP4 without the words.
+
+The two windows are not merely different, they are different *in the direction that
+guarantees a loss*. The editor bounds the strip by the clip's kept length
+(`karaokeClipWindow`); the render bounds the caption by `textEnd`, whose default is
+the slide's `duration` — and for a movie `duration` is a floor, never a cap, since
+the MP4 plays the file to its end regardless. Tap a whole song onto a 30 s clip
+with the default 8 s duration and everything after 8 s was cut, while the popup
+that produced those timings kept showing every word. That is the report "the final
+result renders okay, except the karaoke text is missing", and it was never a font
+or a filter-graph problem.
+
+So: **the sung line widens its own caption window, and stops where the slide ends.**
+`karaoke.speech_span()` (twin `karaokeSpeechSpan`) is first tapped time to last
+tapped time plus `tail`; `karaoke_document()` takes `min(textStart, span.from)` and
+`max(textEnd, span.to)`, clamped to the slide's *visible hold* — which is why
+`Renderer._text_filter` gained a `hold=` argument fed by `durations[index]` rather
+than reusing `item["duration"]`: the hold is the only number that knows a movie runs
+to 12 s while its slide "says" 8. Widening is one-way, so a line that fits inside
+its handles keeps the caption's fade timing byte for byte, and `textStart` still
+delays the words — it just cannot delete the ones before it.
+
+Verified frame by frame, not by reading: the same slide (`textEnd` 2 s, six words to
+6.7 s, a 12 s movie) renders an empty frame at 3.5 s before the change and
+`To mountain high now forever always` with `high` mid-sweep after it, the whole line
+still sweeping at 5.5 s. `SpeechWindowTest` pins all four sides of it — reaches the
+last word, bounded by the hold, no-ops for a short line, and that the render loop is
+the one supplying the hold.
 
 ## Rules the editor guarantees
 

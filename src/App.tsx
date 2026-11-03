@@ -45,7 +45,7 @@ import { TextEffectBrowser, type BrowserCaption } from './TextEffectBrowser'
 import { MotionStage, useMotionClock } from './TextMotionStage'
 import { KaraokeStage, useKaraokeClockTime } from './KaraokeStage'
 import { KaraokeEditor } from './KaraokeEditor'
-import { karaokeTextStyleTouched, sanitizeKaraoke, tokenize, type KaraokeData } from './karaokeCore'
+import { karaokeSpeechSpan, karaokeTextStyleTouched, sanitizeKaraoke, tokenize, type KaraokeData } from './karaokeCore'
 import { FRAME_H, FRAME_W, type Prepared, type SceneInput } from './textMotionScene'
 import type { BgChange } from './textMotionCore'
 import { FontPicker } from './FontPicker'
@@ -3380,9 +3380,16 @@ function CaptionStage({ input, clock, karaoke, className = '', ...rest }: Omit<R
   const at = useKaraokeClockTime(karaoke && input ? clock ?? null : null)
   if (karaoke && input && (input.text || '').trim()) {
     const scene = input
+    // The sung line owns its window, exactly as `karaoke_document` widens it for
+    // the render: a word tapped past `textEnd` is on screen in the MP4 (up to the
+    // slide's visible hold), so it has to be here too. `scene.end` cannot carry
+    // that bound — the stage does not know a movie's native length — so the
+    // preview may hold the last words a moment longer than the file shows them,
+    // and never hides one it should have shown.
+    const span = karaokeSpeechSpan(karaoke)
     return <KaraokeStage
       className={`stage-fill ${className}`} text={scene.text} karaoke={karaoke} at={at}
-      from={scene.start} to={scene.end} family={scene.family} bold={scene.bold} italic={scene.italic}
+      from={span ? Math.min(scene.start, span[0]) : scene.start} to={span ? Math.max(scene.end, span[1]) : scene.end} family={scene.family} bold={scene.bold} italic={scene.italic}
       underline={scene.underline} colour={scene.colour} fontSize={scene.fontSize} x={scene.x} y={scene.y}
       align={scene.align} outline={scene.outline}
     />

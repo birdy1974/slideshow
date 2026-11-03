@@ -31,6 +31,9 @@ for (const c of input.cases) {
     groups: core.sentenceGroups(core.tokenize(c.text), data.words, data.maxWords),
     auto: core.autoTime(core.tokenize(c.text), [], data.maxWords, c.from ?? 0, c.to ?? 0).map(w => w.t),
     signed: core.textSignature(core.tokenize(c.text)),
+    // The window the sung words occupy, which both engines widen their caption
+    // window with. Compared here so the popup cannot promise a line the MP4 cuts.
+    span: core.karaokeSpeechSpan(data) || [],
     // The look the preview would paint with: `karaoke.text` validated, then merged
     // over the caption's own style in `KaraokeStage`'s names. The Python side
     // builds the same nine values out of `style_overrides` + `_geometry`'s caption

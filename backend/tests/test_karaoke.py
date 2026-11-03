@@ -648,6 +648,86 @@ class TextStyleTest(unittest.TestCase):
 
 
 
+class SpeechWindowTest(unittest.TestCase):
+    """A line tapped past the caption window stays in the MP4.
+
+    This is the "final result renders fine except the karaoke text is missing"
+    bug, and it was never a font or a filter-graph problem: `plan_of` clamps the
+    words into `textStart..textEnd`, and `textEnd` defaults to the slide's
+    `duration` — which for a movie is a floor, not a cap, because the MP4 plays
+    the movie to its end regardless. So the words past `duration` were deleted in
+    silence while the karaoke editor, bounded by the clip length, showed all of
+    them. Verified end to end against a real FFmpeg: the same slide renders the
+    whole line at 3.5 s and 5.5 s with the window widened, and nothing at all
+    without it.
+    """
+
+    DEFAULTS = {"fontFamily": "Montserrat", "fontSize": 64, "fontColor": "#ffffff"}
+
+    def item(self, span_end: float, text_end: float, duration: float = 8.0) -> dict:
+        words = [{"t": round(0.8 + i * 1.1, 3)} for i in range(6)]
+        return {"id": 1, "type": "video", "name": "a.mp4", "path": "/videos/a.mp4",
+                "text": "To mountain high now forever always", "duration": duration,
+                "textStart": 0.0, "textEnd": text_end,
+                "karaoke": {"style": "sweep", "fill": "#ffd166", "tail": 0.4, "leadIn": 0.4, "words": words}}
+
+    def events(self, item: dict, hold: float | None) -> list[tuple[float, float]]:
+        from app.text_effects import karaoke_document
+        doc = karaoke_document(item, self.DEFAULTS, 1920, 1080, 0.0, hold=hold)
+        out = []
+        for line in (doc or "").splitlines():
+            if line.startswith("Dialogue:"):
+                fields = line.split(",", 9)
+                out.append((fields[1], fields[2]))
+        return out
+
+    def test_span_is_first_to_last_plus_tail(self) -> None:
+        from app.karaoke import data_for, speech_span
+        item = self.item(6.3, 2.0)
+        self.assertEqual((0.8, 6.7), speech_span(data_for(item)))
+
+    def test_span_needs_a_time(self) -> None:
+        from app.karaoke import speech_span
+        self.assertIsNone(speech_span({"words": [{}, {}], "tail": 0.4}))
+        self.assertIsNone(speech_span(None))
+
+    @staticmethod
+    def seconds(stamp: str) -> float:
+        h, m, rest = stamp.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(rest)
+
+    def test_the_line_widens_past_text_end(self) -> None:
+        # textEnd says 2 s, six words run to 6.7 s, and the picture is on screen
+        # 12 s: the line must reach its last word, not stop at the stale handle.
+        events = self.events(self.item(6.3, 2.0), hold=12.0)
+        self.assertEqual(1, len(events))
+        cut_short = self.events(self.item(6.3, 2.0), hold=2.0)[0]
+        self.assertGreaterEqual(self.seconds(events[0][1]), 6.7, "the last word and its tail stay on screen")
+        self.assertLess(self.seconds(cut_short[1]), self.seconds(events[0][1]),
+                        "and that is the hold doing it, not a wider default window")
+
+    def test_it_never_outlives_the_visible_hold(self) -> None:
+        # Same slide, picture up for 3 s only: widening stops at the last frame
+        # that exists, or the .ass would promise seconds of nothing to fade out in.
+        end = self.seconds(self.events(self.item(6.3, 2.0), hold=3.0)[0][1])
+        self.assertLessEqual(end, 3.0 + 1e-6)
+        self.assertGreater(end, 2.0, "it still uses everything the caption window denied it")
+
+    def test_a_short_line_keeps_the_caption_window_untouched(self) -> None:
+        # The other half of the contract: widening is one-way. A line that ends
+        # inside the caption window must not move a byte of the timing.
+        item = self.item(6.3, 6.0)
+        item["karaoke"]["words"] = [{"t": 1.0}, {"t": 1.6}]
+        self.assertEqual(self.events(item, hold=None), self.events(item, hold=12.0))
+        self.assertEqual(self.events(item, hold=None), self.events(item, hold=120.0))
+
+    def test_the_render_loop_hands_the_visible_hold_to_the_branch(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        renderer_src = (repo / "backend/app/renderer.py").read_text(encoding="utf-8")
+        self.assertEqual(1, renderer_src.count("hold=durations[index]"),
+                         "the karaoke branch needs the real hold, not item.duration")
+
+
 class DegradeReasonTest(unittest.TestCase):
     """Every silent "the sung words are not in the MP4" state, named.
 

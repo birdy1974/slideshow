@@ -313,6 +313,7 @@ class KaraokeTwinTest(unittest.TestCase):
                     self.assertEqual(mine_value, their_value, f"{name}: render {caption_key}")
             for mine, theirs in zip(K.auto_time(K.tokenize(case["text"]), [], data["maxWords"], case.get("from", 0.0), case.get("to", 0.0)), got["auto"]):
                 _close(self, mine.get("t"), theirs, f"{name}: first-pass time")
+            self.assertEqual(list(K.speech_span(data) or []), got.get("span", []), f"{name}: speech span")
             self.assertTrue(got["signed"], f"{name}: signature")
 
     def test_windows_never_overlap_and_words_finish(self) -> None:
