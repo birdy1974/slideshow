@@ -258,9 +258,14 @@ class BackgroundSurfaceTest(unittest.TestCase):
         self.assertIn("setTimelineView(true)", self.app)
         self.assertIn("const shown=timelineView?timelineEntries:entries", self.app,
                       "the view swaps the list the existing cards draw, rather than forking the grid")
-        self.assertIn("timeline={timelinePictures(media)}", self.app)
-        self.assertGreaterEqual(self.app.count("timeline={timelinePictures(media)}"), 6,
+        self.assertIn("timeline={timelinePicturesForBrowser}", self.app)
+        self.assertGreaterEqual(self.app.count("timeline={timelinePicturesForBrowser}"), 6,
                                 "every picture picker: collage, replace, both backgrounds, and both popups")
+        # One memoized array for all six, and `timelinePictures(media)` inline would
+        # undo it: a fresh array per render is the browser's memo key, and the memo
+        # key is what decides whether the mount is re-read on every parent render.
+        self.assertNotIn("timeline={timelinePictures(media)}", self.app,
+                         "see MediaBrowserStabilityTest — the call has to be memoized, not repeated")
 
 
 if __name__ == "__main__":

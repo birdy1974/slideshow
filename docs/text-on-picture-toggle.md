@@ -9,6 +9,13 @@ caption text and its timing, but the text is not drawn on the picture — in the
 preview, in the editor, and in the final FFmpeg render. Title frames are unaffected:
 a text frame *is* its text, so the flag never applies to `type === "title"` items.
 
+That flag also decides **which parts enter the fast preview at all**: a hold with no
+text is skipped, so turning the caption on can make a JPEG-derived slide the first
+part of the stitched timeline. It used to inherit the whole file's colour
+description with it, which is how a report of "the movie turns to garbage when I
+enable the text" ended up being a colour-range bug rather than a caption bug — see
+`docs/timeline-colour-normalisation.md`.
+
 Implemented controls (the recommended placement) are marked **[implemented]**.
 Alternatives are listed so we can switch cheaply if a different spot is preferred.
 
