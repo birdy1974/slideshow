@@ -26,6 +26,10 @@ from app.renderer import (
     video_trim_window,
     fill_frame_filter,
     fit_frame_filter,
+    SIGNATURE_FIELDS,
+    TIMELINE_COLOURSPACE,
+    TIMELINE_COLOUR_ARGS,
+    timeline_frame_filter,
     movie_background,
     movie_frame_filter,
     loudnorm_filter,
@@ -2200,10 +2204,9 @@ class UniformStitchTest(unittest.TestCase):
     def test_holds_and_xfades_normalize_to_the_configured_canvas(self) -> None:
         commands = self._render(fail_first_hold_on_qsv=False)
         parts = {Path(c[-1]).name: c for c in self._parts(commands)}
-        normalize = (
-            "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,"
-            "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p"
-        )
+        # Derived, not retyped: the point is that *the renderer's own* normalizer is in
+        # every stitched graph, and a copy of its text here would only pin a snapshot.
+        normalize = timeline_frame_filter(1280, 720)
 
         hold_graph = parts["hold-0000.mp4"][parts["hold-0000.mp4"].index("-filter_complex") + 1]
         self.assertEqual(1, hold_graph.count(normalize))
@@ -2211,6 +2214,48 @@ class UniformStitchTest(unittest.TestCase):
         transition_graph = parts["transition-0000.mp4"][parts["transition-0000.mp4"].index("-filter_complex") + 1]
         self.assertEqual(2, transition_graph.count(normalize), "both xfade inputs must have identical geometry and pixel format")
         self.assertLess(transition_graph.index("xfade="), transition_graph.index("format=yuv420p", transition_graph.index("xfade=")))
+
+
+    def test_stitched_parts_carry_one_colour_description(self) -> None:
+        """A JPEG-derived part must not be allowed to describe the whole movie.
+
+        Photos decode as `yuvj420p(pc, bt470bg)` and movies as limited `yuv420p`. The
+        stitched MP4 carries one colour description — the first part's — so any part
+        that differs silently restyles every other slide: full-range pixels shown as
+        limited (or the reverse) plus the wrong matrix is the "the picture turned
+        green/magenta as soon as I switched the caption on" report, and the caption
+        only matters because a text-free hold is skipped from the preview. Fixing it
+        needs both halves: convert the pixels, and stamp what they became.
+        """
+        commands = self._render(fail_first_hold_on_qsv=False)
+        parts = {Path(c[-1]).name: c for c in self._parts(commands)}
+        self.assertTrue({"hold-0000.mp4", "transition-0000.mp4"}.issubset(parts), "expected a mixed photo+movie timeline")
+        for name, command in parts.items():
+            graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("out_range=limited", graph, f"{name}: full-range photo frames must be brought into the timeline's range")
+            self.assertIn(f"out_color_matrix={TIMELINE_COLOURSPACE}", graph, f"{name}: 601 and 701 matrices must not mix in one file")
+            text = " ".join(command)
+            for flag in (" ".join(TIMELINE_COLOUR_ARGS[i:i + 2]) for i in range(0, len(TIMELINE_COLOUR_ARGS), 2)):
+                self.assertIn(flag, text, f"{name}: the stamp must say what the conversion did")
+
+    def test_a_colour_mismatch_alone_refuses_the_copy_stitch(self) -> None:
+        # Same SPS/PPS, same size, only the tags differ: copying is still illegal,
+        # because the file would carry one description for two kinds of frames.
+        tv = ("h264", "High", 41, "yuv420p", 1280, 720, "tv", "bt709", "bt709", "bt709", "AA")
+        pc = ("h264", "High", 41, "yuv420p", 1280, 720, "pc", "bt470bg", "bt709", "bt709", "AA")
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[tv, pc]):
+            self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[tv, tv]):
+            self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
+
+    def test_the_refused_stitch_names_the_differing_parameter(self) -> None:
+        tv = ("h264", "High", 41, "yuv420p", 1280, 720, "tv", "bt709", "bt709", "bt709", "AA")
+        pc = ("h264", "High", 41, "yuv420p", 1280, 720, "pc", "bt709", "bt709", "bt709", "AA")
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[tv, pc]):
+            with self.assertLogs("app.renderer", level="WARNING") as logs:
+                self.renderer._parts_share_parameter_set([Path("hold-0000.mp4"), Path("hold-0001.mp4")])
+        self.assertTrue(any("color_range" in line and "hold-0001.mp4" in line for line in logs.output),
+                        "a decision that costs a full re-encode has to be readable in the log")
 
     def test_cpu_fallback_applies_to_every_part(self) -> None:
         commands = self._render(fail_first_hold_on_qsv=True)
@@ -2267,10 +2312,10 @@ class UniformStitchTest(unittest.TestCase):
         self.assertIn("copy", join, "the normalized, matching parts can now be joined without decoding")
 
     def test_parameter_set_comparison(self) -> None:
-        matching = ("h264", "High", 41, "yuv420p", 1280, 720, "AA")
+        matching = ("h264", "High", 41, "yuv420p", 1280, 720, "tv", "bt709", "bt709", "bt709", "AA")
         with mock.patch.object(self.renderer, "_stream_signature", side_effect=[matching, matching]):
             self.assertTrue(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
-        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[matching, ("h264", "Main", 40, "nv12", 1280, 720, "BB")]):
+        with mock.patch.object(self.renderer, "_stream_signature", side_effect=[matching, ("h264", "Main", 40, "nv12", 1280, 720, "tv", "bt709", "bt709", "bt709", "BB")]):
             self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]))
         with mock.patch.object(self.renderer, "_stream_signature", side_effect=[None, matching]):
             self.assertFalse(self.renderer._parts_share_parameter_set([Path("a"), Path("b")]), "an unreadable probe is not proof that copy-joining is safe")
@@ -2278,12 +2323,18 @@ class UniformStitchTest(unittest.TestCase):
     def test_stream_signature_requests_and_reads_extradata(self) -> None:
         stream = {
             "codec_name": "h264", "profile": "High", "level": 41, "pix_fmt": "yuv420p",
-            "width": 1280, "height": 720, "extradata": "00000000: 0164 0029 SPS/PPS",
+            "width": 1280, "height": 720, "color_range": "tv", "color_space": "bt709",
+            "color_primaries": "bt709", "color_transfer": "bt709",
+            "extradata": "00000000: 0164 0029 SPS/PPS",
         }
         with mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=0, stdout=json.dumps({"streams": [stream]}), stderr="")) as run:
             signature = self.renderer._stream_signature(Path("hold.mp4"))
         self.assertIn("-show_data", run.call_args.args[0], "ffprobe must emit the SPS/PPS bytes, not just the extradata size")
+        query = run.call_args.args[0][run.call_args.args[0].index("-show_entries") + 1]
+        for field in SIGNATURE_FIELDS:
+            self.assertIn(field, query, f"the stitch must verify {field}, not only the geometry")
         self.assertEqual(stream["extradata"], signature[-1])
+        self.assertEqual(("tv", "bt709", "bt709", "bt709"), signature[6:10], "colour tags belong in the signature, before the bytes")
 
     def test_stream_signature_rejects_failed_or_incomplete_probe(self) -> None:
         with mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=1, stdout="{}", stderr="probe failed")):

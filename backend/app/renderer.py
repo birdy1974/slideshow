@@ -508,11 +508,41 @@ def timeline_frame_filter(width: int, height: int) -> str:
     dimensions and the concat stage expects every part to have one video
     geometry. Fit the complete image, pad any leftover canvas with black, and
     normalize the pixel format before encoding each hold/transition part.
+
+    The colour *description* is normalized here too, because this is the one filter
+    every stitched part passes through: a photo decoded from JPEG arrives as
+    `yuvj420p(pc, bt470bg)` — full range, 601 matrix — while a movie arrives as
+    limited-range `yuv420p`, and `format=` alone keeps a still's tags. Without the
+    explicit range and matrix conversion, the hold cut from that photo is the single
+    part of the timeline declaring something else than all the others — and a stitched
+    MP4 can only carry one description, which is the first part's. The player then
+    shows the *movies* with the photo's range and matrix (measured on a real FFmpeg:
+    the same encoded frame reads back as RGB 70,0,0 on its own and 78,15,16 after the
+    stitch). That is the "colours are wrong / picture is garbage as soon as the text
+    is on" report: `textEnabled` decides whether the JPEG-derived slide enters the
+    timeline at all, since the fast preview skips text-free holds.
     """
     return (
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2:"
+        f"out_range=limited:out_color_matrix={TIMELINE_COLOURSPACE},"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p"
     )
+
+
+# One colour description for the whole timeline: `timeline_frame_filter` converts the
+# pixels to it, every part encoder stamps it, and the stitch refuses to copy across
+# parts that do not agree. Stamping alone would lie about the pixels; converting alone
+# leaves the file declaring whatever the first part happened to carry. Both together
+# mean the copy stitch stays legal and the browser has nothing to guess.
+TIMELINE_COLOURSPACE = "bt709"
+TIMELINE_COLOUR_ARGS = ["-color_range", "tv", "-colorspace", TIMELINE_COLOURSPACE,
+                        "-color_primaries", TIMELINE_COLOURSPACE, "-color_trc", TIMELINE_COLOURSPACE]
+
+# What `ffprobe` must agree on before parts may meet in one -c:v copy stitch. The last
+# element of a signature is always the extradata (SPS/PPS), so the colour tags sit
+# between the geometry and the bytes that describe it.
+SIGNATURE_FIELDS = ("codec_name", "profile", "level", "pix_fmt", "width", "height",
+                    "color_range", "color_space", "color_primaries", "color_transfer")
 
 
 # Bundled fonts (public/fonts in the repo, copied to FONTS_DIR in the image).
@@ -2219,7 +2249,7 @@ class Renderer:
                 args = ["-c:v", codec, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-preset", preset, "-pix_fmt", "yuv420p"]
             if not intermediate:
                 args += ["-movflags", "+faststart"]
-            return pinned + args
+            return pinned + TIMELINE_COLOUR_ARGS + args
 
         def cpu_variant(command: list[str]) -> list[str]:
             """The same compose command re-targeted at libx264."""
@@ -2417,7 +2447,7 @@ class Renderer:
             log.warning("Timeline parts have mismatched or unknown H.264 parameters; re-encoding the join instead of copying")
             progress(80, "Parts differ; re-encoding the join")
             join_codec = ["-c:v", "libx264", "-preset", "medium", "-b:v", bitrate, "-maxrate", bitrate,
-                          "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "yuv420p"]
+                          "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "yuv420p", *TIMELINE_COLOUR_ARGS]
         concat_command = [
             self.settings.ffmpeg_bin, "-hide_banner", "-y", "-f", "concat", "-safe", "0",
             "-i", str(concat_list), "-map", "0:v:0", "-an", *join_codec,
@@ -2635,7 +2665,7 @@ class Renderer:
         try:
             result = subprocess.run(
                 [self.settings.ffprobe_bin, "-v", "error", "-select_streams", "v:0", "-show_data", "-show_entries",
-                 "stream=codec_name,profile,level,pix_fmt,width,height,extradata", "-of", "json", str(path)],
+                 "stream=" + ",".join(SIGNATURE_FIELDS) + ",extradata", "-of", "json", str(path)],
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode:
@@ -2649,7 +2679,7 @@ class Renderer:
         # we cannot certify that stream-copy joining is safe.
         if not stream.get("codec_name") or not stream.get("extradata"):
             return None
-        return tuple(stream.get(key) for key in ("codec_name", "profile", "level", "pix_fmt", "width", "height", "extradata"))
+        return tuple(stream.get(key) for key in SIGNATURE_FIELDS) + (stream.get("extradata"),)
 
     def _parts_share_parameter_set(self, parts: list[Path]) -> bool:
         """True only when every part is verified to share one H.264 parameter set.
@@ -2664,7 +2694,20 @@ class Renderer:
         if any(signature is None for signature in signatures):
             return False
         first = signatures[0]
-        return all(signature == first for signature in signatures[1:])
+        if all(signature == first for signature in signatures[1:]):
+            return True
+        # Say which part and which parameter: this decision is invisible in the output
+        # (a stitch that copies looks exactly like one that re-encodes, only wrong),
+        # and it is the difference between a normal render and a slow one.
+        for part, signature in zip(parts[1:], signatures[1:]):
+            if signature == first:
+                continue
+            fields = [name for name, want, got in zip(SIGNATURE_FIELDS, first, signature) if want != got]
+            log.warning("Timeline part %s cannot be copy-joined with %s: %s differ (%s vs %s)",
+                        part.name, parts[0].name, ", ".join(fields) or "extradata",
+                        " ".join(str(value) for value in first[:-1]),
+                        " ".join(str(value) for value in signature[:-1]))
+        return False
 
     def _probe_duration(self, path: Path) -> float:
         result=subprocess.run([self.settings.ffprobe_bin,"-v","error","-show_entries","format=duration","-of","json",str(path)],capture_output=True,text=True,timeout=30)
