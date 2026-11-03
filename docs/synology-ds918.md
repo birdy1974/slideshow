@@ -138,6 +138,39 @@ means something in between is caching — a reverse proxy that was told to cache
 HTML is the usual suspect, and it must pass `Cache-Control` through (or not
 cache `/` at all).
 
+## The picture still looks wrong after a fix
+
+The shell's caching trick has a sibling: a *video* URL that never changes while its file
+is replaced underneath it — a gallery example clip, the scrub proxy for a movie, a
+filmstrip, a finished render. Browsers answer such a URL from their own arithmetic
+(roughly "a tenth of the age I saw when I cached it"), so the app can serve new bytes and
+still show you the old ones. Those responses now carry `Cache-Control: no-cache` too:
+ask first, take the 304, keep the range requests.
+
+The app's own caches changed in the same direction. A generated MP4 used to be trusted
+because its name matched and it was bigger than a kilobyte; now FFmpeg is asked whether
+the file decodes to the end, and a truncated one is deleted and rebuilt — because a
+truncated MP4 is a valid-looking header followed by unrecoverable mosaic, and once it
+was on the volume it was served forever. So "I re-rendered and got exactly the same
+broken result" was a real failure mode, not an impression.
+
+One URL answers the rest without a shell:
+
+```bash
+curl -s localhost:8080/api/diagnose | python3 -m json.tool
+curl -s 'localhost:8080/api/diagnose?root=output&path=movie.mp4' | python3 -m json.tool
+curl -s 'localhost:8080/api/diagnose?root=videos&path=holiday.mp4' | python3 -m json.tool
+```
+
+The first reports the running revision, which FFmpeg and which encoders it verified, the
+font directory, free space, and what each cache holds (including `.part` files left by a
+killed transcode). The others ask FFmpeg itself about one file: its streams, its colour
+description, and whether it decodes to the end. Paste those three into a report and the
+cause — build, encoder, volume, cache, or source — is usually visible without anyone
+guessing. Until the image you are running has that route, the same facts come from
+`docker exec <container> ffmpeg -i /output/movie.mp4`, which must read
+`yuv420p(tv, bt709/…)`.
+
 ## Folder permissions
 
 The container only sees what `PUID`/`PGID` can read. A shared folder can appear

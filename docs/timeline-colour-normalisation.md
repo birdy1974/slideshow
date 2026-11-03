@@ -77,6 +77,22 @@ consistently instead of per part. Nor does it touch the *per-slide* segment file
 (`segment-0000.mp4` may still be `yuvj420p`), which are never stitched: only holds
 and transition handles reach the concat, which is why one filter is enough.
 
+## Measured and rejected: converting one stage earlier
+
+The same reasoning applied one stage upstream — to the per-slide chains that write each
+`segment-*.mp4` — and was **dropped, because the numbers said so**. A full-range JPEG
+ramp through the current photo chain keeps its tags (`yuvj420p(pc, bt470bg)`) and its
+mid-grey (129); only the timeline normalizer rewrites the description, and the grey it
+leaves is 128 in a file tagged `yuv420p(tv, bt709)`. Adding `out_range=limited` to the
+per-slide chain changed nothing at that stage (also 128) and would put a resampler in
+front of every encode. Convert once, at the boundary every stitched part passes, and
+leave the segments alone.
+
+It is also the honest limit of this fix: a colour *mislabelling* shifts hue and lifts
+blacks. It does not paint confetti. Blocky mosaic is a different complaint — see the
+generated-file caches and `GET /api/diagnose`, discussed under *The picture still looks
+wrong after a fix* in `docs/synology-ds918.md`.
+
 ## Checking a file
 
 ```bash

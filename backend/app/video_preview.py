@@ -26,13 +26,19 @@ import logging
 import subprocess
 from pathlib import Path
 
+from .colour import TIMELINE_COLOUR_ARGS, colour_scale
 from .config import Settings
 from .media import VIDEO_EXTENSIONS, safe_path
+from .media_probe import verified_whole
 
 log = logging.getLogger(__name__)
 
 PREVIEW_TIMEOUT = 180
-CACHE_VERSION = "v1"
+# v2: the proxy now carries the timeline's colour description (see colour_scale), so
+# every proxy built by the old chain has to go. A cache key that no user can see is
+# the only place this kind of change can be announced — bump it whenever the command
+# below changes, or a deployment keeps serving the previous generation of bytes.
+CACHE_VERSION = "v2"
 DEFAULT_WIDTH = 640  # matches the low-res slideshow preview
 
 
@@ -80,8 +86,19 @@ def build_video_preview(
 
     cache_dir = settings.config_dir / "video-previews"
     cached = cache_dir / f"{_cache_key(root_name, relative, stat.st_size, stat.st_mtime_ns, width)}.mp4"
-    if cached.exists() and cached.stat().st_size > 1024:
-        return cached
+    if cached.exists():
+        # Size is not a check. A proxy whose write was cut short — the container
+        # stopped mid-transcode, a rename across a NAS share that is not atomic, a
+        # volume without room left — is a small, valid-looking file, and trusting it
+        # means the user watches the same broken clip through every future fix.
+        if verified_whole(settings, cached):
+            return cached
+        log.warning("Discarding the cached proxy for %s: it does not decode to the end", target.name)
+        cached.unlink(missing_ok=True)
+    for leftover in cache_dir.glob("*.mp4.part"):
+        # An interrupted transcode leaves its .part behind; removing it keeps the
+        # volume from filling with files no response will ever serve.
+        leftover.unlink(missing_ok=True)
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     tmp = cached.with_suffix(".mp4.part")
@@ -95,7 +112,9 @@ def build_video_preview(
     # - Use veryfast preset for speed.
     # Rotation metadata is honoured via autorotate no; we let FFmpeg handle it via transpose if needed,
     # but simple scale handles most.
-    vf = f"scale={width}:-2:flags=bicubic,format=yuv420p"
+    # The same colour description the render stamps, so the file a user scrubs
+    # through cannot look different from the file they download.
+    vf = f"{colour_scale(f'{width}:-2:flags=bicubic')},format=yuv420p"
     # Add yadif for interlaced detection: it is harmless on progressive and fixes 29.97i
     # We use yadif=mode=0:parity=-1:deint=interlaced – but to keep simple, use yadif with deint all?
     # Instead, use bwdif which is better and auto. Fallback to yadif if bwdif missing.
@@ -108,7 +127,7 @@ def build_video_preview(
         "-i", str(target),
         "-vf", vf,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-        "-pix_fmt", "yuv420p",
+        "-pix_fmt", "yuv420p", *TIMELINE_COLOUR_ARGS,
         "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-movflags", "+faststart",
         "-y",

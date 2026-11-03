@@ -27,6 +27,11 @@ FFMPEG_LINES = [
     'args = sys.argv[1:]',
     'with open(os.environ["FFMPEG_STUB_LOG"], "a") as handle:',
     '    handle.write(" ".join(args) + chr(10))',
+    'if "-f" in args and "null" in args:',
+    '    # A decode probe (`-f null -`): the real binary reads the file and writes',
+    '    # nothing, and it fails on a file that is not a picture at all.',
+    '    probed = pathlib.Path(args[args.index("-i") + 1])',
+    '    sys.exit(0 if probed.stat().st_size > 100 else 1)',
     'out = pathlib.Path(args[-1])',
     'tail = args[args.index("-i") + 1:] if "-i" in args else args',
     'declared = tail[tail.index("-f") + 1] if "-f" in tail else ""',
@@ -34,7 +39,7 @@ FFMPEG_LINES = [
     'if ext not in ("png", "jpg", "jpeg") and declared not in ("mjpeg", "image2"):',
     '    sys.stderr.write("Unable to choose an output format for " + str(out) + chr(10))',
     '    sys.exit(1)',
-    'out.write_bytes(b"JPG-STUB")',
+    'out.write_bytes(b"\\xff\\xd8\\xff" + bytes(2048) + b"\\xff\\xd9")',
 ]
 
 
@@ -84,6 +89,23 @@ class FilmstripsTest(unittest.TestCase):
         stamps = [float(render.split("-ss")[i].split()[0]) for i in range(1, 11)]
         self.assertAlmostEqual(2.0, stamps[0], places=2)   # (0+0.5)/10 * 40
         self.assertAlmostEqual(38.0, stamps[-1], places=2)  # (9+0.5)/10 * 40
+
+    def test_a_torn_sprite_is_rebuilt_instead_of_served(self) -> None:
+        """A cached filmstrip used to be believed because it existed.
+
+        The sprite is the scrubber's only picture, so a write cut short reads as a
+        torn or grey strip — and the user concludes the movie is broken. It also
+        stayed broken through every update, because nothing re-examined the file.
+        """
+        sprite = build_filmstrip(self.settings, "videos", "holiday.mp4")
+        renders = lambda: len([c for c in self.calls() if "-filter_complex" in c])
+        self.assertEqual(1, renders())
+
+        sprite.write_bytes(b"\xff\xd8\xff" + bytes(20))  # a header and nothing else
+        again = build_filmstrip(self.settings, "videos", "holiday.mp4")
+        self.assertEqual(2, renders(), "the torn sprite must be re-rendered, not served")
+        self.assertEqual(sprite, again)
+        self.assertGreater(again.stat().st_size, 100, "and the replacement is a whole sprite")
 
     def test_second_call_is_served_from_the_cache(self) -> None:
         first = build_filmstrip(self.settings, "videos", "holiday.mp4")

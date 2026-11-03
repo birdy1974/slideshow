@@ -53,7 +53,7 @@ STUB_LINES = [
     '    sys.stderr.write("Unable to choose an output format for " + str(out) + chr(10))',
     '    sys.exit(1)',
     'out.parent.mkdir(parents=True, exist_ok=True)',
-    'out.write_bytes(b"PNG-STUB" if ext == "png" else b"STUBMP4")',
+    'out.write_bytes(b"PNG-STUB" if ext == "png" else b"ftypisom" + b"moov" + bytes(4096))',
 ]
 STUB = chr(10).join(STUB_LINES) + chr(10)
 
@@ -121,6 +121,25 @@ class TransitionPreviewCacheTest(unittest.TestCase):
         again = self.cache.ensure("GL · Angular")
         self.assertEqual(path, again)
         self.assertEqual(1, len([c for c in self.calls() if "filter_complex" in c]))
+
+    def test_a_cached_clip_without_an_index_is_rebuilt(self) -> None:
+        """The gallery used to trust any file that existed.
+
+        A clip whose write was cut short carries media bytes and no `moov`, which is
+        exactly what a `<video>` cannot play — and the gallery kept handing it out
+        after every update, so the same broken chip stayed on screen until someone
+        deleted the volume by hand.
+        """
+        path = self.cache.ensure("GL \u00b7 Angular")
+        self.assertIn(b"moov", path.read_bytes(), "the fixture clip must look like an MP4")
+        renders = len([c for c in self.calls() if "filter_complex" in c])
+        self.assertEqual(1, renders)
+
+        path.write_bytes(b"mdat" + bytes(4096))  # bulk with no index: a torn write
+        self.cache.ensure("GL \u00b7 Angular")
+        self.assertEqual(2, len([c for c in self.calls() if "filter_complex" in c]),
+                         "the torn clip must be re-rendered, not served")
+        self.assertIn(b"moov", path.read_bytes(), "and the replacement is a real clip")
 
     def test_render_uses_the_real_xfade_filter_with_registry_defaults(self) -> None:
         self.cache.ensure("GL · Angular")

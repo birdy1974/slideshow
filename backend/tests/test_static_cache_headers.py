@@ -61,6 +61,30 @@ class SpaShellCachingTest(unittest.TestCase):
         self.assertNotIn("max-age", policy.group(1),
                          "any freshness window is the bug itself: a licence to serve the old shell")
 
+    def test_replaced_files_are_revalidated_so_a_fix_is_visible(self) -> None:
+        """The sibling of the shell bug, on the other kind of URL.
+
+        Six responses hand the browser a file that can be replaced while its URL
+        stays the same: the media streamer (a movie re-uploaded under its own name),
+        the movie proxy and the filmstrip sprite (both regenerated on the next
+        request), the two gallery-clip routes (which now re-render a truncated clip
+        in place), and a job's own output file. With no `Cache-Control` a browser
+        applies its own freshness arithmetic to those, and then "I rendered again
+        and got exactly the same broken result" is literally true — the app served
+        new bytes and the browser never asked.
+
+        `no-cache`, not `no-store`: the 304 fast path and range requests survive.
+        """
+        source = MAIN.read_text(encoding="utf-8")
+        policy = re.search(r"REVALIDATED_HEADERS = \{([^}]*)\}", source)
+        self.assertIsNotNone(policy, "the policy for replaceable files is stated once, next to the shell's")
+        self.assertIn('"Cache-Control": "no-cache"', policy.group(1))
+        self.assertNotIn("no-store", policy.group(1))
+        self.assertNotIn("max-age", policy.group(1), "any freshness window is the bug itself")
+        self.assertEqual(7, source.count("headers=REVALIDATED_HEADERS"),
+                         "the media streamer, the movie proxy, the filmstrip sprite, both gallery routes and the job file — "
+                         "one fewer and a replaced file is cacheable again")
+
     def test_hashed_assets_keep_their_names_as_their_cache_key(self) -> None:
         text = MAIN.read_text(encoding="utf-8")
         mount = re.search(r'app\.mount\("/assets",\s*StaticFiles\(([^)]*)\)', text)
