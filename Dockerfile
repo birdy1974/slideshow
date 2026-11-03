@@ -132,6 +132,10 @@ COPY --from=frontend /src/dist ./static
 # Same TTFs the browser preview uses, so FFmpeg renders identical typography.
 COPY public/fonts ./fonts
 ENV FONTS_DIR=/app/fonts
+# Which commit this image came from, answered by /api/health. Declared here,
+# after the COPYs, so a new revision cannot invalidate any cached layer.
+ARG SLIDESHOW_REVISION=""
+ENV SLIDESHOW_REVISION=$SLIDESHOW_REVISION
 RUN mkdir -p /config/work /config/previews /output /photos /videos /music /uploads
 EXPOSE 8080
 VOLUME ["/config", "/output"]

@@ -340,6 +340,31 @@ store an empty clock), and on an FFmpeg build without libass the karaoke branch
 is not entered at all, so the slide keeps its words, position, style and plain
 fades rather than failing the job.
 
+**Neither is silent.** "The MP4 is fine except the sung words are missing" is
+otherwise undiagnosable from outside the renderer — no FFmpeg error, no failed
+job, no pixel to point at — so `karaoke.degrade_reason(item)` names every state
+that keeps a block out of the render (empty caption, no block, times never
+tapped, times outside the 0-86399 s a subtitle clock can hold, caption switched
+off) and `_text_filter` logs it as a warning naming that slide's
+`text-NNNN.ass`. A slide that *does* burn karaoke in logs one INFO line with its
+event count and the fonts directory libass was handed, so
+
+    docker compose logs slideshow | grep -i karaoke
+
+answers "did the sung words get a font, and were there any events?" without a
+repro. Read the switched-off case first: `textEnabled: false` hides the caption
+*and* the karaoke with it, because the sung words are the caption — while the
+karaoke editor keeps previewing them, which is exactly how "the preview shows
+them, the render does not" comes to be reported.
+
+`/api/health` carries the two numbers the same question needs before any log is
+grep'd: `revision` (the commit the image was built from, stamped by CI's
+`SLIDESHOW_REVISION` build arg; `untracked` means a build without it, not an old
+image) and `fonts` (the directory, whether it exists, how many font files are in
+it, and how many registry families have a file there). `familiesWithFile: 0`
+means no caption can find its face in any engine, and it is a deployment
+question, not a project one.
+
 ## Rules the editor guarantees
 
 * A line appears `leadIn` before its first word and holds `tail` after its last,
@@ -391,6 +416,14 @@ fades rather than failing the job.
   `\pos(960,340)` — the caption's x, the block's y — and the words in order. That
   is the "is my karaoke in the final result?" question, asked where it can be
   answered.
+* `backend/tests/test_karaoke.py` — `DegradeReasonTest` pins each silent case to
+  one sentence, including the two that must *not* be reported (a `br`-only block
+  and a usable one); `backend/tests/test_renderer.py`'s `KaraokeDiagnosticsTest`
+  pins that the renderer actually logs them, and that a healthy karaoke slide
+  logs its event count and `fontsdir` and warns about nothing.
+* `backend/tests/test_font_status.py` — the `/api/health` fonts report: names
+  only, no fontconfig and no FFmpeg, and an absent directory is a number rather
+  than an exception.
 * `backend/tests/test_karaoke.py` — the rules above against the Python engine,
   the ASS emission (tag spelling, colour direction, per-word `\kf` sums, brace
   escaping, `WrapStyle: 2`), the style block (clamps, "a boolean is not a size",

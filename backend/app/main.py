@@ -28,6 +28,7 @@ from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_f
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
 from .text_effect_previews import TextEffectPreviewCache
+from .font_registry import fonts_status
 from .uploads import UploadRejected, store_upload, uploads_status
 from .filmstrips import FilmstripUnavailable, build_filmstrip
 from .video_preview import PreviewUnavailable as VideoPreviewUnavailable, build_video_preview
@@ -170,7 +171,12 @@ async def ping() -> dict[str, str]:
 def health() -> dict[str, Any]:
     capabilities = renderer.capabilities()
     return {"status": "ok", "database": str(settings.database_path), "capabilities": capabilities,
-            "uploads": uploads_status(settings), "version": app.version}
+            "uploads": uploads_status(settings), "version": app.version,
+            # `revision` tells a user which commit they are actually running —
+            # "untracked" means a build without CI's stamp, not an old image.
+            # `fonts` is the one glance that says whether a caption can find its
+            # face at all, which is what a missing-text report turns on.
+            "revision": settings.revision[:12] or "untracked", "fonts": fonts_status(settings.fonts_dir)}
 
 
 @app.get("/api/projects")

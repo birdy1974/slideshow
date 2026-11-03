@@ -1623,6 +1623,14 @@ class Renderer:
         the plain fades rather than failing the render.
         """
         if overlay_plan(item) is None:
+            # No caption window means no filter *at all* — and with it, no
+            # karaoke: `textEnabled: false` hides the sung words too, because
+            # they are the caption. Intended for someone who hid the text, and
+            # baffling for a project that lost the flag on the way in, so the log
+            # names the slide that ends up drawing nothing.
+            if ass_path is not None and isinstance(item.get("karaoke"), dict) and str(item.get("text") or "").strip():
+                log.warning("Slide %s carries karaoke timings but draws no caption — %s",
+                            ass_path.name, karaoke_mod.degrade_reason(item) or "its caption window is empty")
             return None
         # Normalize the window before shifting it into the segment's incoming
         # handle.  The visible hold ends at `hold`; the outgoing transition
@@ -1656,7 +1664,24 @@ class Renderer:
             if doc is not None:
                 ass_path.parent.mkdir(parents=True, exist_ok=True)
                 ass_path.write_text(doc, encoding="utf-8")
+                # One line per karaoke slide, naming the fonts directory libass
+                # was handed: once a document exists an absent sung caption has
+                # only two explanations left — no events, or no font — and this
+                # is the only place the second can still be told apart.
+                log.info("Karaoke overlay %s: %d event(s), fonts from %s",
+                         ass_path.name, doc.count("Dialogue:"), self.settings.fonts_dir or "fontconfig defaults")
                 return karaoke_overlay_filter(ass_path, self.settings.fonts_dir)
+            # The document is the last gate before FFmpeg, and it can close on a
+            # block the editor still shows as timed. Without this line the slide
+            # silently loses its words and nothing ever says so.
+            log.warning("Slide %s has karaoke timings but no document was built — %s",
+                        ass_path.name, karaoke_mod.degrade_reason(item) or "unknown")
+        elif ass_path is not None and isinstance(item.get("karaoke"), dict):
+            reason = karaoke_mod.degrade_reason(item)
+            if not reason and not has_ass:
+                reason = "this FFmpeg build has no 'ass' filter, which word timing needs"
+            if reason:
+                log.warning("Slide %s keeps its karaoke out of the render — %s", ass_path.name, reason)
         if has_stack(item):
             # Stacked effects (textFx): the channel compositor in text_motion.py.
             # It needs libass; without it the caption keeps its words, position
