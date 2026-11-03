@@ -2311,3 +2311,60 @@ class InputWindowTest(UniformStitchTest):
         self.assertNotIn("trim=", graph)
         self.assertIn("xfade=", graph)
         self.assertEqual(2, transition.count("-i"))
+
+
+class KaraokeDiagnosticsTest(unittest.TestCase):
+    """A karaoke slide that renders without its words says so in the log.
+
+    The failure the user sees is "the MP4 is fine except the sung text is
+    missing" — no FFmpeg error, no failed job, nothing to read. So each silent
+    branch of ``_text_filter`` is asserted here, at the level and with the words
+    that make the cause obvious from ``docker compose logs`` alone.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        # A fonts dir of its own: Settings is frozen, so it is passed in, and the
+        # log line under test has to name the directory it was handed.
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos",
+                                 output_dir=base / "out", music_dir=base / "music", fonts_dir=base / "config" / "fonts")
+        self.settings.fonts_dir.mkdir(parents=True, exist_ok=True)
+        self.renderer = Renderer(Database(base / "diag.db"), self.settings)
+        self.renderer._drawtext_supported = True
+        self.renderer._ass_supported = True
+        self.ass_path = self.settings.work_dir / "text-0003.ass"
+        self.ass_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def filtered(self, item: dict):
+        defaults = {"fontFamily": "Montserrat", "fontSize": 48, "fontColor": "#ffffff"}
+        with self.assertLogs("app.renderer", level="INFO") as caught:
+            chain = self.renderer._text_filter(item, defaults, 1920, 1080, self.ass_path)
+        return chain, caught.records
+
+    def test_a_hidden_caption_names_itself(self) -> None:
+        block = {"style": "sweep", "fill": "#ffd166", "words": [{"t": 0.4}, {"t": 1.0}]}
+        chain, records = self.filtered({"type": "video", "text": "To mountain", "karaoke": block, "textEnabled": False})
+        self.assertIsNone(chain)
+        warnings = [r.getMessage() for r in records if r.levelno >= logging.WARNING]
+        self.assertEqual(1, len(warnings), records)
+        self.assertIn("text-0003.ass", warnings[0])
+        self.assertIn("caption is switched off", warnings[0])
+
+    def test_untimed_words_are_reported_and_do_not_stop_the_caption(self) -> None:
+        chain, records = self.filtered({"type": "video", "text": "To mountain", "karaoke": {"words": [{}, {}]}})
+        self.assertIsNotNone(chain, "the caption itself must still render")
+        self.assertIn("carries a time yet", " ".join(r.getMessage() for r in records if r.levelno >= logging.WARNING))
+
+    def test_a_rendered_karaoke_slide_logs_the_fonts_it_was_given(self) -> None:
+        block = {"style": "sweep", "fill": "#ffd166", "words": [{"t": 0.4}, {"t": 1.0}]}
+        chain, records = self.filtered({"type": "video", "text": "To mountain", "karaoke": block})
+        self.assertIn("ass=filename=", str(chain))
+        self.assertIn("fontsdir=", str(chain), "the karaoke filter must say where the fonts are")
+        line = [r.getMessage() for r in records if "Karaoke overlay" in r.getMessage()]
+        self.assertEqual(1, len(line), records)
+        self.assertIn(str(self.settings.fonts_dir), line[0])
+        self.assertFalse([r for r in records if r.levelno >= logging.WARNING], "a healthy slide must not warn")

@@ -82,6 +82,32 @@ def font_files() -> dict[str, dict[str, str]]:
             if entry.get("files")}
 
 
+def fonts_status(fonts_dir: Path | str) -> dict[str, Any]:
+    """What ``/api/health`` says about the bundled caption fonts.
+
+    ``families`` is what the registry offers; ``familiesWithFile`` is how many of
+    them have a real font file in ``fonts_dir`` — the directory drawtext reads
+    file by file and the one libass is pointed at for karaoke. Those two numbers
+    are the whole answer to "why is the text missing / in the wrong face": a
+    deployment that mounts its own empty ``FONTS_DIR``, or runs the backend
+    outside the image, draws every caption from fontconfig's fallbacks and no
+    project file shows it. Deliberately stat() only — no FFmpeg, no fontconfig —
+    because a status report must answer while a render saturates the machine.
+    """
+    root = Path(fonts_dir)
+    files = font_files()
+    resolvable = 0
+    for styles in files.values():
+        if any((root / name).is_file() for name in styles.values()):
+            resolvable += 1
+    try:
+        on_disk = sum(len(list(root.glob(ext))) for ext in ("*.ttf", "*.otf", "*.ttc")) if root.is_dir() else 0
+    except OSError:
+        on_disk = 0
+    return {"dir": str(root), "exists": root.is_dir(), "files": on_disk,
+            "families": len(files), "familiesWithFile": resolvable}
+
+
 def family_entry(family: str) -> dict[str, Any] | None:
     """Registry entry for a family name (case and spaces ignored)."""
     return _by_key().get(_key(family))

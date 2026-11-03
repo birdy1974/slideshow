@@ -647,5 +647,59 @@ class TextStyleTest(unittest.TestCase):
             self.has(styles, selector, selector)
 
 
+
+class DegradeReasonTest(unittest.TestCase):
+    """Every silent "the sung words are not in the MP4" state, named.
+
+    Each case below renders *successfully* — the slide simply has no caption in
+    the output, and nothing in the file explains it. ``Renderer._text_filter``
+    logs this string, so every branch has to be reachable and, just as much, a
+    slide that does render has to return "".
+    """
+
+    BLOCK = {"style": "sweep", "fill": "#ffd166", "words": [{"t": 0.4}, {"t": 1.0}]}
+
+    def reason(self, **overrides):
+        from app.karaoke import degrade_reason
+        item = {"type": "video", "name": "a.mp4", "text": "To mountain", "karaoke": dict(self.BLOCK)}
+        for key, value in overrides.items():      # a key of "karaoke" replaces the block
+            item[key] = value
+        return degrade_reason(item)
+
+    def test_a_usable_block_reports_nothing(self) -> None:
+        self.assertEqual("", self.reason())
+
+    def test_missing_slide_and_missing_text(self) -> None:
+        from app.karaoke import degrade_reason
+        self.assertEqual("the slide is missing", degrade_reason(None))
+        self.assertIn("caption text is empty", self.reason(text="   "))
+
+    def test_no_block_and_no_entries(self) -> None:
+        self.assertIn("no karaoke block", self.reason(karaoke=None))
+        self.assertIn("no word entries", self.reason(karaoke={"words": []}))
+
+    def test_untimed_words_are_counted(self) -> None:
+        reason = self.reason(karaoke={"style": "sweep", "words": [{}, {}, {}]})
+        self.assertIn("3 word entries", reason)
+        self.assertIn("tap along with the movie", reason)
+
+    def test_break_markers_alone_still_render(self) -> None:
+        # \n is a formatting choice, not a clock: `br` entries without any `t`
+        # count as karaoke, so they must NOT be reported as a silent loss.
+        self.assertEqual("", self.reason(karaoke={"style": "sweep", "words": [{}, {"br": 1}, {}]}))
+
+    def test_a_hidden_caption_hides_the_karaoke_too(self) -> None:
+        # The one state that reads as "the renderer dropped my words" but is the
+        # caption switch: it must be spelled out, because the karaoke editor still
+        # previews the words while the render paints none.
+        self.assertIn("caption is switched off", self.reason(textEnabled=False))
+
+    def test_times_out_of_range_are_dropped_as_corrupt(self) -> None:
+        # has_karaoke() accepts any t >= 0; sanitize_karaoke() only keeps the ones
+        # a subtitle clock can hold. An import that got that wrong used to yield a
+        # caption-less render with no trace, which is the whole reason for this string.
+        self.assertIn("out of range", self.reason(karaoke={"words": [{"t": 9e9}, {"t": 1e10}]}))
+
+
 if __name__ == "__main__":
     unittest.main()

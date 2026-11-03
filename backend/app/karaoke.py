@@ -654,6 +654,36 @@ def data_for(item: dict[str, Any] | None, lead_in: float = 0.0) -> dict[str, Any
     return shift_times(data, max(0.0, float(lead_in)))
 
 
+def degrade_reason(item: dict[str, Any] | None) -> str:
+    """Why this item's karaoke block will not reach the screen, "" when it will.
+
+    A caption that loses its sung words loses them *silently*: the MP4 encodes,
+    the slide looks finished, and no pixel explains the absence. Every reason
+    below is a state a saved project can genuinely be in — text edited after the
+    words were tapped, timings never tapped, the caption switched off — so the
+    renderer can name the one it hit instead of leaving the user to guess. Kept
+    free of FFmpeg so the tests can pin all of them.
+    """
+    if not isinstance(item, dict):
+        return "the slide is missing"
+    text = str(item.get("text") or "")
+    if not text.strip():
+        return "the caption text is empty, and karaoke times the words of that text"
+    block = item.get("karaoke")
+    if not isinstance(block, dict):
+        return "the slide has no karaoke block"
+    words = block.get("words")
+    if not isinstance(words, list) or not words:
+        return "the karaoke block has no word entries"
+    if not has_karaoke(item):
+        return f"none of its {len(words)} word entries carries a time yet — tap along with the movie or import lyrics"
+    if item.get("textEnabled") is False:
+        return "the caption is switched off (textEnabled is false), which hides the karaoke with it"
+    if data_for(item) is None:
+        return "every word time is out of range, so sanitize_karaoke() drops the block as corrupt (0-86399 s are accepted)"
+    return ""
+
+
 def has_karaoke(item: dict[str, Any] | None) -> bool:
     """True when an item carries word times worth rendering as karaoke."""
     if not item:

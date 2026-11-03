@@ -28,6 +28,12 @@ class Settings:
     # Bundled TTFs used by drawtext; the repo's public/fonts in development,
     # /app/fonts inside the container.
     fonts_dir: Path = Path(os.getenv("FONTS_DIR", "/app/fonts"))
+    # Which commit this container was built from, passed in as a build argument
+    # by CI (see SLIDESHOW_REVISION in .github/workflows/container.yml) and
+    # reported by /api/health. "Did the fix reach my NAS?" is otherwise answered
+    # by an image tag that `latest` reuses for every release; it is the first
+    # question any render bug report needs, so the image answers it itself.
+    revision: str = os.getenv("SLIDESHOW_REVISION", "")
     ffmpeg_bin: str = os.getenv("FFMPEG_BIN", "ffmpeg")
     ffprobe_bin: str = os.getenv("FFPROBE_BIN", "ffprobe")
     # Media probing happens on potentially slow NAS volumes / network mounts.
