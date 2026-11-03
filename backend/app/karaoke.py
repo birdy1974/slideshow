@@ -623,6 +623,29 @@ def style_overrides(data: Any) -> dict[str, Any]:
     return out
 
 
+def speech_span(data: dict[str, Any] | None) -> tuple[float, float] | None:
+    """The window the sung words actually occupy, in the block's own clock.
+
+    ``(first tapped time, last tapped time + tail)`` — ``None`` when no word is
+    timed. Karaoke is a clock the user set by ear against the movie, so it is the
+    only authority on when the line has to be on screen; ``textStart``/``textEnd``
+    were never meant to cut it up. The gap this closes is measurable: the render
+    clamps the words to the caption window, while the karaoke editor bounds them
+    by the *clip length*, so a line tapped across a whole movie loses every word
+    past the slide's ``duration`` — a movie that keeps playing in the MP4 anyway,
+    because there a duration is a floor and never a cap. Twin of
+    ``karaokeSpeechSpan`` in ``src/karaokeCore.ts``.
+    """
+    if not isinstance(data, dict):
+        return None
+    times = [_num(w.get("t"), float("nan")) for w in (data.get("words") or []) if isinstance(w, dict)]
+    times = [t for t in times if math.isfinite(t) and t >= 0]
+    if not times:
+        return None
+    tail = _clamp(_num(data.get("tail"), KARAOKE_DEFAULTS["tail"]), 0.0, 10.0)
+    return ms_round(min(times)), ms_round(max(times) + tail)
+
+
 def shift_times(data: dict[str, Any], delta: float) -> dict[str, Any]:
     """Move every word time by ``delta`` seconds.
 

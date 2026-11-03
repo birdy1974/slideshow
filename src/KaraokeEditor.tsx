@@ -30,7 +30,7 @@ import { KaraokeStage } from './KaraokeStage'
 import { FontPicker } from './FontPicker'
 import {
   KARAOKE_DEFAULTS, KARAOKE_EDITORS, KARAOKE_STYLES, KARAOKE_TEXT_FIELDS, KARAOKE_ZOOM_MAX, autoTime,
-  karaokeClipClock, karaokeClipWindow, karaokeFollowScroll,
+  karaokeClipClock, karaokeClipWindow, karaokeFollowScroll, karaokeSpeechSpan,
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
@@ -157,7 +157,11 @@ function bootstrap(item: MediaItem, tokens: KaraokeToken[], from: number, to: nu
 
 /** The karaoke popup. `item.text` owns the words; this owns when. */
 export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: KaraokeEditorProps) {
-  const windowStart = Math.max(0, Number(item.textStart) || 0)
+  // The window the render will really use: the caption's, widened to the tapped
+  // line (same rule as `speech_span` in the backend), so the strip never times a
+  // word into a second the MP4 will not show it in.
+  const speech = karaokeSpeechSpan(sanitizeKaraoke(item.karaoke, tokenize(item.text || '').length))
+  const windowStart = Math.max(0, Math.min(Number(item.textStart) || 0, speech ? speech[0] : Infinity))
   // Where the strip's zero is and how wide it is: the kept region of the file, not
   // the file. `MovieEditor` hands the exact length (it has the decoder's `total`);
   // opened from anywhere else the item's own IN/OUT pair says the same thing, which
@@ -167,7 +171,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     kept
   ), [item.trimStart, item.trimEnd, item.duration, kept])
   const clipSeconds = clip.span
-  const windowEnd = Math.max(windowStart + 0.5, Math.min(clipSeconds, Number(item.textEnd) || clipSeconds))
+  const windowEnd = Math.max(windowStart + 0.5, Math.min(clipSeconds, Math.max(Number(item.textEnd) || clipSeconds, speech ? speech[1] : 0)))
 
   const [draftText, setDraftText] = useState(item.text || '')
   const tokens = useMemo(() => tokenize(draftText), [draftText])
