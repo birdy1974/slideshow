@@ -28,6 +28,7 @@ from .project_files import ProjectFileExistsError, ReadOnlyMountError, project_f
 from .renderer import OutputExistsError, Renderer
 from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slugify
 from .text_effect_previews import TextEffectPreviewCache
+from .diagnostics import diagnose
 from .font_registry import fonts_status
 from .uploads import UploadRejected, store_upload, uploads_status
 from .filmstrips import FilmstripUnavailable, build_filmstrip
@@ -177,6 +178,20 @@ def health() -> dict[str, Any]:
             # `fonts` is the one glance that says whether a caption can find its
             # face at all, which is what a missing-text report turns on.
             "revision": settings.revision[:12] or "untracked", "fonts": fonts_status(settings.fonts_dir)}
+
+
+@app.get("/api/diagnose")
+def diagnose_route(root: str = "", path: str = "") -> dict[str, Any]:
+    """One answer for "the render is fine but the picture is wrong" — see app/diagnostics.py.
+
+    `root`/`path` optionally describe one specific file, e.g. `?root=output&path=movie.mp4`
+    for what the render produced or `?root=videos&path=holiday.mp4` for what went into it:
+    FFmpeg's own reading of its streams, its colour description, and whether it decodes to
+    the end. Everything else is the environment the answer depends on — which build, which
+    encoder it verified, whether the fonts and free space are there, and how many generated
+    files are sitting in the caches.
+    """
+    return diagnose(settings, renderer, fonts_status(settings.fonts_dir), root=root, path=path)
 
 
 @app.get("/api/projects")
@@ -550,7 +565,8 @@ def media_filmstrip(root: str = Query(pattern="^(photos|videos|uploads)$"), path
     except FilmstripUnavailable as exc:
         status = 404 if "not found" in str(exc) else 422
         raise HTTPException(status, str(exc)) from exc
-    return FileResponse(sprite, media_type="image/jpeg", filename=f"{sprite.stem}.jpg", content_disposition_type="inline")
+    return FileResponse(sprite, media_type="image/jpeg", filename=f"{sprite.stem}.jpg", content_disposition_type="inline",
+                    headers=REVALIDATED_HEADERS)
 
 
 @app.get("/api/media/loudness")
@@ -698,6 +714,7 @@ def media_file(root: str = Query(pattern="^(photos|videos|music|uploads)$"), pat
         raise HTTPException(422, "File is empty (0 bytes) — remove or replace it")
     return FileResponse(
         target,
+        headers=REVALIDATED_HEADERS,
         media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
         filename=target.name,
         content_disposition_type="inline",
@@ -720,7 +737,8 @@ def media_preview(root: str = Query(pattern="^(photos|videos|uploads)$"), path: 
     except VideoPreviewUnavailable as exc:
         status = 404 if "not found" in str(exc).lower() else 422
         raise HTTPException(status, str(exc)) from exc
-    return FileResponse(preview, media_type="video/mp4", filename=preview.name, content_disposition_type="inline")
+    return FileResponse(preview, media_type="video/mp4", filename=preview.name, content_disposition_type="inline",
+                    headers=REVALIDATED_HEADERS)
 
 
 @app.get("/api/transition-previews/status")
@@ -766,7 +784,8 @@ def transition_preview_file(slug: str) -> FileResponse:
     except Exception as exc:  # noqa: BLE001 - a failed probe must not 500 the picker
         log.exception("Could not build a preview for %s", entry["label"])
         raise HTTPException(500, f"Could not render preview: {exc}") from exc
-    return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline")
+    return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline",
+                    headers=REVALIDATED_HEADERS)
 
 
 @app.get("/api/text-effects/status")
@@ -804,7 +823,8 @@ def text_effect_preview_file(slug: str) -> FileResponse:
     except Exception as exc:  # noqa: BLE001 - a failed render must not 500 the picker
         log.exception("Could not build a text-effect preview for %s", entry["label"])
         raise HTTPException(500, f"Could not render preview: {exc}") from exc
-    return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline")
+    return FileResponse(path, media_type="video/mp4", filename=f"{name}.mp4", content_disposition_type="inline",
+                    headers=REVALIDATED_HEADERS)
 
 
 @app.post("/api/transitions/preview")
@@ -853,7 +873,8 @@ def transition_preview(request: TransitionPreviewRequest) -> FileResponse:
     # The proxy MP4 is served straight from preview_dir; its interim segments
     # in the work dir are temporary and can be removed right away.
     shutil.rmtree(work, ignore_errors=True)
-    return FileResponse(output, media_type="video/mp4", filename="transition-preview.mp4", content_disposition_type="inline")
+    return FileResponse(output, media_type="video/mp4", filename="transition-preview.mp4", content_disposition_type="inline",
+                    headers=REVALIDATED_HEADERS)
 
 
 # Characters no common filesystem accepts in a file name — the same rule as
@@ -943,7 +964,7 @@ def job_file(job_id: str) -> FileResponse:
         project = db.get_project(job["project_id"]) if job.get("project_id") is not None else None
         name = str((project or {}).get("project", {}).get("name") or "")
         filename = preview_download_name(name, job_id)
-    return FileResponse(path, media_type="video/mp4", filename=filename)
+    return FileResponse(path, media_type="video/mp4", filename=filename, headers=REVALIDATED_HEADERS)
 
 
 @app.get("/api/jobs/{job_id}/log")
@@ -969,6 +990,15 @@ def job_log(job_id: str) -> dict[str, str]:
 # `public/` files the fallback serves (`/fonts/*.ttf`, the icons): replaced in a
 # new image under the same name, so they must be revalidated too.
 SHELL_HEADERS = {"Cache-Control": "no-cache"}
+
+# The same arithmetic bites anything whose *file* can be replaced while its URL stays
+# the same: a cached example clip in a gallery after the cache regenerated it, a movie
+# re-uploaded under its own name, a job's output file written again. `no-cache` keeps
+# the 304 fast path (Starlette already sends `etag` and `last-modified`, and a
+# `Range` request is unaffected) while removing the browser's licence to answer from
+# its own arithmetic — which is how "I rendered again and got exactly the same broken
+# file" can be true even though the bytes on the volume changed.
+REVALIDATED_HEADERS = {"Cache-Control": "no-cache"}
 static_dir = Path(os.getenv("STATIC_DIR", "/app/static"))
 if static_dir.exists():
     app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")

@@ -23,6 +23,7 @@ import subprocess
 from pathlib import Path
 
 from .config import Settings
+from .media_probe import verified_whole
 from .media import VIDEO_EXTENSIONS, safe_path
 
 log = logging.getLogger(__name__)
@@ -41,8 +42,13 @@ class FilmstripUnavailable(RuntimeError):
     """The movie cannot be turned into a filmstrip; the message is user-facing."""
 
 
+# In the key by name, so a change to the sprite below can be announced the only way a
+# running container can act on it: by making the old files unreachable.
+CACHE_VERSION = "v1"
+
+
 def _cache_key(root_name: str, relative: str, size: int, mtime_ns: int, count: int, width: int) -> str:
-    raw = f"v1:{root_name}:{relative}:{size}:{mtime_ns}:{count}:{width}"
+    raw = f"{CACHE_VERSION}:{root_name}:{relative}:{size}:{mtime_ns}:{count}:{width}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
 
@@ -90,8 +96,13 @@ def build_filmstrip(settings: Settings, root_name: str, relative: str, count: in
 
     cache_dir = settings.config_dir / "filmstrips"
     cached = cache_dir / f"{_cache_key(root_name, relative, stat.st_size, stat.st_mtime_ns, count, width)}.jpg"
-    if cached.exists():
+    if cached.exists() and verified_whole(settings, cached, image=True):
+        # A half-written sprite does not fail: it draws as a grey band or a torn
+        # strip, and the user reads that as "the video is broken".
         return cached
+    if cached.exists():
+        log.warning("Discarding the cached filmstrip for %s: it does not decode", target.name)
+        cached.unlink(missing_ok=True)
 
     duration = _probe_duration(settings.ffprobe_bin, target)
     # One FFmpeg run: N inputs of the same file, each fast-seeked (-ss before

@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
+from .colour import SCALE_COLOUR, TIMELINE_COLOUR_ARGS, TIMELINE_COLOURSPACE  # noqa: F401
 from .collage import bg_blur_radius, bg_fit_filter, collage_background, collage_graph, collage_inputs, normalize_collage
 from .config import Settings
 from .database import Database, utcnow
@@ -524,19 +525,16 @@ def timeline_frame_filter(width: int, height: int) -> str:
     """
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2:"
-        f"out_range=limited:out_color_matrix={TIMELINE_COLOURSPACE},"
+        f"{SCALE_COLOUR},"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p"
     )
 
 
-# One colour description for the whole timeline: `timeline_frame_filter` converts the
-# pixels to it, every part encoder stamps it, and the stitch refuses to copy across
-# parts that do not agree. Stamping alone would lie about the pixels; converting alone
-# leaves the file declaring whatever the first part happened to carry. Both together
-# mean the copy stitch stays legal and the browser has nothing to guess.
-TIMELINE_COLOURSPACE = "bt709"
-TIMELINE_COLOUR_ARGS = ["-color_range", "tv", "-colorspace", TIMELINE_COLOURSPACE,
-                        "-color_primaries", TIMELINE_COLOURSPACE, "-color_trc", TIMELINE_COLOURSPACE]
+# The colour rule lives in app/colour.py, shared with the browser-facing proxies so a
+# proxy cannot look different from the render it stands in for. Imported here because
+# the render pipeline, its tests and docs/timeline-colour-normalisation.md all speak
+# of the timeline's canvas.
+from .colour import SCALE_COLOUR, TIMELINE_COLOUR_ARGS, TIMELINE_COLOURSPACE  # noqa: F401
 
 # What `ffprobe` must agree on before parts may meet in one -c:v copy stitch. The last
 # element of a signature is always the extradata (SPS/PPS), so the colour tags sit

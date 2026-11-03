@@ -292,6 +292,19 @@ class TransitionPreviewCache:
         with self._lock:
             return self._slug_locks.setdefault(slug, threading.Lock())
 
+    def verified(self, path: Path) -> bool:
+        """Trust a cached clip only after FFmpeg says it decodes at both ends.
+
+        These clips are handed straight to a `<video>` element in the gallery, so a
+        truncated one looks like a broken effect, not a broken cache — and it would
+        stay broken across every update, because nothing else looks at it. The check
+        is structural on purpose: reading an index header costs nothing, while a
+        decode probe per chip would cost more than rendering the chip.
+        """
+        from .media_probe import structurally_whole
+
+        return structurally_whole(path)
+
     def path_for(self, slug: str) -> Path:
         return self.root / f"{slug}.mp4"
 
@@ -350,7 +363,7 @@ class TransitionPreviewCache:
         """Return the cached clip for ``label``, rendering it on first use."""
         slug = slugify(label)
         cached = self.path_for(slug)
-        if cached.exists():
+        if cached.exists() and self.verified(cached):
             return cached
         recorded = self._read_manifest()["items"].get(slug) or {}
         if recorded.get("status") in ("failed", "unsupported"):
@@ -360,7 +373,7 @@ class TransitionPreviewCache:
         if not lock.acquire(timeout=RENDER_TIMEOUT + 10):
             raise PreviewUnavailable("Another preview is still rendering")
         try:
-            if cached.exists():
+            if cached.exists() and self.verified(cached):
                 return cached
             return self._render(label, slug, (entry or {}).get("params") or (params or {}))
         finally:
