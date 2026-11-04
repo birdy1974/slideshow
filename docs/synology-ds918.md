@@ -170,7 +170,17 @@ libx264. Wrong pixels, a flat field, or an output that cannot be decoded at all 
 encoder is **not** used: the render runs on libx264, and `/api/health` and `/api/diagnose`
 report which encoder was rejected and by how much (`encoderCheck`, e.g.
 `h264_vaapi: rejected — encoded without error but its pixels are wrong: mean luma differs
-from libx264 by 127.3 (limit 10)`). A render that finishes is also asked the same
+from libx264 by 127.3 (limit 10)`
+
+That first check was still too easy, and a real report proved it: `verified — pixels
+match libx264 within 0.4` on a box whose 1080p renders were confetti. Flat bars carry no
+detail to lose, and a 320-pixel frame gives a broken scaler nothing to get wrong. So the
+probe now encodes **the render's own canvas, with the render's own flags** (profile,
+level, GOP, colour stamps, rate control) and **moving, high-entropy detail**, and it
+measures two things: how far the decoded frames sit from what went in, and how *blocky*
+they came back — because a mosaic is nearly right in value and structurally wrecked,
+which only a block-shaped measurement sees. Verdicts are remembered per encoder *and*
+size, since that is the level at which they are true.). A render that finishes is also asked the same
 question as its whole file: if the finished MP4 does not decode, it is rewritten once on
 the CPU, and only if that still fails does the job report an error — rather than handing
 you a broken file and calling it Complete.
@@ -181,11 +191,25 @@ and leaving the encoder on CPU is the fix; the container needs no GPU passthroug
 
 One URL answers the rest without a shell:
 
-```bash
-curl -s localhost:8080/api/diagnose | python3 -m json.tool
-curl -s 'localhost:8080/api/diagnose?root=output&path=movie.mp4' | python3 -m json.tool
-curl -s 'localhost:8080/api/diagnose?root=videos&path=holiday.mp4' | python3 -m json.tool
+The container has no `curl` and no `wget`, so do not look for them: the answer is a
+URL, and a browser is enough. Open these three (port from your Compose mapping):
+
+```text
+http://<nas-address>:8080/api/diagnose
+http://<nas-address>:8080/api/diagnose?root=output&path=movie.mp4
+http://<nas-address>:8080/api/diagnose?root=videos&path=holiday.mp4
 ```
+
+From a shell on the NAS, `python` is in the image (the container's own healthcheck uses
+it), so the same URL works there too:
+
+```bash
+docker compose exec slideshow python -c \
+  "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/api/diagnose').read().decode())"
+```
+
+`revision` also says which build is running, so it settles whether an update arrived at
+all: if the first URL returns 404, the container is still on the previous image.
 
 The first reports the running revision, which FFmpeg and which encoders it verified, the
 font directory, free space, and what each cache holds (including `.part` files left by a
