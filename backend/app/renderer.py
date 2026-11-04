@@ -182,6 +182,33 @@ def parse_number(label: str, fallback: float) -> float:
     return float(match.group(1)) if match else fallback
 
 
+# The hop that hands the GPU its frames, and the format it expects to receive.
+#
+# VA-API encodes take NV12 — one luma plane plus a *half-resolution interleaved*
+# chroma plane. The software pipeline works in planar YUV420P. Uploading planar
+# frames to a surface the encoder then reads as semi-planar **does not fail**: every
+# chroma sample is simply reinterpreted, so the movie comes out as colour confetti
+# while its container still reports `yuv420p(tv, bt709)`, `complete: true`, correct
+# size, correct SAR — and every metadata check anyone can write passes. Low-power
+# VDENC entrypoints (Apollo Lake, the DS918+) are the ones that do this quietly.
+#
+# This is one constant because the probe and the render must not disagree about it.
+# The probe verified this host's encoder by encoding NV12 while the render uploaded
+# YUV420P — so "verified — pixels match libx264" was true, meaningless, and three
+# fixes in a row changed nothing the user could see.
+HW_UPLOAD_GRAPH = "format=nv12,hwupload"
+
+
+def upload_graph(encoder: str) -> str:
+    """The tail every stitched part's filter graph ends with, for this encoder.
+
+    Chosen by the encoder rather than spelled out at each call site, because there is
+    no version of "mostly the same graph" that is safe here: the format has to match
+    what the encoder reads, on every part, or the join is garbage.
+    """
+    return f",{HW_UPLOAD_GRAPH}" if encoder == "h264_vaapi" else ",format=yuv420p"
+
+
 def intermediate_pin(fps: int) -> list[str]:
     """The H.264 parameters every stitched part is pinned to — and every probe uses.
 
@@ -1526,7 +1553,7 @@ class Renderer:
             args = self._probe_encode_args("h264_vaapi", bitrate=bitrate, bitrate_value=bitrate_value,
                                            fps=fps, rc_mode=rc_mode, low_power=low_power)
             return self._encoder_output_is_faithful("h264_vaapi", args,
-                                                    pre=["-vaapi_device", device], vf="format=nv12,hwupload",
+                                                    pre=["-vaapi_device", device], vf=HW_UPLOAD_GRAPH,
                                                     width=width, height=height)
 
         last_error = ""
@@ -2567,7 +2594,7 @@ class Renderer:
         # hwupload hop, and each command opens the device once via -vaapi_device
         # (which also makes it the default device for the graph's filters).
         hw_device_args = ["-vaapi_device", self._vaapi_device] if encoder == "h264_vaapi" and self._vaapi_device else []
-        hw_graph_suffix = ",hwupload" if encoder == "h264_vaapi" else ""
+        hw_tail = upload_graph(encoder)
 
         def encode_args_for(codec: str, *, intermediate: bool) -> list[str]:
             # Every part is stitched later with -c:v copy, so all of them must
@@ -2628,7 +2655,11 @@ class Renderer:
                     continue
                 if arg in ("-filter_complex", "-vf") and position + 1 < len(command):
                     patched.append(arg)
-                    patched.append(command[position + 1].replace(",hwupload", ""))
+                    # Reverting only the `,hwupload` hop would leave the GPU's pixel
+                    # format on a software encode: x264 would be handed NV12 frames and
+                    # the part would be written in a format the rest of the timeline does
+                    # not use, which is the same class of mistake as the upload itself.
+                    patched.append(command[position + 1].replace(HW_UPLOAD_GRAPH, "format=yuv420p"))
                     skip = True
                     continue
                 if arg == "h264_vaapi":
@@ -2683,7 +2714,7 @@ class Renderer:
             # every hold per transition — pure CPU time on a NAS.
             hold_graph = (
                 f"[0:v]{timeline_frame_filter(width, height)},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p{hw_graph_suffix}[vout]"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_tail}[vout]"
             )
             hold_command = [
                 self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,
@@ -2740,7 +2771,7 @@ class Renderer:
                 f"[0:v]{frame_filter},settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[outgoing];"
                 f"[1:v]{frame_filter},settb=AVTB,setpts=PTS-STARTPTS,fps={fps}[incoming];"
                 f"[outgoing][incoming]{xfade_fragment},"
-                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p{hw_graph_suffix}[vout]"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}{hw_tail}[vout]"
             )
             transition_command = [
                 self.settings.ffmpeg_bin, "-hide_banner", "-y", *hw_device_args,

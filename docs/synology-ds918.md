@@ -185,6 +185,25 @@ question as its whole file: if the finished MP4 does not decode, it is rewritten
 the CPU, and only if that still fails does the job report an error — rather than handing
 you a broken file and calling it Complete.
 
+### Why a "verified" encoder can still deliver confetti
+
+An encoder being faithful and a render being correct are different claims, and the gap
+between them is where this bug lived for a long time. VA-API takes frames as **NV12** —
+one luma plane plus a half-resolution *interleaved* chroma plane — while the software
+pipeline works in planar **YUV420P**. Hand the encoder planar frames and it does not
+complain: it reads the same bytes as if they were interleaved, so every chroma sample
+lands in the wrong place. The result is full-frame colour mosaic, and every check that
+looks at the *container* passes — `yuv420p(tv, bt709)`, correct size, `complete: true`.
+That is why a report can read "the file is valid, the metadata is right, and the picture
+is garbage", and it is the shape of the low-power VDENC entrypoint on Apollo Lake
+(`-low_power 1`), which accepts the upload and mis-reads it.
+
+The rule this leaves behind: **a probe must run the graph the render runs.** The
+capability check verified `format=nv12,hwupload` while the render uploaded
+`format=yuv420p,hwupload`, so "verified" was true about a code path nothing executes.
+Both now come from one constant, `HW_UPLOAD_GRAPH`, and a test refuses either side a
+literal of its own.
+
 To compare by hand, render twice — once with **Output → encoder = CPU (libx264)** and once
 with the hardware choice. If only the hardware one is scrambled, the driver is the cause,
 and leaving the encoder on CPU is the fix; the container needs no GPU passthrough at all.

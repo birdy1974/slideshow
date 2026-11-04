@@ -2092,10 +2092,40 @@ class VaapiEncodingTest(unittest.TestCase):
             joined = " ".join(command)
             self.assertIn("-vaapi_device /dev/dri/renderD128", joined)
             self.assertIn("hwupload", joined)
-            self.assertIn("fps=30,format=yuv420p,hwupload[vout]", joined)
+            from app.renderer import HW_UPLOAD_GRAPH
+            self.assertIn(f"fps=30,{HW_UPLOAD_GRAPH}[vout]", joined)
+            # This line used to read `assertIn("fps=30,format=yuv420p,hwupload[vout]")`
+            # — the test was asserting the bug, which is a fair summary of how it
+            # survived: planar YUV420P handed to an encoder reading semi-planar NV12
+            # reinterprets every chroma sample and paints the movie in confetti,
+            # while the container still reports `yuv420p(tv, bt709)` and `complete`.
+            self.assertNotIn("format=yuv420p,hwupload", joined,
+                             "the GPU path must not be fed planar frames")
             self.assertIn("-low_power 1", joined)
         # Segment preparation stays on the CPU (quality intermediates at crf 18).
         self.assertTrue(any("libx264" in command and "-crf 18" in " ".join(command) for command in commands))
+
+    def test_the_probe_verifies_the_graph_the_render_uploads(self) -> None:
+        """The invariant whose absence made three fixes invisible.
+
+        A capability probe is only worth what it runs. Verifying `format=nv12,hwupload`
+        while the render uploads `format=yuv420p,hwupload` verifies a code path that
+        never executes, and reports the result as a guarantee about the one that does.
+        So the two are not allowed to hold their own copies of the string: the render's
+        tail is built from the same constant the probe passes to FFmpeg.
+        """
+        from app.renderer import HW_UPLOAD_GRAPH, upload_graph
+
+        self.assertEqual(f",{HW_UPLOAD_GRAPH}", upload_graph("h264_vaapi"))
+        for cpu in ("libx264", "h264_qsv"):
+            self.assertEqual(",format=yuv420p", upload_graph(cpu),
+                             "only VA-API takes surfaces; the rest stay in planar software frames")
+        source = (Path(__file__).resolve().parents[1] / "app" / "renderer.py").read_text(encoding="utf-8")
+        probe = source.split("def _probe_vaapi")[1][:3000]
+        self.assertIn("vf=HW_UPLOAD_GRAPH", probe,
+                      "the probe must build its graph from the constant, not a literal")
+        self.assertNotIn('vf="format=', probe,
+                         "a literal here is how the probe and the render came to disagree")
 
     def test_vaapi_failure_retries_composition_on_cpu(self) -> None:
         settings, renderer, project = self._hw_renderer()
