@@ -185,6 +185,18 @@ question as its whole file: if the finished MP4 does not decode, it is rewritten
 the CPU, and only if that still fails does the job report an error — rather than handing
 you a broken file and calling it Complete.
 
+### A movie that is suddenly far shorter than the slideshow
+
+With the soundtrack policy **Fit slideshow to audio**, holds scale to the length of the
+music. Scaling down has a floor: if the track is short enough that a photo would be left
+on screen for less than a second, the fit is refused, the slide timings are kept and the
+music simply ends — with the two numbers in the log. Before that floor, a short track
+collapsed every photo onto the 0.2-second minimum, and a 10-second show rendered as 2.2
+seconds of fragments while the editor still displayed the timings you set. Nothing was
+broken in the encoder, the container or the caches; the render was faithfully drawing
+what the arithmetic had left. If your final MP4 is much shorter than the preview, check
+the log for "fitting to audio would leave" before checking anything else.
+
 ### Why a "verified" encoder can still deliver confetti
 
 An encoder being faithful and a render being correct are different claims, and the gap

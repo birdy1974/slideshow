@@ -560,6 +560,87 @@ class OutputDecodabilityTest(unittest.TestCase):
                          "the scratch file must not outlive the repair")
 
 
+class FitToAudioFloorTest(unittest.TestCase):
+    """"Fit slideshow to audio" trims holds to the music — it may not erase them.
+
+    The file that started this hunt was a 2.2-second MP4 whose project held five
+    two-second photos: the soundtrack was shorter than the show, the scale factor went
+    well under 1, and every photo landed on the `max(.2, …)` floor. The movie was a
+    strobe of fragments while the editor still displayed the configured timings, which
+    reads precisely as "the render is scrambled" — and nothing in the encoder, the
+    container or the caches was at fault.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        for name in ("config", "photos", "videos", "music", "output"):
+            (base / name).mkdir()
+        self.settings = Settings(base / "config", base / "photos", base / "videos", base / "music", base / "output")
+        for index in range(5):
+            (base / "photos" / f"p{index}.jpg").write_bytes(b"jpg")
+        self.db = Database(base / "slideshow.db")
+        self.db.initialize()
+        self.renderer = Renderer(self.db, self.settings)
+        logging.disable(logging.CRITICAL)
+
+    def tearDown(self) -> None:
+        self.renderer.pool.shutdown(wait=True, cancel_futures=True)
+        logging.disable(logging.NOTSET)
+        self.temp.cleanup()
+
+    def holds(self, audio_seconds: float, photo_seconds: float = 2.0) -> list[float]:
+        """Every hold part's length, for a five-photo show against a given soundtrack."""
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"part")
+
+        project = {"schemaVersion": 1, "project": {"name": "Fit"},
+                   "media": [{"id": i, "type": "image", "path": f"/photos/p{i}.jpg", "duration": photo_seconds,
+                              "effect": "None", "transition": "Fade", "transitionTime": 0.2} for i in range(5)],
+                   "soundtrack": {"tracks": [{"path": "/music/bed.mp3"}], "policy": "Fit slideshow to audio"},
+                   "output": {"resolution": "720p", "frameRate": "30 fps", "bitrate": "8M",
+                              "encoder": "CPU · x264", "path": "/output", "filename": "movie.mp4"}}
+        work = self.settings.work_dir / "job"
+        work.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=work / "mix.m4a"), \
+             mock.patch.object(self.renderer, "_probe_duration", return_value=audio_seconds), \
+             mock.patch.object(self.renderer, "_parts_share_parameter_set", return_value=True):
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        lengths: list[float] = []
+        for command in commands:
+            if Path(command[-1]).name.startswith("hold-"):
+                # The part's own length is the last -t in the command: the output side,
+                # after any input-side -ss/-t that cuts the source window.
+                self.assertEqual("-t", command[-3], command[-6:])
+                lengths.append(float(command[-2]))
+        self.assertEqual(5, len(lengths), "every slide still gets a hold part")
+        return lengths
+
+    def test_a_short_soundtrack_keeps_the_configured_holds(self) -> None:
+        """2.2 s of music under 10 s of photos: keep the show, end the music.
+
+        The old arithmetic produced ~0.28 s per photo — a flash. The floor refuses the
+        fit and the log names the two durations that disagreed, because a silent
+        truncation here is indistinguishable from a broken encoder.
+        """
+        self.assertEqual([2.0] * 5, self.holds(2.2))
+
+    def test_a_mild_shrink_is_still_honoured(self) -> None:
+        """The policy exists to trim a show onto a track, and still does."""
+        lengths = self.holds(7.0)
+        self.assertTrue(all(1.0 <= length < 2.0 for length in lengths), lengths)
+
+    def test_a_longer_soundtrack_still_stretches_the_photos(self) -> None:
+        lengths = self.holds(30.0)
+        self.assertTrue(all(length > 2.0 for length in lengths), lengths)
+
+
+
 class MediaValidationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
