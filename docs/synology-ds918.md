@@ -154,6 +154,31 @@ truncated MP4 is a valid-looking header followed by unrecoverable mosaic, and on
 was on the volume it was served forever. So "I re-rendered and got exactly the same
 broken result" was a real failure mode, not an impression.
 
+### The GPU encoder that reports success and delivers confetti
+
+If the **editor's own preview looks right but the rendered MP4 does not**, the difference
+is that the preview is drawn by your browser and the file is encoded by your GPU. A VA-API
+or Quick Sync driver can encode *garbage while exiting 0*: FFmpeg complains about nothing,
+the file has a valid header and a plausible size, and every frame is mosaic. That is
+indistinguishable from a working encoder if the only evidence a program collects is the
+exit code — which is all the capability probe used to collect, so a NAS could be marked
+"hardware encoding verified" while it ruined every render.
+
+The probe no longer asks FFmpeg whether it was happy. It encodes a small SMPTE-bar
+pattern, decodes the file back, and compares the pixels with the same pattern encoded by
+libx264. Wrong pixels, a flat field, or an output that cannot be decoded at all means the
+encoder is **not** used: the render runs on libx264, and `/api/health` and `/api/diagnose`
+report which encoder was rejected and by how much (`encoderCheck`, e.g.
+`h264_vaapi: rejected — encoded without error but its pixels are wrong: mean luma differs
+from libx264 by 127.3 (limit 10)`). A render that finishes is also asked the same
+question as its whole file: if the finished MP4 does not decode, it is rewritten once on
+the CPU, and only if that still fails does the job report an error — rather than handing
+you a broken file and calling it Complete.
+
+To compare by hand, render twice — once with **Output → encoder = CPU (libx264)** and once
+with the hardware choice. If only the hardware one is scrambled, the driver is the cause,
+and leaving the encoder on CPU is the fix; the container needs no GPU passthrough at all.
+
 One URL answers the rest without a shell:
 
 ```bash

@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -28,6 +29,7 @@ from .config import Settings
 from .database import Database, utcnow
 from .filter_values import quote_filter_value
 from .media import UnsafePath, mounted_path, source_path
+from .media_probe import whole_video
 from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
 from .picture_filters import picture_look
 from .font_registry import font_files
@@ -531,10 +533,25 @@ def timeline_frame_filter(width: int, height: int) -> str:
 
 
 # The colour rule lives in app/colour.py, shared with the browser-facing proxies so a
-# proxy cannot look different from the render it stands in for. Imported here because
-# the render pipeline, its tests and docs/timeline-colour-normalisation.md all speak
-# of the timeline's canvas.
-from .colour import SCALE_COLOUR, TIMELINE_COLOUR_ARGS, TIMELINE_COLOURSPACE  # noqa: F401
+# proxy cannot look different from the render it stands in for; it is imported at the
+# top of this module, which is where the timeline filter and the encoder probes below
+# read it. docs/timeline-colour-normalisation.md explains what it is for.
+#
+# Every encoder probe is judged on pixels, not on an exit code. A GPU driver can
+# "succeed" at encoding and hand back mosaic: FFmpeg reports nothing wrong, the file
+# plays, the header is honest, and the picture is confetti. That is what a broken
+# VA-API/QSV stack on a NAS-class iGPU looks like from the inside — and it is
+# indistinguishable from a working one when the only evidence collected is
+# `returncode == 0`, which is all the probes used to check.
+#
+# So a probe encodes this pattern, decodes the result, and compares it with the same
+# pattern encoded by libx264. Flat bars are deliberate: an encoder that works reproduces
+# them within a couple of luma points, and one that emits blocks cannot, because the
+# blocks are exactly where the bars used to be. `smptebars` is built into every FFmpeg,
+# so the check needs no fixture of its own.
+VERIFY_PATTERN = "smptebars=size=320x240:rate=25:duration=0.4"
+VERIFY_FRAMES = 3
+VERIFY_MAX_MEAN_DELTA = 10.0
 
 # What `ffprobe` must agree on before parts may meet in one -c:v copy stitch. The last
 # element of a signature is always the extradata (SPS/PPS), so the colour tags sit
@@ -945,6 +962,10 @@ class Renderer:
         # Lake's low-power VDENC entrypoint); "cbr" for bitrate-based encodes.
         self._vaapi_rc_mode: str = "cbr"
         self._vaapi_error: str = ""
+        # What the last encoder probe actually saw, so a status report can say
+        # "verified: pixels match libx264 within 0.4" instead of a bare boolean.
+        self._encoder_check: str = ""
+        self._reference_frame: bytes | None = None
         self._vaapi_lock = threading.Lock()
         self._ffmpeg_version: str | None = None
         self._version_probed = False
@@ -1113,7 +1134,7 @@ class Renderer:
         if self._xfade_has_easing is None and self._xfade_supported is not None:
             # try quick probe without lock if not yet done? report false until warm
             has_easing = False
-        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "vaapi": self.vaapi_encodable_cached(), "vaapiError": self._vaapi_error, "cpuEncoding": bool(ffmpeg), "xfadeTransitions": len(supported) if supported else 0, "hasEasing": bool(has_easing), "hasGL": bool(supported and any(s.startswith("gl_") for s in supported))}
+        return {"ffmpeg": bool(ffmpeg), "ffmpegVersion": self.ffmpeg_version(), "quickSync": self.qsv_encodable_cached(), "vaapi": self.vaapi_encodable_cached(), "vaapiError": self._vaapi_error, "cpuEncoding": bool(ffmpeg), "xfadeTransitions": len(supported) if supported else 0, "hasEasing": bool(has_easing), "hasGL": bool(supported and any(s.startswith("gl_") for s in supported)), "encoderCheck": self._encoder_check}
 
     def qsv_encodable_cached(self) -> bool:
         """Non-blocking view of the Quick Sync probe (False until it finishes).
@@ -1138,18 +1159,21 @@ class Renderer:
         return self._qsv_encodable
 
     def _probe_qsv(self) -> bool:
+        """Whether h264_qsv encodes output this host can actually use.
+
+        This used to encode twelve black frames into `-f null -`, the weakest test
+        available: nothing is written, nothing is read back, and a mosaic-producing
+        driver never complains. Black was also the wrong subject — mosaic of black is
+        indistinguishable from black, so the old probe could not have caught the
+        failure it exists to catch even if it had looked.
+        """
         if not Path("/dev/dri/renderD128").exists():
             return False
-        try:
-            result = subprocess.run(
-                [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error",
-                 "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25",
-                 "-frames:v", "12", "-c:v", "h264_qsv", "-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M",
-                 "-f", "null", "-"],
-                capture_output=True, text=True, timeout=30)
-            return result.returncode == 0
-        except Exception:
-            return False
+        ok, _ = self._encoder_output_is_faithful(
+            "h264_qsv", ["-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M", "-pix_fmt", "nv12"])
+        if not ok:
+            log.warning("Quick Sync probe: %s", self._encoder_check)
+        return ok
 
     def vaapi_encodable_cached(self) -> bool:
         """Non-blocking view of the VA-API probe (False until it finishes)."""
@@ -1169,6 +1193,95 @@ class Renderer:
             if self._vaapi_encodable is None:
                 self._vaapi_encodable, self._vaapi_device, self._vaapi_low_power = self._probe_vaapi()
             return self._vaapi_encodable
+
+    def _encode_pattern(self, codec: str, encode_args: list[str], *, pre: list[str], vf: str, dest: Path) -> str:
+        """Encode the reference pattern with one candidate encoder. '' means it ran."""
+        command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", *pre,
+                   "-f", "lavfi", "-i", VERIFY_PATTERN]
+        if vf:
+            command += ["-vf", vf]
+        command += ["-frames:v", str(VERIFY_FRAMES), "-c:v", codec, *encode_args, "-y", str(dest)]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=90)
+        except Exception as exc:  # noqa: BLE001 - a probe reports a failure, it never raises one
+            return f"could not run FFmpeg: {exc}"
+        if result.returncode != 0:
+            lines = [line for line in (result.stderr or "").strip().splitlines() if line.strip()]
+            return lines[-1] if lines else f"FFmpeg exited with code {result.returncode}"
+        return ""
+
+    def _decoded_pixels(self, source: Path) -> bytes:
+        """The pattern as the encoded file really holds it: RGB out of the decoder.
+
+        Raw video to stdout is the only way to see it from here — `signalstats` prints
+        nothing for some pixel formats, and stream *metadata* says nothing about pixels
+        a driver mangled while leaving the container clean.
+        """
+        command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-i", str(source),
+                   "-frames:v", str(VERIFY_FRAMES), "-vf", "scale=320:240,format=rgb24", "-f", "rawvideo", "-"]
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=90)
+        except Exception:  # noqa: BLE001
+            return b""
+        return result.stdout if result.returncode == 0 else b""
+
+    def _reference_pixels(self) -> bytes:
+        """libx264's encoding of the pattern, once per process."""
+        if self._reference_frame is None:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "reference.mp4"
+                error = self._encode_pattern("libx264", ["-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"],
+                                             pre=[], vf="", dest=path)
+                self._reference_frame = b"" if error else self._decoded_pixels(path)
+        return self._reference_frame
+
+    def _encoder_output_is_faithful(self, codec: str, encode_args: list[str], *,
+                                    pre: list[str] | None = None, vf: str = "") -> tuple[bool, str]:
+        """Encode, decode, compare — the only probe that can see a lying driver.
+
+        Returns (usable, what was seen). A failed comparison is reported with its
+        numbers rather than as a bare refusal, because "this box's encoder is broken"
+        is exactly the sentence that has to be checkable from the log afterwards.
+        """
+        reference = self._reference_pixels()
+        if not reference:
+            # No reference, no verdict. `returncode == 0` is what this replaced, so it
+            # must not come back as the answer by the side door: without something to
+            # compare against, the honest report is "unverified" — and an unverified
+            # encoder is not one the render is allowed to build every frame from.
+            self._encoder_check = f"{codec}: rejected — the libx264 reference pattern could not be built"
+            return False, "no reference frame to compare against"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "candidate.mp4"
+                error = self._encode_pattern(codec, encode_args, pre=pre or [], vf=vf, dest=path)
+                if error:
+                    self._encoder_check = f"{codec}: rejected — {error}"
+                    return False, error
+                pixels = self._decoded_pixels(path)
+        except Exception as exc:  # noqa: BLE001 - a probe that cannot run is not a verdict on the encoder
+            self._encoder_check = f"{codec}: probe could not run ({exc.__class__.__name__}: {exc})"
+            return False, "the probe itself failed"
+        if not pixels:
+            self._encoder_check = f"{codec}: rejected — its own output could not be decoded"
+            return False, f"{codec} reported success but its output could not be decoded"
+        shared = min(len(pixels), len(reference)) // 3 * 3
+        if shared <= 0:
+            self._encoder_check = f"{codec}: rejected — {len(pixels)} decoded bytes, expected {len(reference)}"
+            return False, f"{codec} decoded to {len(pixels)} bytes instead of a {VERIFY_FRAMES}-frame pattern"
+        delta = sum(abs(a - b) for a, b in zip(pixels[:shared], reference[:shared])) / shared
+        mean = sum(pixels[:shared]) / shared
+        variance = sum((value - mean) ** 2 for value in pixels[:shared]) / shared
+        if variance < 25.0:
+            reason = f"{codec} encoded without error but returned a flat image (luma variance {variance:.1f})"
+        elif delta > VERIFY_MAX_MEAN_DELTA:
+            reason = (f"{codec} encoded without error but its pixels are wrong: mean luma differs from "
+                      f"libx264 by {delta:.1f} (limit {VERIFY_MAX_MEAN_DELTA:g})")
+        else:
+            self._encoder_check = f"{codec}: verified — pixels match libx264 within {delta:.1f}"
+            return True, ""
+        self._encoder_check = f"{codec}: rejected — {reason}"
+        return False, reason
 
     @staticmethod
     def _first_render_node() -> str | None:
@@ -1201,31 +1314,18 @@ class Renderer:
         ]
 
         def attempt(rc_mode: str, low_power: bool) -> tuple[bool, str]:
-            command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error",
-                       "-vaapi_device", device,
-                       "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25",
-                       "-vf", "format=nv12,hwupload",
-                       "-frames:v", "12", "-c:v", "h264_vaapi"]
-            if low_power:
-                command += ["-low_power", "1"]
-            if rc_mode == "cqp":
-                command += ["-rc_mode", "CQP", "-qp", "23"]
-            else:
-                command += ["-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M"]
-            command += ["-f", "null", "-"]
-            try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=30)
-            except Exception as exc:
-                return False, f"Could not run FFmpeg: {exc}"
-            if result.returncode == 0:
-                return True, ""
-            stderr = getattr(result, "stderr", "") or ""
-            if isinstance(stderr, str):
-                lines = [line for line in stderr.strip().splitlines() if line.strip()]
-                reason = "\n".join(lines[-2:]) if lines else f"FFmpeg exited with code {result.returncode}"
-            else:
-                reason = f"FFmpeg exited with code {result.returncode}"
-            return False, reason
+            """Try one rate-control mode, and keep it only if the pixels came back right.
+
+            The candidate list is unchanged — Apollo Lake needs low-power CQP — but a
+            zero exit code is no longer accepted as proof that the encoder works. This
+            is the check that decides whether *every* part of a timeline is built out
+            of frames a driver quietly ruined, so it has to look at frames.
+            """
+            extra = ["-low_power", "1"] if low_power else []
+            extra += ["-rc_mode", "CQP", "-qp", "23"] if rc_mode == "cqp" else [
+                "-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M"]
+            return self._encoder_output_is_faithful("h264_vaapi", extra,
+                                                    pre=["-vaapi_device", device], vf="format=nv12,hwupload")
 
         last_error = ""
         for rc_mode, low_power in candidates:
@@ -1529,6 +1629,31 @@ class Renderer:
             log.info("Pruned %d stale preview file(s); kept %s", removed, newest.name)
         return removed
 
+    def _repair_output(self, output: Path, log_file: Path, cancelled: threading.Event) -> None:
+        """Rewrite one finished file through the software encoder, atomically.
+
+        Not a re-render: the frames are usually fine and what is broken is the
+        container or the parameter set the parts were stitched with — a GPU encoder
+        that drifts, a mux interrupted, an index in the wrong place. libx264 with the
+        timeline's colour stamps normalizes all of it, and `+faststart` moves the index
+        where a browser wants it. The new file is written beside the old one and moved
+        over it, so an interrupted repair leaves a watchable movie instead of half one.
+        """
+        tmp = output.with_name(output.stem + ".repair.mp4")
+        command = [self.settings.ffmpeg_bin, "-hide_banner", "-y", "-i", str(output),
+                   "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                   "-pix_fmt", "yuv420p", *TIMELINE_COLOUR_ARGS, "-c:a", "aac", "-b:a", "192k",
+                   "-movflags", "+faststart", str(tmp)]
+        try:
+            self._run_ffmpeg(command, cancelled, log_file)
+            os.replace(tmp, output)
+            log.info("Repaired %s on the CPU encoder", output.name)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
     def _run(self, job_id: str, project: dict[str, Any], kind: str, cancelled: threading.Event) -> None:
         work = self.settings.work_dir / job_id
         work.mkdir(parents=True, exist_ok=True)
@@ -1538,6 +1663,24 @@ class Renderer:
             if not shutil.which(self.settings.ffmpeg_bin):
                 raise RenderError("FFmpeg is not installed or is not available on PATH")
             output = self.render(project, kind, work, cancelled, lambda p,s: self.db.update_job(job_id, progress=p, stage=s))
+            # A render that "succeeded" while producing a file nobody can play is the
+            # worst outcome available: the queue says Complete, the size looks right, the
+            # URL is fine — and the user opens confetti. So the finished file is asked the
+            # same question the caches are now asked: can FFmpeg decode it, both here and
+            # at its end? (Two frames, not a pass over the whole movie.) The answer is what
+            # separates "the app broke your video" from "your source video is broken", and
+            # a file that fails is rewritten once through the software encoder before the
+            # job is allowed to report anything.
+            if output.is_file() and not whole_video(self.settings, output):
+                log.warning("%s does not decode although the render reported success; rewriting it on CPU", output.name)
+                self.db.update_job(job_id, progress=99, stage="Output does not decode; repairing on CPU")
+                self._repair_output(output, work / "ffmpeg.log", cancelled)
+                if not whole_video(self.settings, output):
+                    raise RenderError(
+                        "The render finished but the file does not decode cleanly, and a CPU re-encode did not repair "
+                        "it. Re-render with Output → encoder set to CPU (libx264); if it is still broken, one of the "
+                        "source files is — GET /api/diagnose?root=videos&path=<file> names which."
+                    )
             # Remember the finished file's size so the GUI can show "MP4 ready ·
             # 1.2 GB" and real download sizes without probing the file again.
             try:

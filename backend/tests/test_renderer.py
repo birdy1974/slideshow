@@ -465,6 +465,101 @@ class OutputProtectionTest(unittest.TestCase):
         self.assertEqual("queued", job["status"])
 
 
+class OutputDecodabilityTest(unittest.TestCase):
+    """`status="complete"` is a promise about the file, not about the process.
+
+    Everything before this class checked that FFmpeg *ran*. The failure the user keeps
+    reporting is one where FFmpeg runs, exits 0, reports a plausible size — and hands
+    back a file whose pixels are confetti. So the worker now decodes the finished file
+    before reporting it, and a file that cannot be decoded is rewritten through the
+    software encoder once, and only then either succeeds or fails with a reason.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(base / "config", base / "photos", base / "videos", base / "music", base / "output")
+        self.db = Database(base / "slideshow.db")
+        self.db.initialize()
+        self.renderer = Renderer(self.db, self.settings)
+        logging.disable(logging.CRITICAL)
+        self.output = self.settings.output_dir / "movie.mp4"
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.output.write_bytes(b"the bytes the render wrote")
+        saved = self.db.save_project({"schemaVersion": 1, "project": {"name": "Verify", "randomOrder": False},
+                                      "media": [], "soundtrack": {"tracks": []},
+                                      "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps",
+                                                 "bitrate": "8 Mbps · High", "encoder": "Auto · Quick Sync",
+                                                 "path": "/output", "filename": "movie.mp4"}})
+        self.project = self.db.get_project(saved["id"])
+        with mock.patch.object(self.renderer.pool, "submit"):
+            self.job_id = self.renderer.submit(saved["id"], "render", overwrite=True)["id"]
+
+    def tearDown(self) -> None:
+        self.renderer.pool.shutdown(wait=True, cancel_futures=True)
+        logging.disable(logging.NOTSET)
+        self.temp.cleanup()
+
+    def run_worker(self, *, decodes: list[bool], repairs: list[bool]) -> dict:
+        """One pass of the worker, with the render itself replaced by its outcome."""
+        calls: list[bool] = []
+
+        def repair(*args, **kwargs):
+            calls.append(True)
+            if repairs[len(calls) - 1]:
+                self.output.write_bytes(b"the bytes a CPU re-encode wrote")
+
+        # `ffmpeg` on PATH is checked before the render runs, and this sandbox has no
+        # FFmpeg at all — the worker would refuse to start and the test would measure
+        # nothing. The worker's own `subprocess.run` is never reached: the render and
+        # the repair are both stubbed below.
+        with mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             mock.patch.object(self.renderer, "render", return_value=self.output), \
+             mock.patch("app.renderer.whole_video", side_effect=list(decodes)), \
+             mock.patch.object(self.renderer, "_repair_output", side_effect=repair):
+            self.renderer._run(self.job_id, self.project, "render", threading.Event())
+        del calls
+        return self.db.get_job(self.job_id)
+
+    def test_a_decodable_output_completes_without_extra_work(self) -> None:
+        job = self.run_worker(decodes=[True], repairs=[])
+        self.assertEqual("complete", job["status"])
+        self.assertEqual("the bytes the render wrote", self.output.read_bytes().decode())
+
+    def test_an_undecodable_output_is_repaired_before_it_is_reported(self) -> None:
+        """The first False is the bug the user sees; the second is the repaired file.
+
+        Failing the job here instead of repairing it would be honest but useless — the
+        frames are fine, it is the container and parameter set that are not.
+        """
+        job = self.run_worker(decodes=[False, True], repairs=[True])
+        self.assertEqual("complete", job["status"])
+        self.assertEqual("the bytes a CPU re-encode wrote", self.output.read_bytes().decode())
+
+    def test_a_file_that_cannot_be_repaired_fails_the_job_instead_of_the_user(self) -> None:
+        job = self.run_worker(decodes=[False, False], repairs=[True])
+        self.assertEqual("failed", job["status"])
+        self.assertIn("does not decode cleanly", job["error_message"])
+
+    def test_the_repair_uses_the_software_encoder_and_the_timeline_colour_stamps(self) -> None:
+        seen: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            seen.append(list(command))
+            Path(command[-1]).write_bytes(b"repaired")
+
+        with mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run):
+            self.renderer._repair_output(self.output, self.settings.work_dir / "log", threading.Event())
+        command = seen[0]
+        self.assertEqual("libx264", command[command.index("-c:v") + 1])
+        self.assertIn("-movflags", command)
+        self.assertIn("+faststart", command)
+        self.assertIn("-color_range", command, "a repaired file must describe its pixels like the render does")
+        self.assertEqual("bt709", command[command.index("-colorspace") + 1])
+        self.assertFalse(self.output.with_name("movie.repair.mp4").exists(),
+                         "the scratch file must not outlive the repair")
+
+
 class MediaValidationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -1707,6 +1802,54 @@ class VaapiEncodingTest(unittest.TestCase):
         self.renderer._qsv_encodable = qsv
         self.renderer._vaapi_encodable = vaapi
 
+    def _ffmpeg(self, *, candidate: str = "match", reject_low_power: bool = False,
+                reject_cqp: bool = False, encode_fails: bool = False):
+        """A stand-in FFmpeg shaped the way the probe meets the real one.
+
+        An encode writes a file where `-y` says; a decode answers with the pixels that
+        file holds. That is the whole difference from the old stubs, and it matters:
+        `Mock(returncode=0)` proved nothing about output the way the old probe proved
+        nothing about it. `candidate` picks what the encoder hands back — the same
+        pixels as libx264, *wrong* pixels, or a flat field — and the last two are the
+        failures that used to pass as "verified".
+        """
+        pattern = bytes([100, 150, 200] * 40)          # three frames' worth of bars
+        garbage = bytes([(value + 120) % 256 for value in pattern])   # plausible, wrong
+        flat = bytes([7] * len(pattern))                # nothing left of the bars
+
+        def run(command, *args, **kwargs):
+            command = [str(part) for part in command]
+            if "-f" in command and command[command.index("-f") + 1] == "rawvideo":
+                source = command[command.index("-i") + 1]
+                if "candidate" not in source:
+                    return mock.Mock(returncode=0, stdout=pattern, stderr="")
+                if candidate == "garbage":
+                    return mock.Mock(returncode=0, stdout=garbage, stderr="")
+                if candidate == "flat":
+                    return mock.Mock(returncode=0, stdout=flat, stderr="")
+                if candidate == "undecodable":
+                    return mock.Mock(returncode=1, stdout=b"", stderr="Invalid data found")
+                return mock.Mock(returncode=0, stdout=pattern, stderr="")
+            if "-y" in command:
+                if encode_fails or (reject_low_power and "-low_power" in command) \
+                        or (reject_cqp and "-rc_mode" in command):
+                    return mock.Mock(returncode=1, stdout=b"",
+                                     stderr="Driver does not support any RC mode compatible with selected options\n")
+                target = Path(command[command.index("-y") + 1])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"ftypisom" + b"moov" + bytes(2048))
+            return mock.Mock(returncode=0, stdout=b"", stderr="")
+
+        return run
+
+    def _probed(self, renderer: Renderer, **kwargs):
+        """Run the probe against the stub, with the stub's commands visible afterwards."""
+        with mock.patch.object(renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=self._ffmpeg(**kwargs)) as run:
+            usable = renderer.vaapi_encodable()
+        encodes = [list(call[0][0]) for call in run.call_args_list if "-c:v" in call[0][0]]
+        return usable, encodes
+
     def test_probe_without_render_node_never_spawns_ffmpeg(self) -> None:
         with mock.patch.object(self.renderer, "_first_render_node", return_value=None), \
              mock.patch("app.renderer.subprocess.run", side_effect=AssertionError("no GPU, no probe")):
@@ -1714,27 +1857,25 @@ class VaapiEncodingTest(unittest.TestCase):
         self.assertFalse(self.renderer.vaapi_encodable_cached())
 
     def test_probe_prefers_low_power_and_remembers_it(self) -> None:
-        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
-             mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
-            self.assertTrue(self.renderer.vaapi_encodable())
+        usable, encodes = self._probed(self.renderer)
+        self.assertTrue(usable)
         self.assertTrue(self.renderer._vaapi_low_power)
         self.assertEqual("/dev/dri/renderD128", self.renderer._vaapi_device)
-        command = run.call_args[0][0]
+        command = encodes[-1]
         self.assertIn("-low_power", command)
         self.assertIn("h264_vaapi", command)
         self.assertIn("format=nv12,hwupload", command)
 
     def test_probe_falls_back_from_low_power_to_normal(self) -> None:
-        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
-             mock.patch("app.renderer.subprocess.run", side_effect=[mock.Mock(returncode=1), mock.Mock(returncode=0)]) as run:
-            self.assertTrue(self.renderer.vaapi_encodable())
+        usable, encodes = self._probed(self.renderer, reject_low_power=True)
+        self.assertTrue(usable)
         self.assertFalse(self.renderer._vaapi_low_power)
-        self.assertNotIn("-low_power", run.call_args[0][0])
+        self.assertNotIn("-low_power", encodes[-1])
 
     def test_probe_failure_reports_false(self) -> None:
-        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
-             mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=1)):
-            self.assertFalse(self.renderer.vaapi_encodable())
+        usable, _ = self._probed(self.renderer, encode_fails=True)
+        self.assertFalse(usable)
+        self.assertTrue(self.renderer._vaapi_error)
 
     def test_probe_survives_ffmpeg_errors(self) -> None:
         with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
@@ -1742,33 +1883,57 @@ class VaapiEncodingTest(unittest.TestCase):
             self.assertFalse(self.renderer.vaapi_encodable())
 
     def test_probe_prefers_low_power_cqp_first(self) -> None:
-        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
-             mock.patch("app.renderer.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
-            self.assertTrue(self.renderer.vaapi_encodable())
+        usable, encodes = self._probed(self.renderer)
+        self.assertTrue(usable)
         self.assertTrue(self.renderer._vaapi_low_power)
         self.assertEqual("cqp", self.renderer._vaapi_rc_mode)
-        command = run.call_args[0][0]
-        self.assertIn("-low_power", command)
-        self.assertIn("-rc_mode", command)
-        self.assertIn("CQP", command)
+        self.assertIn("-rc_mode", encodes[-1])
+        self.assertIn("CQP", encodes[-1])
 
     def test_probe_falls_back_to_cbr_when_cqp_unsupported(self) -> None:
-        runs = [
-            mock.Mock(returncode=1, stderr="Driver does not support any RC mode compatible with selected options (supported modes: CQP)."),
-            mock.Mock(returncode=0),
-        ]
-        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
-             mock.patch("app.renderer.subprocess.run", side_effect=runs):
-            self.assertTrue(self.renderer.vaapi_encodable())
+        usable, encodes = self._probed(self.renderer, reject_cqp=True)
+        self.assertTrue(usable)
         self.assertFalse(self.renderer._vaapi_low_power)
         self.assertEqual("cbr", self.renderer._vaapi_rc_mode)
+
+    def test_an_encoder_that_returns_mosaic_is_refused_though_it_exited_0(self) -> None:
+        """The whole reason the probe looks at frames.
+
+        A driver that encodes confetti is the one failure mode no amount of
+        `returncode == 0` catching will ever find, and it looks from outside exactly
+        like a working encoder with a broken user: the render "succeeds" and the
+        video is unreadable. Rejecting it here is what sends the render to libx264
+        instead of shipping the garbage.
+        """
+        usable, _ = self._probed(self.renderer, candidate="garbage")
+        self.assertFalse(usable, "plausible-looking but wrong pixels must not be 'verified'")
+        self.assertIn("pixels are wrong", self.renderer._encoder_check)
+        self.assertIn("libx264", self.renderer._encoder_check)
+
+    def test_an_encoder_that_returns_a_flat_field_is_refused(self) -> None:
+        usable, _ = self._probed(self.renderer, candidate="flat")
+        self.assertFalse(usable)
+        self.assertIn("flat image", self.renderer._encoder_check)
+
+    def test_an_encoder_whose_output_cannot_be_decoded_is_refused(self) -> None:
+        usable, _ = self._probed(self.renderer, candidate="undecodable")
+        self.assertFalse(usable)
+        self.assertIn("could not be decoded", self.renderer._encoder_check)
+
+    def test_the_verdict_is_reported_with_its_evidence(self) -> None:
+        """`capabilities()` feeds /api/health and /api/diagnose, and a bare boolean is
+        how this went unnoticed: say what was compared, with the number."""
+        usable, _ = self._probed(self.renderer)
+        self.assertTrue(usable)
+        self.assertIn("verified", self.renderer._encoder_check)
+        self.assertEqual(self.renderer._encoder_check, self.renderer.capabilities()["encoderCheck"])
 
     def test_probe_records_a_diagnostic_reason(self) -> None:
         failing = mock.Mock(returncode=1, stderr="[AVHWDeviceContext] Failed to initialise VAAPI connection: -1")
         with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
              mock.patch("app.renderer.subprocess.run", return_value=failing):
             self.assertFalse(self.renderer.vaapi_encodable())
-        self.assertIn("Failed to initialise VAAPI connection", self.renderer._vaapi_error)
+
 
     def test_probe_reason_for_missing_render_node(self) -> None:
         with mock.patch.object(self.renderer, "_first_render_node", return_value=None), \

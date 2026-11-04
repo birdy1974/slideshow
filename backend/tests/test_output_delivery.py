@@ -124,8 +124,13 @@ class RendererCompletionSizeTest(unittest.TestCase):
             output = root / "output" / "done.mp4"
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"\x00" * 2048)
+            # The worker now asks whether the finished file decodes before it may
+            # report Complete, and that question needs real FFmpeg. This test is about
+            # the size the row carries, so the answer is asserted rather than measured
+            # (test_renderer.OutputDecodabilityTest measures it).
             with mock.patch.object(Renderer, "render", return_value=output), \
-                 mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffmpeg"):
+                 mock.patch("app.renderer.shutil.which", return_value="/usr/bin/ffmpeg"), \
+                 mock.patch("app.renderer.whole_video", return_value=True):
                 renderer._run("job-size", {"media": []}, "render", threading.Event())
 
             job = db.get_job("job-size")
