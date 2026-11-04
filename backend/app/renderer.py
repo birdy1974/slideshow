@@ -209,6 +209,15 @@ def upload_graph(encoder: str) -> str:
     return f",{HW_UPLOAD_GRAPH}" if encoder == "h264_vaapi" else ",format=yuv420p"
 
 
+# "Fit slideshow to audio" may stretch holds to fill a longer soundtrack and trim them
+# to match a shorter one. It must not do the second without limit: below about a second a
+# still is a flash, and a show whose photos have all collapsed onto the `max(.2, …)`
+# floor is not "fitted", it is a strobe of fragments that a viewer describes as
+# scrambled. The editor still displays the configured timings, so the discrepancy looks
+# like the render ignoring the project — which, at that point, it is.
+MIN_FIT_HOLD = 1.0
+
+
 def intermediate_pin(fps: int) -> list[str]:
     """The H.264 parameters every stitched part is pinned to — and every probe uses.
 
@@ -2193,18 +2202,31 @@ class Renderer:
                 # Holds scale to fill the audio; transitions retain their set duration.
                 # Videos are excluded from scaling so a full movie is never shortened.
                 factor = (audio_duration - transition_total) / duration_total
-                scaled: list[dict[str, Any]] = []
-                for item in media:
-                    if item.get("type") == "video":
-                        scaled.append(item)
-                        continue
-                    hold = max(.2, float(item.get("duration", 5)) * factor)
-                    # The caption window stretches with its clip so a text that
-                    # covered "the middle third" still does.
-                    text_end = min(float(item.get("textEnd", item.get("duration", 5))) * factor, hold)
-                    text_start = min(float(item.get("textStart") or 0.0) * factor, max(0.0, text_end - 0.3))
-                    scaled.append({**item, "duration": hold, "textStart": text_start, "textEnd": text_end})
-                media = scaled
+                photo_holds = [max(.2, float(item.get("duration", 5))) for item in media if item.get("type") != "video"]
+                if factor < 1 and photo_holds and min(photo_holds) * factor < MIN_FIT_HOLD:
+                    # The soundtrack is shorter than the show by more than the show can
+                    # absorb. Shrinking anyway is the destructive reading of "fit": keep
+                    # the timings the user set, let the music end, and say which numbers
+                    # disagreed — a silent truncation here is indistinguishable from a
+                    # broken encoder, and cost a long hunt for one.
+                    log.warning(
+                        "Soundtrack is %.1fs, the slideshow is %.1fs: fitting to audio would leave its shortest photo "
+                        "with %.2fs, under the %.1fs floor — keeping the slide timings and letting the music fade",
+                        audio_duration, duration_total + transition_total, min(photo_holds) * factor, MIN_FIT_HOLD)
+                else:
+                    scaled: list[dict[str, Any]] = []
+                    for item in media:
+                        if item.get("type") == "video":
+                            scaled.append(item)
+                            continue
+                        hold = max(.2, float(item.get("duration", 5)) * factor)
+                        # The caption window stretches with its clip so a text that
+                        # covered "the middle third" still does. Both ends move: a window
+                        # scaled on one side only would slide off the shortened hold.
+                        text_end = min(float(item.get("textEnd", item.get("duration", 5))) * factor, hold)
+                        text_start = min(float(item.get("textStart") or 0.0) * factor, max(0.0, text_end - 0.3))
+                        scaled.append({**item, "duration": hold, "textStart": text_start, "textEnd": text_end})
+                    media = scaled
         segments: list[Path] = []
         transitions = self.effective_transitions(media)
         # Resolve hold durations. Videos normally play through to the end of
