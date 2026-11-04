@@ -1813,18 +1813,41 @@ class VaapiEncodingTest(unittest.TestCase):
         pixels as libx264, *wrong* pixels, or a flat field — and the last two are the
         failures that used to pass as "verified".
         """
-        pattern = bytes([100, 150, 200] * 40)          # three frames' worth of bars
+        # Real geometry, because that is what the probe measures: an 8-row horizontal
+        # ramp, 480 px wide, is the crop the probe reads back. The three damaged forms
+        # are the three ways a driver fails — wrong values, one flat colour, and the
+        # mosaic this whole mechanism exists to catch, which is *nearly* right in value
+        # and structurally wrecked, so only a block-shaped measurement sees it.
+        def ramp(flatten: int = 1) -> bytes:
+            row = bytearray()
+            for x in range(480):
+                value = x * 255 // 479
+                if flatten > 1:
+                    value = sum(min(255, (k * 255 // 479))
+                                for k in range(x // flatten * flatten, x // flatten * flatten + flatten)) // flatten
+                row += bytes((value, value, value))
+            return bytes(row) * 8
+
+        pattern = ramp()
+        blocky = ramp(16)
+        if len(blocky) != len(pattern):   # defensive: keep the buffers comparable
+            blocky = blocky[:len(pattern)].ljust(len(pattern), b"\x00")
         garbage = bytes([(value + 120) % 256 for value in pattern])   # plausible, wrong
-        flat = bytes([7] * len(pattern))                # nothing left of the bars
+        flat = bytes([7] * len(pattern))                # one colour, nothing else
 
         def run(command, *args, **kwargs):
             command = [str(part) for part in command]
-            if "-f" in command and command[command.index("-f") + 1] == "rawvideo":
+            # A decode is recognised by asking for raw video at all, not by the first
+            # -f: the probe's unencoded source reads `-f lavfi … -f rawvideo`, and a
+            # check on the first flag alone quietly treats that encode as a decode.
+            if "rawvideo" in command:
                 source = command[command.index("-i") + 1]
                 if "candidate" not in source:
                     return mock.Mock(returncode=0, stdout=pattern, stderr="")
                 if candidate == "garbage":
                     return mock.Mock(returncode=0, stdout=garbage, stderr="")
+                if candidate == "blocky":
+                    return mock.Mock(returncode=0, stdout=blocky, stderr="")
                 if candidate == "flat":
                     return mock.Mock(returncode=0, stdout=flat, stderr="")
                 if candidate == "undecodable":
@@ -1907,13 +1930,59 @@ class VaapiEncodingTest(unittest.TestCase):
         """
         usable, _ = self._probed(self.renderer, candidate="garbage")
         self.assertFalse(usable, "plausible-looking but wrong pixels must not be 'verified'")
-        self.assertIn("pixels are wrong", self.renderer._encoder_check)
+        self.assertIn("frames are wrong", self.renderer._encoder_check)
+        self.assertIn("mean difference", self.renderer._encoder_check)
         self.assertIn("libx264", self.renderer._encoder_check)
+
+    def test_the_probe_encodes_the_render_s_canvas_with_the_render_s_flags(self) -> None:
+        """The point of the whole rewrite: the probe must not be easier work.
+
+        A user's box verified at 320x240 flat bars and ruined 1920x1080 video, so a
+        check that asks about a different size, a different pattern and a different set
+        of encoder flags is a check that will be wrong in exactly the way it was before.
+        """
+        commands: list[list[str]] = []
+        real = self._ffmpeg()
+
+        def spy(command, *args, **kwargs):
+            commands.append([str(part) for part in command])
+            return real(command, *args, **kwargs)
+
+        with mock.patch.object(self.renderer, "_first_render_node", return_value="/dev/dri/renderD128"), \
+             mock.patch("app.renderer.subprocess.run", side_effect=spy):
+            self.renderer.select_encoder("Hardware · VAAPI", width=1920, height=1080,
+                                        bitrate="8M", bitrate_value=8.0, fps=30)
+        encodes = [c for c in commands if "-c:v" in c]
+        self.assertTrue(encodes, "the probe must encode something")
+        pattern = next(c[c.index("-i") + 1] for c in encodes if "-i" in c)
+        self.assertIn("size=1920x1080", pattern,
+                        "ask about the canvas being rendered, not a smaller one")
+        self.assertNotIn("size=1920:1080", pattern,
+                         "lavfi separates options with `:` — a colon here is a parse error on a real FFmpeg")
+        self.assertIn("testsrc2", pattern, "moving detail, not flat bars a broken driver can copy blindly")
+        for flag in ("-profile:v", "high", "-level", "4.1", "-bf", "0", "-g", "-color_range", "bt709"):
+            self.assertIn(flag, encodes[-1], f"a probe without {flag} certifies a code path no render takes")
+        self.assertTrue(any("crop=480:360" in ",".join(c) for c in commands),
+                        "measure on a crop: scaling would smooth away the block edges being looked for")
+
+    def test_an_encoder_whose_frames_are_blocky_is_refused_though_their_values_are_right(self) -> None:
+        """The one failure mean error cannot see, so blockiness has to earn its place.
+
+        `blocky` is the ramp quantized into 16x16 groups: the values are within a few
+        points of the source — comfortably inside the error limit — while every block
+        edge is a cliff. That is what mosaic is, and a driver that "merely" does this to
+        a real frame is not an encoder this app should build a movie from.
+        """
+        usable, _ = self._probed(self.renderer, candidate="blocky")
+        self.assertFalse(usable, "frames that are numerically close but structurally wrecked must not pass")
+        self.assertIn("blocks", self.renderer._encoder_check)
+        self.assertIn("blockiness", self.renderer._encoder_check)
 
     def test_an_encoder_that_returns_a_flat_field_is_refused(self) -> None:
         usable, _ = self._probed(self.renderer, candidate="flat")
         self.assertFalse(usable)
         self.assertIn("flat image", self.renderer._encoder_check)
+        self.assertIn("distinct sample values", self.renderer._encoder_check)
 
     def test_an_encoder_whose_output_cannot_be_decoded_is_refused(self) -> None:
         usable, _ = self._probed(self.renderer, candidate="undecodable")

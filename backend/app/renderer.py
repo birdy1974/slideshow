@@ -182,6 +182,18 @@ def parse_number(label: str, fallback: float) -> float:
     return float(match.group(1)) if match else fallback
 
 
+def intermediate_pin(fps: int) -> list[str]:
+    """The H.264 parameters every stitched part is pinned to — and every probe uses.
+
+    They live here, not inside `encode_args_for`, so the encoder probe can pass the
+    same flags the render will. Profile, level, GOP and timescale are exactly where a
+    driver's edge cases live, so a probe without them would certify a code path that
+    no render ever takes.
+    """
+    return ["-profile:v", "high", "-level", "4.1", "-bf", "0", "-g", str(fps * 2), "-keyint_min", str(fps * 2),
+            "-video_track_timescale", "90000"]
+
+
 def vaapi_qp_for_bitrate(mbps: float) -> int:
     """Map a GUI bitrate preset to a CQP quantizer.
 
@@ -539,19 +551,38 @@ def timeline_frame_filter(width: int, height: int) -> str:
 #
 # Every encoder probe is judged on pixels, not on an exit code. A GPU driver can
 # "succeed" at encoding and hand back mosaic: FFmpeg reports nothing wrong, the file
-# plays, the header is honest, and the picture is confetti. That is what a broken
-# VA-API/QSV stack on a NAS-class iGPU looks like from the inside — and it is
-# indistinguishable from a working one when the only evidence collected is
-# `returncode == 0`, which is all the probes used to check.
+# plays, the header is honest, and the picture is confetti.
 #
-# So a probe encodes this pattern, decodes the result, and compares it with the same
-# pattern encoded by libx264. Flat bars are deliberate: an encoder that works reproduces
-# them within a couple of luma points, and one that emits blocks cannot, because the
-# blocks are exactly where the bars used to be. `smptebars` is built into every FFmpeg,
-# so the check needs no fixture of its own.
-VERIFY_PATTERN = "smptebars=size=320x240:rate=25:duration=0.4"
+# What that first check could not see, on a real user's box, is the size of the work.
+# It encoded flat bars at 320x240 and matched libx264 to within 0.4 — while the same
+# driver ruined 1920x1080 frames of photographic detail. A bar chart has no detail to
+# lose and a 320-pixel frame gives a broken scaler nothing to get wrong, so the test
+# passed and every render since came out blocky. Three things therefore have to be
+# hard, not just present:
+#
+#   * the content — `testsrc2` is high-entropy, moving detail, the sort of thing
+#     motion estimation and deblocking loops choke on;
+#   * the geometry — the canvas the render will actually use, and 16-pixel block
+#     alignment preserved by cropping instead of scaling;
+#   * the flags — profile, level, GOP and rate control, because those are what the
+#     render passes and a probe that omits them certifies a code path nobody takes.
+#
+# (`x`, not `:`, between the dimensions: lavfi separates *options* with `:`, so
+# `size=320:240` is a parse error — which a stub never notices and a real FFmpeg
+# refuses outright.)
+#
+# And two measurements, because mean error alone forgives a lot: how far the decoded
+# frames sit from what went in, and how *blocky* they came back.
+VERIFY_PATTERN = "testsrc2=size={width}x{height}:rate=25:duration=0.5"
+VERIFY_MIN_SIZE = (640, 384)      # below this a driver has too little to get wrong
+VERIFY_MAX_SIZE = (1920, 1080)    # above this a probe costs more than it is worth
 VERIFY_FRAMES = 3
-VERIFY_MAX_MEAN_DELTA = 10.0
+VERIFY_PROBE_WIDTH = 480          # measured on a full-resolution crop, never a scale
+VERIFY_PROBE_HEIGHT = 360
+VERIFY_MAX_MEAN_DELTA = 10.0      # absolute floor for the error verdict
+VERIFY_DELTA_RATIO = 3.0          # …or this many times worse than libx264, whichever is larger
+VERIFY_MAX_BLOCKINESS = 4.0       # absolute floor for the blockiness verdict
+VERIFY_BLOCKINESS_RATIO = 2.5     # …or this many times the reference's, whichever is larger
 
 # What `ffprobe` must agree on before parts may meet in one -c:v copy stitch. The last
 # element of a signature is always the extradata (SPS/PPS), so the colour tags sit
@@ -965,7 +996,12 @@ class Renderer:
         # What the last encoder probe actually saw, so a status report can say
         # "verified: pixels match libx264 within 0.4" instead of a bare boolean.
         self._encoder_check: str = ""
-        self._reference_frame: bytes | None = None
+        # Per-size memory. "This encoder works" is not a property of an encoder alone:
+        # it is a property of encoder × canvas × flags, and the failure that reached a
+        # user twice was exactly one that only appears at the bigger size.
+        self._hw_verdicts: dict[tuple, tuple[bool, str]] = {}
+        self._reference_frames: dict[tuple[int, int], bytes] = {}
+        self._pattern_frames: dict[tuple[int, int], bytes] = {}
         self._vaapi_lock = threading.Lock()
         self._ffmpeg_version: str | None = None
         self._version_probed = False
@@ -1003,16 +1039,21 @@ class Renderer:
         with self._version_lock:
             if self._version_probed:
                 return
-            self._version_probed = True
             path = shutil.which(self.settings.ffmpeg_bin)
             if not path:
+                self._version_probed = True   # nothing on PATH: asking again cannot help
                 return
             try:
-                self._ffmpeg_version = subprocess.run(
-                    [path, "-version"], capture_output=True, text=True, timeout=3
-                ).stdout.splitlines()[0]
+                version = subprocess.run([path, "-version"], capture_output=True, text=True, timeout=20).stdout
             except Exception:
-                self._ffmpeg_version = None
+                # A cold container on a spinning disk can take longer than any fixed
+                # patience allows, and giving up permanently is how a healthy FFmpeg
+                # ends up reported as no version at all in every diagnostic.
+                return
+            lines = [line for line in (version or "").splitlines() if line.strip()]
+            if lines:
+                self._ffmpeg_version = lines[0]
+                self._version_probed = True
 
     def ffmpeg_version(self) -> str | None:
         """First line of ``ffmpeg -version``, probed at most once per process."""
@@ -1145,20 +1186,29 @@ class Renderer:
         """
         return bool(self._qsv_encodable)
 
-    def qsv_encodable(self) -> bool:
-        """Whether h264_qsv actually encodes on this host, verified by a probe.
+    def qsv_encodable(self, *, width: int = 0, height: int = 0, bitrate: str = "8M",
+                     bitrate_value: float = 8.0, fps: int = 30) -> bool:
+        """Whether h264_qsv may be used — at this canvas, with these flags.
 
-        Merely having /dev/dri/renderD128 is not enough: runtimes differ in the
-        rate control modes, pixel formats and resolutions they accept (the
-        DS918+ in particular). A tiny test encode mirrors the renderer's
-        bitrate-based settings, so "Auto" can pick the working encoder up front.
+        Merely having /dev/dri/renderD128 is not enough: runtimes differ in the rate
+        control modes, pixel formats and resolutions they accept (the DS918+ in
+        particular). With no size given this is the coarse yes/no that status reporting
+        wants, memoized once per process; a render passes its own geometry and gets its
+        own answer, because "works at 640x384" and "works at 1920x1080" are different
+        claims and only one of them is about the movie being made.
         """
+        if not (width and height):
+            # No geometry asked for: this is status reporting, not a render.
+            with self._qsv_lock:
+                if self._qsv_encodable is None:
+                    self._qsv_encodable = self._probe_qsv()
+                return self._qsv_encodable
         with self._qsv_lock:
-            if self._qsv_encodable is None:
-                self._qsv_encodable = self._probe_qsv()
-        return self._qsv_encodable
+            return self._probe_qsv(width=width, height=height, bitrate=bitrate,
+                                   bitrate_value=bitrate_value, fps=fps)
 
-    def _probe_qsv(self) -> bool:
+    def _probe_qsv(self, *, width: int = 0, height: int = 0, bitrate: str = "8M",
+                   bitrate_value: float = 8.0, fps: int = 30) -> bool:
         """Whether h264_qsv encodes output this host can actually use.
 
         This used to encode twelve black frames into `-f null -`, the weakest test
@@ -1168,9 +1218,16 @@ class Renderer:
         failure it exists to catch even if it had looked.
         """
         if not Path("/dev/dri/renderD128").exists():
-            return False
-        ok, _ = self._encoder_output_is_faithful(
-            "h264_qsv", ["-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M", "-pix_fmt", "nv12"])
+            # No device to ask. `_qsv_encodable` can only be True if some probe once
+            # found a device and liked what it saw, so an absent node now — a GPU passed
+            # through at one start and not the next — is not evidence that the encoder
+            # misbehaves; it is evidence that the question cannot be asked. The recorded
+            # answer stands, which is also what lets a test without a GPU say "assume the
+            # probes passed" and exercise the render rather than the probe.
+            return bool(self._qsv_encodable)
+        args = self._probe_encode_args("h264_qsv", bitrate=bitrate, bitrate_value=bitrate_value,
+                                       fps=fps, rc_mode="cbr", low_power=False)
+        ok, _ = self._encoder_output_is_faithful("h264_qsv", args, width=width, height=height)
         if not ok:
             log.warning("Quick Sync probe: %s", self._encoder_check)
         return ok
@@ -1179,30 +1236,72 @@ class Renderer:
         """Non-blocking view of the VA-API probe (False until it finishes)."""
         return bool(self._vaapi_encodable)
 
-    def vaapi_encodable(self) -> bool:
-        """Whether h264_vaapi actually encodes on this host, verified by a probe.
+    def vaapi_encodable(self, *, width: int = 0, height: int = 0, bitrate: str = "8M",
+                        bitrate_value: float = 8.0, fps: int = 30) -> bool:
+        """Whether h264_vaapi may be used — at this canvas, with these flags.
 
-        Same philosophy as the Quick Sync probe: a device node says nothing
-        about the driver stack, so a tiny test encode decides. NAS-class
-        iGPUs (the DS918+'s Apollo Lake among them) only expose encode via
-        the low-power VDENC entrypoint, which FFmpeg reaches with
-        ``-low_power 1`` — that mode is therefore tried first and the
-        working mode is remembered for the real renders.
+        NAS-class iGPUs (the DS918+'s Apollo Lake among them) only expose encode via
+        the low-power VDENC entrypoint, which FFmpeg reaches with ``-low_power 1``, and
+        some accept only constant-QP rate control — so each mode is tried and the one
+        that produced *faithful frames* is remembered for the real renders.
         """
         with self._vaapi_lock:
-            if self._vaapi_encodable is None:
-                self._vaapi_encodable, self._vaapi_device, self._vaapi_low_power = self._probe_vaapi()
-            return self._vaapi_encodable
+            if not (width and height):
+                if self._vaapi_encodable is None:
+                    self._vaapi_encodable, self._vaapi_device, self._vaapi_low_power = self._probe_vaapi()
+                return self._vaapi_encodable
+            ok, device, low_power = self._probe_vaapi(width=width, height=height, bitrate=bitrate,
+                                                       bitrate_value=bitrate_value, fps=fps)
+            if ok:
+                self._vaapi_device = device
+                self._vaapi_low_power = low_power
+            return ok
 
-    def _encode_pattern(self, codec: str, encode_args: list[str], *, pre: list[str], vf: str, dest: Path) -> str:
+    def _probe_size(self, width: int, height: int) -> tuple[int, int]:
+        """The size the probe encodes at: the render's, clamped to stay meaningful.
+
+        Probing a size the render will not use is probing nothing, so 1080p is tested
+        at 1080p; the clamp keeps it from being silly in either direction — no smaller
+        than 640x384 (below that a driver has too little to get wrong), no larger than
+        1080p (past that a probe costs more than it is worth).
+        """
+        w = max(VERIFY_MIN_SIZE[0], min(int(width) or VERIFY_MIN_SIZE[0], VERIFY_MAX_SIZE[0]))
+        h = max(VERIFY_MIN_SIZE[1], min(int(height) or VERIFY_MIN_SIZE[1], VERIFY_MAX_SIZE[1]))
+        return w - w % 2, h - h % 2
+
+    def _probe_encode_args(self, codec: str, *, bitrate: str, bitrate_value: float, fps: int,
+                           rc_mode: str, low_power: bool) -> list[str]:
+        """The flags a real render passes, so the probe is never easier work.
+
+        Profile, level, GOP, colour stamps and rate control are where a driver's edge
+        cases live; a probe that omits them certifies a code path no render takes.
+        `h264_vaapi` gets no pixel format for the reason the render gives it none: its
+        frames arrive as VA-API surfaces from `hwupload`.
+        """
+        args = [*intermediate_pin(fps), *TIMELINE_COLOUR_ARGS, codec]
+        if codec == "h264_vaapi":
+            if rc_mode == "cqp":
+                args += ["-rc_mode", "CQP", "-qp", str(vaapi_qp_for_bitrate(bitrate_value))]
+            else:
+                args += ["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M"]
+            if low_power:
+                args += ["-low_power", "1"]
+        elif codec == "h264_qsv":
+            args += ["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{bitrate_value * 2:g}M", "-pix_fmt", "nv12"]
+        else:
+            args += ["-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
+        return args
+
+    def _encode_pattern(self, codec: str, encode_args: list[str], *, pre: list[str], vf: str,
+                        dest: Path, width: int, height: int) -> str:
         """Encode the reference pattern with one candidate encoder. '' means it ran."""
         command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", *pre,
-                   "-f", "lavfi", "-i", VERIFY_PATTERN]
+                   "-f", "lavfi", "-i", VERIFY_PATTERN.format(width=width, height=height)]
         if vf:
             command += ["-vf", vf]
-        command += ["-frames:v", str(VERIFY_FRAMES), "-c:v", codec, *encode_args, "-y", str(dest)]
+        command += ["-frames:v", str(VERIFY_FRAMES), "-c:v", *encode_args, "-y", str(dest)]
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=90)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=120)
         except Exception as exc:  # noqa: BLE001 - a probe reports a failure, it never raises one
             return f"could not run FFmpeg: {exc}"
         if result.returncode != 0:
@@ -1210,77 +1309,174 @@ class Renderer:
             return lines[-1] if lines else f"FFmpeg exited with code {result.returncode}"
         return ""
 
-    def _decoded_pixels(self, source: Path) -> bytes:
-        """The pattern as the encoded file really holds it: RGB out of the decoder.
+    def _pixels(self, *, width: int, height: int, decode_from: Path | None = None) -> bytes:
+        """The pattern as RGB — straight from lavfi, or out of an encoded file.
 
-        Raw video to stdout is the only way to see it from here — `signalstats` prints
-        nothing for some pixel formats, and stream *metadata* says nothing about pixels
-        a driver mangled while leaving the container clean.
+        Cropped, never scaled: resampling smooths away the 16x16 block structure that
+        `blockiness` measures, so a scaled comparison would be looking at the resampler
+        instead of the encoder. Raw video to stdout is the only way to see the frames
+        from here — `signalstats` prints nothing for some pixel formats, and stream
+        metadata says nothing about pixels a driver mangled while leaving the container
+        clean.
         """
-        command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-i", str(source),
-                   "-frames:v", str(VERIFY_FRAMES), "-vf", "scale=320:240,format=rgb24", "-f", "rawvideo", "-"]
+        source = ["-i", str(decode_from)] if decode_from is not None else \
+                 ["-f", "lavfi", "-i", VERIFY_PATTERN.format(width=width, height=height)]
+        command = [self.settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", *source,
+                   "-frames:v", str(VERIFY_FRAMES),
+                   "-vf", f"crop={min(VERIFY_PROBE_WIDTH, width)}:{min(VERIFY_PROBE_HEIGHT, height)}:0:0,format=rgb24",
+                   "-f", "rawvideo", "-"]
         try:
-            result = subprocess.run(command, capture_output=True, timeout=90)
+            result = subprocess.run(command, capture_output=True, timeout=120)
         except Exception:  # noqa: BLE001
             return b""
         return result.stdout if result.returncode == 0 else b""
 
-    def _reference_pixels(self) -> bytes:
-        """libx264's encoding of the pattern, once per process."""
-        if self._reference_frame is None:
+    def _pattern_pixels(self, width: int, height: int) -> bytes:
+        """The source frames themselves, before any encoder touched them."""
+        key = (width, height)
+        if key not in self._pattern_frames:
+            self._pattern_frames[key] = self._pixels(width=width, height=height)
+        return self._pattern_frames[key]
+
+    def _reference_pixels(self, width: int, height: int) -> bytes:
+        """libx264's encoding of the pattern at this size, once per process."""
+        key = (width, height)
+        if key not in self._reference_frames:
+            args = self._probe_encode_args("libx264", bitrate="8M", bitrate_value=8.0, fps=25,
+                                          rc_mode="cbr", low_power=False)
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "reference.mp4"
-                error = self._encode_pattern("libx264", ["-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"],
-                                             pre=[], vf="", dest=path)
-                self._reference_frame = b"" if error else self._decoded_pixels(path)
-        return self._reference_frame
+                error = self._encode_pattern("libx264", args, pre=[], vf="", dest=path, width=width, height=height)
+                self._reference_frames[key] = b"" if error else self._pixels(width=width, height=height,
+                                                                             decode_from=path)
+        return self._reference_frames[key]
 
-    def _encoder_output_is_faithful(self, codec: str, encode_args: list[str], *,
-                                    pre: list[str] | None = None, vf: str = "") -> tuple[bool, str]:
+    @staticmethod
+    def _mean_error(a: bytes, b: bytes) -> float:
+        """Mean per-channel difference between two buffers, sampled every 15th pixel.
+
+        Sampling is not a shortcut around the failure being measured: mosaic corrupts
+        whole 16x16 blocks, so any pixel in one agrees with any other, while a
+        twentieth of the bytes keeps a probe that runs inside a render at a fraction of
+        a second.
+        """
+        n = min(len(a), len(b))
+        if n < 6:
+            return 0.0
+        total = count = 0
+        for i in range(0, n - 3, 45):
+            total += abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2])
+            count += 3
+        return total / max(1, count)
+
+    @staticmethod
+    def _blockiness(data: bytes, width: int, height: int) -> float:
+        """Boundary contrast over interior contrast: the fingerprint of a mosaic.
+
+        A picture of blocks is flat inside each 16x16 and discontinuous across their
+        edges, so the ratio of the two jumps; a merely lossy encode raises both
+        together and keeps the ratio near one. The +1 keeps smooth source content —
+        which has almost no interior gradient at all — from dividing by nothing.
+        """
+        w, h = min(VERIFY_PROBE_WIDTH, width), min(VERIFY_PROBE_HEIGHT, height)
+        # Trust the buffer over the request: a crop that did not arrive whole (a short
+        # read, a stub, a truncated file) would otherwise read past its end and raise
+        # inside a probe that is not allowed to raise.
+        if w * h * 3 > len(data):
+            h = len(data) // (w * 3)
+        if w < 24 or h < 8:
+            return 0.0
+
+        def mean_at(columns) -> float:
+            total = count = 0
+            for x in columns:
+                for y in range(1, h, 3):
+                    i = y * w * 3 + x * 3
+                    j = i - 3
+                    total += abs(data[i] - data[j]) + abs(data[i + 1] - data[j + 1]) + abs(data[i + 2] - data[j + 2])
+                    count += 3
+            return total / max(1, count)
+
+        boundary = mean_at(range(16, w, 16))
+        interior = mean_at(range(2, w - 1, 5))
+        return boundary / (interior + 1.0)
+
+    def _encoder_output_is_faithful(self, codec: str, encode_args: list[str], *, pre: list[str] | None = None,
+                                    vf: str = "", width: int = 0, height: int = 0) -> tuple[bool, str]:
         """Encode, decode, compare — the only probe that can see a lying driver.
 
-        Returns (usable, what was seen). A failed comparison is reported with its
-        numbers rather than as a bare refusal, because "this box's encoder is broken"
-        is exactly the sentence that has to be checkable from the log afterwards.
+        Verdicts are remembered per (encoder, size, flags), because that is the level
+        at which they are true: the bug this catches in the field appeared at the
+        render's canvas and not at the probe's. Returns (usable, what was seen), and
+        states the numbers either way — "verified" that cannot be checked is how this
+        went unnoticed for two releases.
         """
-        reference = self._reference_pixels()
-        if not reference:
+        width, height = self._probe_size(width, height)
+        key = (codec, width, height, tuple(encode_args), tuple(pre or ()), vf)
+        cached = self._hw_verdicts.get(key)
+        if cached is not None:
+            self._encoder_check = f"{codec} at {width}x{height}: {cached[1] or 'verified'}"
+            return cached
+        source = self._pattern_pixels(width, height)
+        reference = self._reference_pixels(width, height)
+        if not source or not reference:
             # No reference, no verdict. `returncode == 0` is what this replaced, so it
             # must not come back as the answer by the side door: without something to
-            # compare against, the honest report is "unverified" — and an unverified
-            # encoder is not one the render is allowed to build every frame from.
-            self._encoder_check = f"{codec}: rejected — the libx264 reference pattern could not be built"
-            return False, "no reference frame to compare against"
+            # compare against, the honest report is "unverified".
+            reason = "the unencoded pattern and the libx264 reference could not be produced"
+            self._encoder_check = f"{codec} at {width}x{height}: rejected — {reason}"
+            self._hw_verdicts[key] = (False, reason)
+            return False, reason
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "candidate.mp4"
-                error = self._encode_pattern(codec, encode_args, pre=pre or [], vf=vf, dest=path)
+                error = self._encode_pattern(codec, encode_args, pre=pre or [], vf=vf, dest=path,
+                                             width=width, height=height)
                 if error:
-                    self._encoder_check = f"{codec}: rejected — {error}"
+                    self._encoder_check = f"{codec} at {width}x{height}: rejected — {error}"
                     return False, error
-                pixels = self._decoded_pixels(path)
-        except Exception as exc:  # noqa: BLE001 - a probe that cannot run is not a verdict on the encoder
-            self._encoder_check = f"{codec}: probe could not run ({exc.__class__.__name__}: {exc})"
+                pixels = self._pixels(width=width, height=height, decode_from=path)
+        except Exception as exc:  # noqa: BLE001 - a probe that cannot run is no verdict at all
+            self._encoder_check = f"{codec} at {width}x{height}: probe could not run ({exc.__class__.__name__})"
             return False, "the probe itself failed"
         if not pixels:
-            self._encoder_check = f"{codec}: rejected — its own output could not be decoded"
-            return False, f"{codec} reported success but its output could not be decoded"
-        shared = min(len(pixels), len(reference)) // 3 * 3
-        if shared <= 0:
-            self._encoder_check = f"{codec}: rejected — {len(pixels)} decoded bytes, expected {len(reference)}"
-            return False, f"{codec} decoded to {len(pixels)} bytes instead of a {VERIFY_FRAMES}-frame pattern"
-        delta = sum(abs(a - b) for a, b in zip(pixels[:shared], reference[:shared])) / shared
-        mean = sum(pixels[:shared]) / shared
-        variance = sum((value - mean) ** 2 for value in pixels[:shared]) / shared
-        if variance < 25.0:
-            reason = f"{codec} encoded without error but returned a flat image (luma variance {variance:.1f})"
-        elif delta > VERIFY_MAX_MEAN_DELTA:
-            reason = (f"{codec} encoded without error but its pixels are wrong: mean luma differs from "
-                      f"libx264 by {delta:.1f} (limit {VERIFY_MAX_MEAN_DELTA:g})")
+            reason = f"{codec} reported success but its output could not be decoded"
+            self._encoder_check = f"{codec} at {width}x{height}: rejected — {reason}"
+            self._hw_verdicts[key] = (False, reason)
+            return False, reason
+        # "How many different values are in the frame" is a third question, and it is
+        # the one that names a driver that filled the canvas with one colour instead of
+        # encoding it: a mean error alone would call that "wrong", which is true but
+        # much less useful than "no detail survived at all".
+        def distinct(data: bytes) -> int:
+            # ~2048 samples, whatever the frame size: enough to count how much of the
+            # 8-bit range survived without walking millions of bytes inside a render.
+            return len(set(data[::max(1, len(data) // 2048)]))
+
+        detail_cand, detail_ref = distinct(pixels), distinct(reference)
+        error_ref = self._mean_error(reference, source)
+        error_cand = self._mean_error(pixels, source)
+        block_ref = self._blockiness(reference, width, height)
+        block_cand = self._blockiness(pixels, width, height)
+        # `detail_cand < 16` keeps this rule for "no detail survived"; a frame of 30
+        # shades is quantized rather than flat, and blockiness names that far better.
+        if detail_ref >= 16 and detail_cand * 8 < detail_ref and detail_cand < 16:
+            reason = (f"{codec} encoded without error but returned a flat image: {detail_cand} distinct sample values "
+                      f"against libx264's {detail_ref}")
+        elif error_cand > max(VERIFY_DELTA_RATIO * error_ref, VERIFY_MAX_MEAN_DELTA):
+            reason = (f"{codec} encoded without error but its frames are wrong: mean difference "
+                      f"{error_cand:.1f} against libx264's {error_ref:.1f} (limit {VERIFY_MAX_MEAN_DELTA:g})")
+        elif block_cand > max(VERIFY_BLOCKINESS_RATIO * block_ref, VERIFY_MAX_BLOCKINESS):
+            reason = (f"{codec} encoded without error but its frames came back in blocks: blockiness "
+                      f"{block_cand:.1f} against libx264's {block_ref:.1f} (limit {VERIFY_MAX_BLOCKINESS:g})")
         else:
-            self._encoder_check = f"{codec}: verified — pixels match libx264 within {delta:.1f}"
+            note = (f"verified — difference {error_cand:.1f} (libx264 {error_ref:.1f}), blockiness "
+                    f"{block_cand:.1f} (libx264 {block_ref:.1f})")
+            self._encoder_check = f"{codec} at {width}x{height}: {note}"
+            self._hw_verdicts[key] = (True, note)
             return True, ""
-        self._encoder_check = f"{codec}: rejected — {reason}"
+        self._encoder_check = f"{codec} at {width}x{height}: rejected — {reason}"
+        self._hw_verdicts[key] = (False, reason)
         return False, reason
 
     @staticmethod
@@ -1292,9 +1488,15 @@ class Renderer:
             return None
         return str(nodes[0]) if nodes else None
 
-    def _probe_vaapi(self) -> tuple[bool, str | None, bool]:
+    def _probe_vaapi(self, *, width: int = 0, height: int = 0, bitrate: str = "8M",
+                     bitrate_value: float = 8.0, fps: int = 30) -> tuple[bool, str | None, bool]:
         device = self._first_render_node()
         if not device:
+            if self._vaapi_encodable:
+                # See the QSV note above: a question that cannot be asked is not a
+                # verdict, and the device, mode and low-power setting remembered from
+                # the last time it *could* be asked are what the render should use.
+                return True, self._vaapi_device, self._vaapi_low_power
             self._vaapi_error = (
                 "No /dev/dri render node found inside the container — the GPU is "
                 "not passed through (missing `devices: [/dev/dri:/dev/dri]`)."
@@ -1314,18 +1516,18 @@ class Renderer:
         ]
 
         def attempt(rc_mode: str, low_power: bool) -> tuple[bool, str]:
-            """Try one rate-control mode, and keep it only if the pixels came back right.
+            """Try one rate-control mode, and keep it only if the frames come back right.
 
             The candidate list is unchanged — Apollo Lake needs low-power CQP — but a
-            zero exit code is no longer accepted as proof that the encoder works. This
-            is the check that decides whether *every* part of a timeline is built out
-            of frames a driver quietly ruined, so it has to look at frames.
+            zero exit code is not proof, and neither is a clean encode of a small flat
+            image: the mode is kept only if it survives this render's canvas with this
+            render's flags, which is the only condition the render cares about.
             """
-            extra = ["-low_power", "1"] if low_power else []
-            extra += ["-rc_mode", "CQP", "-qp", "23"] if rc_mode == "cqp" else [
-                "-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M"]
-            return self._encoder_output_is_faithful("h264_vaapi", extra,
-                                                    pre=["-vaapi_device", device], vf="format=nv12,hwupload")
+            args = self._probe_encode_args("h264_vaapi", bitrate=bitrate, bitrate_value=bitrate_value,
+                                           fps=fps, rc_mode=rc_mode, low_power=low_power)
+            return self._encoder_output_is_faithful("h264_vaapi", args,
+                                                    pre=["-vaapi_device", device], vf="format=nv12,hwupload",
+                                                    width=width, height=height)
 
         last_error = ""
         for rc_mode, low_power in candidates:
@@ -1339,7 +1541,8 @@ class Renderer:
         log.warning("VA-API probe failed on %s: %s", device, self._vaapi_error)
         return False, device, False
 
-    def select_encoder(self, label: str) -> str:
+    def select_encoder(self, label: str, *, width: int = 0, height: int = 0, bitrate: str = "8M",
+                       bitrate_value: float = 8.0, fps: int = 30) -> str:
         """Map the GUI encoder choice to a codec, decided by the verified probes.
 
         "Auto" prefers Quick Sync, then VA-API, then CPU: NAS-class Intel GPUs
@@ -1349,15 +1552,22 @@ class Renderer:
         like the QSV path always has. Legacy labels keep their meaning —
         projects stored before VA-API existed still say "Auto · Quick Sync"
         and get the full auto chain.
+
+        The canvas, bitrate and frame rate are part of the question, not detail
+        around it. An encoder is not simply working or broken: a driver can encode a
+        640x384 test card flawlessly and ruin 1920x1080 at 8 Mbps, and the render is
+        the second thing. Asking "does it work" without saying what it has to work on
+        is how a box got a clean bill of health and kept delivering confetti.
         """
+        probe = {"width": width, "height": height, "bitrate": bitrate, "bitrate_value": bitrate_value, "fps": fps}
         if "VAAPI" in label.upper():
-            return "h264_vaapi" if self.vaapi_encodable() else "libx264"
+            return "h264_vaapi" if self.vaapi_encodable(**probe) else "libx264"
         if "Quick Sync" in label:
             if not label.startswith("Auto"):
-                return "h264_qsv" if self.qsv_encodable() else "libx264"
-            if self.qsv_encodable():
+                return "h264_qsv" if self.qsv_encodable(**probe) else "libx264"
+            if self.qsv_encodable(**probe):
                 return "h264_qsv"
-            if self.vaapi_encodable():
+            if self.vaapi_encodable(**probe):
                 return "h264_vaapi"
         return "libx264"
 
@@ -2352,8 +2562,8 @@ class Renderer:
         output = target_dir / filename
         encoder_label = str(output_settings.get("encoder", "Auto"))
         bitrate_value = parse_number(bitrate, 2)
-        encoder = self.select_encoder(encoder_label)
-        # VA-API consumes frames on the GPU: both filter graphs must end with a
+        encoder = self.select_encoder(encoder_label, width=width, height=height, bitrate=bitrate,
+                                      bitrate_value=bitrate_value, fps=fps)        # VA-API consumes frames on the GPU: both filter graphs must end with a
         # hwupload hop, and each command opens the device once via -vaapi_device
         # (which also makes it the default device for the graph's filters).
         hw_device_args = ["-vaapi_device", self._vaapi_device] if encoder == "h264_vaapi" and self._vaapi_device else []
@@ -2366,8 +2576,7 @@ class Renderer:
             # timescale. Without this a hold encoded after a CPU fallback and a
             # transition encoded on the GPU decode as stripes/garbage because
             # the MP4 carries only the first part's SPS/PPS.
-            pinned = ["-profile:v", "high", "-level", "4.1", "-bf", "0", "-g", str(fps * 2), "-keyint_min", str(fps * 2),
-                      "-video_track_timescale", "90000"] if intermediate else []
+            pinned = intermediate_pin(fps) if intermediate else []
             if codec == "h264_vaapi":
                 # Frames arrive as VA-API surfaces from hwupload, so nv12/yuv420p
                 # does not apply. -low_power selects the VDENC entrypoint that
