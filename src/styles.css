@@ -1953,6 +1953,28 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-div.last{background:#d9b35d}
 .kara-slot.end b{display:none}
 .kara-playhead{position:absolute;top:6px;bottom:4px;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 5px #000;pointer-events:none;border-radius:2px}
+/* The word bar under the strip: one sentence across the full width of the
+   preview, so a boundary between two words is a thing you can actually aim at.
+   Its own classes, never `.kara-block`/`.kara-slot` — the stage learned that
+   lesson once (docs/karaoke-text-on-movies-options.md) and so does the bar. */
+.kara-wordbar{margin:7px 0 0;padding:7px 8px 8px;background:#111310;border:1px solid #3a3e36;border-radius:8px}
+.kara-wordbar-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px;font:700 9px Manrope;color:#7f857a}
+.kara-wordbar-head b{color:#dfe7d3;font:800 9px Manrope;letter-spacing:.03em;text-transform:uppercase}
+.kara-wordbar-text{flex:1 1 auto;min-width:120px;font:600 10px Manrope;color:#a9b0a2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kara-wordbar-head small{flex:1 1 100%;font:500 8px Manrope;color:#6b7066}
+.kara-wordbar-track{position:relative;height:38px;background:#0b0d0a;border-radius:6px;overflow:hidden;touch-action:none;cursor:crosshair;user-select:none}
+.kara-wordbar-word{position:absolute;top:3px;bottom:3px;display:flex;align-items:center;justify-content:center;gap:5px;padding:0 7px;border-radius:5px;background:#252b20;border:1px solid #3d4634;color:#8d9388;font:700 11px Manrope;overflow:hidden;cursor:pointer;transition:background .12s,border-color .12s}
+.kara-wordbar-word b{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:inherit}
+.kara-wordbar-word i{font:700 8px Manrope;font-style:normal;color:#6b7066;flex:0 0 auto}
+.kara-wordbar-word.next{background:#2f3a26;border-color:#55643f;color:#dfe7d3}
+.kara-wordbar-word.now{background:#4a4222;border-color:#ffd166;color:#ffe6a3}
+.kara-wordbar-word.now i{color:#ffd166}
+.kara-wordbar-word.sung{color:#d9efb0}
+.kara-wordbar-cut{position:absolute;top:0;bottom:0;width:9px;margin-left:-4.5px;background:transparent;cursor:ew-resize;touch-action:none;z-index:3}
+.kara-wordbar-cut::after{content:"";position:absolute;left:4px;top:4px;bottom:4px;width:1px;background:#5c6b4a;transition:background .12s,width .12s}
+.kara-wordbar-cut:hover::after,.kara-wordbar-cut:active::after{background:#a3cd63;width:3px;left:3px}
+.kara-wordbar-playhead{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 5px #000;pointer-events:none;z-index:2}
+
 .kara-chips{display:flex;flex-wrap:wrap;gap:2px 3px;background:#161813;border:1px solid #3a3e36;border-radius:8px;padding:9px 10px;max-height:150px;overflow-y:auto}
 .kara-chip{display:inline-flex;align-items:center;gap:1px}
 .kara-chip button{border:1px solid transparent;background:transparent;color:#c3c8bd;font:600 11px Manrope;padding:2px 4px;border-radius:4px;cursor:pointer}
