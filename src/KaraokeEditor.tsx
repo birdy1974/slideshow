@@ -34,6 +34,7 @@ import {
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
+  karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarTime,
   timeFromImport, tokenize, wordsPerSecond,
   type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
   type KaraokeToken, type KaraokeWord,
@@ -682,6 +683,47 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     dragRef.current = null
     flush()
   }
+
+  // ---- the word bar: one sentence across the full width of the preview ----
+  //
+  // The strip above owns the clip, so a sentence's words are a handful of pixels
+  // and their dividers are millimetres apart. This bar owns the *selected
+  // sentence*: the same seconds, stretched over the whole preview width, one
+  // draggable boundary per word. Both edit `data.words`, so there is nothing to
+  // keep in sync — the bar is the strip, zoomed to the line you are fixing.
+  const wordBar = useMemo(() => karaokeWordBar(current, windowEnd), [current, windowEnd])
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const barDragRef = useRef<{ cut: number; ripple: boolean; snapshot: KaraokeWord[] } | null>(null)
+  const barFraction = (clientX: number) => {
+    const rect = barRef.current?.getBoundingClientRect()
+    if (!rect || rect.width < 8) return 0
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  }
+  /** Seconds on the clip clock under a pointer over the bar. */
+  const barTime = (clientX: number) => karaokeWordBarTime(wordBar, barFraction(clientX))
+  const beginBarCut = (k: number) => (event: React.PointerEvent) => {
+    event.stopPropagation()
+    event.preventDefault()
+    // Shift takes the rest of the line with it, exactly as a modifier-click on a
+    // sentence block does: fixing one boundary should not un-time its neighbours.
+    barDragRef.current = { cut: k, ripple: event.shiftKey, snapshot: data.words.map(w => ({ ...w })) }
+    ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
+  }
+  const moveBar = (event: React.PointerEvent) => {
+    const drag = barDragRef.current
+    if (!drag || !wordBar) return
+    const cut = karaokeWordBarCut(wordBar, drag.cut, barTime(event.clientX), { minGap: MIN_WORD_GAP })
+    if (!cut) return
+    const words = drag.snapshot.map(w => ({ ...w }))
+    while (words.length <= cut.i) words.push({})
+    words[cut.i] = { ...words[cut.i], t: cut.t }
+    withWords(makeContinuous(drag.ripple ? ripple(words, cut.i + 1, cut.delta) : words, MIN_WORD_GAP), false)
+  }
+  const endBar = () => {
+    if (!barDragRef.current) return
+    barDragRef.current = null
+    flush()
+  }
   // ⌘/Ctrl+wheel over the strip is the zoom gesture every map and audio editor
   // has taught people; a plain wheel just scrolls along the clip. It goes on as a
   // native listener because React's `onWheel` is passive and so cannot keep the
@@ -954,6 +996,34 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
             <div className="kara-playhead" style={{ left: toPercent(position) }}/>
           </div>
           </div>
+
+          {/* Deliberately outside `.kara-strip-scroll`: the bar's axis is one
+              sentence, so the clip's zoom would only slide part of it out of
+              view. It is the width of the preview, and that is the point. */}
+          {wordBar && current ? <div className="kara-wordbar">
+            <div className="kara-wordbar-head">
+              <b>Sentence {plan.sentences.indexOf(current) + 1} of {plan.sentences.length}</b>
+              <span className="kara-wordbar-text">{draftText.slice(tokens[current.from]?.i0 ?? 0, tokens[current.to]?.i1 ?? 0)}</span>
+              <span>{formatClockPrecise(wordBar.from)} → {formatClockPrecise(wordBar.to)} · {round3(wordBar.dur)} s · {wordBar.words.length} words</span>
+              <small>drag a divider to re-time the word after it · <kbd>⇧</kbd> drag takes the rest of the line with it · click the bar to seek</small>
+            </div>
+            <div className="kara-wordbar-track" ref={barRef}
+                 onPointerDown={event => seek(barTime(event.clientX))}
+                 onPointerMove={moveBar} onPointerUp={endBar} onPointerCancel={endBar}>
+              {wordBar.words.map(w => <div key={`w-${w.i}`}
+                className={`kara-wordbar-word${position >= w.t1 ? ' sung' : position >= w.t0 ? ' now' : ' next'}`}
+                style={{ left: `${w.left}%`, width: `${Math.max(1.2, w.width)}%` }}
+                title={`“${draftText.slice(tokens[w.i].i0, tokens[w.i].i1)}” — ${formatClockPrecise(w.t0)} → ${formatClockPrecise(w.t1)} (${round3(w.t1 - w.t0)} s) · click to put the playhead on it`}
+                onPointerDown={event => { event.stopPropagation(); seek(w.t0) }}>
+                <b>{draftText.slice(tokens[w.i].i0, tokens[w.i].i1)}</b>
+                <i>{round3(w.t1 - w.t0)}</i>
+              </div>)}
+              {wordBar.words.map((w, k) => <i key={`cut-${w.i}`} className="kara-wordbar-cut" style={{ left: `${w.left}%` }}
+                title={`Start of “${draftText.slice(tokens[w.i].i0, tokens[w.i].i1)}” at ${formatClockPrecise(w.t0)} — drag it, or Shift+← / Shift+→ while this word is being sung`}
+                onPointerDown={beginBarCut(k)}/>)}
+              <div className="kara-wordbar-playhead" style={{ left: `${karaokeWordBarFraction(wordBar, position)}%` }}/>
+            </div>
+          </div> : null}
 
           <div className="strip-legend">
             <span>{plan.sentences.length} sentences · {tokens.length} words{perSecond ? ` · ${perSecond.toFixed(2)} words/s` : ''}</span>

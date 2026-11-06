@@ -1266,3 +1266,111 @@ export function karaokeTickLabel (step: number, t: number): string {
 export function karaokeBlockFloor (zoom: number): number {
   return 0.8 / clampKaraokeZoom(zoom)
 }
+
+// ---- the word bar under the strip -------------------------------------------
+//
+// The strip draws the whole clip, so the words of one sentence are a handful of
+// pixels wide and their dividers are millimetres apart. The bar under it draws
+// *one sentence* across the full width of the preview: the same seconds, a much
+// longer ruler. It is a view of the same plan, not a second source of truth — a
+// divider drag writes the start of the word after it, exactly as the strip's own
+// `.kara-wordrow` does, so the render's \k tags follow whatever the bar sets.
+
+/** One word in the bar: its clip times and where it sits across the bar. */
+export interface KaraokeWordBarWord {
+  /** Index into `tokenize(text)` / `data.words`. */
+  i: number
+  t0: number
+  t1: number
+  /** Left edge and width, percent of the bar (the sentence's own window). */
+  left: number
+  width: number
+}
+
+export interface KaraokeWordBar {
+  /** The sentence's window on the clip clock, and its length in seconds. */
+  from: number
+  to: number
+  dur: number
+  words: KaraokeWordBarWord[]
+}
+
+/** The smallest gap two words can be pulled to, in seconds. */
+export const KARAOKE_MIN_WORD_GAP = 0.06
+
+const barPercent = (value: number, dur: number) => Math.max(0, Math.min(100, (value / Math.max(dur, 1e-6)) * 100))
+
+/**
+ * Lay the selected sentence out across the full width of the preview.
+ *
+ * `ceiling` is the caption window: a sentence is only ever sung inside it, so the
+ * bar ends where the window ends rather than at the plan's `end`, which has the
+ * tail (the breath before the next line) already folded into it.
+ */
+export function karaokeWordBar (line: KaraokePlanSentence | null | undefined, ceiling?: number): KaraokeWordBar | null {
+  if (!line || !line.words.length) return null
+  const lo = Number(line.start) || 0
+  const hard = Number(ceiling) > 0 ? Number(ceiling) : Infinity
+  const from = msRound(Math.max(0, lo))
+  const to = msRound(Math.max(from + KARAOKE_MIN_WORD_GAP, Math.min(hard, Number(line.end) || from + 1)))
+  const dur = msRound(Math.max(KARAOKE_MIN_WORD_GAP, to - from))
+  const words = line.words.map(word => {
+    // Monotone, and never outside the bar: the plan already clamps `t0` forward,
+    // so a mistimed tap cannot reorder the line — the bar keeps that promise.
+    const t0 = msRound(Math.max(from, Math.min(to, Number(word.t0) || 0)))
+    // A word ends where the next one starts, never past the window: when the
+    // caption clips a line, the tail word can be left with nothing to draw, and
+    // the bar gives it a pixel-wide floor in the markup instead of lying about
+    // a time outside the window.
+    const t1 = msRound(Math.max(t0, Math.min(to, Math.max(Number(word.t1) || 0, Number(word.t0) || 0))))
+    return { i: word.i, t0, t1, left: barPercent(t0 - from, dur), width: barPercent(t1 - t0, dur) }
+  })
+  return { from, to, dur, words }
+}
+
+/** Seconds on the clip clock for a fraction across the bar (0 = the left edge).
+ *  The inverse of a word's `left`, so a pointer position and a drawn word are
+ *  the same mapping in two directions. */
+export function karaokeWordBarTime (bar: KaraokeWordBar | null | undefined, fraction: number): number {
+  if (!bar) return 0
+  const f = Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0
+  return msRound(bar.from + f * bar.dur)
+}
+
+/** Percent across the bar for a time on the clip clock. */
+export function karaokeWordBarFraction (bar: KaraokeWordBar | null | undefined, seconds: number): number {
+  if (!bar) return 0
+  return barPercent((Number(seconds) || 0) - bar.from, bar.dur)
+}
+
+/**
+ * Where the start of word `cut` has to go when its divider is dragged to `seconds`.
+ *
+ * Returns `null` when the drag would change nothing, which is what keeps a click
+ * from becoming a 1 ms edit the project has to save. A word can only be pushed
+ * between its neighbours — the bar moves one boundary, it never reorders the line —
+ * and it is clamped to the sentence's own window, because where a sentence *ends*
+ * is the next line's start (or the caption window), which is the strip's business.
+ * `delta` is what a ripple-shift drag needs for the words after this one.
+ */
+export function karaokeWordBarCut (
+  bar: KaraokeWordBar | null | undefined,
+  cut: number,
+  seconds: number,
+  opts: { minGap?: number } = {},
+): { i: number; t: number; delta: number } | null {
+  if (!bar || !bar.words.length) return null
+  const k = Math.round(Number(cut))
+  if (!Number.isFinite(k) || k < 0 || k >= bar.words.length) return null
+  const gap = Math.max(0.001, Number(opts.minGap) > 0 ? Number(opts.minGap) : KARAOKE_MIN_WORD_GAP)
+  const at = msRound(Math.max(bar.from, Math.min(bar.to, Number(seconds) || 0)))
+  const prev = bar.words[k - 1]
+  const next = bar.words[k + 1]
+  const lo = prev ? msRound(prev.t0 + gap) : bar.from
+  const hi = next ? msRound(Math.max(lo, next.t0 - gap)) : bar.to
+  const t = msRound(Math.max(lo, Math.min(hi, at)))
+  const word = bar.words[k]
+  const delta = msRound(t - word.t0)
+  if (Math.abs(delta) < 0.001) return null
+  return { i: word.i, t, delta }
+}

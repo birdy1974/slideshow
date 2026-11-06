@@ -276,3 +276,29 @@ showing the real thing while you time it, which is the whole point of the strip.
 4. **Scope**: movies only, or the same editor for a photo slide (and a text
    frame) — the engine cost is the same, the UI cost is one more entry point.
 5. Default **style**: `sweep` (classic karaoke) or `word` (highlight only)?
+
+## The word bar under the strip
+
+The strip times **sentences** over the whole clip, so the words inside one line are a
+handful of pixels wide and their dividers are millimetres apart: precise enough to
+select, not precise enough to aim at. Under the strip, the popup draws a second bar
+the width of the preview for the **selected sentence only** — one segment per word, one
+draggable boundary at each word's start.
+
+Same seconds, longer ruler. The bar is not a second set of timings: it reads the plan
+the strip reads (`planOf`) and writes `karaoke.words[i].t`, the start of the word after
+the boundary you drag. The strip's blocks, the sung line in the preview and the
+`\\k`/`\\kf` tags the render emits all follow from that one array, which is why there
+is nothing to keep in sync and nothing that can disagree at export time.
+
+* **Drag a divider** to move that word's start. It is clamped between its neighbours
+  (never closer than 60 ms, the smallest gap at which a sweep is still visible) and to
+  the sentence's own window, so a boundary can be tight but can never reorder the line
+  or push a word into frames the caption is not on screen for.
+* **Shift-drag** takes the rest of the line with it — the same promise a
+  Shift-click on a sentence block makes: fixing line 3 should not un-time words 4 to 9.
+* **Click a word** to put the playhead on it; click the empty bar to seek anywhere in
+  the sentence. While a word is being sung, `⇧←` / `⇧→` nudge its start by 100 ms.
+* The bar sits outside the strip's zoom scroller on purpose. Its axis is one sentence,
+  so the clip zoom would only slide part of it out of view; zoom stays a strip
+  affordance, and the bar is already at maximum useful scale.
