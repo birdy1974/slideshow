@@ -29,6 +29,14 @@ export interface KaraokeWord {
   /** 1 = force a sentence break after this word, -1 = glue it to the next.
    *  Undefined = the automatic rule (`. ! ? …` or a line break). */
   br?: 1 | -1
+  /** Seconds the *last* word of a sentence is held before the line ends. This is
+   *  the one sentence-end a project can express — the bar's right edge writes it.
+   *  A duration, not a time, so re-trimming the clip (which shifts every `t`)
+   *  keeps the hold intact instead of stranding the line at an old absolute time. */
+  hold?: number
+  /** 1 on a sentence's last word: the line is shown but not sung — no per-word
+   *  colouring at all, so it keeps the caption's own colour for its whole window. */
+  plain?: 1
 }
 
 export interface KaraokeData {
@@ -108,6 +116,10 @@ export interface KaraokePlanSentence {
   words: KaraokePlanWord[]
   /** True when the source text had a line break inside this sentence. */
   hard?: boolean
+  /** True when the line's words are not coloured one by one (`words[to].plain`).
+   *  Only written when set, so a plan for an ordinary line is byte-for-byte what
+   *  it always was — the twin tests compare these dicts. */
+  plain?: boolean
 }
 
 export interface KaraokePlan {
@@ -577,7 +589,13 @@ export function planOf (text: string, data: KaraokeData, opts: { from?: number; 
       const nxt = words[k + 1]
       if (nxt) w.t1 = msRound(nxt.t0)   // sung until the next word starts; no floor, or two words would overlap
       else {
-        const room = Math.max(0.3, Math.min(1.1, boundary - w.t0))
+        // The breath at the end of a line, unless the user set it: the bar's right
+        // edge writes `words[to].hold`, and the window still has the final say, so
+        // a hold dragged past the next line (or the caption) is clipped, not kept.
+        const hold = Number(data.words?.[to]?.hold)
+        const room = Number.isFinite(hold) && hold > 0
+          ? Math.min(hold, Math.max(0.05, boundary - w.t0))
+          : Math.max(0.3, Math.min(1.1, boundary - w.t0))
         w.t1 = msRound(w.t0 + room)
       }
       last1 = Math.max(last1, w.t1)
@@ -587,6 +605,7 @@ export function planOf (text: string, data: KaraokeData, opts: { from?: number; 
     for (let i = from; i < to; i++) if (tokens[i]?.nl) hard = true
     const s: KaraokePlanSentence = {
       from, to, words, hard,
+      ...(Number(data.words?.[to]?.plain) === 1 ? { plain: true } : {}),
       start: msRound(Math.max(lo, start - leadIn)),
       end: msRound(ceiling > 0 ? Math.min(ceiling, last1 + tail) : last1 + tail),
     }
@@ -674,6 +693,10 @@ export function karaokeAt (plan: KaraokePlan, t: number, style: KaraokeStyle = '
 export function wordStates (plan: KaraokePlan, frame: KaraokeFrame, style: KaraokeStyle): ('next' | 'now' | 'sung')[] {
   const s = plan.sentences[frame.s]
   if (!s) return []
+  // "Skip colouring" means the words never change colour, in any style: every
+  // word stays in the caption's own colour, and the stage's sweep is driven off
+  // the `now` state alone, so there is nothing else to unplug.
+  if (s.plain) return s.words.map(() => 'next' as const)
   return s.words.map((w, i) => {
     if (style === 'word' || style === 'pop') return i === frame.k ? 'now' : i < frame.k ? 'sung' : 'next'
     if (style === 'reveal') return i <= frame.done ? 'sung' : 'next'
@@ -688,7 +711,8 @@ export function wordStates (plan: KaraokePlan, frame: KaraokeFrame, style: Karao
  * ------------------------------------------------------------------ */
 
 export const hasKaraoke = (item: { karaoke?: KaraokeData | null } | null | undefined): boolean =>
-  !!item?.karaoke?.words?.some(w => Number.isFinite(Number(w.t)) || w.br !== undefined)
+  !!item?.karaoke?.words?.some(w => Number.isFinite(Number(w.t)) || w.br !== undefined
+    || w.plain === 1 || Number.isFinite(Number(w.hold)))
 
 /** Validate whatever came out of a project file or a paste. Out-of-range
  *  numbers are clamped and unknown keys dropped — the `normalizeCollage`
@@ -718,9 +742,14 @@ export function sanitizeKaraoke (raw: unknown, wordCount: number): KaraokeData |
     }
     if (br === 1 || br === '1') entry.br = 1
     else if (br === -1 || br === '-1') entry.br = -1
+    // The two sentence flags ride on the line's last word, like `br` does, so an
+    // edit that moves the boundary moves the flag with the word it belonged to.
+    const hold = Number(wv?.hold)
+    if (Number.isFinite(hold) && hold > 0) entry.hold = clamp(msRound(hold), 0.05, 600)
+    if (wv?.plain === 1 || wv?.plain === '1' || wv?.plain === true) entry.plain = 1
     words.push(entry)
   }
-  if (!timed && !words.some(w => w.br !== undefined)) return undefined
+  if (!timed && !words.some(w => w.br !== undefined || w.plain !== undefined || w.hold !== undefined)) return undefined
   return {
     editor, style, fill,
     leadIn: clamp(num(r.leadIn, KARAOKE_DEFAULTS.leadIn), 0, 5),
@@ -759,7 +788,15 @@ export function retarget (previous: KaraokeData | undefined, before: KaraokeToke
     while (i < b.length && j < a.length) {
       if (b[i] === a[j]) {
         const prev = old[j]
-        if (prev) out[i] = { ...(prev.t !== undefined ? { t: prev.t } : {}), ...(prev.br !== undefined ? { br: prev.br } : {}) }
+        // The two sentence flags ride the word they sit on, so an edit that keeps a
+        // word keeps its sentence's hold and its "do not sing me" decision too —
+        // dropping them here would make a typo silently re-colour a line.
+        if (prev) out[i] = {
+          ...(prev.t !== undefined ? { t: prev.t } : {}),
+          ...(prev.br !== undefined ? { br: prev.br } : {}),
+          ...(prev.hold !== undefined ? { hold: prev.hold } : {}),
+          ...(prev.plain !== undefined ? { plain: prev.plain } : {}),
+        }
         i++
         j++
       } else if (dp[at(i + 1, j)] >= dp[at(i, j + 1)]) i++
@@ -1335,6 +1372,45 @@ export function karaokeWordBarTime (bar: KaraokeWordBar | null | undefined, frac
   if (!bar) return 0
   const f = Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0
   return msRound(bar.from + f * bar.dur)
+}
+
+/**
+ * The sentence's own end, from the handle at the right edge of the last word.
+ *
+ * A line's window is `last word's end + the tail`, and the tail is a shared
+ * setting, so the only honest thing to drag is the hold on the last word: this
+ * returns it, clamped to the sentence's window and never shorter than the gap a
+ * word needs to be readable. `delta` is what the head of the bar re-shows.
+ */
+export function karaokeWordBarHold (
+  bar: KaraokeWordBar | null | undefined,
+  seconds: number,
+  opts: { minGap?: number } = {},
+): { hold: number; delta: number } | null {
+  if (!bar || !bar.words.length) return null
+  const last = bar.words[bar.words.length - 1]
+  const gap = Math.max(0.001, Number(opts.minGap) > 0 ? Number(opts.minGap) : KARAOKE_MIN_WORD_GAP)
+  const room = Math.max(gap, bar.to - last.t0)
+  const want = Math.max(0, (Number(seconds) || 0) - last.t0)
+  const held = msRound(Math.max(gap, Math.min(room, Number.isFinite(want) ? want : room)))
+  const delta = msRound(held - Math.max(0, last.t1 - last.t0))
+  if (Math.abs(delta) < 0.001) return null
+  return { hold: held, delta }
+}
+
+/**
+ * Divide a window into one equal slot per word: the starts, in seconds.
+ *
+ * The caller hands over the sentence's own span, so "equal" means equal *inside
+ * the time the line already occupies* — the line neither grows nor shrinks and
+ * the neighbours keep their handoff. A single word takes the whole slot.
+ */
+export function karaokeEvenWordTimes (from: number, to: number, count: number): number[] {
+  const n = Math.max(1, Math.round(count))
+  const lo = Math.max(0, Number(from) || 0)
+  const hi = Math.max(lo + KARAOKE_MIN_WORD_GAP, Number(to) || 0)
+  const step = (hi - lo) / n
+  return Array.from({ length: n }, (_, k) => msRound(lo + k * step))
 }
 
 /** Percent across the bar for a time on the clip clock. */

@@ -34,7 +34,7 @@ import {
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
-  karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarTime,
+  karaokeEvenWordTimes, karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarHold, karaokeWordBarTime,
   timeFromImport, tokenize, wordsPerSecond,
   type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
   type KaraokeToken, type KaraokeWord,
@@ -693,14 +693,12 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   // keep in sync — the bar is the strip, zoomed to the line you are fixing.
   const wordBar = useMemo(() => karaokeWordBar(current, windowEnd), [current, windowEnd])
   const barRef = useRef<HTMLDivElement | null>(null)
-  const barDragRef = useRef<{ cut: number; ripple: boolean; snapshot: KaraokeWord[] } | null>(null)
+  const barDragRef = useRef<{ cut: number; ripple?: boolean; end?: boolean; snapshot: KaraokeWord[] } | null>(null)
   const barFraction = (clientX: number) => {
     const rect = barRef.current?.getBoundingClientRect()
     if (!rect || rect.width < 8) return 0
     return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
   }
-  /** Seconds on the clip clock under a pointer over the bar. */
-  const barTime = (clientX: number) => karaokeWordBarTime(wordBar, barFraction(clientX))
   const beginBarCut = (k: number) => (event: React.PointerEvent) => {
     event.stopPropagation()
     event.preventDefault()
@@ -712,6 +710,16 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const moveBar = (event: React.PointerEvent) => {
     const drag = barDragRef.current
     if (!drag || !wordBar) return
+    if (drag.end) {
+      const last = wordBar.words[wordBar.words.length - 1]
+      const held = karaokeWordBarHold(wordBar, barTime(event.clientX), { minGap: MIN_WORD_GAP })
+      if (!held) return
+      const words = drag.snapshot.map(w => ({ ...w }))
+      while (words.length <= last.i) words.push({})
+      words[last.i] = { ...words[last.i], hold: held.hold }
+      withWords(words, false)
+      return
+    }
     const cut = karaokeWordBarCut(wordBar, drag.cut, barTime(event.clientX), { minGap: MIN_WORD_GAP })
     if (!cut) return
     const words = drag.snapshot.map(w => ({ ...w }))
@@ -723,6 +731,46 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     if (!barDragRef.current) return
     barDragRef.current = null
     flush()
+  }
+  const barTime = (clientX: number) => karaokeWordBarTime(wordBar, barFraction(clientX))
+  /** The handle at the right edge of the last word: it sets that word's hold, and
+   *  the line's window is `hold + the tail`, so this is how a sentence gets a
+   *  shorter or longer end without touching the next sentence's start. */
+  const beginBarEnd = (event: React.PointerEvent) => {
+    event.stopPropagation()
+    event.preventDefault()
+    barDragRef.current = { cut: (wordBar?.words.length ?? 1) - 1, end: true, snapshot: data.words.map(w => ({ ...w })) }
+    ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
+  }
+  /** One equal slot per word, inside the time this sentence already occupies. */
+  const evenWordsInLine = () => {
+    if (!current || !wordBar) return
+    const n = wordBar.words.length
+    const starts = karaokeEvenWordTimes(wordBar.words[0].t0, wordBar.to, n)
+    const slot = n > 1 ? round3(starts[1] - starts[0]) : round3(Math.max(MIN_WORD_GAP, wordBar.to - starts[0]))
+    const words = data.words.map(w => ({ ...w }))
+    wordBar.words.forEach((w, k) => {
+      while (words.length <= w.i) words.push({})
+      // The last word's hold is set as well, not cleared: an even split that
+      // quietly shortened the line's window would move the next sentence too.
+      words[w.i] = k === n - 1 ? { ...words[w.i], t: starts[k], hold: slot } : { ...words[w.i], t: starts[k], hold: undefined }
+      if (k !== n - 1) delete words[w.i].hold
+    })
+    withWords(makeContinuous(words, MIN_WORD_GAP), true)
+    setNotice({ kind: 'info', text: `${n} words × ${slot} s — the sentence keeps its ${round3(wordBar.dur)} s window.` })
+  }
+  /** Show the line, do not sing it: no per-word colouring anywhere, in either
+   *  surface. The flag lives on the line's last word, where the break lives. */
+  const togglePlainLine = () => {
+    if (!current) return
+    const words = data.words.map(w => ({ ...w }))
+    while (words.length <= current.to) words.push({})
+    if (words[current.to]?.plain === 1) delete words[current.to].plain
+    else words[current.to] = { ...words[current.to], plain: 1 }
+    withWords(words, true)
+    setNotice({ kind: 'info', text: words[current.to]?.plain === 1
+      ? `Sentence ${plan.sentences.indexOf(current) + 1} shows in the caption's own colour — no word is highlighted.`
+      : `Sentence ${plan.sentences.indexOf(current) + 1} is sung word by word again.` })
   }
   // ⌘/Ctrl+wheel over the strip is the zoom gesture every map and audio editor
   // has taught people; a plain wheel just scrolls along the clip. It goes on as a
@@ -963,7 +1011,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
             <div className="kara-lane">
               {plan.sentences.map((line, i) => <div
                 key={`${line.from}-${i}`}
-                className={`kara-block${i === selected ? ' active' : ''}${line.end >= windowEnd - 0.001 ? ' clipped' : ''}`}
+                className={`kara-block${i === selected ? ' active' : ''}${line.plain ? ' plain' : ''}${line.end >= windowEnd - 0.001 ? ' clipped' : ''}`}
                 style={{ left: toPercent(line.start), width: `${Math.max(karaokeBlockFloor(zoom), ((line.end - line.start) / span) * 100)}%` }}
                 onPointerDown={beginDrag('block', i)}
                 title={`Sentence ${i + 1}: ${draftText.slice(tokens[line.from]?.i0 ?? 0, tokens[line.to]?.i1 ?? 0)} · ${formatClockPrecise(line.start)} → ${formatClockPrecise(line.end)} (${round3(line.end - line.start)} s) · drag to move, Shift-click sets the start, Ctrl-click the end`}
@@ -1005,7 +1053,16 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
               <b>Sentence {plan.sentences.indexOf(current) + 1} of {plan.sentences.length}</b>
               <span className="kara-wordbar-text">{draftText.slice(tokens[current.from]?.i0 ?? 0, tokens[current.to]?.i1 ?? 0)}</span>
               <span>{formatClockPrecise(wordBar.from)} → {formatClockPrecise(wordBar.to)} · {round3(wordBar.dur)} s · {wordBar.words.length} words</span>
-              <small>drag a divider to re-time the word after it · <kbd>⇧</kbd> drag takes the rest of the line with it · click the bar to seek</small>
+              <span className="kara-wordbar-actions">
+                <button type="button" onClick={evenWordsInLine} title="Divide this sentence's own window into one equal slot per word — the line keeps its timing, the words lose their guesses">
+                  <AlignLeft size={12}/>Even words
+                </button>
+                <button type="button" className={current.plain ? 'on' : ''} onClick={togglePlainLine}
+                        title={current.plain ? 'Sing this line word by word again' : 'Show this sentence without colouring any word: it keeps its window and wears the caption colour'}>
+                  {current.plain ? <Check size={12}/> : <X size={12}/>}No colouring
+                </button>
+              </span>
+              <small>drag a divider to re-time the word after it · <kbd>⇧</kbd> drag takes the rest of the line with it · drag the right edge to lengthen or shorten the sentence · click the bar to seek</small>
             </div>
             <div className="kara-wordbar-track" ref={barRef}
                  onPointerDown={event => seek(barTime(event.clientX))}
@@ -1021,6 +1078,12 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
               {wordBar.words.map((w, k) => <i key={`cut-${w.i}`} className="kara-wordbar-cut" style={{ left: `${w.left}%` }}
                 title={`Start of “${draftText.slice(tokens[w.i].i0, tokens[w.i].i1)}” at ${formatClockPrecise(w.t0)} — drag it, or Shift+← / Shift+→ while this word is being sung`}
                 onPointerDown={beginBarCut(k)}/>)}
+              {(() => {
+                const last = wordBar.words[wordBar.words.length - 1]
+                return <i className="kara-wordbar-cut end" style={{ left: `${Math.min(99.6, last.left + last.width)}%` }}
+                  title={`End of “${draftText.slice(tokens[last.i].i0, tokens[last.i].i1)}” at ${formatClockPrecise(last.t1)} — the sentence ends ${round3(wordBar.dur)} s in, so this edge is where the line leaves`}
+                  onPointerDown={beginBarEnd}/>
+              })()}
               <div className="kara-wordbar-playhead" style={{ left: `${karaokeWordBarFraction(wordBar, position)}%` }}/>
             </div>
           </div> : null}

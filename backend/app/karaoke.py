@@ -103,6 +103,11 @@ _NL_RE = re.compile(r"^[ \t]*\r?\n")
 # ---------------------------------------------------------------------------
 
 
+def entry(value: Any) -> dict[str, Any]:
+    """A word's own dict, or an empty one. A project file can hold a null."""
+    return value if isinstance(value, dict) else {}
+
+
 def ms_round(value: float) -> float:
     """Milliseconds — the resolution both engines agree on, so a save → load →
     render cycle cannot drift by a frame.
@@ -416,7 +421,16 @@ def plan_of(
                 # editor's own drags keep MIN_WORD_GAP between starts).
                 w["t1"] = ms_round(nxt["t0"])
             else:
-                room = max(0.3, min(1.1, boundary - w["t0"]))
+                # The breath at the end of a line, unless the user set it: the bar's
+                # right edge writes `words[to].hold`, and the window still has the
+                # final say, so a hold dragged past the next line (or past the
+                # caption) is clipped rather than kept. Mirrors `planOf`.
+                held = _num(entry(words[b]).get("hold"), float("nan"))
+                room = (
+                    min(held, max(0.05, boundary - w["t0"]))
+                    if math.isfinite(held) and held > 0
+                    else max(0.3, min(1.1, boundary - w["t0"]))
+                )
                 w["t1"] = ms_round(w["t0"] + room)
             last1 = max(last1, w["t1"])
         if last1 > boundary:
@@ -426,7 +440,13 @@ def plan_of(
         s_end = ms_round(min(ceiling, last1 + tail) if ceiling > 0 else last1 + tail)
         if s_end <= s_start:
             s_end = ms_round(s_start + 0.2)
-        sentences.append({"from": a, "to": b, "start": s_start, "end": s_end, "hard": hard, "words": items})
+        plain = entry(words[b]).get("plain") in (1, "1", True)
+        # Only written when set, so a plan for an ordinary line is byte-for-byte what
+        # it always was — the twin tests compare these dicts.
+        sentences.append({
+            "from": a, "to": b, "start": s_start, "end": s_end, "hard": hard, "words": items,
+            **({"plain": True} if plain else {}),
+        })
         end = max(end, s_end)
     # Two sentences must never be on screen at once: they share one \pos, so an
     # overlap is two lines printed on top of each other. The handoff point is
@@ -500,6 +520,12 @@ def word_states(plan: dict[str, Any], frame: dict[str, Any], style: str = "sweep
     s = frame["s"]
     if s < 0 or s >= len(sentences):
         return []
+    if sentences[s].get("plain"):
+        # "Skip colouring" means the words never change colour, in any style: every
+        # word stays in the caption's own colour, exactly as `wordStates` in
+        # src/karaokeCore.ts decides, because the stage paints its sweep off the
+        # `now` state alone and there is nothing else to unplug.
+        return ["next"] * len(sentences[s]["words"])
     out: list[str] = []
     for i in range(len(sentences[s]["words"])):
         if style in ("word", "pop"):
@@ -547,8 +573,19 @@ def sanitize_karaoke(raw: Any, word_count: int) -> dict[str, Any] | None:
                 entry["br"] = 1
             elif src.get("br") in (-1, "-1"):
                 entry["br"] = -1
+            # The two sentence flags ride on the line's last word, like `br` does, so
+            # an edit that moves the boundary moves the flag with the word it
+            # belonged to. `hold` is a duration: re-trimming the clip shifts every
+            # `t`, and a held line must come out of it still held for the same time.
+            held = _num(src.get("hold"), float("nan"))
+            if math.isfinite(held) and held > 0:
+                entry["hold"] = _clamp(ms_round(held), 0.05, 600.0)
+            if src.get("plain") in (1, "1", True):
+                entry["plain"] = 1
         words.append(entry)
-    if not timed and not any(w.get("br") is not None for w in words):
+    if not timed and not any(
+        w.get("br") is not None or w.get("plain") is not None or w.get("hold") is not None for w in words
+    ):
         return None
     return {
         "editor": editor,
@@ -722,6 +759,11 @@ def has_karaoke(item: dict[str, Any] | None) -> bool:
             return True
         if w.get("br") is not None:
             return True
+        # A line that is flagged rather than timed is still a decision the user made
+        # in the popup: "show this sentence, do not sing it" has no word times in it
+        # at all, and dropping it here would silently un-do it.
+        if w.get("plain") is not None or w.get("hold") is not None:
+            return True
     return False
 
 
@@ -760,6 +802,18 @@ def _sentence_body(text: str, sentence: dict[str, Any], tokens: list[dict[str, A
     the other half is being sung (``WrapStyle: 2``, see ``_header`` in
     ``text_effects.py``).
     """
+    if sentence.get("plain"):
+        # No \\k runs, so libass paints the line in the event's primary colour for
+        # its whole window. The hard breaks the user typed still have to survive, or
+        # the line re-wraps itself (WrapStyle: 2 keeps every other line whole).
+        runs: list[str] = []
+        for w in sentence["words"]:
+            token = tokens[w["i"]]
+            run = _escape_ass(str(token["w"]))
+            if token.get("nl"):
+                run += "\\N"
+            runs.append(run)
+        return " ".join(runs)
     out: list[str] = []
     for w in sentence["words"]:
         token = tokens[w["i"]]
@@ -815,20 +869,27 @@ def build_karaoke_events(
                 token = tokens[w["i"]]
                 t0 = float(w["t0"])
                 t1 = max(t0 + 0.18, float(w["t1"]))
+                plain = bool(sentence.get("plain"))
                 tags = (
                     f"{align_tag}\\pos({cx:.0f},{cy:.0f})\\fad({fi},{fo})"
-                    f"\\1c{_colour(fill)}\\2c{_colour(base_colour)}"
+                    f"\\1c{_colour(base_colour if plain else fill)}\\2c{_colour(base_colour)}"
                     f"\\t(0,{min(220, int((t1 - t0) * 1000))},\\fscx118\\fscy118)"
                     f"\\t({min(220, int((t1 - t0) * 1000))},{min(420, int((t1 - t0) * 1200))},\\fscx100\\fscy100)"
                 )
                 events.append(
-                    f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},FX,,0,0,0,,{{{tags}}}{_pop_body(token['w'], t1 - t0)}"
+                    f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},FX,,0,0,0,,{{{tags}}}"
+                    + (_escape_ass(str(token["w"])) if plain else _pop_body(token["w"], t1 - t0))
                 )
         return events
     for sentence in plan.get("sentences") or []:
         start, stop = float(sentence["start"]), float(sentence["end"])
         if style == "reveal":
             colours = f"\\1c{_colour(base_colour)}\\2c&HFF{_ass_rgb(base_colour)}&"
+        elif sentence.get("plain"):
+            # Nothing sweeps to the fill colour on this line, so the primary colour
+            # stays the caption's own; leaving it on `fill` would make an
+            # un-coloured line arrive already highlighted.
+            colours = f"\\1c{_colour(base_colour)}\\2c{_colour(base_colour)}"
         else:
             colours = f"\\1c{_colour(fill)}\\2c{_colour(base_colour)}"
         tags = f"{align_tag}\\pos({cx:.0f},{cy:.0f})\\fad({fi},{fo}){colours}"

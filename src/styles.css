@@ -1962,6 +1962,14 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-wordbar-head b{color:#dfe7d3;font:800 9px Manrope;letter-spacing:.03em;text-transform:uppercase}
 .kara-wordbar-text{flex:1 1 auto;min-width:120px;font:600 10px Manrope;color:#a9b0a2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kara-wordbar-head small{flex:1 1 100%;font:500 8px Manrope;color:#6b7066}
+.kara-wordbar-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.kara-wordbar-actions button{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:4px;border:1px solid #3d4634;background:#191c17;color:#a9b0a2;font:700 9px Manrope;cursor:pointer}
+.kara-wordbar-actions button:hover{border-color:#55643f;color:#dfe7d3;background:#2f3a26}
+.kara-wordbar-actions button.on{border-color:#ffd166;color:#ffe6a3;background:#3a3524}
+.kara-wordbar-cut.end{width:11px;margin-left:-6px}
+.kara-wordbar-cut.end::after{background:#d9b35d;width:2px;left:4px}
+.kara-wordbar-cut.end:hover::after,.kara-wordbar-cut.end:active::after{background:#ffd166;width:4px;left:3px}
+.kara-block.plain{border-style:dashed;border-color:#4a5340;background:#262b22;color:#a9b0a2}
 .kara-wordbar-track{position:relative;height:38px;background:#0b0d0a;border-radius:6px;overflow:hidden;touch-action:none;cursor:crosshair;user-select:none}
 .kara-wordbar-word{position:absolute;top:3px;bottom:3px;display:flex;align-items:center;justify-content:center;gap:5px;padding:0 7px;border-radius:5px;background:#252b20;border:1px solid #3d4634;color:#8d9388;font:700 11px Manrope;overflow:hidden;cursor:pointer;transition:background .12s,border-color .12s}
 .kara-wordbar-word b{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:inherit}
