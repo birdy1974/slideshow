@@ -137,9 +137,21 @@ Merging is one function per engine, and both are trivial:
 
 A three-minute song squeezed into a 700 px box is 0.26 seconds per pixel: the
 ruler is honest and a divider is un-hittable. So the strip zooms, 100 % (the whole
-clip, as it always was) to 1200 %, by the slider in the transport row, `+`/`-`, or
-⌘/Ctrl+wheel over the strip itself; `0` or *Fit* comes back out, and Alt-click
+clip, as it always was) to **6000 %**, by the slider in the transport row, `+`/`-`,
+or ⌘/Ctrl+wheel over the strip itself; `0` or *Fit* comes back out, and Alt-click
 puts the time you clicked in the middle of the box.
+
+The ceiling was 1200 % and that was a bug of the arithmetic, not of the gesture: the
+top of the range has to be set by what the *widest* use needs, which is `3 lines` on a
+long clip — "did I steal this syllable from the next sentence" is only answerable when
+three sentences of a nine-minute movie fit the box, and at 12× a 540-second clip would
+still show twenty sentences. `KARAOKE_ZOOM_MAX = 60` is that number rounded up. What
+used to stop anyone from asking for more was the ruler's own label budget, a flat
+`KARAOKE_MAX_TICKS` per *strip*: at 30 s × 60 it answered with a rung so coarse that
+two ticks stood 350 px apart, i.e. the ceiling was useless because the ruler refused to
+follow it up. `karaokeLabelBudget(zoom)` now scales the budget per *screen* of strip
+(139 × zoom, capped at 6000 labels), which keeps the pixel target the deciding rule and
+still bounds the DOM.
 
 Nothing about the *model* changes, which is the whole design: every lane already
 stores its geometry as a percent of the clip, so zooming is drawing that one
@@ -173,9 +185,9 @@ position there, and sliding the view under a pointer that is sliding through it 
 feedback loop, so that case keeps its own held-offset rule. Alt-click uses the same
 arithmetic, which is what `KaraokeFollowScrollTest` measures. The one thing the zoom
 cannot do is sharpen the
-waveform: 700 buckets are fetched for the kept cut and stay 700 buckets, so at 12×
-the peaks stretch (they do not lie — they just get soft) while the onset marks
-remain exact to the millisecond.
+waveform: `WAVE_BUCKETS` buckets are fetched once for the kept cut and stay that
+many, so at 12× the peaks stretch (they do not lie — they just get soft) while the
+onset marks remain exact to the millisecond.
 
 ## The clip the strip runs on
 
@@ -282,6 +294,117 @@ absolutely positioned overlay is placed against its parent's *padding* box, so t
 padding was lifting the coloured copy a few pixels above the letters it is
 supposed to colour. One box, both copies, no offset — and the twin's arithmetic
 does not move, because the box is unchanged in size, only in who owns it.
+
+## Reading the audio: two bands on a dB ruler
+
+The lane under the strip used to be a single dark polygon of peak amplitudes, scaled
+against full scale, and it was described in the field as "hard to see whether words are
+actually spoken". That is what a peak view *is*: `max(|x|)` per pixel column, which says
+"a transient happened somewhere in this column" and says nothing about whether anything
+was *said*. Measured on a real voice, a bucket at 5 % of the file's loudest sample — a
+syllable, a breath, the tail of a sentence — draws 0.056 of the half-height, i.e. a few
+pixels, and silence draws the same. A flat lane and a spoken lane were the same picture.
+
+Three changes, in the order the reading needs them:
+
+* **Peaks *and* RMS.** The backend reduces each bucket to both (`_waveform_buckets`,
+  pure, so it is testable without FFmpeg). The dark shape is the peak envelope, the
+  lighter band inside it is RMS, and the gap between the two is the crest factor — wide
+  for speech and untreated drums, narrow for a compressed music bed. That gap is the
+  thing that distinguishes a syllable from a click: measured on a file with one
+  full-scale sample dropped in front of a tone, the click's bucket reads `peak 1.0 /
+  rms 0.0707` and the tone's reads `1.0 / 1.0`. One value per bucket cannot say that.
+* **Measured against the file's own peak, not full scale.** Both series are divided by
+  the loudest bucket in *this* movie before they leave the backend, and the API returns
+  `reference: 1.0` to say so — the contract the lane draws against. A quietly recorded
+  voice then fills the lane instead of hugging the centre line.
+* **A dB ruler by default, with *linear* one click away.** Silence to the file's peak
+  spread over 48 dB: the same 5 % bucket is 0.05 of the lane linear and 0.89 of it in
+  dB, and 2 % is 0.29 instead of invisible. Amplitude is kept as the alternative because
+  it is the honest view of clipping, and the choice is remembered in
+  `localStorage` (`slideshow.karaoke.waveScale`) rather than in `KaraokeData`: which way
+  *you* want to read a level is not a property of the caption, and it must not ride into
+  the MP4 or a project file. The scale along the left edge is five mirrored marks
+  (`-48 · -24 · 0 dB · -24 · -48`) because the lane itself is mirrored around the centre
+  line; a ruler that only counts down from the top describes a shape nobody draws.
+
+What silence draws is the part that earns the height: nothing but the centre line. So
+the flat runs *are* the gaps, and a sentence boundary belongs at the edge of a hill.
+Marks for both timelines are painted on top of the picture — one tick per sentence
+start (`i`, the selected one bright), and one per word of the selected sentence (`u`,
+`sung` once the playhead is past it) — because a level you can see is only useful next
+to the words you are timing against it. `karaokeWaveLevel` and `karaokeWavePaths` are
+pure and measured in `AudioLaneScaleTest`; the three smaller waveform drawings (the
+`wave` surface, the word bar's mini lane, the lane) share `karaokeWavePaths`, so a
+bucket means one thing in the whole popup.
+
+## Two rulers, one axis, and how the words pane got its controls back
+
+Four layout asks, one of which was a cascade bug worth writing down:
+
+* **The lanes are the popup's width, not the preview's.** They are grid items of
+  `.karaoke-body` (`.kara-left` is `display:contents`, so the stage, the transport row,
+  both timelines and the controls row are rows of the same grid) and each lane says
+  `grid-column:1/-1`. It did not work the first time, for a reason no screenshot
+  explains: a second, later `.kara-left{display:flex…}` rule in the same file overrode
+  the `display:contents` above it, so the lanes stayed children of a column as wide as
+  the video and `grid-column` was never applied. Both rules were in the file; the later
+  one won. `PaneLayoutTest.test_the_lanes_span_the_popup_not_the_preview` therefore
+  greps for a *second declaration of the class* rather than trusting that the intended
+  rule exists.
+* **The selected sentence's controls live under the strip again.** `Selected sentence
+  x of y` with *Split here*, *Merge* and *Start here* had moved behind *Settings* in the
+  previous change, and that turned out to be a bad trade: the line you are timing is the
+  line whose boundary you are moving, and a click away is one click too far. They are a
+  full-width row of the same grid now. *Settings* keeps the things that are not a
+  timeline — style, text look, first pass, the caption window, the numbers — including
+  the new bulk action below.
+* **A row's × merges it into the row before it.** `glueToPrevious(i)` writes `br: -1` on
+  the previous line's last word. That is not "remove the flag", it is "never cut here":
+  `-1` beats punctuation *and* a hard break in the text, so the × also fixes the
+  sentence a full stop made — while an old project saved with real newlines still splits
+  the way it always did. `SentenceBreakIsAFlagTest` runs all four cases through the real
+  `planOf`.
+* **The rail scrolls under the wheel.** `karaokeRailWheelScroll(deltaY, deltaX,
+  deltaMode, scrollHeight, clientHeight)` is the decision, and it is in core because
+  each of its four rules is a complaint waiting to happen: a sideways swipe belongs to
+  the strip beside it, a Firefox `deltaMode: 1` means lines and must be scaled, a list
+  with nothing to scroll must leave the event to the page, and one notch is clamped to
+  60 % of the visible height so it cannot throw the list from end to end. The listener
+  is native with `{ passive: false }` — React's `onWheel` is passive and cannot
+  `preventDefault`, which is exactly the half-scroll that makes a popup feel broken.
+
+## A sentence break is a flag, never an edit
+
+The report was "too many 1-word sentences since the last-word timing change", and the
+cause was in the *text*: *New sentence* inserted a `\n` into the caption at the caret.
+`tokenize` treats every hard break as a sentence boundary — that is how a lyric line
+becomes a line — so one stray keystroke both minted a sentence out of whatever single
+word happened to sit beside the caret *and* re-wrapped the rendered caption. Nothing in
+the plan's arithmetic was wrong; the plan was reading a real edit as a real sentence.
+
+Now a break is a word flag and the editor never writes to `item.text`: *New sentence*
+sets `br: 1` on the word before the caret, the rail's × sets `br: -1`, `hold` rides the
+last word of a line, and the same three surfaces — the pane, the numbered rows, the
+strip — read that one list of flags, which is what "the sentence in *The words* should
+match the numbered sentence" means. A test says it rather than a promise:
+`SentenceBreakIsAFlagTest` asserts that neither handler contains `setDraftText`, and
+that the four flag combinations produce the four expected `[[from, to], …]` plans.
+
+## Spacing every word evenly, per line
+
+*Space all words evenly* in *Settings* divides each sentence's own window by its own
+word count (`karaokeEvenWordLine`, shared with the per-line *Space evenly*). Two details
+make it safe to press at any time:
+
+* A line's window is never moved, only divided, so a handoff you already tapped with a
+  neighbour survives — the alternative is a bulk action that quietly re-times the whole
+  caption.
+* The last word's `hold` is retuned to the new slot. A line's window is its last word's
+  end plus the tail, so a hold left over from a longer line keeps revealing after the
+  boundary — the sung colour would still be crawling into the next sentence. This is the
+  same bug class as the typed *Sentence to* field, and it is why `karaokeHoldForEnd` and
+  `karaokeEvenWordLine` exist instead of a subtraction at each call site.
 
 ## Where the code is
 
@@ -447,6 +570,22 @@ the one supplying the hold.
   Save must not write the opening snapshot back over it — that clobber is how
   "save, close, reopen" lost both the text and the timing.
 
+* **A sentence break is a word flag.** Nothing in this editor writes to
+  `item.text`: *New sentence* sets `br: 1` on the word before the caret and the rail's
+  × sets `br: -1`, because `tokenize` reads every hard break as a boundary — an edit to
+  the text to "fix the timing" re-wraps the rendered caption *and* mints a sentence,
+  which is exactly how the one-word sentences appeared.
+* **The pane, the rail and the strip read the same flags.** A row of *The words* is a
+  row of the plan is a block of the bar, in the same order, because all three come from
+  one `planOf` pass over `words[i].br`. A merge that the `maxWords` cap would undo says
+  so instead of claiming a row moved.
+* **A level is measured against the file, not full scale.** The lane's 0 dB is this
+  movie's loudest bucket, the same divisor for peaks and RMS so the gap between the two
+  bands stays the crest factor, and the choice of dB or linear is a browser preference —
+  never in `KaraokeData`, so it cannot ride into an MP4 or a project file.
+* **No button inside a button.** A rail row is a `div[role=button]` with its own
+  key handler, so the × in it is a real button with a real click target.
+
 ## Tests
 
 * `backend/tests/test_database.py` — the block, the word times and its text style
@@ -499,3 +638,19 @@ the one supplying the hold.
   from `TEXT_STYLE` rather than repeated as a literal, so an engine that renames
   or drops a field fails here. This is the file that decides whether "what you
   time is what the MP4 does" is a sentence rather than a hope.
+* `backend/tests/test_karaoke_wordbar.py` + `karaoke_wordbar.mjs` — the word bar and the
+  lane under it. The geometry (bar span, per-word left/width, a divider dragged into its
+  neighbours, a typed end, the ruler's label budget at the top of the zoom range) is run
+  through `karaokeCore.ts` by Node, so it is measured rather than eyeballed;
+  `AudioLaneScaleTest` and `WaveformBucketsTest` pin the audio lane's vertical scale and
+  the bucket maths — the latter on hand-built samples, because this repo's `test` job has
+  no FFmpeg and a lane that can only be tested by decoding a file cannot be tested there
+  at all. `SentenceBreakIsAFlagTest` puts the four `br` combinations through the real
+  `planOf` and asserts that neither *New sentence* nor the rail's × contains
+  `setDraftText`, which is the whole fix for the one-word sentences.
+  `PopupShapeTest` and `PaneLayoutTest` read the two files instead of running them —
+  there is no browser here, so what they can honestly pin is the *rules*: that a lane
+  claims `grid-column:1/-1`, that no later rule un-claims it, that the × is not a button
+  inside a button, that the controls row is under the strip and not in the settings
+  layer. They are text assertions, deliberately, and each one says which change would
+  have silently undone the feature.

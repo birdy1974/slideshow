@@ -406,9 +406,15 @@ rail scrolls the active row into view, so a playhead that walks the caption keep
 with it.
 
 **Settings is a layer, not a column.** Style, sung colour, text look, first pass, the import
-box, the caption window, lead-in/tail/snap/words-per-line and the selected-sentence actions
-moved behind a `Settings` button beside the movie's name. They are the *same JSX* — one
-function returning the same markup, closing over the same `apply`/`patchLook` — rendered in
-a second popup, so there is no second copy of the state and no field that can disagree with
-the timing. The notices stay with the timelines, because they report what a bar or a button
-just did.
+box, the caption window, lead-in/tail/snap/words-per-line moved behind a `Settings` button
+beside the movie's name. They are the *same JSX* — one function returning the same markup,
+closing over the same `apply`/`patchLook` — rendered in a second popup, so there is no
+second copy of the state and no field that can disagree with the timing. The notices stay
+with the timelines, because they report what a bar or a button just did.
+
+**One correction, asked for next time round:** the selected sentence's
+*Split here* / *Merge* / *Start here* row went into that layer with them, and it should not
+have. A control that moves the boundary you are looking at belongs under the strip it moves,
+so it came back as a full-width row of the popup (`docs/karaoke-timing-editor.md`: *Two
+rulers, one axis, and how the words pane got its controls back*). What stays in *Settings* is
+what you set once per caption — including *Space all words evenly*.

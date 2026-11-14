@@ -250,6 +250,358 @@ class ThreeLineZoomTest(unittest.TestCase):
         self.assertGreater(got["fit"]["zoom"], 1)
 
 
+class SourceShapeTest(unittest.TestCase):
+    """Tests that read the two files instead of running them — the popup's shape is
+    CSS and JSX, and there is no browser here to ask."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.editor = (REPO / "src" / "KaraokeEditor.tsx").read_text(encoding="utf-8")
+        cls.css = (REPO / "src" / "styles.css").read_text(encoding="utf-8")
+
+
+class SentenceBreakIsAFlagTest(SourceShapeTest):
+    """Why the "too many one-word sentences" report happened, in one place.
+
+    `tokenize` treats every hard break in the caption as a sentence boundary, and
+    `New sentence` used to write a `\\n` into `item.text` to split a line. One
+    keystroke therefore re-wrapped the rendered movie *and* minted a sentence out of
+    whatever single word happened to sit beside the caret. A boundary is now a `br`
+    flag on a word — a display wrap the renderer still honours, but the pane, the
+    rail and the strip all read the same flags, so they cannot disagree.
+    """
+
+    def test_the_break_is_a_flag_and_the_text_is_never_touched(self) -> None:
+        body = self.editor[self.editor.index("const addSentenceAtCaret = () => {"):]
+        body = body[:body.index("\n  }\n")]
+        self.assertIn("setBreak(at, 1)", body)
+        self.assertIn("plan.sentences.findIndex(l => l.to === at)", body, "and the rail follows the new row")
+        self.assertNotIn("setDraftText", body, "a sentence break must not edit the caption text")
+        self.assertNotIn("\\n", body, "no newline is written to the text from here")
+
+    def test_merging_is_the_same_flag_the_other_way(self) -> None:
+        body = self.editor[self.editor.index("const glueToPrevious = (index: number) => {"):]
+        body = body[:body.index("\n  }\n")]
+        self.assertIn("br: -1", body, "`br: -1` also overrides a hard break, so a merged row stays merged")
+        self.assertNotIn("setDraftText", body)
+        self.assertNotIn("replace(/\\\\n/g", body, "the fix is not to normalise the text afterwards")
+        # And it does not claim a merge the cap will undo: `maxWords` splits a long
+        # run by itself, so `br: -1` can be applied and the row can still come back.
+        self.assertIn("Number(data.maxWords)", body)
+        self.assertIn("kind: 'warn'", body, "the notice must name the setting that re-splits the line")
+
+    def test_the_flags_survive_into_the_plan_both_ways(self) -> None:
+        # The same four words, four ways, through the real `planOf`. This is the whole
+        # claim of ask 8: the pane, the rail and the strip read one list of flags, so
+        # the sentence you read is the sentence that is numbered and timed.
+        text = "alpha beta gamma delta"
+        # The flag lives on the word a line *ends* with: `br: 1` means "cut after me",
+        # `br: -1` means "never cut after me", which is why the rail's × is just the
+        # second value written over the first.
+        rows = _run([{"breaks": {"text": text, "words": [{"t": 0.0}, {"t": 0.6}, {"t": 1.2}, {"t": 1.8}]}},
+                     {"breaks": {"text": text, "words": [{"t": 0.0}, {"t": 0.6, "br": 1}, {"t": 1.2}, {"t": 1.8}]}},
+                     {"breaks": {"text": text, "words": [{"t": 0.0}, {"t": 0.6, "br": -1}, {"t": 1.2}, {"t": 1.8}]}},
+                     {"breaks": {"text": "alpha beta\ngamma delta", "words": [{"t": 0.0}, {"t": 0.6, "br": -1}, {"t": 1.2}, {"t": 1.8}]}}])
+        self.assertEqual([[0, 3]], rows[0]["breaks"], "untimed text is one sentence")
+        self.assertEqual([[0, 1], [2, 3]], rows[1]["breaks"], "`br: 1` splits it after word 1")
+        self.assertEqual([[0, 3]], rows[2]["breaks"], "`br: -1` in the same place glues it back")
+        self.assertEqual([[0, 3]], rows[3]["breaks"], "and that beats a hard break in the text")
+        self.assertEqual([[0, 1], [2, 3]], _run([{"breaks": {"text": "alpha beta\ngamma delta", "words": [{"t": 0.0}, {"t": 0.6}, {"t": 1.2}, {"t": 1.8}]}}]
+                                                )[0]["breaks"],
+                         "while a project saved with real newlines still splits as it always did")
+
+
+class PaneLayoutTest(SourceShapeTest):
+    """Asks 2, 3, 6, 7 in the two files that decide them."""
+
+    def test_the_split_and_merge_controls_are_back_on_the_main_popup(self) -> None:
+        """Ask 2: they had been moved behind a Settings click.
+
+        The sentence you are timing is the sentence whose controls you want, so the
+        row lives directly under the timelines, in the same popup — not one click away.
+        """
+        row = self.editor[self.editor.index('<div className="kara-line-actions">'):]
+        row = row[:row.index("{notice ?")]
+        for control in ("splitAtPlayhead", "dropBreak", "startLineHere", "of ${plan.sentences.length}"):
+            self.assertIn(control, row, f"{control} belongs under the strip, not behind a Settings click")
+        # And it must be the main popup's own DOM, not a field of the settings layer.
+        settings = self.editor[self.editor.index("const settingsFields = () => <>"):]
+        settings = settings[:settings.index("\n</>")]
+        for control in ("splitAtPlayhead", "dropBreak", "Selected sentence"):
+            self.assertNotIn(control, settings, "the settings popup must not keep a copy of these")
+        self.assertIn("evenWordsEverywhere", settings, "the bulk action stays in settings, where its effect is described")
+        # Inside the popup body, before the aside: full width under the strip rather
+        # than squeezed into the right-hand column beside the preview.
+        self.assertLess(self.editor.index('<div className="kara-line-actions">'), self.editor.index('<aside className="kara-side">'))
+        self.assertGreater(self.editor.index('<div className="kara-line-actions">'), self.editor.index('className="kara-wordbar"'))
+
+    def test_the_lanes_span_the_popup_not_the_preview(self) -> None:
+        body = self.css[self.css.index(".karaoke-body{"):]
+        body = body[:body.index("@media")]
+        self.assertIn(".kara-left{display:contents}", body, "the lanes must be grid children to span the popup")
+        self.assertIn(".kara-strip-scroll{grid-column:1/-1", body)
+        self.assertIn(".kara-wordbar{grid-column:1/-1", body)
+        self.assertIn(".kara-line-actions{grid-column:1/-1;grid-row:6", self.css,
+                      "the controls row that came back from Settings is full width too")
+        self.assertEqual(0, body.count(".kara-left{display:flex"),
+                         "a later `.kara-left{display:flex}` silently undid `display:contents` — the whole bug")
+
+    def test_a_row_merges_into_the_row_before_it(self) -> None:
+        """Ask 6: a × on the right of a numbered sentence glues it to the row before."""
+        rail = self.editor[self.editor.index('<div className="kara-lines"'):]
+        rail = rail[:rail.index("No sentences yet")]
+        self.assertIn('className="kara-line-merge"', rail)
+        self.assertIn('role="button" tabIndex={0}', rail,
+                      "the row cannot be a <button>: the × in it would be a button inside a button")
+        self.assertIn("onKeyDown={event => {", rail, "and a div has to be reachable from the keyboard itself")
+        self.assertIn("i > 0", rail, "row 1 has no row before it to merge into")
+        self.assertIn("event.stopPropagation()", rail, "the × is inside the row's own select button")
+        self.assertIn("glueToPrevious(i)", rail)
+        self.assertIn(".kara-line-merge{", self.css)
+
+    def test_the_rail_scrolls_under_the_wheel(self) -> None:
+        self.assertIn("addEventListener('wheel', onWheel, { passive: false })", self.editor)
+        self.assertIn("box.scrollTop += by", self.editor)
+        wheel = self.editor[self.editor.index("// The rail gets its own wheel."):][:1200]
+        self.assertGreaterEqual(wheel.count("event.preventDefault()"), 1,
+                                "without it the scroll bubbles and the popup jitters instead of the list moving")
+        rows = _run([{"wheel": {"deltaY": 40, "deltaX": 0, "deltaMode": 0, "scrollHeight": 400, "clientHeight": 160}},
+                     {"wheel": {"deltaY": 40, "deltaX": 200, "deltaMode": 0, "scrollHeight": 400, "clientHeight": 160}},
+                     {"wheel": {"deltaY": 40, "deltaX": 0, "deltaMode": 1, "scrollHeight": 400, "clientHeight": 160}},
+                     {"wheel": {"deltaY": 40, "deltaX": 0, "deltaMode": 0, "scrollHeight": 158, "clientHeight": 160}},
+                     {"wheel": {"deltaY": 9000, "deltaX": 0, "deltaMode": 0, "scrollHeight": 4000, "clientHeight": 160}},
+                     {"wheel": {"deltaY": -9000, "deltaX": 0, "deltaMode": 0, "scrollHeight": 4000, "clientHeight": 160}}])
+        self.assertEqual(40, rows[0]["wheel"], "a pixel delta is pixels")
+        self.assertEqual(0, rows[1]["wheel"], "a sideways swipe belongs to the strip beside it")
+        self.assertEqual(96, rows[2]["wheel"], "Firefox reports lines, and 16 px a line is what makes it feel right")
+        self.assertEqual(0, rows[3]["wheel"], "nothing to scroll means the page keeps the event")
+        self.assertEqual(96, rows[4]["wheel"], "one notch cannot throw the list to the bottom")
+        self.assertEqual(-96, rows[5]["wheel"], "nor to the top")
+
+    def test_every_word_of_every_sentence_can_be_spaced_evenly(self) -> None:
+        # Ask 5: the setting itself, and the contract that a line's window is not moved.
+        settings = self.editor[self.editor.index("const settingsFields = () => <>"):]
+        settings = settings[:settings.index("\n</>")]
+        self.assertIn("Space all words evenly", settings, "ask 5: the setting, in the settings popup")
+        self.assertIn("onClick={evenWordsEverywhere}", settings)
+        self.assertIn("onClick={spaceEvenly}", settings, "the per-line action is still there next to it")
+        rows = _run([{"even": {"from": 0.0, "to": 2.6, "count": 4}},
+                     {"even": {"from": 10.0, "to": 10.4, "count": 1}},
+                     {"even": {"from": 4.0, "to": 4.05, "count": 3}}])
+        self.assertEqual([0.0, 0.65, 1.3, 1.95], rows[0]["even"]["starts"])
+        self.assertEqual(0.65, rows[0]["even"]["slot"], "the last word's hold is the same slot, or the reveal outlives the line")
+        self.assertEqual([10.0], rows[1]["even"]["starts"])
+        self.assertEqual(0.4, rows[1]["even"]["slot"], "a single word takes the whole window")
+        self.assertEqual([4.0, 4.02, 4.04], rows[2]["even"]["starts"], "a window narrower than a word still divides")
+        self.assertGreaterEqual(rows[2]["even"]["slot"], 0.02)
+
+
+class WaveformBucketsTest(unittest.TestCase):
+    """The bucket maths, without FFmpeg.
+
+    `test_the_probe_returns_both_levels_for_real_audio` below needs the binary, which
+    this sandbox does not have — so the part of the lane that is *arithmetic* (one
+    peak and one RMS per column, both divided by the file's loudest column) is tested
+    here instead, against a sample array built by hand. Measured numbers, because the
+    whole claim of ask 4 is that the shape now says something about the audio.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import sys
+        sys.path.insert(0, str(REPO / "backend"))
+        from app import renderer as RD  # noqa: PLC0415
+        cls.buckets = staticmethod(RD._waveform_buckets)
+
+    @staticmethod
+    def _square(amplitude: float, samples: int) -> list[int]:
+        import array
+        peak = int(amplitude * 32767)
+        return array.array("h", [peak if i % 2 == 0 else -peak for i in range(samples)])
+
+    def test_a_quiet_recording_is_read_as_loudly_as_a_loud_one(self) -> None:
+        loud = self._square(0.5, 800)
+        quiet = self._square(0.005, 800)
+        zero = [0.0] * 4 + [1.0] * 4
+        for samples in (loud, quiet):
+            peaks, rms, top = self.buckets([0] * 800 + list(samples), 8)
+            self.assertEqual(zero, peaks, "the silent half draws nothing, the loud half fills the lane")
+            self.assertEqual(zero, rms, "a steady tone has no crest gap, and both bands agree")
+            self.assertLess(top, 0.02 if samples is quiet else 0.9, "`top` is the raw level, kept out of the shape")
+
+    def test_a_click_and_a_syllable_are_the_only_two_things_this_distinguishes(self) -> None:
+        import array
+        click = array.array("h", [0] * 799 + [30000])
+        tone = self._square(0.5, 800)
+        peaks, rms, _top = self.buckets(list(click) + list(tone), 8)
+        self.assertEqual(1.0, peaks[3], "one sample at full scale is a peak, and the envelope shows it")
+        self.assertAlmostEqual(0.0707, rms[3], places=4,
+                               msg="but it is not a syllable: the RMS band stays flat, which is the whole read")
+        # The tone is 16383 and the click is 30000, so normalised against the file's
+        # own loudest bucket the *whole* rest of the movie reads 0.5461. That is the
+        # cost of a single pop, and the reason the lane defaults to dB: see
+        # `test_a_pop_flattens_a_linear_lane_and_not_a_log_one`.
+        self.assertEqual([0.5461] * 4, peaks[4:])
+        self.assertEqual([0.5461] * 4, rms[4:], "a steady tone has no crest gap at all")
+
+    def test_silence_and_an_empty_file_answer_instead_of_raising(self) -> None:
+        import array
+        peaks, rms, top = self.buckets(array.array("h", [0] * 1000), 8)
+        self.assertEqual([0.0] * 8, peaks, "all silence is a flat lane, not a divide-by-zero")
+        self.assertEqual([0.0] * 8, rms)
+        self.assertEqual(1.0, top, "with nothing to divide by, the scale stays at unity")
+        self.assertEqual(([], [], 1.0), self.buckets(array.array("h", []), 8))
+
+    def test_the_bucket_count_is_clamped_to_the_dom(self) -> None:
+        import array
+        samples = array.array("h", [100] * 400_000)
+        for asked, expected in ((1, 8), (800, 800), (99_999, 4000)):
+            peaks, rms, _top = self.buckets(samples, asked)
+            self.assertEqual(expected, len(peaks), f"{asked} buckets")
+            self.assertEqual(len(peaks), len(rms), "one RMS value per peak value, or the bands lie")
+
+
+class AudioLaneScaleTest(unittest.TestCase):
+    """The lane is measured, and the ffmpeg data behind it is checked end to end.
+
+    `karaokeWaveLevel` is the whole difference between "a flat line" and "I can see
+    the words": the peaks the backend returns are already divided by the file's own
+    loudest bucket, so a linear view is that same ratio in pixels and quiet speech
+    stays near the centre line. The dB view spends a fixed range (48 dB) below the
+    file's own peak, which is where speech actually lives.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _node():
+            raise unittest.SkipTest("node is not installed, so the lane's scale cannot be run")
+
+    def test_the_dB_scale_lifts_quiet_speech_without_inventing_it(self) -> None:
+        values = [0.0, 0.02, 0.5, 1.0, 0.5, 0.02, 0.0]
+        got = _run([{"wave": {"values": values, "reference": 1.0}}])[0]["wave"]
+        self.assertEqual([0.0, 0.02, 0.5, 1.0, 0.5, 0.02, 0.0], got["linear"])
+        # 0.02 of the peak is -34 dB, so 1 - 33.98/48 of the way up. Measured, not guessed.
+        self.assertEqual([0.0, 0.2921, 0.8746, 1.0, 0.8746, 0.2921, 0.0], got["dB"])
+        self.assertEqual(0.0, got["dB"][0], "silence is silence on either scale")
+        self.assertEqual(1.0, got["dB"][3], "and so is the peak: dB expands, it does not lift")
+        self.assertTrue(all(b > a for a, b in zip(got["linear"], got["dB"]) if 0 < a < 1),
+                        "between silence and the peak, every dB level is taller than its linear twin")
+
+    def test_a_quiet_file_is_normalised_once_and_the_gain_cap_holds_it_back(self) -> None:
+        # peaks are already relative to the file's own max, so `reference` is 1.0; a
+        # raw level of 0.02 with a 24 dB cap is lifted to ~0.32, not to 1.0 — a lone
+        # pop must not turn the noise floor into a wall.
+        # The backend divides both series by the file's own loudest bucket, so the
+        # lane's 0 dB means "as loud as the loudest thing in this movie" and a quiet
+        # recording still fills it. Room noise at a twentieth of the peak stays small.
+        got = _run([{"wave": {"values": [0.02, 0.001], "reference": 0.02}}])[0]["wave"]
+        self.assertEqual([1.0, 0.05], got["linear"], "the file's own peak fills the lane, noise does not")
+        self.assertEqual([1.0, 0.4579], got["dB"], "26 dB down is well short of the top, on either scale")
+        self.assertLess(got["linear"][1], 0.2, "the floor is not amplified into a wall")
+
+
+    def test_a_pop_flattens_a_linear_lane_and_not_a_log_one(self) -> None:
+        """Ask 4's payoff, in one pair of numbers.
+
+        A full-scale click is the file's own peak, so every spoken bucket is
+        normalised against *it*: measured on the click-plus-tone file from
+        `WaveformBucketsTest`, the voice is 0.5461 of the lane's half-height in linear
+        amplitude and 0.8905 of it in dB. dB is not a magic separator — it *compresses*
+        the distance between two loud things (0.4754 of a lane apart in amplitude,
+        0.3699 in dB, both asserted below so nobody sells the other story) — what it
+        buys is that the quiet material a boundary is timed against stays in the
+        picture instead of being squashed to a ripple near the centre line.
+        """
+        got = _run([{"wave": {"values": [0.5461, 0.0707, 1.0], "reference": 1.0}}])[0]["wave"]
+        self.assertEqual([0.5461, 0.0707, 1.0], got["linear"])
+        self.assertEqual([0.8905, 0.5206, 1.0], got["dB"])
+        self.assertGreater(got["dB"][0], got["linear"][0], "the voice keeps 89 % of the lane, not half of it")
+        self.assertGreater(got["dB"][1], got["linear"][1], "and the floor is lifted into view, not hidden")
+        self.assertLess(got["dB"][0] - got["dB"][1], got["linear"][0] - got["linear"][1],
+                        "log compresses the gap between two loud things; said out loud so it is not sold as a benefit")
+
+    def test_the_lane_draws_an_envelope_an_inner_band_and_a_centre_line(self) -> None:
+        peaks = [0.0, 0.4, 1.0, 0.4, 0.0]
+        rms = [0.0, 0.1, 0.6, 0.1, 0.0]
+        got = _run([{"wave": {"values": peaks, "rms": rms, "reference": 1.0, "log": True}},
+                    {"wave": {"values": [0.2], "reference": 1.0}}])[0]
+        paths = got["wave"]["paths"]
+        self.assertTrue(paths["envelope"].startswith("M0,"))
+        self.assertTrue(paths["inner"].startswith("M0,"))
+        self.assertEqual("M0,50 L999,50", paths["centre"])
+        self.assertIsNone(_run([{"wave": {"values": [0.2], "reference": 1.0}}])[0]["wave"]["paths"],
+                          "one bucket is not a waveform, and the lane says so instead of drawing a spike")
+
+    def test_the_probe_returns_both_levels_for_real_audio(self) -> None:
+        import shutil as _shutil
+        import subprocess
+        import tempfile
+        ffmpeg = _shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+        if not _shutil.which("ffmpeg"):
+            raise unittest.SkipTest("ffmpeg is not installed")
+        import sys
+        sys.path.insert(0, str(REPO / "backend"))
+        from app import renderer as RD  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "half.wav"
+            # A second of silence, then a second of tone: the lane must show the gap.
+            subprocess.run([ffmpeg, "-y", "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=8000:duration=1",
+                            "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono:duration=1",
+                            "-filter_complex", "[1:a][0:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", str(wav)],
+                           capture_output=True, check=True, timeout=120)
+            peaks, rms, duration = RD._waveform_peaks_pcm(ffmpeg, wav, buckets=20)
+        self.assertGreater(len(peaks), 8)
+        self.assertEqual(len(peaks), len(rms), "the RMS band needs one value per peak bucket")
+        self.assertEqual(1.0, max(peaks), "normalised against the file's own loudest bucket")
+        half = len(peaks) // 2
+        self.assertEqual(0.0, sum(peaks[:half]), "the silent half of the file draws nothing")
+        self.assertGreater(sum(rms[half:]), 0.0)
+        self.assertTrue(all(r <= p for r, p in zip(rms, peaks)), "RMS is never above the peak it sits inside")
+        self.assertAlmostEqual(2.0, duration, places=1)
+
+    def test_the_endpoint_shape_the_lane_reads(self) -> None:
+        """`Renderer.waveform` is what the fetch resolves to, so its keys are the API.
+
+        The editor reads `peaks`, `rms` and `reference` and nothing else; `reference`
+        is 1.0 precisely because both series are already divided by the file's peak,
+        and a lane that divided by 0.9 as well would quietly over-draw everything.
+        """
+        import shutil as _shutil
+        import subprocess
+        import tempfile
+        if not _shutil.which("ffmpeg"):
+            self.skipTest("ffmpeg is not installed")
+        import sys
+        sys.path.insert(0, str(REPO / "backend"))
+        from app.database import Database  # noqa: PLC0415
+        from app.config import Settings  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wav = base / "tone.wav"
+            subprocess.run([_shutil.which("ffmpeg"), "-y", "-f", "lavfi", "-i",
+                            "sine=frequency=440:sample_rate=8000:duration=1.5", str(wav)],
+                           capture_output=True, check=True, timeout=120)
+            from app.renderer import Renderer
+            data = Renderer(Database(base / "test.db"), Settings()).waveform(wav, buckets=24)
+        self.assertEqual({"peaks", "rms", "reference", "duration", "start"}, set(data))
+        self.assertEqual(1.0, data["reference"], "the lane's 0 dB is this file's own peak")
+        self.assertEqual(len(data["peaks"]), len(data["rms"]))
+        self.assertAlmostEqual(1.5, data["duration"], places=1)
+        self.assertEqual(0.0, data["start"])
+        self.assertEqual(1.0, max(data["peaks"]))
+
+
+class RulerAtMaxZoomTest(unittest.TestCase):
+    """A zoom ceiling is only real if the ruler stays readable at it."""
+
+    def test_the_label_budget_scales_with_the_zoom_not_the_clip(self) -> None:
+        got = _run([{"zoomAt": 1}, {"zoomAt": 12}, {"zoomAt": 60}, {"zoomAt": 999}])
+        self.assertEqual(139, got[0]["budget"], "one screen of strip, one screen of labels")
+        self.assertEqual(1668, got[1]["budget"], "139 per screen, so twelve screens get twelve screens of labels")
+        self.assertEqual(6000, got[2]["budget"], "the cap: 139 x 60 would be 8340 <b> tags")
+        self.assertEqual(6000, got[3]["budget"], "a cap, or an hour-long clip at full stretch asks for a million labels")
+
+
 class TypedEndTest(unittest.TestCase):
     """The bar's number fields and the bar's handles write one number."""
 
@@ -294,8 +646,13 @@ class PopupShapeTest(unittest.TestCase):
         self.assertIn("onClick={addSentenceAtCaret}", self.editor)
         # A hard break at the caret, and nothing if the caret is nowhere to cut.
         body = self.editor[self.editor.index("const addSentenceAtCaret"):self.editor.index("const [wordFocus")]
-        self.assertIn("` ${before}\\n${after}`".replace(" ", ""), body)
-        self.assertIn("retarget(data, tokens, tokenize(next))", body)
+        # A `br` flag, never an edit to the caption: a newline in `item.text` is a
+        # hard line break in the movie *and* a sentence to `tokenize`, which is how
+        # one stray keystroke used to add a one-word sentence everywhere at once.
+        self.assertIn("setBreak(at, 1)", body)
+        for text_edit in ("setDraftText(next)", "apply({ ...data, words", "retarget("):
+            self.assertNotIn(text_edit, body, f"a sentence break must not touch the caption ({text_edit})")
+        self.assertIn("data.words[at]?.br === 1", body, "an already-broken word says so instead of stacking breaks")
 
     def test_the_words_pane_numbers_the_sentences_and_selects_one(self) -> None:
         rail = self.editor[self.editor.index('className="kara-lines"'):]
@@ -340,16 +697,23 @@ class PopupShapeTest(unittest.TestCase):
         self.assertIn(f"buckets=${{WAVE_BUCKETS}}", self.editor)
         for state in ("'reading'", "'ready'", "'empty'", "'failed'"):
             self.assertIn(state, self.editor)
-        lane = self.editor[self.editor.index('className="kara-audio"'):][:2200]
+        lane = self.editor[self.editor.index('className="kara-audio"'):][:4200]
         for note in ("no movie to read audio from", "the audio probe did not answer", "no audio track", "reading the movie"):
             self.assertIn(note, lane)
-        self.assertIn(".kara-audio{position:relative;", self.css)
+        self.assertIn(".kara-audio{position:relative;height:52px;", self.css)
+        self.assertIn(".kara-audio path.rms{fill:#a3cd63", self.css, "the RMS band has to read as the lighter shape inside the darker one")
+        # The dB / linear choice, remembered like the zoom.
+        self.assertIn("slideshow.karaoke.waveScale", self.editor)
+        self.assertIn("setWaveLog(true)", self.editor)
         self.assertIn(".kara-audio-scale", self.css, "levels need a scale: a peak envelope is max(|x|), not RMS")
 
     def test_the_audio_lane_shares_the_strips_axis_and_marks_both_timelines(self) -> None:
         lane = self.editor[self.editor.index('className="kara-audio"'):]
-        lane = lane[:lane.index("kara-audio-note")]
-        self.assertIn("<path d={wavePath}/>", lane)
+        lane = lane[:lane.index("kara-audio-note") + 900]
+        self.assertIn("karaokeWavePaths(peaks.values, peaks.rms, peaks.level || 1", self.editor)
+        self.assertIn('<path className="env" d={waveLane.envelope}/>', lane)
+        self.assertIn('<path className="rms" d={waveLane.inner}/>', lane)
+        self.assertIn('<path className="zero" d={waveLane.centre}/>', lane)
         self.assertIn("plan.sentences.map((line, ai) => <i key={`al-${ai}`}", lane)   # sentence starts
         self.assertIn("current ? current.words.map(w => <u", lane)                    # the selected line's words
         self.assertEqual(0, lane.count("stripWidth"), "it lives inside the strip, so the zoom is inherited, not repeated")
