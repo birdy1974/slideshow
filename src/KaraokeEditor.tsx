@@ -34,7 +34,7 @@ import {
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
-  karaokeEvenWordLine, karaokeRailWheelScroll, karaokeEvenWordTimes, karaokeHoldForEnd, karaokeNeighbourSpan, karaokeWavePaths, karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarHold, karaokeWordBarTime,
+  karaokeEvenWordLine, karaokeRailWheelScroll, karaokeEvenWordTimes, karaokeHoldForEnd, karaokeNeighbourSpan, karaokeWaveAim, karaokeWaveBuckets, karaokeWavePaths, karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarHold, karaokeWordBarTime,
   timeFromImport, tokenize, wordsPerSecond,
   type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
   type KaraokeToken, type KaraokeWord,
@@ -117,9 +117,10 @@ function writeZoomPref (zoom: number): void {
 }
 /** How far apart two words must be for the sweep to be visible at all. */
 const MIN_WORD_GAP = 0.06
-/** Peaks across the kept cut: about 8 px each on a wide monitor, and the
- *  endpoint caches per bucket count, so this stays a cheap request. */
-const WAVE_BUCKETS = 1400
+/* The waveform's resolution used to be a constant here (1400 buckets, whatever the
+ * zoom). It is not any more: `karaokeWaveBuckets` picks a rung of the ladder from the
+ * drawn width, because 1400 buckets across a strip that is 60× wider is one column of
+ * detail every thirty pixels — the reason peaks went soft the more you zoomed. */
 const WAVE_SCALE_KEY = 'slideshow.karaoke.waveScale'
 const writeWaveScale = (log: boolean): void => {
   try { localStorage.setItem(WAVE_SCALE_KEY, log ? 'dB' : 'linear') } catch { /* private mode: it just does not stick */ }
@@ -190,6 +191,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const [data, setData] = useState<KaraokeData>(seeded.current.data)
 
   const [selected, setSelected] = useState(0)
+  const [reveal, setReveal] = useState(0)
   /** Whether the panel is following the playhead or the user put it somewhere. */
   const [follow, setFollow] = useState(true)
   const [playing, setPlaying] = useState(false)
@@ -271,7 +273,34 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const selectLine = (value: number | ((index: number) => number)) => {
     setFollow(false)
     setSelected(value)
+    setReveal(v => v + 1)
   }
+  /** One centring pass per deliberate selection.
+   *
+   *  The follow-scroll that keeps the sung line in the middle of the box is turned off
+   *  while the movie is paused (a scrub must not fight the pointer), which is how
+   *  "click a numbered sentence" ended up *selected and invisible*: the block got its
+   *  highlight somewhere off the side of a zoomed strip. Deliberate selections
+   *  therefore ask for the view themselves — and only they do, so play still owns the
+   *  continuous follow and a drag does not yank the view around.
+   */
+  useEffect(() => {
+    if (!reveal) return
+    const line = plan.sentences[Math.min(selected, Math.max(0, plan.sentences.length - 1))]
+    if (!line) return
+    // One frame late, for the same reason `fitNeighbours` is: the centring is measured
+    // in the box's client width and the strip's pixel width, and on the first click
+    // after the popup opens those are still the numbers from before the layout.
+    const frame = requestAnimationFrame(() => {
+      const box = scrollRef.current
+      const strip = stripRef.current
+      if (!box || !strip || !span || zoom <= 1.001) return
+      box.scrollLeft = karaokeFollowScroll((((line.start + line.end) / 2) / span) * strip.offsetWidth, box.clientWidth)
+    })
+    // Not on `selected`, `zoom` or `plan`: a re-centre is a *request*, and reacting to
+    // the state too would move the view while someone is mid-drag inside it.
+    return () => cancelAnimationFrame(frame)
+  }, [reveal])
   const current = plan.sentences[Math.min(selected, Math.max(0, plan.sentences.length - 1))]
   const perSecond = wordsPerSecond(plan)
 
@@ -389,16 +418,42 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
       alive = false
     }
   }, [analyzable, root, relative, trimStart, span])
+  const waveBuckets = useMemo(() => karaokeWaveBuckets(zoom), [zoom])
+  // Which profile is in hand, as one key: the file, the kept cut and the rung of the
+  // resolution ladder. Zoom is *not* in the file part, which is the whole trick — a
+  // zoom change is allowed to re-ask for detail, while a wheel that clicks through
+  // twelve notches inside one rung asks once.
+  const waveRung = `${root}\n${relative}\n${trimStart.toFixed(2)}\n${span.toFixed(2)}`
+  const waveKey = `${waveRung}\n${waveBuckets}`
+  const waveAsked = useRef<string | null>(null)
+  const waveClip = useRef<string | null>(null)
   useEffect(() => {
-    if (!analyzable || peaks) return
+    if (!analyzable) return
     // Not gated on the `wave` surface any more: the profile is one of the three
     // timelines now, and a lane that only appears in one of four modes is a lane
     // that looks broken in the other three.
+    //
+    // And not gated on "have I got peaks" either: the lane's horizontal resolution is
+    // a property of the drawn width, so zooming in asks the probe for more buckets.
+    // `waveAsked` is the guard instead, and a failed probe is not retried on every
+    // wheel notch either.
+    if (waveClip.current !== waveRung) {
+      // A different movie, or a different kept cut: whatever is on screen now is a
+      // picture of somewhere else, so it goes before the new read even starts. A lane
+      // that quietly keeps describing the previous clip is worse than an empty one —
+      // it is a wrong hint about where a word starts.
+      waveClip.current = waveRung
+      setPeaks(null)
+      // No `setWaveState` here: the key embeds the rung, so a file change can never
+      // match the guard below, and 'reading' is set there.
+    }
+    if (waveAsked.current === waveKey) return
+    waveAsked.current = waveKey
     setWaveState('reading')
     let alive = true
     void (async () => {
       try {
-        const response = await fetch(`/api/media/waveform?root=${root}&path=${encodeURIComponent(relative)}&buckets=${WAVE_BUCKETS}&start=${trimStart.toFixed(2)}&length=${span.toFixed(2)}`)
+        const response = await fetch(`/api/media/waveform?root=${root}&path=${encodeURIComponent(relative)}&buckets=${waveBuckets}&start=${trimStart.toFixed(2)}&length=${span.toFixed(2)}`)
         if (!response.ok) { if (alive) setWaveState('failed'); return }
         const json = await response.json()
         const list: number[] = Array.isArray(json?.peaks) ? json.peaks.map((v: unknown) => Number(v) || 0) : []
@@ -421,7 +476,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     return () => {
       alive = false
     }
-  }, [analyzable, peaks, root, relative, trimStart, span])
+  }, [analyzable, waveKey, waveRung, root, relative, trimStart, span, waveBuckets])
 
   // ---- the edits every surface shares ----
   const withWords = (words: KaraokeWord[], commit: boolean) => {
@@ -433,8 +488,8 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     if (i < 0) return
     const before = Number(data.words[i]?.t)
     let value = Math.max(0, round3(t))
-    if (opts.snap !== false && data.snap > 0 && onsets.length) {
-      const snapped = snapWords([{ t: value }], onsets, data.snap)[0]?.t
+    if (opts.snap !== false && data.snap > 0 && aim.length) {
+      const snapped = snapWords([{ t: value }], aim, data.snap)[0]?.t
       if (Number.isFinite(snapped)) value = Math.max(0, round3(snapped as number))
     }
     const words = data.words.map(w => ({ ...w }))
@@ -465,8 +520,8 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
       setNotice({ kind: 'warn', text: 'No onsets to snap to — this file’s audio could not be analysed. Time it by ear instead.' })
       return
     }
-    apply({ ...data, words: makeContinuous(snapWords(data.words, onsets, Math.max(data.snap, 0.1))) })
-    setNotice({ kind: 'info', text: `Snapped onto the nearest onset within ${Math.round(Math.max(data.snap, 0.1) * 1000)} ms (${onsets.length} onsets found).` })
+    apply({ ...data, words: makeContinuous(snapWords(data.words, aim, Math.max(data.snap, 0.1))) })
+    setNotice({ kind: 'info', text: `Snapped onto the nearest onset or silence edge within ${Math.round(Math.max(data.snap, 0.1) * 1000)} ms (${onsets.length} onsets, ${Math.max(0, aim.length - onsets.length)} gap edges).` })
   }
   const fitToWindow = () => {
     const times = data.words.map(w => Number(w.t)).filter(Number.isFinite)
@@ -1264,6 +1319,34 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     log: waveLog,
     floorDb: 48,
   }) : null), [peaks, waveLog])
+  // Where nothing is spoken, in clip seconds: shaded in the lane, and offered to the
+  // magnet beside the onsets — a boundary belongs at the end of a flat run, which is
+  // the one thing every speech-annotation manual tells you to look for.
+  // Seconds, not fractions: the magnet works in clip time. Read off the lane rather
+  // than recomputed, so the shading and the snap targets are *the same run* — the one
+  // silence map in the file. (It is scale-independent inside `karaokeWaveGaps`, so a
+  // dB/linear switch changes how the lane looks and nothing about where it is quiet.)
+  const waveGaps = useMemo<[number, number][]>(
+    () => (waveLane ? waveLane.gapRuns : []).map(([from, to]) => [from * span, to * span]),
+    [waveLane, span],
+  )
+  const waveMs = peaks && peaks.values.length ? Math.round((span / peaks.values.length) * 1000) : 0
+  /** What `B` and the typed fields snap to.
+   *
+   *  An onset says "a sound started here"; the end of a silent run says "nothing was
+   *  being said until here", and for a *word boundary* the second is usually the more
+   *  useful of the two — a fricative can be 30 ms of turbulence before the voice
+   *  begins, whereas the edge of a gap is where the previous word let go. Both go in
+   *  one list and `snapWords` takes whichever is nearest, so the magnet gets better
+   *  aimed without ever becoming stricter than the radius the user set.
+   *
+   *  The edges of the *file's* first and last run are left out: snapping a word to the
+   *  start of the clip is not a correction, it is the editor inventing a boundary.
+   */
+  const aim = useMemo(() => {
+    const edges = karaokeWaveAim(waveGaps, span)
+    return edges.length ? [...onsets, ...edges].sort((a, b) => a - b) : onsets
+  }, [onsets, waveGaps, span])
   // The `wave` surface and the word bar's own mini lane used to build a polygon of
   // their own, so the three drawings of the same audio disagreed about what a bucket
   // meant. They share the lane's envelope now: one bucket-to-column mapping, one
@@ -1379,11 +1462,16 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
                 peaks come from ffmpeg (`/api/media/waveform`, kept cut only) rather
                 than the browser's decoder — and the lane says so when the probe has
                 no answer, instead of sitting there blank like it used to. */}
-            <div className="kara-audio" title="Audio levels of the kept cut: a dark peak envelope with a lighter RMS band inside it, against this file's own loudest sample. Silence is the bare centre line, so a flat run is a gap with no word in it — that is what to time a boundary against.">
+            <div className="kara-audio" title={`Audio levels of the kept cut: a dark peak envelope with a lighter RMS band inside it, against this file's own loudest sample. Shaded runs are where nothing is spoken — a boundary belongs at the edge of one.${waveMs ? ` ${waveMs} ms per column.` : ''}`}>
               {waveLane ? <svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">
+                {/* Paint order is the whole design: the silence sits behind the wave,
+                    the RMS band inside the peak envelope, and the silhouette last so
+                    nothing ever paints over the edge the eye aims at. */}
+                {waveLane.gaps ? <path className="gap" d={waveLane.gaps}/> : null}
                 <path className="env" d={waveLane.envelope}/>
                 {waveLane.inner ? <path className="rms" d={waveLane.inner}/> : null}
                 <path className="zero" d={waveLane.centre}/>
+                <path className="edge" d={waveLane.edge}/>
               </svg> : null}
               {/* Five marks, mirrored, because the lane is mirrored: the centre line is
                   the file's own loudest sample and the two edges are the floor. A ruler

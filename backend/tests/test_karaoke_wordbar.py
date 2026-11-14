@@ -396,6 +396,168 @@ class PaneLayoutTest(SourceShapeTest):
         self.assertGreaterEqual(rows[2]["even"]["slot"], 0.02)
 
 
+class PreviewVisibilityTest(SourceShapeTest):
+    """The preview disappeared when the lanes went full width, and this pins why.
+
+    `.kara-left{display:contents}` makes the stage a grid item, and a grid item sized
+    by `max-width` with `justify-self:start` is sized by its *content* — whose every
+    child (`video`, the caption overlay, the tap cue) is `position:absolute`. Content
+    width zero, aspect-ratio on zero, and the movie's picture simply was not there. The
+    fix is a definite width on the box itself, so the rule here is the shape of the
+    declaration rather than how the popup looks.
+    """
+
+    def test_the_preview_box_has_a_width_of_its_own(self) -> None:
+        rule = self.css[self.css.index(".kara-stage-wrap{"):]
+        rule = rule[:rule.index("}") + 1]
+        self.assertIn("width:min(100%,520px)", rule,
+                      "a grid item whose content is all absolutely positioned needs a definite width")
+        self.assertNotIn("max-width:min(100%,520px)", rule, "max-width alone is what made it vanish")
+        # …and the box still keeps its shape and the overlay stack.
+        shape = self.css[self.css.index(".kara-stage-wrap{position:relative"):]
+        shape = shape[:shape.index("}") + 1]
+        self.assertIn("aspect-ratio:16/9", shape)
+        for child in (".kara-video{position:absolute;inset:0", ".kara-overlay{position:absolute;inset:0"):
+            self.assertIn(child, self.css, "these are why the parent cannot be content-sized")
+
+    def test_a_deliberate_selection_reveals_itself_in_the_strip(self) -> None:
+        """Clicking row 7 while paused used to select it *somewhere off screen*.
+
+        The playhead follow is off while paused on purpose (a scrub must not fight the
+        pointer), so nothing else moved the view — the block got its highlight and the
+        user saw an unchanged timeline. A selection therefore asks for one centring
+        pass of its own, and only a selection does.
+        """
+        select = self.editor[self.editor.index("const selectLine = (value:"):]
+        select = select[:select.index("\n  }")]
+        self.assertIn("setReveal(v => v + 1)", select, "every deliberate selection asks for the view")
+        effect = self.editor[self.editor.index("  useEffect(() => {\n    if (!reveal) return"):]
+        effect = effect[:effect.index("}, [reveal])")]
+        self.assertIn("karaokeFollowScroll", effect, "the same centring rule as the playhead, not a second one")
+        self.assertIn("zoom <= 1.001", effect, "at fit there is nothing to scroll, so it must not pretend")
+        self.assertIn("requestAnimationFrame", effect, "measured after the layout, or the widths are stale")
+        self.assertIn("cancelAnimationFrame", effect, "a second click inside the frame wins; the first must not land")
+        self.assertIn("const line = plan.sentences[Math.min(selected", effect,
+                      "it centres the *selected* line, read at the moment of the request")
+        follow = self.editor[self.editor.index("if (!playing) return"):]
+        self.assertIn("box.scrollLeft = karaokeFollowScroll((position / span)", follow,
+                      "the playhead's continuous follow is still gated on playing")
+        self.assertNotIn("setReveal", self.editor[self.editor.index("const beginDrag ="):][:600],
+                         "a drag must not yank the view out from under the pointer")
+
+
+class WaveLaneShapeTest(SourceShapeTest):
+    """The three shapes the lane is made of, measured through the real helpers.
+
+    All three exist because of what the research said about reading speech rather than
+    music: a filled peak envelope whose edge is the same colour as its body has no edge
+    to aim at; a bucket repeated across thirty columns is a staircase that implies hard
+    edges the audio does not have; and "where is the silence" is the question a word
+    boundary actually answers, so the lane says it instead of leaving it to be inferred.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()   # the editor and the core, for the wiring assertions below
+        cls.core = CORE_TS.read_text(encoding="utf-8")
+        if not _node():
+            raise unittest.SkipTest("node is not installed, so the lane's geometry cannot be run")
+
+    def test_a_bucket_wider_than_a_column_slopes_instead_of_stepping(self) -> None:
+        """Three buckets across a thousand columns, read out of the path itself.
+
+        A bucket is one third of the lane wide, so if its value were *repeated* across
+        those columns, a third of the way in would be the baseline and the change would
+        be a cliff. It is half-way up instead: the line between two bucket centres,
+        which is what makes a taper look like a taper rather than a step.
+        """
+        rows = _run([{"wave": {"values": [0.0, 1.0, 0.0], "reference": 1.0}, "at": at}
+                     for at in (0, 166, 333, 499, 999)])
+        half = 47   # the lane's half-height, in viewBox units
+        y = lambda i: rows[i]["wave"]["column"]["y"]   # noqa: E731
+        self.assertAlmostEqual(50.0, y(0), places=1, msg="column 0 is bucket 0's own value")
+        self.assertAlmostEqual(50.0, y(1), places=1, msg="a bucket's centre sits on its value")
+        self.assertAlmostEqual(50 - half * 0.5, y(2), places=1,
+                               msg="half-way between centres is half-way up; a repeated bucket reads 50.0")
+        # `delta`, not `places`: the path is written with `toFixed(1)`, so the most
+        # exact answer the lane can give is a tenth of a viewBox unit.
+        self.assertAlmostEqual(50 - half, y(3), delta=0.15, msg="the loud bucket's centre is the peak")
+        self.assertAlmostEqual(50.0, y(4), places=1, msg="and the lane ends on the last bucket, not past it")
+
+    def test_the_silhouette_is_a_stroke_and_not_another_fill(self) -> None:
+        rows = _run([{"wave": {"values": [0.0, 0.8, 0.2, 0.9], "reference": 1.0}}])
+        edge = rows[0]["wave"]["paths"]["edge"]
+        points, head, tail = edge.split("|")
+        self.assertEqual("1000", points, "one vertex per column, or the outline is a different shape from the fill")
+        self.assertEqual("M0,50.0", head)
+        self.assertEqual("open", tail, "closed would fill the area under the silhouette a second time")
+
+    def test_the_gaps_are_the_runs_where_nothing_is_spoken(self) -> None:
+        rows = _run([{"wave": {"values": [0.0, 0.0, 0.9, 0.9, 0.0, 0.0], "reference": 1.0}},
+                     {"wave": {"values": [0.0, 1.0, 0.0], "reference": 1.0}},
+                     {"wave": {"values": [0.2, 0.2, 0.2], "reference": 1.0}},
+                     {"wave": {"values": [0.0, 0.0, 0.0, 0.0], "reference": 1.0}}])
+        self.assertEqual([[0.0, 1 / 3], [2 / 3, 1.0]], rows[0]["wave"]["gaps"])
+        self.assertEqual([], rows[1]["wave"]["gaps"], "one quiet bucket between two loud ones is not a gap")
+        self.assertEqual([], rows[2]["wave"]["gaps"],
+                         "a voice recorded at 20 % of the peak is quiet, not silent — 0.2 is above the 6 % floor")
+        self.assertEqual([[0.0, 1.0]], rows[3]["wave"]["gaps"], "a lane of nothing but silence says so")
+        self.assertEqual("M0,0 H333 V100 H0 Z M666,0 H999 V100 H666 Z", rows[0]["wave"]["paths"]["gaps"],
+                         "full-height rectangles, drawn behind the wave")
+
+    def test_the_silence_map_does_not_change_with_the_ruler(self) -> None:
+        """Same buckets, both rulers, same answer — and a quiet file is not a silent one.
+
+        The first version read the floor through `karaokeWaveLevel`, so switching to
+        linear moved the shading and the magnet's targets: the lane appeared to say the
+        recording had changed. It also meant a file recorded 20 % of peak read as
+        near-silence on the linear ruler, which is simply wrong.
+        """
+        rows = _run([{"wave": {"values": [0.2, 0.2, 0.2], "reference": 1.0}},
+                     {"wave": {"values": [0.2, 0.2, 0.2], "reference": 1.0, "log": True}},
+                     {"wave": {"values": [0.001, 0.001, 0.001], "reference": 1.0}},
+                     {"wave": {"values": [0.001, 0.001, 0.001], "reference": 1.0, "log": True}}])
+        self.assertEqual(rows[0]["wave"]["gaps"], rows[1]["wave"]["gaps"], "dB and linear must agree")
+        self.assertEqual([], rows[0]["wave"]["gaps"], "-14 dB is a quiet voice, not a pause")
+        self.assertEqual([[0.0, 1.0]], rows[2]["wave"]["gaps"], "-60 dB is a gap on either ruler")
+        self.assertEqual(rows[2]["wave"]["gaps"], rows[3]["wave"]["gaps"])
+        # and the drawn shading is the same list, not a second threshold
+        self.assertEqual(rows[0]["wave"]["paths"]["gaps"], "")
+        self.assertIn("karaokeWaveGaps(quiet || list, reference, { minRun: opts.minRun, floorDb: opts.gapFloorDb })", self.core,
+                      "one silence map for the paint and the magnet, read off the same buckets")
+        self.assertIn("karaokeWaveGaps(", self.core)
+        self.assertEqual(1, self.core.count("karaokeWaveGaps("),
+                         "the gap function has exactly one caller — the lane. The editor reads `waveLane.gapRuns`.")
+        self.assertIn("waveLane.gapRuns", self.editor, "the magnet's targets are the shaded runs, not a second guess")
+        self.assertNotIn("karaokeWaveGaps(", self.editor, "no second call, so no second threshold that could drift")
+
+    def test_the_magnet_gets_the_edges_and_not_the_middles(self) -> None:
+        rows = _run([{"aim": {"gaps": [[0.0, 4.0], [6.0, 12.0]], "span": 12.0},
+                      "wave": {"values": [0.5], "reference": 1.0}},
+                     {"aim": {"gaps": [], "span": 12.0}, "wave": {"values": [0.5], "reference": 1.0}},
+                     {"aim": {"gaps": [[3.0, 12.0]], "span": 12.0}, "wave": {"values": [0.5], "reference": 1.0}}])
+        self.assertEqual([4.0, 6.0], rows[0]["wave"]["aim"], "the two edges that face the speech")
+        self.assertEqual([], rows[1]["wave"]["aim"])
+        self.assertEqual([3.0], rows[2]["wave"]["aim"], "a run to the end of the cut has one edge worth snapping to")
+        self.assertIn("[...onsets, ...edges].sort", self.editor, "the gap edges join the onsets, they do not replace them")
+        self.assertIn("snapWords([{ t: value }], aim, data.snap)", self.editor)
+        self.assertIn("snapWords(data.words, aim, Math.max(data.snap, 0.1))", self.editor)
+
+    def test_the_resolution_follows_the_drawn_width(self) -> None:
+        """One bucket per column of strip, on a short ladder, because each request is a decode."""
+        rows = _run([{"zoomAt": z} for z in (1, 2, 3, 8, 60, 999)])
+        got = [r["buckets"] for r in rows]
+        self.assertEqual([800, 1600, 1600, 4000, 4000, 4000], got)
+        self.assertEqual(got, sorted(got), "never coarser after zooming in")
+        self.assertLessEqual(max(got), 4000, "the API caps `buckets` at 4000")
+        wide = _run([{"zoomAt": 3, "boxPx": 2000}])[0]["buckets"]
+        self.assertGreaterEqual(wide, 1600, "a wider box asks for at least as much detail")
+        self.assertIn("buckets=${waveBuckets}", self.editor, "the request, not a constant")
+        self.assertIn("waveAsked.current === waveKey", self.editor,
+                      "one request per rung, so the wheel does not spend a decode per notch")
+        self.assertEqual(1, self.editor.count("waveAsked.current = "), "one place decides what has been asked")
+
+
 class WaveformBucketsTest(unittest.TestCase):
     """The bucket maths, without FFmpeg.
 
@@ -671,7 +833,10 @@ class PopupShapeTest(unittest.TestCase):
         self.assertIn(".kara-wordbar{grid-column:1/-1;grid-row:4}", self.css)
         self.assertIn(".strip-legend{grid-column:1/-1;grid-row:5}", self.css)
         self.assertIn(".kara-side{grid-column:2;grid-row:1/span 2", self.css)
-        self.assertIn("max-width:min(100%,520px)", self.css)
+        # `width`, not `max-width`, since the stage became a real grid item: with only
+        # absolutely positioned children there is no content to size, and `max-width`
+        # alone left the box measuring nothing — the "preview disappeared" report.
+        self.assertIn("width:min(100%,520px)", self.css)
 
     def test_the_settings_are_a_layer_over_the_timing_not_a_column_beside_it(self) -> None:
         # One copy of the fields, rendered in a second popup: they are a function
@@ -692,9 +857,21 @@ class PopupShapeTest(unittest.TestCase):
         # modes it sat empty and looked broken. Peaks are fetched once, and the
         # outcome is stated for each reason it can be missing.
         self.assertNotIn("data.editor !== 'wave' || peaks", self.editor)
-        self.assertIn("if (!analyzable || peaks) return", self.editor)
+        self.assertIn("if (!analyzable) return", self.editor)
+        # The guard is the resolution in hand plus the file it belongs to — not
+        # `peaks`, which would make zooming unable to re-ask, and not the bucket count
+        # alone, which would let a *new* clip keep the previous clip's lane.
+        self.assertIn("if (waveAsked.current === waveKey) return", self.editor)
+        self.assertIn("const waveKey = `${waveRung}\\n${waveBuckets}`", self.editor)
+        self.assertIn("const waveRung = `${root}\\n${relative}\\n${trimStart.toFixed(2)}\\n${span.toFixed(2)}`", self.editor)
+        self.assertIn("if (waveClip.current !== waveRung) {", self.editor)
+        clear = self.editor[self.editor.index("if (waveClip.current !== waveRung) {"):]
+        clear = clear[:clear.index("\n    }")]
+        self.assertIn("setPeaks(null)", clear, "a different movie or a different cut clears the lane first")
+        self.assertLess(self.editor.index("if (waveClip.current !== waveRung)"), self.editor.index("if (waveAsked.current === waveKey)"),
+                        "clear before the guard, or a same-rung file change skips the refetch")
         self.assertIn("/api/media/waveform", self.editor, "the levels come from ffmpeg, not the browser's decoder")
-        self.assertIn(f"buckets=${{WAVE_BUCKETS}}", self.editor)
+        self.assertIn("buckets=${waveBuckets}", self.editor, "the resolution follows the drawn width")
         for state in ("'reading'", "'ready'", "'empty'", "'failed'"):
             self.assertIn(state, self.editor)
         lane = self.editor[self.editor.index('className="kara-audio"'):][:4200]
@@ -711,7 +888,18 @@ class PopupShapeTest(unittest.TestCase):
         lane = self.editor[self.editor.index('className="kara-audio"'):]
         lane = lane[:lane.index("kara-audio-note") + 900]
         self.assertIn("karaokeWavePaths(peaks.values, peaks.rms, peaks.level || 1", self.editor)
+        self.assertIn('<path className="gap" d={waveLane.gaps}/>', lane)
         self.assertIn('<path className="env" d={waveLane.envelope}/>', lane)
+        self.assertIn('<path className="edge" d={waveLane.edge}/>', lane)
+        # Order is the whole story: the shading is behind the wave, the RMS band inside
+        # the envelope, and the silhouette last — nothing may paint over the edge the
+        # eye aims at, so a reordered list of paths is a broken lane.
+        order = ['className="gap"', 'className="env"', 'className="rms"', 'className="zero"', 'className="edge"']
+        marks = [lane.index(name) for name in order]
+        self.assertEqual(sorted(marks), marks, "gap → env → rms → zero → edge")
+        self.assertEqual(5, len(set(marks)))
+        self.assertIn(".kara-audio path.gap{fill:#12150f", self.css)
+        self.assertIn(".kara-audio path.edge{fill:none;stroke:#c9e6a0", self.css)
         self.assertIn('<path className="rms" d={waveLane.inner}/>', lane)
         self.assertIn('<path className="zero" d={waveLane.centre}/>', lane)
         self.assertIn("plan.sentences.map((line, ai) => <i key={`al-${ai}`}", lane)   # sentence starts

@@ -1880,7 +1880,11 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-wordbar{grid-column:1/-1;grid-row:4}
 .strip-legend{grid-column:1/-1;grid-row:5}
 .kara-side{grid-column:2;grid-row:1/span 2;align-self:start;overflow:visible;background:transparent;border-left:0;padding:0}
-.kara-stage-wrap{grid-column:1;grid-row:1;max-width:min(100%,520px);justify-self:start}
+/* `width`, not `max-width`. Once `.kara-left` really is `display:contents` the stage is
+   a grid item, and a grid item with `justify-self:start` is sized to its content — whose
+   only content is `position:absolute`, so `max-width` left it measuring nothing and the
+   preview disappeared. The 520 px monitor has to be an explicit width now. */
+.kara-stage-wrap{grid-column:1;grid-row:1;width:min(100%,520px);justify-self:start}
 /* The flex column that used to be declared for the class below is gone, and it is
    worth saying why: it sat sixty lines after the `display:contents` above, the later
    rule won, every lane stayed a child of a column as wide as the preview, and the
@@ -2013,6 +2017,12 @@ html.modal-open,html.modal-open body{overflow:hidden}
    compressed music bed. `path.zero` is the only thing silence draws. */
 .kara-audio path{stroke:none}
 .kara-audio path.env{fill:#4d5a3d}
+/* Under the wave, not over it: a shaded run is "nothing is being spoken here", the
+   place a boundary belongs, so it is the negative space the eye is steered to. */
+.kara-audio path.gap{fill:#12150f;opacity:.72}
+/* The silhouette is what you actually aim at, and a filled shape whose edge is the
+   same colour as its body has no edge. */
+.kara-audio path.edge{fill:none;stroke:#c9e6a0;stroke-width:1;opacity:.55;vector-effect:non-scaling-stroke}
 .kara-audio path.rms{fill:#a3cd63;opacity:.6}
 .kara-audio path.zero{fill:none;stroke:#5f655d;stroke-width:1;vector-effect:non-scaling-stroke}
 .kara-audio-mode{position:absolute;top:2px;right:3px;display:flex;gap:2px}
