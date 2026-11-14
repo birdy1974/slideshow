@@ -1430,6 +1430,27 @@ export function karaokeHoldForEnd (start: number, end: number, tail: number, cei
   return msRound(Math.max(0.05, Math.min(Math.max(0.05, want), cap)))
 }
 
+/**
+ * The zoom that fits `seconds` of the clip into the box, and the span of the
+ * selected sentence with its neighbours: three lines in view is the reading that
+ * answers "did I just steal time from the next sentence?", which no amount of
+ * zooming on one line shows. At either end of the caption there is no neighbour,
+ * so `lines` says what is actually in view instead of promising three.
+ */
+export function karaokeZoomToFit (span: number, seconds: number): number {
+  const box = Math.max(0.2, Number(seconds) || 0)
+  return clampKaraokeZoom((Math.max(0.2, Number(span) || 0)) / box)
+}
+
+export function karaokeNeighbourSpan (plan: KaraokePlan, index: number, back = 1, forward = 1): { from: number; to: number; lines: number } | null {
+  const lines = plan?.sentences || []
+  if (!lines.length) return null
+  const at = Math.max(0, Math.min(lines.length - 1, Math.round(Number(index) || 0)))
+  const first = Math.max(0, at - Math.max(0, Math.round(back)))
+  const last = Math.min(lines.length - 1, at + Math.max(0, Math.round(forward)))
+  return { from: lines[first].start, to: lines[last].end, lines: last - first + 1 }
+}
+
 /** Percent across the bar for a time on the clip clock. */
 export function karaokeWordBarFraction (bar: KaraokeWordBar | null | undefined, seconds: number): number {
   if (!bar) return 0

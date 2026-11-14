@@ -368,3 +368,47 @@ surface computes, cut to the sentence by scaling the one `<svg>` (`width` = clip
 sentence, `margin-left` = −start ÷ sentence) and re-using the existing onsets. It is
 not a second analysis pass, so the shape cannot drift from the surface above it, and a
 consonant you can hear lines up with the word you are moving.
+## Three timelines, one selection, and a settings layer
+
+The popup is now a preview with the words pane beside it and the timing across the
+bottom, full width:
+
+1. **all sentences** — the ruler, the sentence blocks, the zoom slider;
+2. **the words of the selected sentence** — the bar, on the sentence's own axis;
+3. **the audio profile** — the movie's levels under both, on the strip's axis.
+
+**The audio lane is ffmpeg's, and it is always there.** The peaks come from
+`GET /api/media/waveform` (the same analysis the beat magnet uses): `Renderer.waveform`
+decodes the *kept cut only* — `start`/`length` — into a peak envelope of `max(|x|)` per
+bucket, cached by file mtime/size and bucket count. The lane used to be fetched only in
+the `wave` surface, so in the other three modes it sat empty and looked broken; it is
+one of the timelines now and is asked for once. When it has nothing to draw it says
+which of the four reasons it has: no movie to read (a photo), no audio track, the probe
+did not answer, or still reading. The browser's own `MediaElementSource` is not used at
+all — a `<video>` element served over a different origin taints the graph and the analyser
+answers with silence, which is how a lane can be "not working" with nothing wrong in the file.
+
+Sentence starts are drawn as lines and the selected line's words as ticks, on the strip's
+percent mapping inside the strip's scroller: the lane inherits the zoom, the ruler and the
+playhead instead of computing a second axis that could drift from them. The dB rungs are a
+scale, not a measurement — a peak envelope is not RMS.
+
+**`3 lines`** in the zoom group sets the zoom so the selected sentence and one either side
+fill the box (`karaokeNeighbourSpan` then `karaokeZoomToFit`, both pure and tested), and
+scrolls the box to centre them. At either end of the caption there is no neighbour, so the
+notice says how many lines are actually in view. One line's boundary only means something
+next to the lines that share it.
+
+**Selecting is two-way.** A line in the *The words* rail selects it in the strip and the
+bar and seeks the preview to its start; a block clicked in the strip (pressed and released
+without moving — `moved` distinguishes the two) seeks the preview to that sentence, and the
+rail scrolls the active row into view, so a playhead that walks the caption keeps the list
+with it.
+
+**Settings is a layer, not a column.** Style, sung colour, text look, first pass, the import
+box, the caption window, lead-in/tail/snap/words-per-line and the selected-sentence actions
+moved behind a `Settings` button beside the movie's name. They are the *same JSX* — one
+function returning the same markup, closing over the same `apply`/`patchLook` — rendered in
+a second popup, so there is no second copy of the state and no field that can disagree with
+the timing. The notices stay with the timelines, because they report what a bar or a button
+just did.
