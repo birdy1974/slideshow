@@ -1881,7 +1881,11 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .strip-legend{grid-column:1/-1;grid-row:5}
 .kara-side{grid-column:2;grid-row:1/span 2;align-self:start;overflow:visible;background:transparent;border-left:0;padding:0}
 .kara-stage-wrap{grid-column:1;grid-row:1;max-width:min(100%,520px);justify-self:start}
-.kara-left{display:flex;flex-direction:column;gap:9px;padding:13px 15px 11px;min-width:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
+/* The flex column that used to be declared for the class below is gone, and it is
+   worth saying why: it sat sixty lines after the `display:contents` above, the later
+   rule won, every lane stayed a child of a column as wide as the preview, and the
+   popup looked like it had ignored the request outright. A rule that exists is not a
+   rule that applies — `PaneLayoutTest` greps for a second declaration of this class. */
 .kara-side{background:#292c27;border-left:1px solid #3a3e36;padding:14px 16px;display:flex;flex-direction:column;gap:13px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-stage-wrap{position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;flex:0 0 auto}
 .kara-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
@@ -2000,24 +2004,49 @@ html.modal-open,html.modal-open body{overflow:hidden}
    zoom, the ruler and the playhead — three lanes that must agree about a second, and
    one mapping that cannot drift. The dB rungs are only a scale: peak envelope is
    `max(|x|)` per bucket, so 0.5 sits at about -6 dBFS, not at the middle. */
-.kara-audio{position:relative;height:44px;margin-top:4px;background:#0b0d0a;border:1px solid #2c3128;border-radius:6px;overflow:hidden}
+.kara-audio{position:relative;height:52px;margin-top:4px;background:#0b0d0a;border:1px solid #2c3128;border-radius:6px;overflow:hidden}
 .kara-audio svg{position:absolute;left:0;top:8px;width:100%;height:calc(100% - 10px);display:block}
-.kara-audio path{fill:#39432f;stroke:none}
+/* The shape every editor uses for speech, and the reason this lane was unreadable
+   without it: `path.env` is the peak envelope (did a transient happen), `path.rms`
+   is the lighter band inside it (is this loud for as long as a syllable), and the
+   gap between the two is the crest factor — wide for a voice, narrow for a
+   compressed music bed. `path.zero` is the only thing silence draws. */
+.kara-audio path{stroke:none}
+.kara-audio path.env{fill:#4d5a3d}
+.kara-audio path.rms{fill:#a3cd63;opacity:.6}
+.kara-audio path.zero{fill:none;stroke:#5f655d;stroke-width:1;vector-effect:non-scaling-stroke}
+.kara-audio-mode{position:absolute;top:2px;right:3px;display:flex;gap:2px}
+.kara-audio-mode button{padding:0 5px;height:13px;border:1px solid #3d4634;border-radius:3px;background:#191c17;color:#7f857a;font:700 7.5px Manrope;cursor:pointer}
+.kara-audio-mode button:hover{border-color:#6d7a5b;color:#d7dbd0}
+.kara-audio-mode button.on{border-color:#a3cd63;background:#2f3a26;color:#eaf3e6}
 .kara-audio i{position:absolute;top:0;bottom:0;width:1px;background:#55643f;opacity:.7}
 .kara-audio i.sel{background:#a3cd63;opacity:1;width:2px;margin-left:-1px}
 .kara-audio u{position:absolute;top:1px;bottom:1px;width:1px;margin-left:-.5px;background:#8d9388;opacity:.45}
 .kara-audio u.now{background:#ffd166;opacity:1}
 .kara-audio u.sung{background:#d9efb0;opacity:.85}
-.kara-audio-scale{position:absolute;top:2px;left:4px;display:flex;gap:6px;font:700 7px Manrope;color:#5f655d;pointer-events:none}
-.kara-audio-scale b{font-weight:700}
+.kara-audio-scale{position:absolute;left:3px;top:6px;bottom:4px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-start;font:700 6.5px Manrope;color:#6d7268;pointer-events:none;text-shadow:0 0 3px #1e211d,0 0 2px #1e211d}
+.kara-audio-scale b{font-weight:700;line-height:1}
 .kara-audio-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:600 9px Manrope;color:#7f857a;font-style:normal}
 /* Settings live in their own layer now, so the timing lanes can have the width. */
 .kara-settings-open{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;font-size:10px}
 .kara-settings-open.on{border-color:#a3cd63;color:#eaf3e6;background:#2f3a26}
 .kara-settings{width:min(560px,94vw);max-height:calc(100vh - 60px);display:flex;flex-direction:column;background:#1e211d;border:1px solid #41443c;border-radius:13px;overflow:hidden;box-shadow:0 30px 80px #0009}
 .kara-settings-body{padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:13px;background:#292c27;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
+.kara-line-merge{flex:0 0 auto;width:15px;height:15px;margin:-1px 0 0 2px;border:1px solid #4a4f45;border-radius:3px;background:#191c17;color:#9aa096;font:700 11px/0.72 Manrope;cursor:pointer;opacity:.5}
+.kara-line:hover .kara-line-merge,.kara-line.active .kara-line-merge{opacity:1}
+.kara-line-merge:hover{border-color:#ffd166;background:#3a3524;color:#ffe6a3}
+/* Row 6, both columns: like the two timelines above it, the split/merge row is a
+   grid item of `.karaoke-body` rather than a child of the preview column — otherwise
+   "move the controls back into the popup" would have put them back into a 520 px box. */
+.kara-line-actions{grid-column:1/-1;grid-row:6;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin-top:2px}
+.kara-line-actions .field-label{font:800 8px Manrope;letter-spacing:1.1px;color:#9b9f95}
+.kara-line-actions .kara-quote{flex:1 1 190px;min-width:0;margin:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:600 10px Manrope;color:#a9b0a2}
+.kara-line-actions .kara-actions{display:flex;gap:5px;flex:0 0 auto}
+.kara-line-actions .kara-actions .btn{height:24px;font-size:9px;padding:0 8px}
 .kara-lines{display:flex;flex-direction:column;gap:2px;margin-top:7px;max-height:158px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-line{display:flex;align-items:baseline;gap:7px;width:100%;padding:3px 6px;border:1px solid transparent;border-radius:5px;background:#20231f;color:#a9b0a2;font:600 10px Manrope;text-align:left;cursor:pointer}
+.kara-line:focus-visible{outline:1px solid #a3cd63;outline-offset:1px}
+.kara-line>span{user-select:none}
 .kara-line:hover{border-color:#55643f;background:#2b3128;color:#dfe7d3}
 .kara-line.active{border-color:#a3cd63;background:#2f3a26;color:#eaf3e6}
 .kara-line b{flex:0 0 auto;min-width:12px;font:800 9px Manrope;color:#a3cd63}

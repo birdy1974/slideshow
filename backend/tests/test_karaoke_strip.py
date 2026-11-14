@@ -260,11 +260,11 @@ class KaraokeStripZoomTest(unittest.TestCase):
 
     def test_zoom_clamps_to_the_screens_it_can_span(self) -> None:
         row = self.by_key[(20.0, 1.0)]
-        self.assertEqual((row["min"], row["max"]), (1, 12), "1 = the clip already fits the box; 12 = twelve screens")
+        self.assertEqual((row["min"], row["max"]), (1, 60), "1 = the clip already fits the box; 60 = sixty screens, which is what fitting three sentences of a long clip needs")
         clamped = {r["requested"]: r["zoom"] for r in self.rows if r["span"] == 30.0 and r["requested"] not in ZOOMS}
         self.assertEqual(clamped[-3], 1.0, "nothing is narrower than the whole clip")
         self.assertEqual(clamped[0.2], 1.0, "below fit the strip would be a shrunken lie")
-        self.assertEqual(clamped[99], 12.0, "the ceiling is 1200 %, and past it the ruler has no rung")
+        self.assertEqual(clamped[99], 60.0, "the ceiling is 6000 %; the ruler keeps up because its label budget scales with the zoom")
         self.assertEqual(clamped[1.23456], 1.235, "three decimals, or the slider and the ruler disagree")
         self.assertEqual(clamped[None], 1.0, "a NaN from a hand-written project file is just 'fit'")
 
@@ -291,7 +291,12 @@ class KaraokeStripZoomTest(unittest.TestCase):
             self.assertEqual(row["ticks"][0], 0, "the strip starts at the clip's IN point")
             self.assertGreaterEqual(row["ticks"][-1], span - row["step"], "the ruler must reach the end of the clip")
             self.assertLessEqual(row["ticks"][-1], span + 0.001, "no tick past the clip")
-            self.assertLessEqual(count, 140, f"{count} labels is a DOM bill for a ruler")
+            # The bill is per *screen* of strip, not per strip: a wide strip exists so
+            # that a second spans pixels, and a flat 140 answered every zoom with a
+            # coarser rung (350 px of empty ruler at 30 s x 60). Same rule as
+            # `karaokeLabelBudget`, spelled out here so a change has to move both.
+            self.assertLessEqual(count, min(6000, max(139, int(139 * row["zoom"]))),
+                                 f"{count} labels is a DOM bill for a ruler")
             self.assertEqual(row["ticks"], sorted(set(row["ticks"])), "ticks must be unique and in order")
 
     def test_labels_say_the_time_they_stand_on(self) -> None:

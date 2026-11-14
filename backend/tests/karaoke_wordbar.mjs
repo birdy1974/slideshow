@@ -14,6 +14,9 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const core = await import(path.join(here, '..', '..', 'src', 'karaokeCore.ts'))
 
 const out = []
+// Only a prefix of each path is compared: the point of the shape is that a bucket
+// maps to a column, and a full 1000-point path would make the test a diff of numbers.
+const trimPaths = p => (p ? { envelope: p.envelope.slice(0, 24), inner: (p.inner || '').slice(0, 24), centre: p.centre } : null)
 for (const c of input_cases()) {
   const bar = core.karaokeWordBar(c.line, c.ceiling)
   const cuts = []
@@ -30,6 +33,24 @@ for (const c of input_cases()) {
     edges: bar ? [core.karaokeWordBarTime(bar, 0), core.karaokeWordBarTime(bar, 0.5), core.karaokeWordBarTime(bar, 1)] : null,
     frac: bar && bar.words.length ? round(core.karaokeWordBarFraction(bar, bar.words[bar.words.length - 1].t0)) : null,
     cuts,
+    // The rail's wheel, and one line divided evenly: both decisions live in core so
+    // that they can be measured instead of eyeballed in a browser.
+    wheel: c.wheel === undefined ? null : core.karaokeRailWheelScroll(
+      c.wheel.deltaY, c.wheel.deltaX, c.wheel.deltaMode, c.wheel.scrollHeight, c.wheel.clientHeight),
+    // Does the plan read the flags the way the pane draws them? One case per row of
+    // the rail, so "the sentence in the words pane matches the numbered sentence" is
+    // a measured property of `planOf`, not a hope about CSS.
+    breaks: c.breaks === undefined ? null : core.planOf(String(c.breaks.text ?? ""), { words: c.breaks.words }, { duration: 12 })
+      .sentences.map(l => [l.from, l.to]),
+    even: c.even === undefined ? null : core.karaokeEvenWordLine(c.even.from, c.even.to, c.even.count),
+    // The audio lane's vertical scale, and the two paths it draws: a peak envelope
+    // with an RMS band inside it, silence left as the centre line only.
+    wave: c.wave === undefined ? null : {
+      linear: c.wave.values.map(v => round(core.karaokeWaveLevel(v, c.wave.reference, {}))),
+      dB: c.wave.values.map(v => round(core.karaokeWaveLevel(v, c.wave.reference, { log: true, floorDb: c.wave.floorDb ?? 48 }))),
+      paths: trimPaths(core.karaokeWavePaths(c.wave.values, c.wave.rms ?? null, c.wave.reference, { log: !!c.wave.log })),
+    },
+    budget: c.zoomAt === undefined ? null : core.karaokeLabelBudget(c.zoomAt),
     // The three-line zoom: what the strip has to be widened to, and what is
     // actually in view when the caption has no neighbour on one side.
     fit: (c.span === undefined || !c.lines) ? null : (() => {

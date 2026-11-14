@@ -34,7 +34,7 @@ import {
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
-  karaokeEvenWordTimes, karaokeHoldForEnd, karaokeNeighbourSpan, karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarHold, karaokeWordBarTime,
+  karaokeEvenWordLine, karaokeRailWheelScroll, karaokeEvenWordTimes, karaokeHoldForEnd, karaokeNeighbourSpan, karaokeWavePaths, karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarHold, karaokeWordBarTime,
   timeFromImport, tokenize, wordsPerSecond,
   type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
   type KaraokeToken, type KaraokeWord,
@@ -120,6 +120,10 @@ const MIN_WORD_GAP = 0.06
 /** Peaks across the kept cut: about 8 px each on a wide monitor, and the
  *  endpoint caches per bucket count, so this stays a cheap request. */
 const WAVE_BUCKETS = 1400
+const WAVE_SCALE_KEY = 'slideshow.karaoke.waveScale'
+const writeWaveScale = (log: boolean): void => {
+  try { localStorage.setItem(WAVE_SCALE_KEY, log ? 'dB' : 'linear') } catch { /* private mode: it just does not stick */ }
+}
 
 export interface KaraokeEditorProps {
   item: MediaItem
@@ -198,7 +202,17 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const [notice, setNotice] = useState<Notice | null>(seeded.current.fresh
     ? (tokens.length ? { kind: 'info', text: 'Spread evenly for now — press play and tap along, or drag the blocks, and it becomes yours.' } : { kind: 'warn', text: 'Nothing to time yet: write the words first.' })
     : null)
-  const [peaks, setPeaks] = useState<{ values: number[]; duration: number } | null>(null)
+  // `level` is what the API calls `reference`: 1.0, because the backend has already
+  // divided both series by this file's loudest bucket. An older backend sends no
+  // `reference`, and 1.0 is the right assumption about peaks that are 0..1 anyway.
+  const [peaks, setPeaks] = useState<{ values: number[]; rms: number[]; level: number; duration: number } | null>(null)
+  /** The lane's vertical scale, remembered like the strip's zoom: linear is the
+   *  right view for finding a clip at 0 dBFS, dB is the right view for *speech*,
+   *  where the interesting levels are 15-30 dB below the loudest thing in the
+   *  file. Neither is a project setting, so neither is saved into one. */
+  const [waveLog, setWaveLog] = useState<boolean>(() => {
+    try { return typeof localStorage === 'undefined' ? true : localStorage.getItem(WAVE_SCALE_KEY) !== 'linear' } catch { return true }
+  })
   /** Why the audio lane is or is not there. A lane that silently stays blank reads
    *  as a broken editor, so the state is named and shown: `reading` while ffmpeg is
    *  decoding the kept cut, `empty` when the file has no audio track, `failed` when
@@ -391,7 +405,15 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
         if (!alive) return
         if (list.length < 2) setWaveState('empty')
         else {
-          setPeaks({ values: list, duration: Number(json?.duration) || span })
+          // `rms` and `level` are the same decode, not a second pass: the inner band
+          // and the file's own loudest sample, which is what the scale is measured
+          // against. A response from an older backend simply has no `rms`, and the
+          // lane draws the envelope alone rather than refusing to draw.
+          const rmsRaw: number[] = Array.isArray(json?.rms) ? json.rms.map((v: unknown) => Number(v) || 0) : []
+          // One value per peak or neither: a half-length RMS array would put every
+          // syllable band in the wrong column, which is worse than not drawing it.
+          const rmsList = rmsRaw.length === list.length ? rmsRaw : []
+          setPeaks({ values: list, rms: rmsList, level: Number(json?.reference) || 1, duration: Number(json?.duration) || span })
           setWaveState('ready')
         }
       } catch { if (alive) setWaveState('failed') }
@@ -463,11 +485,15 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     const times = idx.map(i => Number(data.words[i].t))
     const first = Math.min(...times)
     const last = Math.max(...times)
-    const step = (last - first) / (idx.length - 1)
     const words = data.words.map(w => ({ ...w }))
     idx.forEach((wi, k) => {
-      words[wi] = { ...words[wi], t: round3(first + k * step) }
+      words[wi] = { ...words[wi], t: round3(first + k * ((last - first) / (idx.length - 1))) }
     })
+    // The last word's hold is retuned to the new step, for the same reason
+    // `evenWordsEverywhere` does it per line: a reveal that outlives its slot is
+    // still half-lit when the next sentence starts, and here the window ends at
+    // `last`, so the tail beyond it belongs to no word.
+    words[idx[idx.length - 1]] = { ...words[idx[idx.length - 1]], hold: round3((last - first) / (idx.length - 1)) }
     apply({ ...data, words: makeContinuous(words) })
   }
   const splitAtPlayhead = () => {
@@ -772,22 +798,102 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
    * its share of the gap to the next timed word — the rule a pasted lyric follows,
    * so a quick line is never stranded at 00:00.
    */
+  /**
+   * A new sentence at the caret — as a `br` flag on the word before it, *not* as a
+   * newline in `item.text`.
+   *
+   * The caption text is what the render paints, so a newline typed here is a hard
+   * line break in the movie: it re-wraps the caption and it never goes away. Worse,
+   * `tokenize` treats every hard break as a sentence, so one stray keystroke was
+   * quietly adding a one-word sentence to the plan, the rail and the strip — which
+   * is exactly the "why are there suddenly so many short sentences" report. A break
+   * flag says the same thing to the *timing* and leaves the words alone, and the ×
+   * on a rail row undoes it, so the pane and the numbered sentences cannot drift.
+   */
+  /** Glue a sentence on to the end of the one before it: `br = -1` on the previous
+   *  line's last word, which overrides even a hard break in the text — the merge a
+   *  numbered row needs, and the way back from a sentence that should never have
+   *  been its own line. Nothing here edits `item.text`. */
+  const glueToPrevious = (index: number) => {
+    const line = plan.sentences[index]
+    if (!line || index < 1) return
+    const prev = plan.sentences[index - 1]
+    if (!prev) return
+    const words = data.words.map(w => ({ ...w }))
+    while (words.length <= prev.to) words.push({})
+    words[prev.to] = { ...words[prev.to], br: -1 }
+    // The merged line starts where the previous one does, so the words of this one
+    // spread over what is left of it instead of sitting on a start that is gone.
+    withWords(makeContinuous(words, MIN_WORD_GAP), true)
+    selectLine(index - 1)
+    const merged = line.words.length + prev.words.length
+    // A merge can fail for a reason the flags have nothing to do with: *Words per
+    // line* splits a long run on its own, so `br: -1` removes the boundary and
+    // `sentenceGroups` puts one straight back. Saying "merged" then would be a lie
+    // about a row that did not move, so the cap is checked here and named there.
+    const cap = Math.max(1, Math.round(Number(data.maxWords) || 12))
+    setNotice(merged > cap
+      ? { kind: 'warn', text: `The break is gone, but ${merged} words is more than ${cap} per line: the caption will split it again. Raise *Words per line* in Settings to keep them together.` }
+      : { kind: 'info', text: `Sentence ${index + 1} merged into ${index} — ${merged} words on one line now.` })
+  }
+  /** Every sentence, spaced evenly inside its own window: the fast pass before the
+   *  taps, and the fix for a caption whose timings were spread by word length when
+   *  the words are actually even. A line's window never moves, so its neighbours
+   *  keep their handoff. */
+  const evenWordsEverywhere = () => {
+    if (!plan.sentences.length) return
+    const words = data.words.map(w => ({ ...w }))
+    let touched = 0
+    for (const line of plan.sentences) {
+      const n = line.words.length
+      if (!n) continue
+      const { starts, slot } = karaokeEvenWordLine(line.words[0].t0, line.end, n)
+      line.words.forEach((w, k) => {
+        while (words.length <= w.i) words.push({})
+        words[w.i] = k === n - 1 ? { ...words[w.i], t: starts[k], hold: slot } : { ...words[w.i], t: starts[k] }
+        if (k !== n - 1) delete words[w.i].hold
+      })
+      touched += n
+    }
+    apply({ ...data, words: makeContinuous(words, MIN_WORD_GAP) })
+    setNotice({ kind: 'info', text: `${plan.sentences.length} sentences, ${touched} words: each line divided evenly inside its own window.` })
+  }
+  // The rail gets its own wheel. Without `preventDefault` the scroll bubbles to the
+  // body and the popup moves a little while the list does not, which is what makes a
+  // short list feel like it cannot scroll at all.
+  useEffect(() => {
+    const box = railRef.current
+    if (!box) return
+    const onWheel = (event: WheelEvent) => {
+      const by = karaokeRailWheelScroll(event.deltaY, event.deltaX, event.deltaMode, box.scrollHeight, box.clientHeight)
+      if (!by) return
+      // Without this the scroll bubbles to the body: the popup shifts a little while
+      // the list does not, which is how a short list ends up feeling broken.
+      event.preventDefault()
+      box.scrollTop += by
+    }
+    box.addEventListener('wheel', onWheel, { passive: false })
+    return () => box.removeEventListener('wheel', onWheel)
+  }, [plan.sentences.length])
+
   const addSentenceAtCaret = () => {
     const el = textRef.current
     const caret = el ? Math.max(0, Math.min(draftText.length, el.selectionStart ?? draftText.length)) : draftText.length
-    const before = draftText.slice(0, caret).replace(/\s+$/, '')
-    const after = draftText.slice(caret).replace(/^\s+/, '')
-    const next = after.length ? `${before}\n${after}` : `${before}\n`
-    if (next === draftText) {
-      setNotice({ kind: 'warn', text: 'Nothing to break yet — put the caret where the new sentence should start.' })
-      return
+    if (!tokens.length) { setNotice({ kind: 'warn', text: 'Write some words first — a sentence is made of them.' }); return }
+    let at = -1
+    for (let k = 0; k < tokens.length; k++) {
+      if (tokens[k].i1 <= caret) at = k
+      else break
     }
-    setDraftText(next)
-    apply({ ...data, words: retarget(data, tokens, tokenize(next)) }, next)
-    setNotice({ kind: 'info', text: after.length
-      ? 'New sentence at the caret: its words are spread inside the gap until you time them.'
-      : 'A new line is waiting at the end — type it and it becomes a sentence.' })
+    if (at < 0) { setNotice({ kind: 'warn', text: 'Put the caret after the first word — a sentence needs words on both sides of the break.' }); return }
+    if (at >= tokens.length - 1) { setNotice({ kind: 'warn', text: 'The caret is past the last word: there is nothing left to start a sentence with.' }); return }
+    if (data.words[at]?.br === 1) { setNotice({ kind: 'info', text: 'That word already ends a sentence — the × on the next row glues it back.' }); return }
+    setBreak(at, 1)
+    const line = Math.max(0, plan.sentences.findIndex(l => l.to === at))
+    selectLine(Math.min(plan.sentences.length, line + 1))
+    setNotice({ kind: 'info', text: `Sentence break after “${tokens[at].w}” — the caption text is untouched, so the movie still wraps as it did.` })
   }
+
   /** Which word the bar's number fields edit. Defaults to the one being sung, so
    *  the usual case (play, stop, nudge that word) needs no clicking at all. */
   const [wordFocus, setWordFocus] = useState<number | null>(null)
@@ -1062,6 +1168,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
               <button className="btn ghost" onClick={snapPass} title="Pull every time onto the nearest onset in the movie’s audio (B)"><FileMusic size={13}/>Snap to onsets</button>
               <button className="btn ghost" onClick={fitToWindow} title="Stretch the timing to fill the caption window"><AlignLeft size={13}/>Fit to window</button>
               <button className="btn ghost" onClick={spaceEvenly} title="Even distance between the timed words">Space evenly</button>
+              <button className="btn ghost" onClick={evenWordsEverywhere} title="Every sentence at once: divide each line's own window by its word count, so the words land at equal distances. A line neither grows nor shrinks, so what you already tapped stays put — only the words inside each line move."><AlignLeft size={13}/>Space all words evenly</button>
               <button className="btn ghost" onClick={() => setShowImport(v => !v)} title="Take the times from a file you already have"><Import size={13}/>Import</button>
             </div>
             {showImport ? <div className="kara-import">
@@ -1103,16 +1210,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
             <label><span>Snap radius</span><input type="number" min={0} max={2000} step={10} value={Math.round(data.snap * 1000)} onChange={event => apply({ ...data, snap: Math.max(0, Math.min(2, (Number(event.target.value) || 0) / 1000)) })}/></label>
           </div>
 
-          <div className="kara-field">
-            <span className="field-label">Selected sentence{current ? ` ${selected + 1} of ${plan.sentences.length}` : ''}</span>
-            {current ? <p className="kara-quote">“{draftText.slice(tokens[current.from]?.i0 ?? 0, tokens[current.to]?.i1 ?? 0)}”</p>
-              : <p className="kara-quote">Nothing timed yet — press Distribute, or play and tap along.</p>}
-            <div className="kara-actions">
-              <button className="btn ghost" onClick={splitAtPlayhead} title="Cut the sentence at the playhead"><Scissors size={13}/>Split here</button>
-              <button className="btn ghost" onClick={dropBreak} title="Remove the break, so the words rejoin their neighbour">Merge</button>
-              <button className="btn ghost" onClick={startLineHere} title="Move this sentence so its first word starts at the playhead">Start here</button>
-            </div>
-          </div></>
+</>
 
   const stageStyle = {
     family: item.fontFamily || defaults?.fontFamily || 'Montserrat',
@@ -1159,21 +1257,18 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
   const flagState = (key: KaraokeTextFlag) => over[key] === undefined
     ? `the caption's ${look[key] ? 'on' : 'off'}`
     : over[key] ? 'on' : 'off'
-  const wavePath = useMemo(() => {
-    if (!peaks || peaks.values.length < 2) return ''
-    const n = peaks.values.length
-    const width = 1000
-    const top: string[] = []
-    const bottom: string[] = []
-    for (let x = 0; x < width; x++) {
-      const at = Math.min(n - 1, Math.max(0, Math.round((x / (width - 1)) * (n - 1))))
-      const v = Math.max(0, Math.min(1, peaks.values[at]))
-      top.push(`${(50 - v * 47).toFixed(1)}`)
-      bottom.unshift(`${(50 + v * 47).toFixed(1)}`)
-    }
-    const points = top.map((y, x) => `${x},${y}`).concat(bottom.map((y, i) => `${width - 1 - i},${y}`))
-    return `M${points.join(' L')} Z`
-  }, [peaks])
+  // `level` is the file's own loudest bucket, so 0 dB on this lane means "as loud as
+  // the loudest thing in *this* movie" rather than "as loud as full scale" — the
+  // difference between a flat line and a readable voice for anything recorded quietly.
+  const waveLane = useMemo(() => (peaks ? karaokeWavePaths(peaks.values, peaks.rms, peaks.level || 1, {
+    log: waveLog,
+    floorDb: 48,
+  }) : null), [peaks, waveLog])
+  // The `wave` surface and the word bar's own mini lane used to build a polygon of
+  // their own, so the three drawings of the same audio disagreed about what a bucket
+  // meant. They share the lane's envelope now: one bucket-to-column mapping, one
+  // scale, and the dB/linear switch changes all three at once.
+  const wavePath = waveLane ? waveLane.envelope : ''
   // A tick every ~55 px of the *drawn* strip: what the strip's own heuristic drew
   // at zoom 1, one finer rung for each step in, down to a hundredth of a second at
   // the top of the range — which is the whole point of zooming in.
@@ -1284,12 +1379,26 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
                 peaks come from ffmpeg (`/api/media/waveform`, kept cut only) rather
                 than the browser's decoder — and the lane says so when the probe has
                 no answer, instead of sitting there blank like it used to. */}
-            <div className="kara-audio" title="Audio levels of the kept cut: an ffmpeg peak envelope per bucket. Sentence starts are the lines, word starts the ticks — put a boundary where the hill begins">
-              {wavePath ? <svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"><path d={wavePath}/></svg> : null}
-              <span className="kara-audio-scale"><b>0</b><b>-12</b><b>-24</b><b>dB</b></span>
+            <div className="kara-audio" title="Audio levels of the kept cut: a dark peak envelope with a lighter RMS band inside it, against this file's own loudest sample. Silence is the bare centre line, so a flat run is a gap with no word in it — that is what to time a boundary against.">
+              {waveLane ? <svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">
+                <path className="env" d={waveLane.envelope}/>
+                {waveLane.inner ? <path className="rms" d={waveLane.inner}/> : null}
+                <path className="zero" d={waveLane.centre}/>
+              </svg> : null}
+              {/* Five marks, mirrored, because the lane is mirrored: the centre line is
+                  the file's own loudest sample and the two edges are the floor. A ruler
+                  that only counts downward from the top would describe a shape nobody
+                  draws, which is why the old four labels never matched the picture. */}
+              <span className="kara-audio-scale">{waveLog
+                ? <><b>-48</b><b>-24</b><b>0 dB</b><b>-24</b><b>-48</b></>
+                : <><b>0</b><b>.5</b><b>peak</b><b>.5</b><b>0</b></>}</span>
+              <span className="kara-audio-mode">
+                <button type="button" className={waveLog ? 'on' : ''} onClick={() => { setWaveLog(true); writeWaveScale(true) }} title="Logarithmic (dB), measured against this file's own peak: quiet speech is expanded, so the hills between words are obvious. The default for timing words.">dB</button>
+                <button type="button" className={waveLog ? '' : 'on'} onClick={() => { setWaveLog(false); writeWaveScale(false) }} title="Linear amplitude: what a level meter looks like. Loud material fills the lane and a clip at 0 dBFS is obvious, but a quiet voice is a flat line.">linear</button>
+              </span>
               {plan.sentences.map((line, ai) => <i key={`al-${ai}`} className={ai === selected ? 'sel' : ''} style={{ left: toPercent(line.start) }}/>)}
               {current ? current.words.map(w => <u key={`aw-${w.i}`} className={position >= w.t1 ? 'sung' : position >= w.t0 ? 'now' : ''} style={{ left: toPercent(w.t0) }} title={`${draftText.slice(tokens[w.i].i0, tokens[w.i].i1)} at ${formatClockPrecise(w.t0)}`}/>) : null}
-              {!wavePath ? <em className="kara-audio-note">{!analyzable ? 'this item has no movie to read audio from'
+              {!waveLane ? <em className="kara-audio-note">{!analyzable ? 'this item has no movie to read audio from'
                 : waveState === 'failed' ? 'the audio probe did not answer — the lane is off, the timing is unaffected'
                 : waveState === 'empty' ? 'this file has no audio track'
                 : 'reading the movie’s audio…'}</em> : null}
@@ -1371,6 +1480,16 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
               <kbd>Space</kbd> tap <kbd>Enter</kbd> next <kbd>⇧←/⇧→</kbd> ±100 ms <kbd>⌥←/⌥→</kbd> ±1 frame <kbd>I</kbd>/<kbd>O</kbd> line start/end <kbd>S</kbd> split <kbd>F</kbd> speed <kbd>1-4</kbd> surface <kbd>⌘</kbd>+scroll <kbd>+/-/0</kbd> zoom
             </span>
           </div>
+          <div className="kara-line-actions">
+          <span className="field-label">Selected sentence{current ? ` ${selected + 1} of ${plan.sentences.length}` : ''}</span>
+          {current ? <p className="kara-quote">“{draftText.slice(tokens[current.from]?.i0 ?? 0, tokens[current.to]?.i1 ?? 0)}”</p>
+            : <p className="kara-quote">Nothing timed yet — press Distribute, or play and tap along.</p>}
+          <div className="kara-actions">
+            <button className="btn ghost" onClick={splitAtPlayhead} title="Cut the sentence at the playhead"><Scissors size={13}/>Split here</button>
+            <button className="btn ghost" onClick={dropBreak} title="Remove the break, so the words rejoin their neighbour">Merge</button>
+            <button className="btn ghost" onClick={startLineHere} title="Move this sentence so its first word starts at the playhead">Start here</button>
+          </div>
+          </div>
           {notice ? <p className={`kara-notice ${notice.kind}`}>{notice.text}</p> : null}
           {perSecond > 3.5 ? <p className="kara-notice warn">Above ~3.5 words per second a sweep reads as a strobe — split a sentence or two.</p> : null}
         </section>
@@ -1391,15 +1510,27 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
                 numbered the way the strip numbers them, with its window. Clicking one
                 selects it in the strip and the bar, so the number is also the way to
                 jump to a line you can see in the text but not in the ruler. */}
+            {/* A row is a div with `role="button"`, not a button. It used to be a
+                `<button>`, which made the × inside it a button inside a button: invalid
+                markup, no focus ring of its own, and a click on the × was a click on the
+                row as far as the browser was concerned. */}
             <div className="kara-lines" ref={railRef}>
-              {plan.sentences.length ? plan.sentences.map((line, i) => <button key={`${line.from}-${i}`} type="button"
+              {plan.sentences.length ? plan.sentences.map((line, i) => <div key={`${line.from}-${i}`} role="button" tabIndex={0}
                 className={`kara-line${i === selected ? ' active' : ''}${line.plain ? ' plain' : ''}`}
                 onClick={() => { selectLine(i); seek(line.start) }}
+                onKeyDown={event => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()   // or Space scrolls the rail and selects at the same time
+                  selectLine(i); seek(line.start)
+                }}
                 title={`${formatClockPrecise(line.start)} → ${formatClockPrecise(line.end)} · ${round3(line.end - line.start)} s${line.plain ? ' · not coloured' : ''} · click to edit this sentence in the bar`}>
                 <b>{i + 1}</b>
                 <span>{draftText.slice(tokens[line.from]?.i0 ?? 0, tokens[line.to]?.i1 ?? 0)}</span>
                 <i>{round3(line.end - line.start)} s</i>
-              </button>) : <small>No sentences yet — write the words above, or press New sentence to start one.</small>}
+                {i > 0 ? <button type="button" className="kara-line-merge"
+                  onClick={event => { event.stopPropagation(); glueToPrevious(i) }}
+                  title={`Merge sentence ${i + 1} into sentence ${i}: its words join the line before it, and the caption text is not touched`}>×</button> : null}
+              </div>) : <small>No sentences yet — write the words above, or press New sentence to start one.</small>}
             </div>
             {draftText !== (item.text || '') ? <small>Commit with Tab or a click outside — the timing is anchored to word numbers, so it rides along with the edit.</small> : null}
           </div>

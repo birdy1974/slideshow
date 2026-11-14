@@ -918,9 +918,12 @@ def _waveform_peaks_pcm(ffmpeg_bin: str, source: Path, buckets: int = 800,
     karaoke editor.
 
     Mono 8 kHz PCM, cut into `buckets` windows of the requested span, each
-    reduced to its loudest sample as a 0..1 float. The editor only needs a
-    shape to aim at, and 8 kHz is far above the ~50 ms resolution a word
-    boundary is timed to. Returns ([], 0.0) for a file with no audio track.
+    reduced to its loudest sample *and* its RMS as 0..1 floats. The editor only needs
+    a shape to aim at, and 8 kHz is far above the ~50 ms resolution a word boundary is
+    timed to. Two levels rather than one, because a peak envelope alone is a poor read
+    for speech: the peaks say "a transient happened", the RMS says "this is loud for
+    about as long as a syllable", and the gap between them is what separates a spoken
+    word from a click. Returns ([], [], 0.0) for a file with no audio track.
     """
     import array as _array
 
@@ -933,31 +936,55 @@ def _waveform_peaks_pcm(ffmpeg_bin: str, source: Path, buckets: int = 800,
     command += ["-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"]
     proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=180)
     if proc.returncode != 0 or not proc.stdout:
-        return [], 0.0
+        return [], [], 0.0
     count = len(proc.stdout) // 2
     if count < 160:                      # under 20 ms: nothing worth drawing
-        return [], 0.0
+        return [], [], 0.0
     samples = _array.array("h")
     samples.frombytes(proc.stdout[: count * 2])
     duration = count / 8000.0
+    peaks, rms, _top = _waveform_buckets(samples, buckets)
+    return peaks, rms, duration
+
+
+def _waveform_buckets(samples, buckets: int = 800) -> tuple[list[float], list[float], float]:
+    """Reduce int16 mono samples to one peak and one RMS per bucket, 0..1.
+
+    Pure, and deliberately so: this is the maths the karaoke lane is drawn from, and
+    a lane that is only testable by running ffmpeg cannot be tested on a machine
+    without ffmpeg (which is most CI machines, including this repo's `test` job).
+
+    Both series are divided by the *same* number — the loudest peak in the file — so
+    the gap between the two bands is still the crest factor rather than two scales
+    that happen to look similar, and a quietly recorded movie fills the lane as well
+    as a loud one. Returns `(peaks, rms, top)` where `top` is that divisor as a
+    full-scale ratio, which is the only place the raw level of the file is known.
+    """
+    count = len(samples)
     n = max(8, min(int(buckets), 4000))
     size = max(1, count // n)
     peaks: list[float] = []
+    rms: list[float] = []
     for k in range(n):
         lo = k * size
         if lo >= count:
             break
         hi = min(count, lo + size)
         peak = 0
+        energy = 0
         for v in samples[lo:hi]:
+            energy += v * v
             a = -v if v < 0 else v
             if a > peak:
                 peak = a
-        peaks.append(round(min(1.0, peak / 32768.0), 4))
-    if peaks:
-        top = max(peaks) or 1.0
-        peaks = [round(v / top, 4) for v in peaks]   # normalise: quiet movies are useful too
-    return peaks, duration
+        peaks.append(min(1.0, peak / 32768.0))
+        rms.append(min(1.0, ((energy / max(1, hi - lo)) ** 0.5) / 32768.0))
+    if not peaks:                        # a file with no samples at all
+        return [], [], 1.0               # (`max([])` is a traceback, not a flat line)
+    top = max(peaks) or 1.0
+    return ([round(v / top, 4) for v in peaks],
+            [round(v / top, 4) for v in rms],
+            round(top, 4))
 
 
 def _detect_beats_pcm(ffmpeg_bin: str, source: Path, max_beats: int = 1200) -> list[float]:
@@ -3026,14 +3053,25 @@ class Renderer:
         return beats
 
     def waveform(self, source: Path, buckets: int = 800, start: float = 0.0, length: float = 0.0) -> dict[str, Any]:
-        """Peak envelope + analysed span of an audio/video file (see
-        :func:`_waveform_peaks_pcm`). The karaoke editor draws this under its
-        timing strip so a consonant you can hear is a line you can aim at."""
+        """Peak envelope, RMS band and analysed span of an audio/video file (see
+        :func:`_waveform_peaks_pcm`). The karaoke editor draws this under its timing
+        strip so a consonant you can hear is a line you can aim at, and the two
+        series together are what make a spoken word look different from a click."""
         try:
-            peaks, duration = _waveform_peaks_pcm(self.settings.ffmpeg_bin, source, buckets, start, length)
+            peaks, rms, duration = _waveform_peaks_pcm(self.settings.ffmpeg_bin, source, buckets, start, length)
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             raise RenderError(f"Waveform analysis of '{source.name}' failed — {exc}") from exc
-        return {"peaks": peaks, "duration": round(duration, 3), "start": round(max(0.0, start), 3)}
+        return {
+            "peaks": peaks,
+            "rms": rms,
+            # The contract the lane is drawn against: both series are already divided
+            # by this file's loudest bucket, so the editor's 0 dB means "as loud as
+            # the loudest thing in *this* movie" and its reference is 1.0 — not
+            # full scale, which is what made a quiet voice look like a flat line.
+            "reference": 1.0 if peaks else 0.0,
+            "duration": round(duration, 3),
+            "start": round(max(0.0, start), 3),
+        }
 
     def measure_loudness(self, source: Path, target: float, edit_filter: str = "", cancelled: threading.Event | None = None, log_file: Path | None = None) -> dict[str, float] | None:
         """First loudnorm pass: integrated loudness / true peak / LRA of a file.

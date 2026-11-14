@@ -1193,13 +1193,17 @@ export function karaokeClipClock (
 /** Narrowest the strip can be: its own box, which already shows the whole clip. */
 export const KARAOKE_ZOOM_MIN = 1
 /**
- * Widest: a 3-minute clip becomes 12 screens wide. The ceiling is set by the
- * ruler, not by the eye — `karaokeTickStep` has to stay on its ladder (0.01 s is
- * one frame at 25 fps), and past ~12× a 1-second clip would want a finer ladder
+ * Widest: a 3-minute clip becomes 60 screens wide, which is what "show me the
+ * selected sentence and one either side" needs on a long clip — at 12× a 90-second
+ * movie can never fit three sentences in one box, and that view is the only one
+ * that shows whether a boundary stole time from a neighbour. The ceiling is still
+ * set by the ruler, not the eye: `karaokeTickStep` bottoms out at 0.01 s (one
+ * frame at 25 fps), so past that point the ticks simply thin out rather than
+ * repeat a label — a strip that lies about the clock is worse than a coarse one.
  * than the render can even express. backend/tests/test_karaoke_strip.py pins both
  * halves: the clamp, and 40–140 px between ticks across the whole range.
  */
-export const KARAOKE_ZOOM_MAX = 12
+export const KARAOKE_ZOOM_MAX = 60
 
 /** 1 = the whole clip fits the box; the strip's width is this × its container. */
 export function clampKaraokeZoom (zoom: number): number {
@@ -1236,7 +1240,7 @@ const KARAOKE_TICK_STEPS = [0.01, 0.02, 0.04, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10,
 const KARAOKE_BOX_PX = 700
 const KARAOKE_TICK_PX = 55
 /** Labels the ruler is allowed to draw at once, whatever the zoom says it wants. */
-const KARAOKE_MAX_TICKS = 139
+const KARAOKE_MAX_TICKS = 139   // one screen's worth; the budget below scales it by the zoom
 
 /**
  * Seconds between ruler ticks for `span` seconds of clip at `zoom`.
@@ -1262,12 +1266,47 @@ export function karaokeTickStep (span: number, zoom: number): number {
   // the browser pays on every frame. Escalating a rung costs legibility nothing —
   // the ticks just stand further apart — so it wins over the pixel target.
   for (let guard = 0; guard < KARAOKE_TICK_STEPS.length; guard += 1) {
-    if (seconds / chosen <= KARAOKE_MAX_TICKS) break
+    if (seconds / chosen <= karaokeLabelBudget(zoom)) break
     const next = KARAOKE_TICK_STEPS.indexOf(chosen) + 1
     if (next >= KARAOKE_TICK_STEPS.length) break
     chosen = KARAOKE_TICK_STEPS[next]
   }
   return chosen
+}
+
+/**
+ * How many labels the ruler may draw: `KARAOKE_MAX_TICKS` per *screen* of strip,
+ * not per strip.
+ *
+ * The original budget was a flat 139, which quietly made the zoom ceiling useless:
+ * a wide strip is wide precisely so that a second can be spread over many pixels,
+ * and a fixed label count answered every zoom with a coarser rung — 350 px of empty
+ * ruler between two ticks at 30 s × 60. Scaling it with the zoom keeps the pixel
+ * target the deciding rule (which is what a ruler is for) while the count still
+ * bounds the DOM: at most `KARAOKE_MAX_TICKS × screens`, capped for a feature-length
+ * clip at full stretch.
+ */
+/**
+ * How many labels the ruler may draw: `KARAOKE_MAX_TICKS` per *screen* of strip,
+ * not per strip.
+ *
+ * The original budget was a flat 140, which quietly made the zoom ceiling useless:
+ * a wide strip is wide precisely so that a second can be spread over many pixels,
+ * and a fixed label count answered every zoom with a coarser rung — 350 px of empty
+ * ruler between two ticks at 30 s x 60. Scaling it with the zoom keeps the pixel
+ * target the deciding rule (which is what a ruler is for) while the count still
+ * bounds the DOM: one screen's worth of labels per screen of strip, capped at 6000
+ * for a feature-length clip at full stretch.
+ *
+ * The cap is not decoration. `karaokeTicks` draws one `<b>` per label and the strip
+ * is re-rendered on every playhead frame, so an uncapped budget turns "fit three
+ * sentences" into a million nodes for an hour-long clip.
+ */
+export function karaokeLabelBudget (zoom: number): number {
+  const screens = clampKaraokeZoom(zoom)
+  // `floor`, not `round`: at zoom 0.99 a rounded budget of 139 would be smaller than
+  // the one-screen default, and the ruler would coarsen just as you zoom in.
+  return Math.min(6000, Math.max(KARAOKE_MAX_TICKS, Math.floor(KARAOKE_MAX_TICKS * screens)))
 }
 
 /** Where to put a tick, in percent of the strip — `toPercent` at any zoom. */
@@ -1414,6 +1453,57 @@ export function karaokeEvenWordTimes (from: number, to: number, count: number): 
 }
 
 /**
+ * How far a numbered-sentence rail should move for one wheel notch.
+ *
+ * Three rules, all of them the difference between "the list scrolled" and "the
+ * popup jittered":
+ *
+ *  - A horizontal wheel (a trackpad swipe, or Shift+wheel) is not this rail's
+ *    business: the strip beside it owns sideways motion, and stealing it makes the
+ *    zoom gesture unusable while the pointer happens to be over the list.
+ *  - `deltaMode` is not always pixels. Firefox reports lines, and some setups
+ *    report pages; multiplying a line delta by 1 gives a list that barely moves,
+ *    which reads exactly like a list that cannot scroll.
+ *  - A rail shorter than its own content has nothing to scroll, and returning 0
+ *    there is what keeps the *page* from jumping under a pointer over a short list.
+ *
+ * Returns the pixels to add to `scrollTop`, or 0 for "leave the event alone".
+ */
+export function karaokeRailWheelScroll (
+  deltaY: number,
+  deltaX: number,
+  deltaMode: number,
+  scrollHeight: number,
+  clientHeight: number,
+): number {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return 0
+  if (Math.abs(deltaX) > Math.abs(deltaY)) return 0
+  if (scrollHeight <= clientHeight + 2) return 0
+  const perUnit = deltaMode === 1 ? 16 : deltaMode === 2 ? Math.max(1, clientHeight) : 1
+  // Clamped: one notch must not be able to throw the list from one end to the other.
+  const max = Math.max(16, Math.round(clientHeight * 0.6))
+  const want = deltaY * perUnit
+  return Math.max(-max, Math.min(max, want))
+}
+
+/**
+ * One sentence divided evenly: the word starts *and* the slot they share.
+ *
+ * The slot matters as much as the starts. A line's window is its last word's end
+ * plus the tail, so if the last word keeps a hold from a longer, differently
+ * shaped line the reveal runs past the boundary the neighbours were handed — which
+ * is the failure `karaokeHoldForEnd` exists for, recomputed here for a whole line
+ * at once. `count === 1` has no gaps to spread, so the one word gets the window.
+ */
+export function karaokeEvenWordLine (from: number, to: number, count: number): { starts: number[]; slot: number } {
+  const starts = karaokeEvenWordTimes(from, to, count)
+  const lo = Math.max(0, Number(from) || 0)
+  const hi = Math.max(lo + KARAOKE_MIN_WORD_GAP, Number(to) || 0)
+  const slot = starts.length > 1 ? msRound(starts[1] - starts[0]) : msRound(Math.max(KARAOKE_MIN_WORD_GAP, hi - lo))
+  return { starts, slot }
+}
+
+/**
  * The hold a sentence needs so its window ends at `end`.
  *
  * A line's window is `last word's end + the tail`, and the tail is one shared
@@ -1428,6 +1518,89 @@ export function karaokeHoldForEnd (start: number, end: number, tail: number, cei
   if (!Number.isFinite(want)) return null
   const cap = Math.max(KARAOKE_MIN_WORD_GAP, (Number(ceiling) || 0) - lo)
   return msRound(Math.max(0.05, Math.min(Math.max(0.05, want), cap)))
+}
+
+/** ------------------------------------------------------------------ *
+ * The audio lane: peaks, RMS, and a scale that shows quiet speech.
+ * ------------------------------------------------------------------ */
+
+/**
+ * One amplitude, placed on the lane's 0..1 half-height.
+ *
+ * A peak envelope is a *linear* view, and linear is why this lane was hard to
+ * read: a voice that peaks at 0.1 of full scale is a flat line at half height,
+ * so the gaps between words and the words themselves look the same. Two rules
+ * from how audio editors draw it: normalise against the clip's own loudest
+ * sample rather than against full scale, and cap that gain (~24 dB) so one
+ * transient pop does not flatten the speech back down; and in the dB view map
+ * logarithmically over a fixed range (Audacity's is ~54 dB) so equal perceptual
+ * steps take equal pixels and quiet material is expanded instead of hidden.
+ */
+export function karaokeWaveLevel (
+  value: number,
+  reference: number,
+  opts: { log?: boolean; floorDb?: number; gainCapDb?: number } = {},
+): number {
+  const v = Math.max(0, Number(value) || 0)
+  if (v <= 0) return 0
+  const ref = Number(reference) > 0 ? Number(reference) : 1
+  if (opts.log) {
+    // Measured against the clip's own loudest sample, so the loudest thing in this
+    // movie is the top of the lane and the floor is `floorDb` below it. The gain cap
+    // is deliberately *not* applied here: on a log scale a transient pop costs a few
+    // rungs, which is exactly the failure the cap exists to prevent on a linear one.
+    const floor = Number(opts.floorDb) > 0 ? Number(opts.floorDb) : 48
+    const db = 20 * Math.log10(Math.max(1e-6, v / Math.max(1e-4, ref)))
+    return Math.max(0, Math.min(1, 1 + db / floor))
+  }
+  // Linear: the ratio itself, which is exactly what makes the lane hard to read for
+  // a quietly recorded voice — kept as an option because it is the honest view of
+  // clipping. Both branches divide by `reference`, so the two scales agree about
+  // which sample is the top of the lane and switching between them does not move
+  // the picture's reference point.
+  return Math.max(0, Math.min(1, v / ref))
+}
+
+/**
+ * The lane as two mirrored polygons over a `0 0 1000 100` viewBox.
+ *
+ * The outer one is the peak envelope, the inner one is RMS: the lighter band
+ * inside the darker shape is what makes a *voiced* word obvious (RMS follows
+ * perceived loudness), and the gap between the two is the crest factor — wide
+ * for speech and untreated drums, narrow for compressed material. Silence
+ * draws nothing but the centre line, which is the whole point: the flat runs
+ * are where no word is spoken, so a word boundary goes at the edge of a hill.
+ */
+export function karaokeWavePaths (
+  peaks: number[] | null | undefined,
+  rms: number[] | null | undefined,
+  reference: number,
+  opts: { log?: boolean; floorDb?: number; gainCapDb?: number; half?: number } = {},
+): { envelope: string; inner: string; centre: string } | null {
+  const list = peaks || []
+  if (list.length < 2) return null
+  const width = 1000
+  const half = Number(opts.half) > 0 ? Number(opts.half) : 47
+  const quiet = rms && rms.length >= 2 ? rms : null
+  const at = (n: number, source: number[]) => Math.min(source.length - 1, Math.max(0, Math.round((n / (width - 1)) * (source.length - 1))))
+  const top: string[] = []
+  const bottom: string[] = []
+  const inTop: string[] = []
+  const inBottom: string[] = []
+  for (let x = 0; x < width; x++) {
+    const v = karaokeWaveLevel(list[at(x, list)], reference, opts)
+    top.push(`${(50 - v * half).toFixed(1)}`)
+    bottom.unshift(`${(50 + v * half).toFixed(1)}`)
+    const r = quiet ? karaokeWaveLevel(quiet[at(x, quiet)], reference, opts) : 0
+    inTop.push(`${(50 - r * half).toFixed(1)}`)
+    inBottom.unshift(`${(50 + r * half).toFixed(1)}`)
+  }
+  const closed = (t: string[], b: string[]) => `M${t.map((y, x) => `${x},${y}`).join(' L')} L${b.map((y, i) => `${width - 1 - i},${y}`).join(' L')} Z`
+  return {
+    envelope: closed(top, bottom),
+    inner: quiet ? closed(inTop, inBottom) : '',
+    centre: `M0,50 L${width - 1},50`,
+  }
 }
 
 /**
