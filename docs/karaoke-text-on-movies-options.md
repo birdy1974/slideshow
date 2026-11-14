@@ -302,3 +302,35 @@ is nothing to keep in sync and nothing that can disagree at export time.
 * The bar sits outside the strip's zoom scroller on purpose. Its axis is one sentence,
   so the clip zoom would only slide part of it out of view; zoom stays a strip
   affordance, and the bar is already at maximum useful scale.
+### Per-sentence options on the word bar
+
+The bar's head carries two decisions that belong to *one* sentence, not to the caption:
+
+* **Even words** divides the sentence's own window into one equal slot per word — the
+  line neither grows nor shrinks, and its neighbours keep the handoff, because the
+  split is made inside the time the sentence already occupies. The last word's hold is
+  set to the same slot rather than cleared, so an even split cannot quietly shorten the
+  line and move the next one.
+* **No colouring** shows the sentence without singing it: every word keeps the
+  caption's own colour for the whole window. In the preview `wordStates` returns no
+  `now`/`sung` at all for the line (and the stage paints its sweep only on `now`, so
+  there is nothing else to unplug); in the render `build_karaoke_events` leaves out the
+  `\k`/`\kf` runs and sets the event's *primary* colour to the caption colour, because
+  leaving it on `fill` would make an un-coloured line arrive already highlighted. `pop`
+  keeps one event per word — the pop is an appearance, not a colouring — but emits no
+  `\kf` inside them.
+
+Both are stored on the sentence's **last word** (`plain`, `hold`), where `br` already
+lives, so an edit that moves the sentence boundary moves the decision with the word it
+belonged to, and `retarget` carries them across when the text changes.
+
+### The end of the last word, and therefore the end of the sentence
+
+A line's window is *its last word's end plus the tail*, and the tail is one shared
+number — so until now the last word's end was not editable at all. The handle at the
+right edge of the bar sets it: it writes `words[to].hold`, the number of seconds the
+last word is held, and the sentence's end follows in both surfaces. A duration rather
+than an absolute time, because re-trimming a clip shifts every `t` in the block
+(`shift_times`) and a stored end would be left behind at a time the picture no longer
+has. A hold longer than the caption window is clipped to it by `plan_of`, so a line can
+be ended early but never pushed into the next one.

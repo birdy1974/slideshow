@@ -61,6 +61,79 @@ LINE = {
 }
 
 
+class SentenceFlagsTest(unittest.TestCase):
+    """`hold` and `plain` are word fields the render reads, not popup decoration.
+
+    These run the real ``backend/app/karaoke.py`` — the twin of the bar — because
+    the whole promise of the karaoke surfaces is that what the popup shows is what
+    FFmpeg is handed. A flag that only changed the preview would pass every test
+    above and still do nothing in the MP4.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import sys
+        sys.path.insert(0, str(REPO / "backend"))
+        from app import karaoke  # noqa: PLC0415
+        cls.k = karaoke
+
+    TEXT = "Never gonna give you up"
+    DATA = {"style": "sweep", "fill": "#9BE564", "leadIn": 0.0, "tail": 0.5, "snap": 0.0,
+            "maxWords": 12, "editor": "strip",
+            "words": [{"t": 1.0}, {"t": 2.0}, {"t": 3.0}, {"t": 4.0}, {"t": 5.0, "hold": 2.0}]}
+
+    def plan(self, data: dict) -> dict:
+        return self.k.plan_of(self.TEXT, data, 0.0, 20.0, 20.0)
+
+    def test_a_hold_moves_the_last_words_end_and_the_sentence_with_it(self) -> None:
+        untimed_tail = {**self.DATA, "words": [dict(w) for w in self.DATA["words"][:4]] + [{"t": 5.0}]}
+        with_hold, without = self.plan(self.DATA), self.plan(untimed_tail)
+        held = with_hold["sentences"][0]["words"][-1]
+        free = next(w for w in without["sentences"][0]["words"] if w["i"] == 4)
+        self.assertEqual(7.0, held["t1"], "5.0 + a 2.0 s hold")  # noqa: E501
+        self.assertLess(free["t1"], held["t1"], "without a hold the line ends on the automatic breath")
+        self.assertEqual(held["t1"] + 0.5, with_hold["sentences"][0]["end"], "the sentence is its last word plus the tail")
+
+    def test_a_hold_cannot_push_the_line_past_the_caption_window(self) -> None:
+        wide = self.plan({**self.DATA, "words": [dict(w) for w in self.DATA["words"][:4]] + [{"t": 5.0, "hold": 40.0}]})
+        s = wide["sentences"][0]
+        self.assertLessEqual(s["words"][-1]["t1"], 20.0)
+        self.assertLessEqual(s["end"], 20.0)
+
+    def test_a_plain_line_has_no_word_colouring_in_either_surface(self) -> None:
+        data = {**self.DATA, "words": [dict(w) for w in self.DATA["words"][:4]] + [{"t": 5.0, "plain": 1}]}
+        plan = self.plan(data)
+        s = plan["sentences"][0]
+        self.assertTrue(s.get("plain"))
+        states = self.k.word_states(plan, self.k.karaoke_at(plan, 3.0, "sweep"), "sweep")
+        self.assertEqual(["next"] * 5, states, "the stage paints nothing while the line is up")
+        events = self.k.build_karaoke_events(self.TEXT, plan, style="sweep", fill="#9BE564",
+                                             base_colour="#FFFFFF", cx=960, cy=900, fade_in=0.0, fade_out=0.0)
+        self.assertNotIn("\\k", events[0])
+        self.assertIn("\\1c&H00FFFFFF&", events[0], "the line wears the caption colour, not the fill")
+        self.assertIn("Never gonna give you up", events[0].replace("\\N", " "))
+
+    def test_pop_still_shows_the_words_but_never_colours_them(self) -> None:
+        data = {**self.DATA, "words": [dict(w) for w in self.DATA["words"][:4]] + [{"t": 5.0, "plain": 1}]}
+        plan = self.plan(data)
+        events = self.k.build_karaoke_events(self.TEXT, plan, style="pop", fill="#9BE564",
+                                             base_colour="#FFFFFF", cx=960, cy=900, fade_in=0.0, fade_out=0.0)
+        self.assertEqual(5, len(events), "pop is one event per word, plain or not — that is the *appearance*, not the colouring")
+        self.assertNotIn("\\kf", "".join(events))
+        self.assertIn("\\1c&H00FFFFFF&", events[0])
+
+    def test_the_sanitizer_keeps_both_and_a_flagged_only_block_survives(self) -> None:
+        kept = self.k.sanitize_karaoke({"style": "sweep", "words": [{"t": 2.0, "hold": 3.5, "plain": "1"}]}, 2)
+        self.assertEqual(3.5, kept["words"][0]["hold"])
+        self.assertEqual(1, kept["words"][0]["plain"])
+        junk = self.k.sanitize_karaoke({"style": "sweep", "words": [{"t": 2.0, "hold": -4, "plain": "yes"}]}, 2)
+        self.assertNotIn("hold", junk["words"][0], "a negative hold is not a duration")
+        self.assertNotIn("plain", junk["words"][0], "anything but 1 is not the flag")
+        only = self.k.sanitize_karaoke({"style": "sweep", "words": [{"plain": 1}]}, 1)
+        self.assertIsNotNone(only, "a line that is flagged but not timed is still a decision")
+        self.assertTrue(self.k.has_karaoke({"text": self.TEXT, "karaoke": only}))
+
+
 class WordBarLayoutTest(unittest.TestCase):
     def test_the_bar_spans_the_sentence_and_tiles_the_words_by_time(self) -> None:
         got = _run([{"line": LINE, "ceiling": 14.0}])[0]
@@ -180,7 +253,21 @@ class WordBarMarkupTest(unittest.TestCase):
                                                         self.editor.index("const endBar")])
         for name in ("karaokeWordBar", "karaokeWordBarTime", "karaokeWordBarCut", "karaokeWordBarFraction"):
             self.assertIn(f"export function {name}", self.core)
-        self.assertIn("karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarTime", self.editor)
+        head = self.editor[:self.editor.index("} from './karaokeCore'")]
+        for name in ("karaokeWordBar", "karaokeWordBarCut", "karaokeWordBarCut", "karaokeWordBarFraction",
+                     "karaokeWordBarHold", "karaokeWordBarTime", "karaokeEvenWordTimes"):
+            self.assertIn(name, head, f"the popup must import {name}, not reimplement it")
+
+    def test_the_sentence_options_are_on_the_bar_not_reimplemented_elsewhere(self) -> None:
+        # Even words and "no colouring" are per-sentence decisions, so they live in
+        # the bar's head (which *is* the selected sentence) and write the two word
+        # fields the render reads — nothing else stores a copy of them.
+        bar = self.editor[self.editor.index('className="kara-wordbar"'):][:3600]
+        self.assertIn("evenWordsInLine", bar)
+        self.assertIn("togglePlainLine", bar)
+        self.assertIn("beginBarEnd", bar)
+        self.assertIn("words[w.i] = k === n - 1 ? { ...words[w.i], t: starts[k], hold: slot }", self.editor)
+        self.assertIn("plain: 1", self.editor)
 
     def test_the_bar_has_its_own_style(self) -> None:
         css = (REPO / "src" / "styles.css").read_text(encoding="utf-8")
