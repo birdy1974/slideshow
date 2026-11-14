@@ -27,6 +27,7 @@ from .colour import SCALE_COLOUR, TIMELINE_COLOUR_ARGS, TIMELINE_COLOURSPACE  # 
 from .collage import bg_blur_radius, bg_fit_filter, collage_background, collage_graph, collage_inputs, normalize_collage
 from .config import Settings
 from .database import Database, utcnow
+from .ffmpeg_argv import graph_script_command, probe_graph_script_flag, remove_quietly
 from .filter_values import quote_filter_value
 from .media import UnsafePath, mounted_path, source_path
 from .media_probe import whole_video
@@ -1074,6 +1075,10 @@ class Renderer:
         self._ass_supported: bool | None = None
         self._drawtext_supported: bool | None = None
         self._ass_lock = threading.Lock()
+        # How this FFmpeg accepts an oversized filter graph (see app/ffmpeg_argv.py):
+        # the option name that reads it from a file, or None when it has none.
+        self._graph_script: str | None | bool = False   # False = not probed yet
+        self._graph_script_lock = threading.Lock()
 
     def warm_capabilities(self) -> None:
         """Probe ffmpeg version, the xfade catalogue, Quick Sync and VA-API
@@ -1989,20 +1994,82 @@ class Renderer:
             except Exception as exc:  # pragma: no cover - defensive only
                 log.warning("Preview prune for job %s failed: %s", job_id, exc)
 
+    def graph_script_flag(self) -> str | None:
+        """The option this FFmpeg reads a filter graph from a file with, or None.
+
+        A slide's graph is one argument, and Linux gives one argument 131 072 bytes
+        (`MAX_ARG_STRLEN`) whatever else is free — a collage page with a few photos, each
+        with its own baked size ladder, passes that and `execve` answers `E2BIG`
+        ("Argument list too long") before FFmpeg starts. The graph then goes into a file
+        beside the job's other interim files (app/ffmpeg_argv.py). Both spellings of that
+        option exist in the wild and neither is in `-h full`, so the binary is asked what
+        it takes, once per process, like the libass and drawtext checks.
+        """
+        with self._graph_script_lock:
+            if self._graph_script is False:
+                self._graph_script = probe_graph_script_flag(self.settings.ffmpeg_bin)
+                log.info("FFmpeg reads an oversized filter graph from a file via %s",
+                         self._graph_script or "no known option (long graphs will stay inline)")
+            return self._graph_script  # type: ignore[return-value]
+
+    def _oversized_graphs_to_files(self, command: list[str], log_file: Path) -> tuple[list[str], list[str], list[Path]]:
+        """Split a command whose filter graph is too long for one argument, if need be.
+
+        Anything that goes wrong here — no FFmpeg to ask, a full disk, a read-only work
+        directory — returns the original command with a note. A render that might still
+        work inline must not be broken by the machinery that tries to help it.
+        """
+        flag = self.graph_script_flag()
+        if not flag:
+            return list(command), [], []
+        stem = "graph"
+        try:
+            stem = Path(str(command[-1])).stem or "graph"
+        except (OSError, ValueError):  # pragma: no cover - a name too odd for Path
+            pass
+        try:
+            return graph_script_command(command, log_file.parent, stem, flag)
+        except OSError as exc:
+            log.warning("Could not move the filter graph into a file: %s", exc)
+            return list(command), [f"the filter graph is too long for one argument and could not be written to a file ({exc}); trying it inline"], []
+
     def _run_ffmpeg(self, command: list[str], cancelled: threading.Event, log_file: Path) -> None:
+        # The log keeps the command as built, graph and all: the `=== Slide 2/3 ===`
+        # sections plus this line are how a bad filter is found, and a path to a
+        # temporary file is not a record. What was actually exec'ed is written next to
+        # it, one indented line per graph that moved into a file.
+        exec_command, notes, scratch = self._oversized_graphs_to_files(command, log_file)
         with log_file.open("a", encoding="utf-8") as logs:
             logs.write("\n$ " + " ".join(command) + "\n")
-            process = subprocess.Popen(command, stdout=logs, stderr=subprocess.STDOUT, text=True)
-            while process.poll() is None:
-                if cancelled.wait(.2):
-                    process.terminate()
-                    try: process.wait(5)
-                    except subprocess.TimeoutExpired: process.kill()
-                    raise RenderError("Render cancelled by user")
-            if process.returncode:
-                text = log_file.read_text(encoding="utf-8", errors="replace")
-                summary = _summarize_ffmpeg_log(text)
-                raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{summary}")
+            for note in notes:
+                logs.write("  " + note + "\n")
+            logs.flush()
+            try:
+                process = subprocess.Popen(exec_command, stdout=logs, stderr=subprocess.STDOUT, text=True)
+            except OSError as exc:
+                # `execve` refused the command line before FFmpeg saw it. With an over-long
+                # graph that is `[Errno 7] Argument list too long: 'ffmpeg'`, which names
+                # no argument, so the reason is written under the command it describes and
+                # the scratch graph is taken with us — nothing here is inside the try/finally
+                # below, which only starts once there is a process to wait for.
+                remove_quietly(scratch)
+                logs.write(f"Could not start FFmpeg: {exc}\n")
+                raise RenderError(f"Could not start FFmpeg: {exc}") from exc
+            try:
+                while process.poll() is None:
+                    if cancelled.wait(.2):
+                        process.terminate()
+                        try: process.wait(5)
+                        except subprocess.TimeoutExpired: process.kill()
+                        raise RenderError("Render cancelled by user")
+                if process.returncode:
+                    text = log_file.read_text(encoding="utf-8", errors="replace")
+                    summary = _summarize_ffmpeg_log(text)
+                    raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{summary}")
+            finally:
+                # The graph file is only a carrier for the argument; the log above holds
+                # the same text, so nothing is lost by not leaving it behind.
+                remove_quietly(scratch)
 
     def ass_filter_supported(self) -> bool:
         """Whether this FFmpeg build can burn .ass overlays (the libass engine).
