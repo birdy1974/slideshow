@@ -338,6 +338,78 @@ pure and measured in `AudioLaneScaleTest`; the three smaller waveform drawings (
 `wave` surface, the word bar's mini lane, the lane) share `karaokeWavePaths`, so a
 bucket means one thing in the whole popup.
 
+### Five more things, after the lane was used for real
+
+The first version of the lane was drawn, then used, and the gap between those two is what
+the first four bullets close: each is a technique the editors that have been annotating
+speech by eye for decades already have, and the lane had none of them. The fifth is the
+paint order that keeps them all visible.
+
+* **The buckets are interpolated, not repeated.** A bucket covering thirty columns used to
+  paint thirty equal pixels, which reads as hard edges the audio does not have — and it
+  made a *taper* (the shape that tells you a word is ending) look like a cliff. A column
+  now takes a weighted mix of the two buckets around it, so the slope is a slope. This is
+  the same reason min/max is used instead of an average: an average hides a transient, a
+  repeat invents one.
+* **The envelope gets a stroked silhouette** (`path.edge`) on top of the fill. An aim point
+  is an *edge*, and a shape whose outline is the same colour as its body has nothing to put
+  a boundary against.
+* **Silent runs are shaded** (`path.gap`, behind the wave) and their edges are added to the
+  magnet beside the onsets. This is the single idea the annotation manuals agree on — Praat
+  guidance is literally "the waveform goes from flat to spiky where the word starts, put
+  the boundary there" — so the lane now marks the flat runs instead of leaving you to
+  notice them, and *B* will pull a word onto the end of one. Only the edges that face
+  speech are offered: a run that touches the start of the file has no boundary to find
+  there, and snapping a word to the IN point would be the editor inventing a correction.
+  Which runs count as silent is decided at 40 dB under the file's own loudest sample and
+  *never* through the display scale — switching between dB and linear must not make the
+  lane claim the recording changed — and the level is deliberately conservative, because
+  the same list steers the magnet. It is computed once, inside the lane, and handed to the
+  popup as `gapRuns`: a second call with its own threshold would be a second opinion about
+  the same audio.
+* **The five shapes have a fixed order**, because they are drawn over each other: shaded
+  silence, peak envelope, RMS band, centre line, silhouette — the outline last so nothing
+  ever paints over the edge being aimed at. `WaveLaneShapeTest` pins the order in the
+  markup, so the list of `<path>`s cannot be tidied into a different picture.
+* **The lane's resolution follows the drawn width** (`karaokeWaveBuckets`, asked for as
+  the probe's `buckets=`: 800 / 1600 / 2400 / 4000). What the lane has to say is one value
+  per painted column, and the painted width is the strip's 700-odd CSS pixels times the
+  zoom — a screenful at fit, ~42 000 px at 60×. The constant it used to be, 1400 buckets,
+  is therefore right at fit and one column every thirty pixels at the top of the range,
+  which is precisely "the peaks go soft when I zoom in". Quantised onto four rungs instead
+  of computed exactly, because a request is an FFmpeg decode: `waveAsked` makes it one
+  request per rung, and the backend's probe cache is keyed by bucket count, so pacing back
+  across a boundary is free rather than another decode. 4000 is the API's ceiling and the
+  honest limit — a bucket is `span / 4000` seconds, 3 ms on a twelve-second cut and 30 ms
+  on a two-minute one, while a word boundary is only ever timed to ~50 ms. Below that, the
+  right picture is a spectrogram, which is the next point.
+
+**What was deliberately not done: a spectrogram.** The Praat/ELAN literature is blunt that
+a waveform cannot distinguish speech from a lip smack, a breath or a door, and that the
+spectrogram is the tool for that. It is also blunt that the waveform is the right tool for
+"where does this word start and end", which is the question this popup asks — and a
+per-column frequency image in an SVG lane, for every clip, in a popup whose job is to drag
+four numbers, is a different feature. The onset marks and the shaded gaps are the 90 % answer
+here; if a caption is genuinely unreadable from the waveform, the honest advice is that the
+audio needs a listen, not another picture.
+
+## Two things the full-width change broke, and how each was fixed
+
+* **The preview vanished.** `display:contents` on `.kara-left` made the stage a grid item,
+  and a grid item sized by `max-width` with `justify-self:start` is sized by its *content*
+  — whose every child (`video`, the caption overlay, the tap cue) is `position:absolute`.
+  Content width zero, `aspect-ratio` on zero, no picture. The box now has a real
+  `width:min(100%,520px)`, and `PreviewVisibilityTest` pins the shape of that declaration
+  rather than trusting that the layout "should" work: this is the second bug in a row that
+  a rule in the file could not prevent.
+* **A selection made while paused was selected but off screen.** The playhead follow is
+  switched off while paused on purpose (a scrub must not fight the pointer), so nothing
+  moved the box: the block got its highlight somewhere the user could not see it, which is
+  what "the first timeline is not updated when I click a numbered sentence" looked like.
+  A deliberate selection now asks for one centring pass (`reveal`), and only a deliberate
+  one — a drag still never yanks the view around.
+
+
 ## Two rulers, one axis, and how the words pane got its controls back
 
 Four layout asks, one of which was a cascade bug worth writing down:
@@ -585,6 +657,14 @@ the one supplying the hold.
   never in `KaraokeData`, so it cannot ride into an MP4 or a project file.
 * **No button inside a button.** A rail row is a `div[role=button]` with its own
   key handler, so the × in it is a real button with a real click target.
+* **The lane's columns match the strip's.** `karaokeWaveBuckets` picks the probe's
+  resolution from the drawn width, one request per rung of the ladder; a lane that kept
+  its fit-zoom detail at 60× is a lane that blurs exactly when it is being used.
+* **The magnet's candidates are onsets *and* silence edges**, sorted into one list and
+  limited by the same radius. Adding a source can only improve which candidate is nearest;
+  it cannot make the magnet grab further than `snap` says.
+* **The stage box has a width of its own.** Its content is entirely absolutely positioned,
+  so nothing else can give it one: `width:min(100%,520px)`, not `max-width`.
 
 ## Tests
 

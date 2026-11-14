@@ -16,7 +16,13 @@ const core = await import(path.join(here, '..', '..', 'src', 'karaokeCore.ts'))
 const out = []
 // Only a prefix of each path is compared: the point of the shape is that a bucket
 // maps to a column, and a full 1000-point path would make the test a diff of numbers.
-const trimPaths = p => (p ? { envelope: p.envelope.slice(0, 24), inner: (p.inner || '').slice(0, 24), centre: p.centre } : null)
+const trimPaths = p => (p ? {
+  envelope: p.envelope.slice(0, 24), inner: (p.inner || '').slice(0, 24), centre: p.centre,
+  // The edge and the gaps are the two new shapes; only their first columns and their
+  // counts are compared, because the point is "one vertex per column, one rect per run".
+  edge: `${p.edge.split(' L').length}|${p.edge.slice(0, 7)}|${p.edge.includes('Z') ? 'closed' : 'open'}`,
+  gaps: p.gaps,
+} : null)
 for (const c of input_cases()) {
   const bar = core.karaokeWordBar(c.line, c.ceiling)
   const cuts = []
@@ -49,8 +55,20 @@ for (const c of input_cases()) {
       linear: c.wave.values.map(v => round(core.karaokeWaveLevel(v, c.wave.reference, {}))),
       dB: c.wave.values.map(v => round(core.karaokeWaveLevel(v, c.wave.reference, { log: true, floorDb: c.wave.floorDb ?? 48 }))),
       paths: trimPaths(core.karaokeWavePaths(c.wave.values, c.wave.rms ?? null, c.wave.reference, { log: !!c.wave.log })),
+      gaps: core.karaokeWaveGaps(c.wave.values, c.wave.reference),
+      // The magnet's candidate list, from a silence map in the lane's own seconds.
+      aim: c.aim === undefined ? null : core.karaokeWaveAim(c.aim.gaps, c.aim.span),
+      // The y of one column, read straight out of the path the browser is handed. This
+      // is how "the lane slopes instead of stepping" gets *measured*: a repeated bucket
+      // would put the column half-way between two buckets exactly on the baseline.
+      column: c.at === undefined || !c.wave || !c.wave.values ? null : (() => {
+        const p = core.karaokeWavePaths(c.wave.values, null, c.wave.reference, {})
+        const pts = p.envelope.slice(1).split(' L').map(s => s.split(','))
+        return { y: Number(pts[c.at][1]) }
+      })(),
     },
     budget: c.zoomAt === undefined ? null : core.karaokeLabelBudget(c.zoomAt),
+    buckets: c.zoomAt === undefined ? null : core.karaokeWaveBuckets(c.zoomAt, c.boxPx),
     // The three-line zoom: what the strip has to be widened to, and what is
     // actually in view when the caption has no neighbour on one side.
     fit: (c.span === undefined || !c.lines) ? null : (() => {

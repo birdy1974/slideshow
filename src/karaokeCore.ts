@@ -1562,44 +1562,174 @@ export function karaokeWaveLevel (
 }
 
 /**
- * The lane as two mirrored polygons over a `0 0 1000 100` viewBox.
+ * How many buckets to ask the audio probe for at this zoom.
  *
- * The outer one is the peak envelope, the inner one is RMS: the lighter band
- * inside the darker shape is what makes a *voiced* word obvious (RMS follows
- * perceived loudness), and the gap between the two is the crest factor — wide
- * for speech and untreated drums, narrow for compressed material. Silence
- * draws nothing but the centre line, which is the whole point: the flat runs
- * are where no word is spoken, so a word boundary goes at the edge of a hill.
+ * The lane is drawn into a fixed 1000-unit viewBox, but what it *occupies* is
+ * `KARAOKE_BOX_PX × zoom` CSS pixels, and a bucket narrower than a column is wasted
+ * while a bucket wider than a column is a staircase. So the request follows the
+ * drawn width, quantised onto a short ladder: one fetch per band instead of one per
+ * wheel notch, because each request is an FFmpeg decode (the backend caches by
+ * bucket count, so scrolling back and forth across a boundary is cheap).
+ *
+ * The API caps `buckets` at 4000, which is the honest resolution limit: at 60× on a
+ * two-minute clip that is a bucket every ~30 ms — above the ~50 ms a word boundary is
+ * timed to, and far below the 10 ms floor that would just be aliasing at that zoom.
+ */
+export const KARAOKE_WAVE_LADDER = [800, 1600, 2400, 4000]
+
+export function karaokeWaveBuckets (zoom: number, boxPx: number = KARAOKE_BOX_PX): number {
+  const want = Math.max(1, Math.round(Math.max(1, Number(boxPx) || KARAOKE_BOX_PX) * clampKaraokeZoom(zoom)))
+  // 3/4 of a column of slack, so a hair of zoom does not cost a decode.
+  return KARAOKE_WAVE_LADDER.find(level => level >= want * 0.75) ?? KARAOKE_WAVE_LADDER[KARAOKE_WAVE_LADDER.length - 1]
+}
+
+/**
+ * Where nothing is spoken, as fractions of the lane.
+ *
+ * A boundary between sentences belongs in a flat run, at the edge of a hill — that is
+ * the one piece of advice every speech-annotation manual agrees on (Praat's
+ * "the waveform goes from flat to spiky when the word starts"). Finding those runs by
+ * eye is the whole reason the lane exists, so they are computed: a run of buckets more
+ * than `floorDb` (default 40) below the file's own peak, at least `minRun` of the lane
+ * wide so a one-bucket dip inside a word is not offered as a gap.
+ *
+ * The threshold is a decision about the *recording*, so it is made in decibels and never
+ * through the display scale: a lane whose shading moved when the reader switched between
+ * dB and linear would be claiming the audio had changed. 40 dB under the loudest sample
+ * in the file is a room with the door closed — and it is deliberately conservative,
+ * because the same list feeds the magnet, and a boundary pulled into a breath is worse
+ * than a boundary that was never offered.
+ */
+export function karaokeWaveGaps (
+  values: number[] | null | undefined,
+  reference: number,
+  opts: { floorDb?: number; minRun?: number } = {},
+): [number, number][] {
+  const list = values || []
+  if (list.length < 2) return []
+  const floorDb = Number(opts.floorDb) > 0 ? Number(opts.floorDb) : 40
+  const ref = Number(reference) > 0 ? Number(reference) : 1
+  const at = (i: number) => 20 * Math.log10(Math.max(1e-6, Math.max(0, list[i] || 0) / ref))
+  // A bucket is exactly `1 / list.length` of the lane; two buckets is the shortest
+  // run that has an inside, or every single-sample dip would be advertised.
+  const shortest = Math.max(2, Math.round((Number(opts.minRun) > 0 ? Number(opts.minRun) : 0.012) * list.length))
+  const out: [number, number][] = []
+  let run = -1
+  for (let i = 0; i <= list.length; i++) {
+    const quiet = i < list.length && at(i) <= -floorDb
+    if (quiet && run < 0) run = i
+    if (!quiet && run >= 0) {
+      if (i - run >= shortest) out.push([run / list.length, i / list.length])
+      run = -1
+    }
+  }
+  return out
+}
+
+/**
+ * The times worth snapping to inside the silence map, in the lane's own seconds.
+ *
+ * The *edges* of a gap, not its middle: a word boundary goes where the previous word
+ * let go (the end of a run) or where the next one starts (the beginning of the run
+ * after it). The two edges of the file itself are dropped — snapping a word to the
+ * start of the clip is not a correction, it is the editor inventing a boundary out of
+ * nothing but padding — and a gap that runs to the end of the kept cut keeps only its
+ * start, for the same reason.
+ */
+export function karaokeWaveAim (gaps: [number, number][] | null | undefined, span: number): number[] {
+  const hi = Number(span) > 0 ? Number(span) : 0
+  const out: number[] = []
+  for (const [from, to] of gaps || []) {
+    if (from > 0 && (from < hi || hi <= 0)) out.push(msRound(from))
+    if (to > 0 && to < hi) out.push(msRound(to))
+  }
+  return out
+}
+
+/**
+ * The lane as mirrored shapes over a `0 0 1000 100` viewBox, in the order the popup
+ * paints them (the five classes in `.kara-audio`: `gap` first, `edge` last).
+ *
+ * `envelope` is the peak wave — the dark body, `max|x|` per bucket. Peak and not
+ *   average, because an average hides a 30 ms fricative and a peak cannot.
+ * `inner` is the RMS band, lighter, inside it. The gap between the two is the crest
+ *   factor, which is what tells a voiced syllable from a sibilant at a glance.
+ * `edge` is the upper silhouette on its own, stroked: a filled shape whose border is
+ *   the same colour as its fill has no border, and a border is what an aim point is
+ *   placed against — this is the line the eye follows when it looks for the slope
+ *   where sound starts.
+ * `centre` is the zero line, which on this scale is also "the file's own loudest
+ *   sample", and the only thing silence draws.
+ * `gaps` shades the runs where nothing is spoken, because that is where a sentence
+ *   boundary belongs; `gapRuns` returns the same runs as fractions, so the magnet is
+ *   aimed at exactly what the reader is being shown and not at a second opinion.
+ *
+ * One vertex per column, and a column between two buckets takes a mix of them: a
+ * bucket thirty columns wide drawn as thirty equal pixels is a staircase, and a
+ * staircase makes a reader time a word to the step. Interpolating the pixel height
+ * rather than the sample value is also what makes a taper look like a taper — which
+ * is the shape that says "this word is finishing".
  */
 export function karaokeWavePaths (
   peaks: number[] | null | undefined,
   rms: number[] | null | undefined,
   reference: number,
-  opts: { log?: boolean; floorDb?: number; gainCapDb?: number; half?: number } = {},
-): { envelope: string; inner: string; centre: string } | null {
+  opts: { log?: boolean; floorDb?: number; gainCapDb?: number; half?: number; minRun?: number; gapFloorDb?: number } = {},
+): { envelope: string; inner: string; edge: string; centre: string; gaps: string; gapRuns: [number, number][] } | null {
   const list = peaks || []
   if (list.length < 2) return null
   const width = 1000
   const half = Number(opts.half) > 0 ? Number(opts.half) : 47
   const quiet = rms && rms.length >= 2 ? rms : null
-  const at = (n: number, source: number[]) => Math.min(source.length - 1, Math.max(0, Math.round((n / (width - 1)) * (source.length - 1))))
-  const top: string[] = []
-  const bottom: string[] = []
-  const inTop: string[] = []
-  const inBottom: string[] = []
-  for (let x = 0; x < width; x++) {
-    const v = karaokeWaveLevel(list[at(x, list)], reference, opts)
-    top.push(`${(50 - v * half).toFixed(1)}`)
-    bottom.unshift(`${(50 + v * half).toFixed(1)}`)
-    const r = quiet ? karaokeWaveLevel(quiet[at(x, quiet)], reference, opts) : 0
-    inTop.push(`${(50 - r * half).toFixed(1)}`)
-    inBottom.unshift(`${(50 + r * half).toFixed(1)}`)
+  // Convert once per bucket, then map columns onto those values. Cheaper than a
+  // conversion per column at 4000 buckets, and it is the order that makes the
+  // interpolation a straight line on screen.
+  const levels = (source: number[]) => source.map(v => karaokeWaveLevel(v, reference, opts))
+  const peakLevels = levels(list)
+  const rmsLevels = quiet ? levels(quiet) : null
+  const at = (source: number[], n: number) => {
+    // Bucket i is *about* the lane from i/N to (i+1)/N — the band `karaokeWaveGaps`
+    // numbers the same way — so its value belongs at the centre of that band, and a
+    // column takes the straight line between the two centres around it. Mapping the
+    // values onto `0..N-1` instead would slide the whole wave half a bucket to the
+    // right of its own shading, which is small and systematic, and a systematic offset
+    // under the thing you are aiming at is the one error a lane like this may not have.
+    const last = source.length - 1
+    const pos = Math.max(0, Math.min(last, (n / (width - 1)) * source.length - 0.5))
+    const lo = Math.floor(pos)
+    const hi = Math.min(last, lo + 1)
+    return source[lo] + (source[hi] - source[lo]) * (pos - lo)
   }
-  const closed = (t: string[], b: string[]) => `M${t.map((y, x) => `${x},${y}`).join(' L')} L${b.map((y, i) => `${width - 1 - i},${y}`).join(' L')} Z`
+  const top: number[] = []
+  const inner: number[] = []
+  for (let x = 0; x < width; x++) {
+    top.push(at(peakLevels, x))
+    inner.push(rmsLevels ? at(rmsLevels, x) : 0)
+  }
+  const y = (v: number) => (50 - v * half).toFixed(1)
+  const closed = (series: number[]) => {
+    const up = series.map(v => y(v))
+    const down = [...series].reverse().map(v => (50 + v * half).toFixed(1))
+    return `M${up.map((v, x) => `${x},${v}`).join(' L')} L${down.map((v, i) => `${width - 1 - i},${v}`).join(' L')} Z`
+  }
+  // The silence map ignores the display scale, and that is the point of it. It is also
+  // returned as *runs*, so the magnet is aimed at the very runs the reader is being
+  // shown — a second call with its own threshold would be a second opinion about the
+  // same audio, and the two would drift the moment one of them was tuned.
+  const gapRuns = karaokeWaveGaps(quiet || list, reference, { minRun: opts.minRun, floorDb: opts.gapFloorDb })
+  const gaps = gapRuns
+    .map(([from, to]) => {
+      const x0 = Math.round(from * (width - 1))
+      const x1 = Math.max(x0 + 1, Math.round(to * (width - 1)))
+      return `M${x0},0 H${x1} V100 H${x0} Z`
+    }).join(' ')
   return {
-    envelope: closed(top, bottom),
-    inner: quiet ? closed(inTop, inBottom) : '',
+    envelope: closed(top),
+    inner: rmsLevels ? closed(inner) : '',
+    edge: `M${top.map((v, x) => `${x},${y(v)}`).join(' L')}`,
     centre: `M0,50 L${width - 1},50`,
+    gapRuns,
+    gaps,
   }
 }
 
