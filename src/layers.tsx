@@ -89,10 +89,15 @@ export function useEscapeToClose(z: number, onEscape: (() => void) | undefined, 
  * browser's delete confirm, the project loader's confirms) closes without
  * taking its parent down with it.
  */
-export function PopupBackdrop({ className, style, onDismiss, children, role, ariaLabel }: {
+export function PopupBackdrop({ className, style, onDismiss, backdropDismiss = true, children, role, ariaLabel }: {
   className?: string
   style?: CSSProperties
   onDismiss?: () => void
+  /** `false` = a click on the dark area outside the panel does nothing. Escape and
+   *  the popup's own buttons still work, because this is about the backdrop, not
+   *  about having a way out: the karaoke editor live-patches the project, so a
+   *  stray click outside it used to end the session mid-drag. */
+  backdropDismiss?: boolean
   children: ReactNode
   role?: string
   ariaLabel?: string
@@ -104,6 +109,6 @@ export function PopupBackdrop({ className, style, onDismiss, children, role, ari
     style={{ ...style, zIndex: layer }}
     role={role}
     aria-label={ariaLabel}
-    onMouseDown={onDismiss ? event => { event.stopPropagation(); onDismiss() } : undefined}
+    onMouseDown={onDismiss && backdropDismiss ? event => { event.stopPropagation(); onDismiss() } : undefined}
   >{children}</div>
 }
