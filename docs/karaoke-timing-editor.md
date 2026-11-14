@@ -338,11 +338,12 @@ pure and measured in `AudioLaneScaleTest`; the three smaller waveform drawings (
 `wave` surface, the word bar's mini lane, the lane) share `karaokeWavePaths`, so a
 bucket means one thing in the whole popup.
 
-### Four more things, after the lane was used for real
+### Five more things, after the lane was used for real
 
-The first version of the lane was drawn and then judged by eye, and three of the four
-changes below are what that judging found — each one is a technique the editors that have
-decades of speech-annotation use already have:
+The first version of the lane was drawn, then used, and the gap between those two is what
+the first four bullets close: each is a technique the editors that have been annotating
+speech by eye for decades already have, and the lane had none of them. The fifth is the
+paint order that keeps them all visible.
 
 * **The buckets are interpolated, not repeated.** A bucket covering thirty columns used to
   paint thirty equal pixels, which reads as hard edges the audio does not have — and it
