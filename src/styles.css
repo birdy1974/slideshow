@@ -1875,12 +1875,12 @@ html.modal-open,html.modal-open body{overflow:hidden}
    the settings scroll beside the preview instead of under it. */
 .karaoke-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(280px,.92fr) minmax(340px,1.08fr);gap:9px 16px;padding:12px 15px 10px;overflow-y:auto;align-items:start;scrollbar-width:thin;scrollbar-color:#4a5242 transparent;border-bottom:1px solid #3a3e36}
 .kara-left{display:contents}
-.kara-stage-wrap{grid-column:1;grid-row:1;max-width:min(100%,460px);justify-self:start}
 .kara-transport{grid-column:1;grid-row:2}
 .kara-strip-scroll{grid-column:1/-1;grid-row:3}
 .kara-wordbar{grid-column:1/-1;grid-row:4}
 .strip-legend{grid-column:1/-1;grid-row:5}
-.kara-side{grid-column:2;grid-row:1/span 5;align-self:start;overflow:visible;background:transparent;border-left:0;padding:0}
+.kara-side{grid-column:2;grid-row:1/span 2;align-self:start;overflow:visible;background:transparent;border-left:0;padding:0}
+.kara-stage-wrap{grid-column:1;grid-row:1;max-width:min(100%,520px);justify-self:start}
 .kara-left{display:flex;flex-direction:column;gap:9px;padding:13px 15px 11px;min-width:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-side{background:#292c27;border-left:1px solid #3a3e36;padding:14px 16px;display:flex;flex-direction:column;gap:13px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-stage-wrap{position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;flex:0 0 auto}
@@ -1995,6 +1995,27 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-wordbar-duration input{width:74px;padding:2px 5px;border:1px solid #494e45;border-radius:4px;background:#20231f;color:#fff;font:700 10px Manrope}
 .kara-wordbar-times small{flex:1 1 200px;font:500 8px Manrope;color:#6b7066;text-align:right;line-height:1.5}
 /* The text pane's sentence rail: the number the strip uses, next to the words. */
+/* The third timeline: the movie's own levels, under the sentences and the words
+   of the selected line. It is drawn inside the strip's scroller so it inherits the
+   zoom, the ruler and the playhead — three lanes that must agree about a second, and
+   one mapping that cannot drift. The dB rungs are only a scale: peak envelope is
+   `max(|x|)` per bucket, so 0.5 sits at about -6 dBFS, not at the middle. */
+.kara-audio{position:relative;height:44px;margin-top:4px;background:#0b0d0a;border:1px solid #2c3128;border-radius:6px;overflow:hidden}
+.kara-audio svg{position:absolute;left:0;top:8px;width:100%;height:calc(100% - 10px);display:block}
+.kara-audio path{fill:#39432f;stroke:none}
+.kara-audio i{position:absolute;top:0;bottom:0;width:1px;background:#55643f;opacity:.7}
+.kara-audio i.sel{background:#a3cd63;opacity:1;width:2px;margin-left:-1px}
+.kara-audio u{position:absolute;top:1px;bottom:1px;width:1px;margin-left:-.5px;background:#8d9388;opacity:.45}
+.kara-audio u.now{background:#ffd166;opacity:1}
+.kara-audio u.sung{background:#d9efb0;opacity:.85}
+.kara-audio-scale{position:absolute;top:2px;left:4px;display:flex;gap:6px;font:700 7px Manrope;color:#5f655d;pointer-events:none}
+.kara-audio-scale b{font-weight:700}
+.kara-audio-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:600 9px Manrope;color:#7f857a;font-style:normal}
+/* Settings live in their own layer now, so the timing lanes can have the width. */
+.kara-settings-open{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;font-size:10px}
+.kara-settings-open.on{border-color:#a3cd63;color:#eaf3e6;background:#2f3a26}
+.kara-settings{width:min(560px,94vw);max-height:calc(100vh - 60px);display:flex;flex-direction:column;background:#1e211d;border:1px solid #41443c;border-radius:13px;overflow:hidden;box-shadow:0 30px 80px #0009}
+.kara-settings-body{padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:13px;background:#292c27;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-lines{display:flex;flex-direction:column;gap:2px;margin-top:7px;max-height:158px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-line{display:flex;align-items:baseline;gap:7px;width:100%;padding:3px 6px;border:1px solid transparent;border-radius:5px;background:#20231f;color:#a9b0a2;font:600 10px Manrope;text-align:left;cursor:pointer}
 .kara-line:hover{border-color:#55643f;background:#2b3128;color:#dfe7d3}

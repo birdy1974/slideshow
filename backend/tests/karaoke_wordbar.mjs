@@ -30,6 +30,15 @@ for (const c of input_cases()) {
     edges: bar ? [core.karaokeWordBarTime(bar, 0), core.karaokeWordBarTime(bar, 0.5), core.karaokeWordBarTime(bar, 1)] : null,
     frac: bar && bar.words.length ? round(core.karaokeWordBarFraction(bar, bar.words[bar.words.length - 1].t0)) : null,
     cuts,
+    // The three-line zoom: what the strip has to be widened to, and what is
+    // actually in view when the caption has no neighbour on one side.
+    fit: (c.span === undefined || !c.lines) ? null : (() => {
+      // The zoom is derived from the very span the helper reports, which is the
+      // pair the popup uses: a preset that fitted a different window than it
+      // announces would be a lie in the notice.
+      const span = core.karaokeNeighbourSpan(c.plan, c.at, c.back, c.forward)
+      return { zoom: core.karaokeZoomToFit(c.span, span ? span.to - span.from : 0), span, max: core.KARAOKE_ZOOM_MAX }
+    })(),
     // A typed sentence end, turned back into the last word's hold — the field and
     // the drag have to produce the same number, or the bar shows one end and the
     // render does another.

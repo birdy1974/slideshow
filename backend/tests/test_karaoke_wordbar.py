@@ -219,6 +219,37 @@ class WordBarDragTest(unittest.TestCase):
         self.assertIsNone(got["cuts"][0])
 
 
+class ThreeLineZoomTest(unittest.TestCase):
+    """The zoom preset is arithmetic on the plan, so it is measured, not eyeballed."""
+
+    def test_three_lines_is_the_span_of_the_neighbours_and_the_box_over_it(self) -> None:
+        plan = {"sentences": [{"start": 1.0, "end": 4.0}, {"start": 4.0, "end": 7.0}, {"start": 7.0, "end": 9.5},
+                              {"start": 9.5, "end": 12.0}]}
+        cases = [
+            {"span": 20.0, "lines": 3, "plan": plan, "at": 1, "back": 1, "forward": 1},
+            {"span": 20.0, "lines": 3, "plan": plan, "at": 0, "back": 1, "forward": 1},
+            {"span": 20.0, "lines": 3, "plan": plan, "at": 3, "back": 1, "forward": 1},
+            {"span": 20.0, "lines": 3, "plan": {"sentences": []}, "at": 0, "back": 1, "forward": 1},
+        ]
+        got = _run(cases)
+        self.assertEqual({"from": 1.0, "to": 9.5, "lines": 3}, got[0]["fit"]["span"])
+        # `clampKaraokeZoom` snaps to the slider's own step, so the expected value
+        # is what the control can actually hold, to three decimals.
+        self.assertEqual(round(20 / 8.5, 3), got[0]["fit"]["zoom"], "the box shows 8.5 s of a 20 s clip")
+        # At either end there is no neighbour: it fits what exists, and says so.
+        self.assertEqual({"from": 1.0, "to": 7.0, "lines": 2}, got[1]["fit"]["span"])
+        self.assertEqual(round(20 / 6.0, 3), got[1]["fit"]["zoom"])
+        self.assertEqual({"from": 7.0, "to": 12.0, "lines": 2}, got[2]["fit"]["span"])
+        self.assertEqual(round(20 / 5.0, 3), got[2]["fit"]["zoom"])
+        self.assertIsNone(got[3]["fit"]["span"], "no sentences, nothing to centre on")
+
+    def test_the_zoom_stays_inside_the_range_the_slider_offers(self) -> None:
+        plan = {"sentences": [{"start": 10.0, "end": 10.05}, {"start": 10.05, "end": 10.1}]}
+        got = _run([{"span": 3600.0, "lines": 3, "plan": plan, "at": 0, "back": 1, "forward": 1}])[0]
+        self.assertEqual(got["fit"]["max"], got["fit"]["zoom"], "a window smaller than a frame still cannot ask for more zoom than the slider has")
+        self.assertGreater(got["fit"]["zoom"], 1)
+
+
 class TypedEndTest(unittest.TestCase):
     """The bar's number fields and the bar's handles write one number."""
 
@@ -276,14 +307,62 @@ class PopupShapeTest(unittest.TestCase):
 
     def test_the_preview_is_small_and_the_timelines_own_the_full_width(self) -> None:
         # `display:contents` is what lets the strip and the bar span the popup while
-        # the video stays in the left column, and the settings scroll beside it.
+        # the video stays in the left column — and the right column is only the words
+        # pane now, because everything else moved into the settings layer.
         self.assertIn(".kara-left{display:contents}", self.css)
-        for selector, want in ((".kara-strip-scroll{", "grid-column:1/-1"),
-                               (".kara-wordbar{grid-column", "1/-1"),
-                               (".kara-stage-wrap{grid-column:1;grid-row:1;max-width:min(100%,460px)", "justify-self:start"),
-                               (".kara-side{grid-column:2", "grid-row:1/span 5")):
-            i = self.css.index(selector)
-            self.assertIn(want, self.css[i:i + 400], selector)
+        self.assertIn(".kara-strip-scroll{grid-column:1/-1;grid-row:3}", self.css)
+        self.assertIn(".kara-wordbar{grid-column:1/-1;grid-row:4}", self.css)
+        self.assertIn(".strip-legend{grid-column:1/-1;grid-row:5}", self.css)
+        self.assertIn(".kara-side{grid-column:2;grid-row:1/span 2", self.css)
+        self.assertIn("max-width:min(100%,520px)", self.css)
+
+    def test_the_settings_are_a_layer_over_the_timing_not_a_column_beside_it(self) -> None:
+        # One copy of the fields, rendered in a second popup: they are a function
+        # returning JSX, so they still close over `apply`/`patchLook` and there is
+        # no second editor state that could disagree with the timing.
+        self.assertIn("const [showSettings, setShowSettings] = useState(false)", self.editor)
+        self.assertIn("const settingsFields = () => <>", self.editor)
+        self.assertIn("{settingsFields()}", self.editor)
+        self.assertIn('onClick={() => setShowSettings(v => !v)}', self.editor)
+        head = self.editor[:self.editor.index('className="karaoke-body"')]
+        self.assertIn("Settings size={13}", head, "the button belongs by the movie's name, above the preview")
+        # The right column of the main popup holds exactly one field: the words pane.
+        aside = self.editor[self.editor.index('<aside className="kara-side">'):self.editor.index("</aside>")]
+        self.assertEqual(1, aside.count('className="kara-field"'), aside[:200])
+
+    def test_the_audio_profile_is_always_asked_for_and_names_why_when_absent(self) -> None:
+        # The lane used to be gated on the `wave` surface, so in the other three
+        # modes it sat empty and looked broken. Peaks are fetched once, and the
+        # outcome is stated for each reason it can be missing.
+        self.assertNotIn("data.editor !== 'wave' || peaks", self.editor)
+        self.assertIn("if (!analyzable || peaks) return", self.editor)
+        self.assertIn("/api/media/waveform", self.editor, "the levels come from ffmpeg, not the browser's decoder")
+        self.assertIn(f"buckets=${{WAVE_BUCKETS}}", self.editor)
+        for state in ("'reading'", "'ready'", "'empty'", "'failed'"):
+            self.assertIn(state, self.editor)
+        lane = self.editor[self.editor.index('className="kara-audio"'):][:2200]
+        for note in ("no movie to read audio from", "the audio probe did not answer", "no audio track", "reading the movie"):
+            self.assertIn(note, lane)
+        self.assertIn(".kara-audio{position:relative;", self.css)
+        self.assertIn(".kara-audio-scale", self.css, "levels need a scale: a peak envelope is max(|x|), not RMS")
+
+    def test_the_audio_lane_shares_the_strips_axis_and_marks_both_timelines(self) -> None:
+        lane = self.editor[self.editor.index('className="kara-audio"'):]
+        lane = lane[:lane.index("kara-audio-note")]
+        self.assertIn("<path d={wavePath}/>", lane)
+        self.assertIn("plan.sentences.map((line, ai) => <i key={`al-${ai}`}", lane)   # sentence starts
+        self.assertIn("current ? current.words.map(w => <u", lane)                    # the selected line's words
+        self.assertEqual(0, lane.count("stripWidth"), "it lives inside the strip, so the zoom is inherited, not repeated")
+
+    def test_the_three_sentence_zoom_and_the_two_way_selection(self) -> None:
+        self.assertIn("karaokeNeighbourSpan(plan, selected, 1, 1)", self.editor)
+        self.assertIn("zoomTo(karaokeZoomToFit(span, fit.to - fit.from))", self.editor)
+        self.assertIn('box.scrollLeft = karaokeFollowScroll(', self.editor)
+        # the words pane scrolls to whatever the playhead or a block click picked
+        self.assertIn("railRef.current?.querySelector('.kara-line.active')?.scrollIntoView", self.editor)
+        self.assertIn('<div className="kara-lines" ref={railRef}>', self.editor)
+        # and a sentence clicked (not dragged) in the strip goes to that moment
+        self.assertIn("if (drag.kind === 'block' && !drag.moved) {", self.editor)
 
     def test_the_bar_shows_the_audio_and_the_typed_times(self) -> None:
         bar = self.editor[self.editor.index('className="kara-wordbar"'):][:6200]
