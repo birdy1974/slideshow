@@ -1413,6 +1413,23 @@ export function karaokeEvenWordTimes (from: number, to: number, count: number): 
   return Array.from({ length: n }, (_, k) => msRound(lo + k * step))
 }
 
+/**
+ * The hold a sentence needs so its window ends at `end`.
+ *
+ * A line's window is `last word's end + the tail`, and the tail is one shared
+ * setting, so this is the inverse the number field needs: typed end minus the
+ * start minus the tail, never below a readable word and never past `ceiling`
+ * (the caption window) — the same clip `planOf` applies when it reads the hold
+ * back, so a typed value and a dragged one cannot disagree.
+ */
+export function karaokeHoldForEnd (start: number, end: number, tail: number, ceiling: number): number | null {
+  const lo = Math.max(0, Number(start) || 0)
+  const want = (Number(end) || 0) - lo - Math.max(0, Number(tail) || 0)
+  if (!Number.isFinite(want)) return null
+  const cap = Math.max(KARAOKE_MIN_WORD_GAP, (Number(ceiling) || 0) - lo)
+  return msRound(Math.max(0.05, Math.min(Math.max(0.05, want), cap)))
+}
+
 /** Percent across the bar for a time on the clip clock. */
 export function karaokeWordBarFraction (bar: KaraokeWordBar | null | undefined, seconds: number): number {
   if (!bar) return 0

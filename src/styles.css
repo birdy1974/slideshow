@@ -1868,7 +1868,19 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-modes button{border:0;background:transparent;color:#b8bcb2;font:700 9px Manrope;padding:6px 9px;border-radius:5px;white-space:nowrap}
 .kara-modes button:hover{background:#272b23;color:#fff}
 .kara-modes button.active{background:#78a13e;color:#141a0c}
-.karaoke-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(520px,1fr) 400px;overflow:hidden;align-items:stretch;border-bottom:1px solid #3a3e36}
+/* The popup is two things now: a small monitor and the whole width of the
+   timeline under it. `.kara-left` is `display:contents`, so its children become
+   grid children of the body — which is how the strip and the word bar get the full
+   popup width while the video and its transport stay in the left column, and why
+   the settings scroll beside the preview instead of under it. */
+.karaoke-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(280px,.92fr) minmax(340px,1.08fr);gap:9px 16px;padding:12px 15px 10px;overflow-y:auto;align-items:start;scrollbar-width:thin;scrollbar-color:#4a5242 transparent;border-bottom:1px solid #3a3e36}
+.kara-left{display:contents}
+.kara-stage-wrap{grid-column:1;grid-row:1;max-width:min(100%,460px);justify-self:start}
+.kara-transport{grid-column:1;grid-row:2}
+.kara-strip-scroll{grid-column:1/-1;grid-row:3}
+.kara-wordbar{grid-column:1/-1;grid-row:4}
+.strip-legend{grid-column:1/-1;grid-row:5}
+.kara-side{grid-column:2;grid-row:1/span 5;align-self:start;overflow:visible;background:transparent;border-left:0;padding:0}
 .kara-left{display:flex;flex-direction:column;gap:9px;padding:13px 15px 11px;min-width:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-side{background:#292c27;border-left:1px solid #3a3e36;padding:14px 16px;display:flex;flex-direction:column;gap:13px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
 .kara-stage-wrap{position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;flex:0 0 auto}
@@ -1970,6 +1982,30 @@ html.modal-open,html.modal-open body{overflow:hidden}
 .kara-wordbar-cut.end::after{background:#d9b35d;width:2px;left:4px}
 .kara-wordbar-cut.end:hover::after,.kara-wordbar-cut.end:active::after{background:#ffd166;width:4px;left:3px}
 .kara-block.plain{border-style:dashed;border-color:#4a5340;background:#262b22;color:#a9b0a2}
+/* The audio profile under the bar: the clip's own peaks, cut to the sentence.
+   The <svg> is the whole clip's path, made that wide and slid left, so the peaks
+   and the words above them are the same seconds — no second resampling pass that
+   could drift from the surface the strip already draws. */
+.kara-wordbar-wave{position:relative;height:34px;margin-top:5px;background:#0b0d0a;border-radius:5px;overflow:hidden}
+.kara-wordbar-wave svg{position:absolute;left:0;top:0;height:100%;display:block}
+.kara-wordbar-wave path{fill:#39432f;stroke:none}
+.kara-wordbar-wave i{position:absolute;top:2px;bottom:2px;width:1px;margin-left:-.5px;background:#a3cd6366}
+.kara-wordbar-times{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 10px;margin-top:7px}
+.kara-wordbar-duration{display:flex;flex-direction:column;gap:2px;font:700 8px Manrope;color:#9b9f95;letter-spacing:.5px}
+.kara-wordbar-duration input{width:74px;padding:2px 5px;border:1px solid #494e45;border-radius:4px;background:#20231f;color:#fff;font:700 10px Manrope}
+.kara-wordbar-times small{flex:1 1 200px;font:500 8px Manrope;color:#6b7066;text-align:right;line-height:1.5}
+/* The text pane's sentence rail: the number the strip uses, next to the words. */
+.kara-lines{display:flex;flex-direction:column;gap:2px;margin-top:7px;max-height:158px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#4a5242 transparent}
+.kara-line{display:flex;align-items:baseline;gap:7px;width:100%;padding:3px 6px;border:1px solid transparent;border-radius:5px;background:#20231f;color:#a9b0a2;font:600 10px Manrope;text-align:left;cursor:pointer}
+.kara-line:hover{border-color:#55643f;background:#2b3128;color:#dfe7d3}
+.kara-line.active{border-color:#a3cd63;background:#2f3a26;color:#eaf3e6}
+.kara-line b{flex:0 0 auto;min-width:12px;font:800 9px Manrope;color:#a3cd63}
+.kara-line span{flex:1 1 auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.kara-line i{flex:0 0 auto;font:700 8px Manrope;font-style:normal;color:#6b7066}
+.kara-line.plain{border-style:dashed;border-color:#4a5340;color:#8d9388}
+.kara-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.kara-newline{padding:1px 7px;border:1px solid #4a4f45;border-radius:4px;background:#22251f;color:#d7dad2;font:700 9px Manrope;letter-spacing:.02em;cursor:pointer}
+.kara-newline:hover{border-color:#78a13e;background:#2b3128}
 .kara-wordbar-track{position:relative;height:38px;background:#0b0d0a;border-radius:6px;overflow:hidden;touch-action:none;cursor:crosshair;user-select:none}
 .kara-wordbar-word{position:absolute;top:3px;bottom:3px;display:flex;align-items:center;justify-content:center;gap:5px;padding:0 7px;border-radius:5px;background:#252b20;border:1px solid #3d4634;color:#8d9388;font:700 11px Manrope;overflow:hidden;cursor:pointer;transition:background .12s,border-color .12s}
 .kara-wordbar-word b{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:inherit}

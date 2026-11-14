@@ -30,6 +30,11 @@ for (const c of input_cases()) {
     edges: bar ? [core.karaokeWordBarTime(bar, 0), core.karaokeWordBarTime(bar, 0.5), core.karaokeWordBarTime(bar, 1)] : null,
     frac: bar && bar.words.length ? round(core.karaokeWordBarFraction(bar, bar.words[bar.words.length - 1].t0)) : null,
     cuts,
+    // A typed sentence end, turned back into the last word's hold — the field and
+    // the drag have to produce the same number, or the bar shows one end and the
+    // render does another.
+    hold: (!bar || c.end === undefined) ? null
+      : core.karaokeHoldForEnd(bar.words[bar.words.length - 1].t0, c.end, c.tail, bar.to),
   })
 }
 function round (v) { return Math.round(v * 10000) / 10000 }

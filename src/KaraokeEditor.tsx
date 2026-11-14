@@ -34,7 +34,7 @@ import {
   clampKaraokeZoom, followSentence, karaokeBlockFloor, karaokePaintStyle, karaokeTextStyleTouched,
   karaokeTickLabel, karaokeTickStep, karaokeTicks, makeContinuous, parseAssKaraoke, parseLrc,
   parseSubtitles, planOf, retarget, ripple, sanitizeKaraoke, snapWords, sentenceGroups,
-  karaokeEvenWordTimes, karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarHold, karaokeWordBarTime,
+  karaokeEvenWordTimes, karaokeHoldForEnd, karaokeWordBar, karaokeWordBarCut, karaokeWordBarFraction, karaokeWordBarHold, karaokeWordBarTime,
   timeFromImport, tokenize, wordsPerSecond,
   type KaraokeData, type KaraokeImport, type KaraokeStyle, type KaraokeTextField, type KaraokeTextFlag, type KaraokeTextStyle,
   type KaraokeToken, type KaraokeWord,
@@ -733,6 +733,66 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     flush()
   }
   const barTime = (clientX: number) => karaokeWordBarTime(wordBar, barFraction(clientX))
+  const textRef = useRef<HTMLTextAreaElement | null>(null)
+  /**
+   * A new sentence, without the playhead dance: a hard break at the caret (or at
+   * the end, if that is where the caret already is). The words after it become
+   * their own line the moment the text is committed, and an untimed line takes
+   * its share of the gap to the next timed word — the rule a pasted lyric follows,
+   * so a quick line is never stranded at 00:00.
+   */
+  const addSentenceAtCaret = () => {
+    const el = textRef.current
+    const caret = el ? Math.max(0, Math.min(draftText.length, el.selectionStart ?? draftText.length)) : draftText.length
+    const before = draftText.slice(0, caret).replace(/\s+$/, '')
+    const after = draftText.slice(caret).replace(/^\s+/, '')
+    const next = after.length ? `${before}\n${after}` : `${before}\n`
+    if (next === draftText) {
+      setNotice({ kind: 'warn', text: 'Nothing to break yet — put the caret where the new sentence should start.' })
+      return
+    }
+    setDraftText(next)
+    apply({ ...data, words: retarget(data, tokens, tokenize(next)) }, next)
+    setNotice({ kind: 'info', text: after.length
+      ? 'New sentence at the caret: its words are spread inside the gap until you time them.'
+      : 'A new line is waiting at the end — type it and it becomes a sentence.' })
+  }
+  /** Which word the bar's number fields edit. Defaults to the one being sung, so
+   *  the usual case (play, stop, nudge that word) needs no clicking at all. */
+  const [wordFocus, setWordFocus] = useState<number | null>(null)
+  const focusWord = useMemo(() => {
+    if (!wordBar || !wordBar.words.length) return null
+    const picked = wordFocus === null ? -1 : wordBar.words.findIndex(w => w.i === wordFocus)
+    if (picked >= 0) return { ...wordBar.words[picked], k: picked }
+    const now = wordBar.words.findIndex(w => position >= w.t0 && position < w.t1)
+    const at = now >= 0 ? now : Math.max(0, wordBar.words.findIndex(w => position < w.t0))
+    return { ...wordBar.words[at], k: at }
+  }, [wordBar, wordFocus, position])
+  /** A typed sentence end becomes the last word's hold — the one number the drag
+   *  writes — so the two input devices cannot disagree about where a line ends. */
+  const applyLineEnd = (end: number) => {
+    if (!wordBar || !current) return
+    const last = wordBar.words[wordBar.words.length - 1]
+    const hold = karaokeHoldForEnd(last.t0, end, data.tail, wordBar.to)
+    if (hold === null) return
+    const words = data.words.map(w => ({ ...w }))
+    while (words.length <= last.i) words.push({})
+    words[last.i] = { ...words[last.i], hold }
+    withWords(words, true)
+  }
+  const applyWordStart = (seconds: number) => {
+    if (!wordBar || !focusWord) return
+    const cut = karaokeWordBarCut(wordBar, focusWord.k, seconds, { minGap: MIN_WORD_GAP })
+    if (cut) setWordTime(cut.i, cut.t, { rippleAfter: false, snap: false })
+  }
+  const applyWordDuration = (seconds: number) => {
+    if (!wordBar || !focusWord) return
+    const { i, k, t0 } = focusWord
+    if (k >= wordBar.words.length - 1) { applyLineEnd(t0 + seconds + data.tail); return }
+    const cut = karaokeWordBarCut(wordBar, k + 1, t0 + seconds, { minGap: MIN_WORD_GAP })
+    if (cut) setWordTime(cut.i, cut.t, { rippleAfter: false, snap: false })
+  }
+
   /** The handle at the right edge of the last word: it sets that word's hold, and
    *  the line's window is `hold + the tail`, so this is how a sentence gets a
    *  shorter or longer end without touching the next sentence's start. */
@@ -950,7 +1010,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
     return { step, at: karaokeTicks(span, zoom) }
   }, [span, zoom])
 
-  return <PopupBackdrop className="dark-backdrop karaoke-backdrop" onDismiss={cancel}>
+  return <PopupBackdrop className="dark-backdrop karaoke-backdrop" onDismiss={cancel} backdropDismiss={false}>
     <div className="karaoke-editor" onMouseDown={event => event.stopPropagation()}>
       <div className="modal-head">
         <div><span className="eyebrow">KARAOKE TIMING</span><h2>{item.name || 'Caption'}</h2></div>
@@ -1071,7 +1131,7 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
                 className={`kara-wordbar-word${position >= w.t1 ? ' sung' : position >= w.t0 ? ' now' : ' next'}`}
                 style={{ left: `${w.left}%`, width: `${Math.max(1.2, w.width)}%` }}
                 title={`“${draftText.slice(tokens[w.i].i0, tokens[w.i].i1)}” — ${formatClockPrecise(w.t0)} → ${formatClockPrecise(w.t1)} (${round3(w.t1 - w.t0)} s) · click to put the playhead on it`}
-                onPointerDown={event => { event.stopPropagation(); seek(w.t0) }}>
+                onPointerDown={event => { event.stopPropagation(); setWordFocus(w.i); seek(w.t0) }}>
                 <b>{draftText.slice(tokens[w.i].i0, tokens[w.i].i1)}</b>
                 <i>{round3(w.t1 - w.t0)}</i>
               </div>)}
@@ -1086,6 +1146,30 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
               })()}
               <div className="kara-wordbar-playhead" style={{ left: `${karaokeWordBarFraction(wordBar, position)}%` }}/>
             </div>
+            {wavePath ? <div className="kara-wordbar-wave" title="The movie’s own audio, cut to this sentence: the same peaks the wave surface draws, so a consonant you can hear is a shape under the word you are timing">
+              <svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"
+                   style={{ width: `${(span / Math.max(0.001, wordBar.dur)) * 100}%`, marginLeft: `-${(wordBar.from / Math.max(0.001, wordBar.dur)) * 100}%` }}>
+                <path d={wavePath}/>
+              </svg>
+              {onsets.filter(t => t >= wordBar.from && t <= wordBar.to).map((t, i) => <i key={i} style={{ left: `${karaokeWordBarFraction(wordBar, t)}%` }}/>)}
+            </div> : null}
+            <div className="kara-wordbar-times">
+              <TimeField label="Sentence from" value={round3(wordBar.from)} min={0} max={round3(span)}
+                        onCommit={v => setWordTime(current.from, Math.max(0, v), { rippleAfter: false, snap: false })}/>
+              <TimeField label="Sentence to" value={round3(wordBar.to)} min={0} max={round3(span)} onCommit={applyLineEnd}/>
+              {focusWord && tokens[focusWord.i] ? <>
+                <TimeField label={`from · ${draftText.slice(tokens[focusWord.i].i0, tokens[focusWord.i].i1)}`} value={round3(focusWord.t0)} min={0} max={round3(span)} onCommit={applyWordStart}/>
+                {/* A duration is a number, not a clock: typing 0.4 must not read as
+                    4 seconds, so this stays a plain field and commits on the way in. */}
+                <label className="kara-wordbar-duration" title="How long this word is held. On the last word of the line it is the sentence’s own hold, so the line ends when you say it does.">
+                  <span>duration</span>
+                  <input type="number" min={MIN_WORD_GAP} max={Math.max(0.2, round3(wordBar.to - focusWord.t0))} step={0.01}
+                         value={round3(Math.max(MIN_WORD_GAP, focusWord.t1 - focusWord.t0))}
+                         onChange={event => { const v = Number(event.target.value); if (Number.isFinite(v)) applyWordDuration(v) }}/>
+                </label>
+              </> : null}
+              <small>{focusWord ? 'typed values go through the same clamps as the drag: between the neighbours, inside the sentence' : 'click a word to type its time — or use the sung one, already selected'}</small>
+            </div>
           </div> : null}
 
           <div className="strip-legend">
@@ -1098,13 +1182,30 @@ export function KaraokeEditor({ item, src, defaults, onChange, onClose, kept }: 
 
         <aside className="kara-side">
           <div className="kara-field">
-            <span className="field-label">The words</span>
-            <textarea value={draftText} rows={5} placeholder="Type or paste the long text. Sentences are found on their own; this editor only decides when each one lands." onChange={event => setDraftText(event.target.value)} onBlur={commitText} onKeyDown={event => {
+            <span className="field-label kara-label-row">The words
+              <button type="button" className="kara-newline" onClick={addSentenceAtCaret}
+                      title="Start a new sentence at the caret (or at the end): no playhead, no split — the words after the break become their own line">New sentence</button>
+            </span>
+            <textarea ref={textRef} value={draftText} rows={4} placeholder="Type or paste the long text. Sentences are found on their own; this editor only decides when each one lands." onChange={event => setDraftText(event.target.value)} onBlur={commitText} onKeyDown={event => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
                 ;(event.target as HTMLTextAreaElement).blur()
               }
             }}/>
+            {/* The text and the timeline in one place: every sentence of the caption,
+                numbered the way the strip numbers them, with its window. Clicking one
+                selects it in the strip and the bar, so the number is also the way to
+                jump to a line you can see in the text but not in the ruler. */}
+            <div className="kara-lines">
+              {plan.sentences.length ? plan.sentences.map((line, i) => <button key={`${line.from}-${i}`} type="button"
+                className={`kara-line${i === selected ? ' active' : ''}${line.plain ? ' plain' : ''}`}
+                onClick={() => { selectLine(i); seek(line.start) }}
+                title={`${formatClockPrecise(line.start)} → ${formatClockPrecise(line.end)} · ${round3(line.end - line.start)} s${line.plain ? ' · not coloured' : ''} · click to edit this sentence in the bar`}>
+                <b>{i + 1}</b>
+                <span>{draftText.slice(tokens[line.from]?.i0 ?? 0, tokens[line.to]?.i1 ?? 0)}</span>
+                <i>{round3(line.end - line.start)} s</i>
+              </button>) : <small>No sentences yet — write the words above, or press New sentence to start one.</small>}
+            </div>
             {draftText !== (item.text || '') ? <small>Commit with Tab or a click outside — the timing is anchored to word numbers, so it rides along with the edit.</small> : null}
           </div>
 

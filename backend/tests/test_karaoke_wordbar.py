@@ -219,6 +219,87 @@ class WordBarDragTest(unittest.TestCase):
         self.assertIsNone(got["cuts"][0])
 
 
+class TypedEndTest(unittest.TestCase):
+    """The bar's number fields and the bar's handles write one number."""
+
+    def test_a_typed_sentence_end_becomes_the_last_words_hold(self) -> None:
+        cases = [
+            {"line": LINE, "ceiling": 14.0, "end": 13.4, "tail": 0.2},   # exact: 0.1 s of hold
+            {"line": LINE, "ceiling": 14.0, "end": 20.0, "tail": 0.2},   # past the window: capped
+            {"line": LINE, "ceiling": 14.0, "end": 12.9, "tail": 0.2},   # before the word: floor
+            {"line": {"from": 0, "to": 0, "start": 1.0, "end": 2.0, "words": []}, "end": 2.0, "tail": 0.2},
+        ]
+        got = _run(cases)
+        self.assertEqual(0.1, got[0]["hold"])
+        self.assertEqual(0.3, got[1]["hold"], "the caption window has the final say")
+        self.assertEqual(0.05, got[2]["hold"], "a word is never held for less than a readable sliver")
+        self.assertIsNone(got[3]["hold"], "no sentence, no number")
+
+    def test_the_field_and_the_drag_write_the_same_field(self) -> None:
+        src = (REPO / "src" / "KaraokeEditor.tsx").read_text(encoding="utf-8")
+        self.assertIn("karaokeHoldForEnd(last.t0, end, data.tail, wordBar.to)", src)
+        self.assertIn("words[last.i] = { ...words[last.i], hold: held.hold }", src)
+
+
+class PopupShapeTest(unittest.TestCase):
+    """The four things this popup's *shape* was asked for."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.editor = (REPO / "src" / "KaraokeEditor.tsx").read_text(encoding="utf-8")
+        cls.layers = (REPO / "src" / "layers.tsx").read_text(encoding="utf-8")
+        cls.css = (REPO / "src" / "styles.css").read_text(encoding="utf-8")
+
+    def test_clicking_outside_does_not_close_the_karaoke_popup(self) -> None:
+        # The backdrop is the one gesture that ends a session by accident, so the
+        # karaoke popup opts out of it while keeping Escape and its own buttons —
+        # `onDismiss` stays, which is what `useEscapeToClose` reads.
+        self.assertIn('onDismiss={cancel} backdropDismiss={false}', self.editor)
+        self.assertIn("backdropDismiss = true", self.layers)
+        self.assertIn("onDismiss && backdropDismiss", self.layers)
+        self.assertIn("useEscapeToClose(layer, onDismiss)", self.layers)
+
+    def test_a_sentence_can_be_added_from_the_words_pane(self) -> None:
+        self.assertIn("onClick={addSentenceAtCaret}", self.editor)
+        # A hard break at the caret, and nothing if the caret is nowhere to cut.
+        body = self.editor[self.editor.index("const addSentenceAtCaret"):self.editor.index("const [wordFocus")]
+        self.assertIn("` ${before}\\n${after}`".replace(" ", ""), body)
+        self.assertIn("retarget(data, tokens, tokenize(next))", body)
+
+    def test_the_words_pane_numbers_the_sentences_and_selects_one(self) -> None:
+        rail = self.editor[self.editor.index('className="kara-lines"'):]
+        rail = rail[:rail.index("</div>\n            {draftText !==")]
+        self.assertIn("<b>{i + 1}</b>", rail)
+        self.assertIn("selectLine(i)", rail)
+        self.assertIn("kara-line${i === selected ? ' active'", rail)
+        self.assertIn(".kara-line.active{", self.css)
+
+    def test_the_preview_is_small_and_the_timelines_own_the_full_width(self) -> None:
+        # `display:contents` is what lets the strip and the bar span the popup while
+        # the video stays in the left column, and the settings scroll beside it.
+        self.assertIn(".kara-left{display:contents}", self.css)
+        for selector, want in ((".kara-strip-scroll{", "grid-column:1/-1"),
+                               (".kara-wordbar{grid-column", "1/-1"),
+                               (".kara-stage-wrap{grid-column:1;grid-row:1;max-width:min(100%,460px)", "justify-self:start"),
+                               (".kara-side{grid-column:2", "grid-row:1/span 5")):
+            i = self.css.index(selector)
+            self.assertIn(want, self.css[i:i + 400], selector)
+
+    def test_the_bar_shows_the_audio_and_the_typed_times(self) -> None:
+        bar = self.editor[self.editor.index('className="kara-wordbar"'):][:6200]
+        self.assertIn('className="kara-wordbar-wave"', bar)
+        self.assertIn("marginLeft: `-${(wordBar.from", bar)   # same peaks, cut to the sentence
+        self.assertIn('className="kara-wordbar-times"', bar)
+        self.assertIn('label="Sentence to"', bar)
+        self.assertIn('<span>duration</span>', bar)
+        # A duration is typed as a number; TimeField speaks clocks, where 0.4 would
+        # read as 4 seconds.
+        duration = self.editor[self.editor.index('className="kara-wordbar-duration"'):]
+        self.assertIn('type="number"', duration[:400], "a duration is a number, not a clock: TimeField reads 0.4 as four seconds")
+        for selector in (".kara-wordbar-wave{", ".kara-wordbar-times{", ".kara-newline{"):
+            self.assertIn(selector, self.css)
+
+
 class WordBarMarkupTest(unittest.TestCase):
     """The two things the geometry cannot prove on its own."""
 
@@ -240,7 +321,7 @@ class WordBarMarkupTest(unittest.TestCase):
         # inherited it once and the lyric line got cut off; the bar must not.
         block = self.editor[self.editor.index('className="kara-wordbar"'):]
         head = block[:block.index(" : null}")]
-        self.assertLess(len(head), 4000, "the bar's own markup, not the whole file")
+        self.assertLess(len(head), 6200, "the bar's own markup, not the whole file")
         self.assertNotIn("kara-block", head)
         self.assertNotIn("kara-slot", head)
         self.assertNotIn("kara-lane", head)

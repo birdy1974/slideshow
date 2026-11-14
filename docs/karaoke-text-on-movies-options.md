@@ -334,3 +334,37 @@ than an absolute time, because re-trimming a clip shifts every `t` in the block
 (`shift_times`) and a stored end would be left behind at a time the picture no longer
 has. A hold longer than the caption window is clipped to it by `plan_of`, so a line can
 be ended early but never pushed into the next one.
+## The popup's shape, and typing instead of dragging
+
+**Clicking outside the karaoke popup does not close it.** `PopupBackdrop` grew a
+`backdropDismiss` prop (default `true`, so every other popup is unchanged); the karaoke
+popup passes `false`. Escape and the popup's own Cancel / Save still work — the backdrop
+was the one gesture that ended a session by accident, mid-drag.
+
+**The layout is a small monitor with the timeline under it.** `.kara-left` is
+`display:contents`, so its children become children of the popup's grid: the video and
+its transport in the left column (the stage capped at 460 px wide), the settings
+scrolling in the right column, and the sentence strip, the word bar and the legend each
+spanning `1 / -1` — the full width of the popup, which is the point of timing anything.
+
+**A sentence can be added from *The words*.** `New sentence` puts a hard break at the
+caret (or at the end of the text, if that is where the caret is) and commits through the
+same `retarget` path as typing, so the timings you already made ride along. The pane
+also lists the sentences, numbered exactly as the strip numbers them, each with its
+window and length — click one and it is selected in the strip and the bar. A dashed row
+means that line is showing but not coloured (see *Per-sentence options*).
+
+**Every time on the bar can be typed as well as dragged.** Under the word row:
+`Sentence from`, `Sentence to`, and — for the focused word, which defaults to the one
+being sung — `from` and `duration`. They write through the *same* functions a drag
+uses: `karaokeWordBarCut` clamps a typed start between the neighbours, and
+`karaokeHoldForEnd` turns a typed sentence end back into the last word's hold, clipped
+to the caption window. So there is no "typed" second timeline that the render does not
+know about. `duration` is a plain number field on purpose: `TimeField` speaks
+`mm:ss.mmm`, and someone typing `0.4` into it means four tenths of a second.
+
+**The movie's audio sits under the sentence.** The bar draws the same peaks the wave
+surface computes, cut to the sentence by scaling the one `<svg>` (`width` = clip ÷
+sentence, `margin-left` = −start ÷ sentence) and re-using the existing onsets. It is
+not a second analysis pass, so the shape cannot drift from the surface above it, and a
+consonant you can hear lines up with the word you are moving.
