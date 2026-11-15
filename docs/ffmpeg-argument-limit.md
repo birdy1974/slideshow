@@ -85,16 +85,18 @@ At 1920×1080, 25 fps, one pad per photo, rounded frame with shadow:
 | 6 photos, `zoom` camera, `curtain` | 15 → 2 | 28 742 B | 11 102 B (62%) |
 | 6 photos, `telescope`, `iris` | 15 → 2 | 31 432 B | 11 296 B (65%) |
 | 12 photos, `zoom` camera, `curtain`, 12 s hold | 14–15 → 2 | 56 834 B | 22 125 B (62%) |
-| 12 photos, `zoom` + Ken Burns + `breathe`, `curtain` | 20+ → 6–7 | 107 469 B | 43 536 B (60%) |
+| 12 photos, `zoom` + Ken Burns + `breathe`, `curtain` | 18–20 → 6–7 | 107 469 B | 43 536 B (60%) |
 | 6 photos, `zoom` + Ken Burns + `breathe` + `mosaic`, 20 s hold, `reverse` exit | 40 → 25 | 139 838 B | 87 410 B (38%) |
-| 9 photos, `droste`, `tumble` (no reveal) | 13–14 | 38 536 B | 38 536 B (0%) |
+| 9 photos, `droste`, `tumble` (no reveal) | 13–14 → 13–14 | 38 536 B | 38 536 B (0%) |
 
 The last two rows are the point and the limit of it: the shape that was reported — a slide
 whose graph was over the 131 072-byte ceiling at 6 photos — comes in under the ceiling, and
 under the 96 KiB threshold too, so it stops taking the file route at all. A slide with no
-mask reveal to compute gains nothing, because nothing about a size ladder was redundant. (`normalize_collage` keeps at most `MAX_COLLAGE_PHOTOS` = 12 photos
-per collage, measured by normalising a 20-photo spec, so "more photos" cannot make a graph
-grow past that either way.)
+mask reveal to compute gains nothing, because nothing about a size ladder was redundant.
+
+`normalize_collage` keeps at most `MAX_COLLAGE_PHOTOS` = 12 photos per collage — measured
+by normalising 20-photo `grid` and `masonry` specs, both of which come back with 12 — so
+"more photos" cannot make a graph grow past that either way.
 
 The reported failure had `split=82` and `split=86`: 82 levels on one photo. A photo's
 *mask* levels are now one, but its *size* levels are still one per bucket crossing, so a
