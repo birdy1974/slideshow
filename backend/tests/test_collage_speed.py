@@ -226,14 +226,19 @@ class ReverseExitGraphTest(unittest.TestCase):
         graph, te0, fly = self._graph_for("wipeUp", "reverse")
         levels = self._levels(graph)
         self.assertGreater(len(levels), 4, "the sweep did not step at all")
-        # The closing sweep does not bake new sprites: a step of the mask is a
-        # still, and the same still serves the moment it opens and the moment it
-        # closes, so those levels simply carry a second window.
-        reused = [l for l in levels if l["p"] is not None and len(l["windows"]) > 1]
-        self.assertGreaterEqual(len(reused), 3,
-                                f"nothing was reused across the exit: {[l['p'] for l in levels]}")
-        late = [w for l in reused for w in l["windows"] if w[0] >= te0 - 0.05]
-        self.assertTrue(late, "no masked level has a window in the exit")
+        # The closing sweep *is* baked, one still per step: a mirrored departure
+        # re-runs the entrance's curve backwards, so those frames are not the
+        # arrival's clock and no expression in `T` describes them. The arrival's own
+        # steps, meanwhile, are not stills any more where one size served several of
+        # them (see reveal_step_expr), which also means there is no longer a sprite
+        # for the exit to share a level with — so what is checked here is that the
+        # exit steps through the same ladder in the other direction.
+        closing = [l["p"] for l in levels if l["p"] is not None
+                   and any(a >= te0 - 0.05 for a, b in l["windows"])]
+        self.assertGreater(len(closing), 3,
+                           f"the closing sweep did not step: {[l['p'] for l in levels]}")
+        self.assertEqual(closing, sorted(closing, reverse=True),
+                         f"the exit does not close in the entrance's steps: {closing}")
 
         def on_at(t: float) -> list[dict]:
             return [l for l in levels
