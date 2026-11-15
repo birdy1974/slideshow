@@ -19,8 +19,9 @@ from typing import Any
 from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, source_path
 from .picture_crop import crop_filters, normalize_crop
 from .picture_filters import picture_look
-from .collage_reveal import (REVEALS, REVEAL_LENGTH, REVEAL_STEPS, geq_alpha, is_reveal, reveal_alpha,
-                             reveal_length, reveal_progress, reveal_quantise)
+from .collage_reveal import (REVEALS, REVEAL_LENGTH, REVEAL_STEPS, geq_alpha, geq_alpha_expr,
+                             is_reveal, reveal_alpha, reveal_length, reveal_progress, reveal_quantise,
+                             reveal_step_expr)
 
 MAX_COLLAGE_PHOTOS = 12
 
@@ -3460,10 +3461,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         fall = f"-{_n(0.26 * height)}*pow(1-{q_drop},3)" if anim == "drop" else ""
 
         # --- size ladder ---------------------------------------------------
-        def size_levels() -> list[tuple[int, int, float | None, str | None, list[list[float]]]]:
-            """Distinct (W, H, mask step) sprite variants photo i shows, each with
-            the [start, end) frame windows it is on screen. The last window is
-            open-ended (end=None).
+        def size_levels() -> list[tuple[int, int, object, str | None, list[list[float]], bool]]:
+            """Distinct (W, H, mask state) sprite variants photo i shows, each with the
+            [start, end) frame windows it is on screen and the expression carrying the
+            sweep, if one does. The last window is open-ended (end=None).
 
             The mask step is part of the key because a reveal needs the same
             treatment as a changing size: FFmpeg's `geq` would otherwise evaluate a
@@ -3511,8 +3512,18 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                                                     or is_reveal(exit_animation(spec, i))
                                                     or exit_animation(spec, i) in SCALE_ANIMS
                                                     or exit_animation(spec, i) in GEOM_SCALES)))
+            # A mask reveal's sweep is a pure function of the frame's time, and `geq`
+            # can read that function itself (see reveal_step_expr), so its steps need not
+            # be baked one still apiece. That is only true while the progress *is* the
+            # arrival's: a mirrored departure re-runs the curve backwards, and a
+            # departure naming another animation replaces the state wholesale, so the
+            # frames from `exit_start()` on belong to a different clock. `merge_upto` is
+            # therefore the last frame whose step the arrival's own formula describes, and
+            # a run that reaches past it stays baked, exactly as it is today.
+            step_ok = is_reveal(anim) and reveal_step_expr(anim, t0, ent, fps) is not None
+            merge_upto = t0 + ent if ex_mode == "none" else min(t0 + ent, exit_start(spec, i, lead_in))
             if not varies:
-                return [(cw, ch, None, None, clip([[0.0, None]]))]
+                return [(cw, ch, None, None, clip([[0.0, None]]), False)]
             # the timeline only moves during the entrance and the depth push
             # windows — sample the twin at frame resolution up to there
             last_var = t0 + ent
@@ -3575,21 +3586,49 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                     runs[-1][1] = k
                 else:
                     runs.append([k, k, w_, h_, mp, kind])
-            levels: dict[tuple[int, int, float | None, str | None], list[list[float]]] = {}
-            order: list[tuple[int, int, float | None, str | None]] = []
+            # windows cut at frame midpoints, padded a few ms either way:
+            # ffmpeg computes t as pts*(1/fps) which can land one ulp below
+            # the exact k/fps an expression boundary would use, and a
+            # boundary exactly on a frame time made that frame match no
+            # window at all (the photo blinked out for a frame)
+            def run_window(k0: int, k1: int) -> list[float]:
+                return [max(0.0, k0 / fps - 0.003),
+                        None if k1 == n_frames else k1 / fps + 0.5 / fps + 0.003]
+
+            # Group the runs as the ladder always has — by size, step and shape — and
+            # then look at the groups that repeat a size. Holding one still per step at
+            # the same size, stacked on the same pixels, is the redundancy this structure
+            # carries, and a level can give it up: `geq` computes the step from the frame's
+            # own time (see reveal_step_expr), so one level serves every step at that size.
+            # It has to keep its frames' timestamps for that — nothing re-times it in the
+            # emission below — which is also why its steps need not be adjacent: a size that
+            # recurs later reuses the same level, exactly as one held still serving two
+            # windows already did. A size with a single step to show has nothing to give up
+            # and keeps its short baked literal, at the same level count as before. Runs the
+            # arrival's clock does not describe — the held photo, and everything a mirrored
+            # or replacing departure does past `merge_upto` — are left exactly as they were.
+            # Two passes, because whether a size is worth merging is only known once
+            # every run has been counted: a size whose steps are all distinct frames is
+            # exactly the size whose run is worth a level of its own.
+            ride: list[bool] = []
+            steps_by_size: dict[tuple[int, int, str | None], set] = {}
             for k0, k1, w_, h_, mp, kind in runs:
-                key = (w_, h_, mp, kind)
+                ok = (step_ok and mp is not None and mp < 1.0
+                      and k1 / fps <= merge_upto)
+                ride.append(ok)
+                if ok:
+                    steps_by_size.setdefault((w_, h_, kind), set()).add(mp)
+            # a size worth merging is one that had to hold more than one still
+            sweep = {size for size, v in steps_by_size.items() if len(v) > 1}
+            levels: dict[tuple, list[list[float]]] = {}
+            order: list[tuple] = []
+            for (k0, k1, w_, h_, mp, kind), ok in zip(runs, ride):
+                key = ((w_, h_, "sweep", kind) if (ok and (w_, h_, kind) in sweep)
+                       else (w_, h_, mp, kind))
                 if key not in levels:
                     levels[key] = []
                     order.append(key)
-                # windows cut at frame midpoints, padded a few ms either way:
-                # ffmpeg computes t as pts*(1/fps) which can land one ulp below
-                # the exact k/fps an expression boundary would use, and a
-                # boundary exactly on a frame time made that frame match no
-                # window at all (the photo blinked out for a frame)
-                a = max(0.0, k0 / fps - 0.003)
-                b = None if k1 == n_frames else k1 / fps + 0.5 / fps + 0.003
-                levels[key].append([a, b])
+                levels[key].append(run_window(k0, k1))
             out = []
             for w_, h_, mp, kind in order:
                 # a level whose every window fell outside the photo's own span is a
@@ -3597,7 +3636,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 # emitted for a time the photo does not exist in
                 ws = clip(levels[(w_, h_, mp, kind)])
                 if ws:
-                    out.append((w_, h_, mp, kind, ws))
+                    # the step slot says it — "sweep" is the level that computes its step,
+                    # and that must not be inferred from the size, because the held photo
+                    # sits at that same size and needs no mask at all
+                    out.append((w_, h_, mp, kind, ws, mp == "sweep"))
             return out
 
         def select_expr(windows: list[list[float]]) -> str:
@@ -3710,7 +3752,11 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         # only for its frame windows. Later levels overlay earlier ones, and
         # the windows partition time, so exactly one size per photo is ever
         # on screen.
-        for k, (W, H, mp, kind, windows) in enumerate(levels):
+        for k, (W, H, mp, kind, windows, use_expr) in enumerate(levels):
+            # `use_expr` marks a level that serves several steps of the sweep at one
+            # size: its mask is computed per frame from the frame's own `T`, which is why
+            # nothing re-times it below and why one `reveal_step_expr` covers the level.
+            step_expr = reveal_step_expr(anim, t0, ent, fps) if use_expr else None
             is_last = k == len(levels) - 1
             src = f"sp{i}f" if len(levels) == 1 else f"b{i}_{k}"
             # the final level closes photo i's chain, so its output keeps the
@@ -3723,14 +3769,25 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
             # rides on the sprite's own box — the same box the preview masks —
             # which is why the two agree without any coordinate translation, and
             # before the rotate, because a CSS mask turns with the element.
-            a_expr = geq_alpha(kind or anim, mp, int(st_dir(spec, i))) if (
-                mp is not None and mp < 1.0) else ""
+            if use_expr:
+                # the mask rides on the level as a function of the frame's own time, so
+                # one level covers every step that size was holding still for
+                a_expr = geq_alpha_expr(kind or anim, step_expr, int(st_dir(spec, i)))
+            elif mp is not None and mp < 1.0:
+                a_expr = geq_alpha(kind or anim, mp, int(st_dir(spec, i)))
+            else:
+                a_expr = ""
             if a_expr:
                 # `select` first: a step is a still image, so the frames outside
                 # its window are worth nothing, and dropping them before the mask
                 # is the difference between one geq per frame of the entrance and
                 # one per frame of the whole slide, per level.
-                lines.append(f"[{src}]select='{select_expr(windows)}',setpts=N/FRAME_RATE/TB,"
+                # A baked step is a still, so its frames are renumbered from zero and
+                # held across the window. A level that computes its step from `T` has to
+                # keep the timestamps it arrived with, or `T` becomes the frame's index
+                # inside the level and every frame shows the first step.
+                retime = "" if use_expr else ",setpts=N/FRAME_RATE/TB"
+                lines.append(f"[{src}]select='{select_expr(windows)}'{retime},"
                              f"scale={W}:{H},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{a_expr}'"
                              f"{rot_seg}[lv{i}_{k}];")
             else:
