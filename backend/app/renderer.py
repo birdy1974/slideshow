@@ -694,6 +694,22 @@ def frame_colour_change(item: dict[str, Any]) -> dict[str, Any] | None:
 LOUDNESS_MIN, LOUDNESS_MAX, LOUDNESS_DEFAULT = -24.0, -8.0, -14.0
 
 
+def _seconds(value: Any, fallback: float) -> float:
+    """A project field read as a finite number of seconds, or `fallback`.
+
+    Timings arrive from JSON, where anything can be in the slot: a string from a
+    hand-edited project file, `null` from a field the editor never wrote, a `NaN`
+    from a measurement that failed. Each of those used to be its own try/except at
+    the call site, which is how a duration of `0` and a missing duration ended up
+    meaning different things in one place and the same thing in another.
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return out if math.isfinite(out) else fallback
+
+
 def normalization_settings(soundtrack: dict[str, Any]) -> tuple[bool, float]:
     """(enabled, target LUFS) from the project's soundtrack settings.
 
@@ -2151,13 +2167,19 @@ class Renderer:
         # lead_in keeps the shifted window inside the normalized segment while
         # preserving its original relationship to the visible hold.
         start, end = normalize_text_window(item)
-        try:
-            hold = float(item.get("duration", 5) or 5)
-        except (TypeError, ValueError):
-            hold = 5.0
-        if not math.isfinite(hold):
-            hold = 5.0
-        hold = max(0.2, hold)
+        # How long this slide is really on screen. The caller passes it (`hold`), and
+        # for a picture that number is the item's own `duration` — but for a movie it
+        # is not, because a movie's duration is a floor and never a cap: the renderer
+        # plays it to the end of the file (`durations[i] = max(duration, kept runtime)`),
+        # and the karaoke editor bounds its sentence strip by that clip length
+        # (`karaokeClipWindow` in src/karaokeCore.ts). Trusting `duration` alone here
+        # therefore cut every word tapped past the duration box out of the render: the
+        # sung line lost its tail, or all of it, silently — a finished MP4 with no
+        # caption and nothing in the file to explain it. The item's own duration stays
+        # in as the floor, so a slide the renderer shortened to zero-length (a text-free
+        # hold in a fast preview) keeps exactly the window it always had.
+        duration = _seconds(item.get("duration") or 5, 5.0)
+        hold = max(0.2, duration, _seconds(hold, 0.0))
         item = {
             **item,
             "duration": hold + max(0.0, lead_in),

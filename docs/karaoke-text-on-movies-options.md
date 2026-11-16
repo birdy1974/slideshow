@@ -418,3 +418,45 @@ have. A control that moves the boundary you are looking at belongs under the str
 so it came back as a full-width row of the popup (`docs/karaoke-timing-editor.md`: *Two
 rulers, one axis, and how the words pane got its controls back*). What stays in *Settings* is
 what you set once per caption — including *Space all words evenly*.
+
+### The caption window over a movie: `duration` is a floor, never a cap
+
+Reported as "text on a picture works, the same text on a movie does not: I can see it in the
+*Edit picture text* popup, but not in the final render." The caption is never absent over a
+movie — `_geometry` takes the `type in ("image", "video")` branch and `_text_filter` builds the
+same chain for both. What is lost is the *end of the line*, and only when the movie holds
+longer than its own duration box:
+
+`_text_filter` derived the visible window from `item["duration"]` twice over — as the clamp on
+`normalize_text_window`, and as the `hold=` it handed the karaoke document, which caps every
+sentence's end time at it. A picture's on-screen time **is** its duration, so for a picture the
+two numbers agree and the line is complete. A movie's is not: `MovieEditor.applyTrim` only ever
+pulls `duration` *down* to the kept span, and the render then plays the clip for `min(probe,
+trimEnd>trimStart ? trimEnd-trimStart : duration) - trimStart` seconds. Any movie longer than
+that number — the 5 s default on a file nobody shortened, an `END` point alone — had its later
+sentences clamp onto their own start time: a 12 s clip with a line tapped to 11.0 s flashed the
+last sentence for 0.2 s and stopped. No FFmpeg error, nothing in the log, and the popup kept
+showing all of it, because the popup bounds its strip with `karaokeClipWindow`, i.e. by the
+clip.
+
+`_text_filter` now takes the caller's hold as the upper bound:
+
+```python
+duration = _seconds(item.get("duration") or 5, 5.0)
+hold = max(0.2, duration, _seconds(hold, 0.0))
+```
+
+— the same sentence `karaokeClipWindow` already spends its docstring on, applied to the render.
+Floored at `duration` so a fast preview that zeroes the hold of a text-free slide cannot shorten
+a caption, and so a picture behaves exactly as before. Measured on a 12.0 s clip with the
+duration box at 5.0 and three sentences of three words tapped to 3.4 / 7.4 / 11.0 s: the ASS
+document used to carry sentence windows `0.80→4.60`, `4.60→5.00`, `8.60→8.80`, and now carries
+`1.30→5.10`, `5.10→9.10`, `9.10→12.10` in the rendered file, with the caption band at max
+254-255 through the last sentence where it used to sit at the blank-frame level (14).
+
+What deliberately did **not** change: the popup's ruler stays bound by `clipDuration =
+max(0.2, duration || 5)`, and `save()` clamps `textEnd` to the slide duration. That is the
+caption *window*, and the storyline lane's handles are what bound it; the sung line's sentence
+times come from the strip. A plain (non-karaoke) caption therefore still ends inside its own
+`textStart`/`textEnd`, clamped in `normalize_text_window` — the render will not invent seconds
+of caption that nobody asked for, and `textEnabled: false` or empty text still draws nothing.

@@ -2764,3 +2764,139 @@ class KaraokeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(1, len(line), records)
         self.assertIn(str(self.settings.fonts_dir), line[0])
         self.assertFalse([r for r in records if r.levelno >= logging.WARNING], "a healthy slide must not warn")
+
+
+class MovieCaptionWindowTest(unittest.TestCase):
+    """A movie's caption follows how long the movie is *on screen*, not the number in
+    its duration box.
+
+    A movie's ``duration`` is a floor and never a cap: the render plays it to the end
+    of the file, so a slide configured at 5 s can hold for 12. The karaoke editor
+    bounds its sentence strip by that same clip length (``karaokeClipWindow``), so the
+    words are tapped across all 12 seconds — and ``_text_filter`` used to re-derive the
+    window from ``duration`` and clamp them back to 5. That deleted the tail of a sung
+    line from the MP4 with no FFmpeg error and nothing in the log: the popup showed
+    every sentence, the render drew the first one. A picture is unaffected, because for
+    a picture the visible hold *is* its duration — which is exactly why the bug read as
+    "works on a photo, not on a movie".
+    """
+
+    WORD_TIMES = [0.8, 2.0, 3.4, 4.6, 6.0, 7.4, 8.6, 10.0, 11.0]
+    TEXT = " ".join(f"W{index}" for index in range(len(WORD_TIMES)))
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos",
+                                 output_dir=base / "out", music_dir=base / "music", fonts_dir=base / "config" / "fonts")
+        for directory in (self.settings.fonts_dir, self.settings.photos_dir, self.settings.videos_dir,
+                          self.settings.work_dir, self.settings.output_dir, self.settings.music_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
+        (self.settings.videos_dir / "a.mp4").write_bytes(b"x" * 64)
+        self.renderer = Renderer(Database(base / "hold.db"), self.settings)
+        self.renderer._drawtext_supported = True
+        self.renderer._ass_supported = True
+        self.ass_path = self.settings.work_dir / "text-0001.ass"
+        self.ass_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def item(self, kind: str = "video", **changes: Any) -> dict:
+        # Three sentences of three words, `br` flags splitting them, tapped across a
+        # 12 s movie while the slide's own duration box still says 5 s.
+        words = [{"t": t} for t in self.WORD_TIMES]
+        words[2]["br"] = words[5]["br"] = 1
+        return {"id": 2, "type": kind, "path": "/videos/a.mp4" if kind == "video" else "/photos/a.jpg",
+                "duration": 5.0, "text": self.TEXT,
+                "karaoke": {"words": words, "style": "sweep", "fill": "#ffd166", "leadIn": 0.0, "tail": 0.6},
+                "textEnabled": True, "textStart": 0.0, "textEnd": 5.0, "textX": 50, "textY": 72,
+                "fontFamily": "Montserrat", "fontSize": 44, "fontColor": "#ffffff", "textBold": True,
+                "textOutline": True, **changes}
+
+    def events(self, path: Path | None = None) -> list[tuple[float, float]]:
+        """The Dialogue events of the document that was just written, in seconds."""
+        out = []
+        for line in (path or self.ass_path).read_text(encoding="utf-8").splitlines():
+            if not line.startswith("Dialogue"):
+                continue
+            fields = line.split(",")
+            stamp = []
+            for part in (fields[1], fields[2]):
+                hh, mm, rest = part.split(":")
+                ss, cs = rest.split(".")
+                stamp.append(int(hh) * 3600 + int(mm) * 60 + int(ss) + int(cs) / 100)
+            out.append((stamp[0], stamp[1]))
+        return out
+
+    def sung(self, item: dict, hold: float | None) -> list[tuple[float, float]]:
+        self.ass_path.unlink(missing_ok=True)
+        chain = self.renderer._text_filter(item, {}, 854, 480, self.ass_path, hold=hold)
+        self.assertIn("ass=filename=", str(chain), "the sung line is a libass overlay")
+        return self.events()
+
+    def test_words_past_the_duration_box_reach_a_movie(self) -> None:
+        events = self.sung(self.item(), hold=12.0)
+        self.assertEqual(3, len(events), "every sentence the editor timed gets an event")
+        self.assertGreater(events[-1][1], 11.0,
+                           f"the last sentence must run to the end of the tapped line, got {events[-1]}")
+        self.assertGreater(events[1][1] - events[1][0], 3.0, "the middle sentence keeps its own length")
+
+    def test_a_picture_with_a_full_hold_is_unchanged(self) -> None:
+        # A picture's hold *is* its duration, so the caller's number can only confirm
+        # the window the timing already describes — never widen or narrow it.
+        held = self.sung(self.item(kind="image"), hold=5.0)
+        unheld = self.sung(self.item(kind="image"), hold=None)
+        self.assertEqual(unheld, held)
+        self.assertEqual(3, len(held))
+
+    def test_a_shortened_preview_hold_cannot_swallow_the_window(self) -> None:
+        # A fast preview zeroes the hold of a text-free slide; that number must not be
+        # able to pull a caption window below the item's own duration.
+        events = self.sung(self.item(), hold=0.0)
+        self.assertGreaterEqual(events[0][0], 0.0)
+        self.assertEqual(3, len(events), "the duration floor still covers the first line")
+
+    def test_the_render_hands_the_caption_the_movies_real_hold(self) -> None:
+        """The window is only as good as the number the render loop passes in."""
+        commands: list[list[str]] = []
+
+        def fake_run(command, cancelled, log_file):
+            commands.append(list(command))
+            Path(command[-1]).write_bytes(b"segment")
+
+        project = {"id": 1, "media": [
+            {"id": 1, "type": "image", "path": "/photos/a.jpg", "duration": 2, "effect": "None",
+             "transition": "Fade", "transitionTime": 0.5},
+            self.item(duration=5.0),
+        ], "output": {"resolution": "SD · 480p", "frameRate": "25 fps", "bitrate": "4 Mbps",
+                     "encoder": "libx264", "path": "/output", "filename": "movie"}}
+        work = self.settings.work_dir / "holdjob"
+        work.mkdir(parents=True, exist_ok=True)
+
+        def probe(_self, path):        # the movie file is 12 s; the photos are not timed
+            return 12.0 if "a.mp4" in str(path) else 30.0
+
+        with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=fake_run), \
+             mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
+             mock.patch.object(Renderer, "_probe_duration", probe):
+            self.renderer.render(project, "render", work, threading.Event(), lambda p, s: None)
+        # The document belongs to the job's work directory, next to the segments.
+        events = self.events(work / "text-0001.ass")
+        self.assertEqual(3, len(events), "the render, not just the unit call, keeps all three sentences")
+        self.assertGreater(events[-1][1], 11.0, events)
+
+    def test_a_plain_caption_still_ends_where_the_timeline_shows_it(self) -> None:
+        # Karaoke may extend to the clip, because the editor bounds it by the clip;
+        # an ordinary caption stays inside textStart/textEnd, which are what the
+        # storyline lane's handles can be dragged to. The two engines have to agree.
+        item = {k: v for k, v in self.item().items() if k != "karaoke"}
+        chain = self.renderer._text_filter(item, {}, 854, 480, self.ass_path, hold=12.0)
+        self.ass_path.unlink(missing_ok=True)
+        chain = self.renderer._text_filter(item, {}, 854, 480, None, hold=12.0)
+        text = str(chain)
+        self.assertIn("drawtext", text)
+        self.assertLessEqual(max(float(v) for v in re.findall(r"lt\(t,([0-9.]+)\)", text)), 5.01,
+                             "a caption must not run past its own window into the transition")
