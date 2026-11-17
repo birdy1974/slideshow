@@ -1802,7 +1802,19 @@ class Renderer:
         event = self.cancel_events.get(job_id)
         if not event:
             return False
-        event.set(); self.db.update_job(job_id, status="cancelling", stage="Stopping FFmpeg")
+        row = self.db.get_job(job_id) or {}
+        event.set()
+        if row.get("status") == "queued":
+            # Nothing has started, so there is no FFmpeg to stop. "Stopping FFmpeg" is a
+            # promise the row then holds for as long as the job waits for a worker —
+            # measured at 40 s of an unmoving progress bar with the default single
+            # RENDER_WORKERS — which reads as a hung app and sends people to a shell.
+            # Settle it now; `_run` returns without touching it when its turn comes.
+            self.db.update_job(job_id, status="cancelled", stage="Cancelled before it started",
+                               error_message="Stopped while still queued; nothing was rendered.",
+                               finished_at=utcnow())
+            return True
+        self.db.update_job(job_id, status="cancelling", stage="Stopping FFmpeg")
         return True
 
     def _cleanup_job_work(self, job_id: str, keep_log: bool = False) -> None:
@@ -1949,11 +1961,24 @@ class Renderer:
                 pass
 
     def _run(self, job_id: str, project: dict[str, Any], kind: str, cancelled: threading.Event) -> None:
+        if cancelled.is_set():
+            # Cancelled while it waited for a worker. Nothing is started here — not the
+            # work directory, not the `running` status. Rewriting the row as `running`
+            # would take back the answer the user already got and put the queue back to
+            # watching a bar that can move again, and the render itself only notices the
+            # flag at its next FFmpeg call, a slide or two later.
+            self.db.update_job(job_id, status="cancelled", stage="Cancelled before it started", finished_at=utcnow())
+            return
         work = self.settings.work_dir / job_id
         work.mkdir(parents=True, exist_ok=True)
         self.db.update_job(job_id, status="running", stage="Validating media", started_at=utcnow())
         _run_status = "failed"
         try:
+            if cancelled.is_set():
+                # `cancel` can land between the check above and this one, and the row is
+                # `running` by then, so go out through the same path a mid-encode cancel
+                # takes rather than inventing a second one.
+                raise RenderError("Render cancelled by user")
             if not shutil.which(self.settings.ffmpeg_bin):
                 raise RenderError("FFmpeg is not installed or is not available on PATH")
             output = self.render(project, kind, work, cancelled, lambda p,s: self.db.update_job(job_id, progress=p, stage=s))
@@ -2081,7 +2106,21 @@ class Renderer:
                 if process.returncode:
                     text = log_file.read_text(encoding="utf-8", errors="replace")
                     summary = _summarize_ffmpeg_log(text)
-                    raise RenderError(f"FFmpeg exited with status {process.returncode}.\n{summary}")
+                    # FFmpeg prints that line when it was *asked* to stop: it catches the
+                    # signal, closes the file, and leaves 255 behind. This app never sends
+                    # one without setting the cancel flag first — that path raises a line
+                    # above, not here — so a 255 with a caught signal means a container
+                    # stop/restart or an out-of-memory killer reached the encoder. Say so:
+                    # "FFmpeg exited with status 255" at the same slide every time reads
+                    # like a broken slide, and people re-author healthy shows over it.
+                    # Checked on the last command only, because the log holds every stage.
+                    signalled = "received signal" in text.rsplit("$ ", 1)[-1]
+                    note = ("\nFFmpeg was terminated from outside the app (it caught a stop signal and exited "
+                            "cleanly, which is why the file it was writing is incomplete). A container stop or "
+                            "restart and an out-of-memory killer both do this; the slideshow itself is fine. "
+                            "Compare the container's start time with this job's, and check the host for memory "
+                            "pressure.") if signalled else ""
+                    raise RenderError(f"FFmpeg exited with status {process.returncode}.{note}\n{summary}")
             finally:
                 # The graph file is only a carrier for the argument; the log above holds
                 # the same text, so nothing is lost by not leaving it behind.
