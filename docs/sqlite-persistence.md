@@ -66,6 +66,12 @@ One ordered row per soundtrack.
 - persisted output path and error message
 - creation, start, and completion timestamps
 - render settings snapshot
+- `queued`, `running` and `cancelling` mean "a live thread owns this row", and nothing
+  else. Their cancel events are in-memory, so an app that dies mid-render cannot settle
+  them; at startup any row still in one of the three is rewritten as `failed` with a
+  stage that names the restart, keeping `progress` so it reads where it stopped.
+- the same startup pass stops an FFmpeg the dead instance left encoding under the work
+  directory (SIGTERM, then SIGKILL), before the rows are cleared.
 
 ## Save behavior
 

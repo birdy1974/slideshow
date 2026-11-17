@@ -2900,3 +2900,175 @@ class MovieCaptionWindowTest(unittest.TestCase):
         self.assertIn("drawtext", text)
         self.assertLessEqual(max(float(v) for v in re.findall(r"lt\(t,([0-9.]+)\)", text)), 5.01,
                              "a caption must not run past its own window into the transition")
+
+
+class CancelledWhileQueuedTest(unittest.TestCase):
+    """Cancel has to answer for a job that never got a worker, not queue a promise.
+
+    With the default single RENDER_WORKERS, a second job waits in the pool. Cancelling
+    it used to write `cancelling` / "Stopping FFmpeg" — a stage the row then held for as
+    long as the job *ahead* of it ran, measured at 40 s of a progress bar that cannot
+    move while the queued job did no work at all. It reads as a hung app. And
+    `_run` now refuses to start such a job, which it previously did: it wrote
+    `running` over the answer the user had already been given, then ran slides before
+    the first FFmpeg call looked at the flag.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos",
+                                 output_dir=base / "out", music_dir=base / "music", fonts_dir=base / "config" / "fonts")
+        for directory in (self.settings.fonts_dir, self.settings.photos_dir, self.settings.videos_dir,
+                          self.settings.work_dir, self.settings.output_dir, self.settings.music_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        (self.settings.photos_dir / "a.jpg").write_bytes(b"x" * 64)
+        self.db = Database(base / "queued.db")
+        self.db.initialize()
+        self.project_id = self.db.save_project({"project": {"name": "queued"}})["id"]
+        self.renderer = Renderer(self.db, self.settings)
+
+    def tearDown(self) -> None:
+        self.renderer.pool.shutdown(wait=True, cancel_futures=True)
+        self.temp.cleanup()
+
+    def job(self, job_id: str, status: str = "queued") -> threading.Event:
+        self.db.create_job({"id": job_id, "project_id": self.project_id, "kind": "render", "settings": {}})
+        self.db.update_job(job_id, status=status)
+        event = threading.Event()
+        self.renderer.cancel_events[job_id] = event
+        return event
+
+    def test_a_queued_job_is_cancelled_at_once(self) -> None:
+        self.job("q1")
+        self.assertTrue(self.renderer.cancel("q1"))
+        row = self.db.get_job("q1")
+        self.assertEqual("cancelled", row["status"], "there is no FFmpeg to stop, so don't say we are stopping one")
+        self.assertEqual("Cancelled before it started", row["stage"])
+        self.assertIsNotNone(row["finished_at"], "a row without a finish time is a row the queue still shows as live")
+
+    def test_a_job_that_is_running_still_gets_the_stop(self) -> None:
+        self.job("r1", status="running")
+        self.assertTrue(self.renderer.cancel("r1"))
+        row = self.db.get_job("r1")
+        self.assertEqual("cancelling", row["status"], "a running render is a process to terminate, and that takes a moment")
+        self.assertEqual("Stopping FFmpeg", row["stage"])
+        self.assertIsNone(row["finished_at"])
+
+    def test_a_cancelled_row_still_in_the_queue_is_not_run_when_its_turn_comes(self) -> None:
+        event = self.job("q2")
+        self.renderer.cancel("q2")
+        with mock.patch.object(self.renderer, "render", side_effect=AssertionError("a cancelled job must not start")) as render:
+            self.renderer._run("q2", {"media": []}, "render", event)
+        render.assert_not_called()
+        self.assertEqual("cancelled", self.db.get_job("q2")["status"])
+
+    def test_the_queue_is_answered_with_the_row_status(self) -> None:
+        """POST /api/jobs/<id>/cancel reports what happened, not a fixed word."""
+        try:
+            from app import main
+        except Exception as exc:  # noqa: BLE001 - fastapi is optional in some dev venvs
+            self.skipTest(f"app.main is not importable here: {exc}")
+        self.job("q5")
+        # The app's own renderer and database, so this covers the wiring as well as the
+        # wording: the answer has to come from the row the cancel just wrote.
+        with mock.patch.object(main, "renderer", self.renderer), mock.patch.object(main, "db", self.db):
+            self.assertEqual({"status": "cancelled"}, main.cancel_job("q5"),
+                             "a job that never started must not be reported as still stopping")
+            self.assertEqual("cancelled", self.db.get_job("q5")["status"])
+        self.job("q6", status="running")
+        with mock.patch.object(main, "renderer", self.renderer), mock.patch.object(main, "db", self.db):
+            self.assertEqual({"status": "cancelling"}, main.cancel_job("q6"),
+                             "a render that is really running still gets the stop-it answer")
+
+    def test_a_cancelled_row_is_never_written_back_to_running(self) -> None:
+        # The row already says `cancelled`; the queue must not be shown it as work in
+        # progress again, and a job that never ran must not leave a directory behind.
+        event = threading.Event()
+        event.set()
+        self.db.create_job({"id": "q4", "project_id": self.project_id, "kind": "render", "settings": {}})
+        self.db.update_job("q4", status="cancelled", stage="Cancelled before it started", finished_at="2026-01-01T00:00:00+00:00")
+        written: list[str] = []
+        real = self.db.update_job
+
+        def record(_job_id: str, **changes: Any) -> None:
+            if "status" in changes:
+                written.append(str(changes["status"]))
+            real(_job_id, **changes)
+
+        with mock.patch.object(self.db, "update_job", side_effect=record), \
+                mock.patch.object(self.renderer, "render", side_effect=AssertionError("a cancelled job must not start")):
+            self.renderer._run("q4", {"media": []}, "render", event)
+        self.assertNotIn("running", written, f"the row was rewritten as running: {written}")
+        self.assertFalse((self.settings.work_dir / "q4").exists(), "no work directory for a job that never began")
+
+    def test_a_cancel_landing_just_after_the_start_is_taken_seriously(self) -> None:
+        # `_run` writes `running` and only then reaches the first FFmpeg call; a cancel
+        # in between must go out through the same path as one that lands mid-encode.
+        event = self.job("q3")
+        event.set()
+        seen: list[str] = []
+        with mock.patch.object(self.renderer, "render", side_effect=lambda *a, **k: seen.append("started")):
+            self.renderer._run("q3", {"media": []}, "render", event)
+        self.assertEqual([], seen, "the second check runs before any work is attempted")
+
+
+class OutsideKillReportedTest(unittest.TestCase):
+    """A 255 from a caught signal is not the project's fault, and must not read like it.
+
+    Reported three times as "the rendering is stuck": the row said `FFmpeg exited with
+    status 255` at the same slide every attempt, while the cause was a stop signal sent
+    to the encoder from outside the app. The app cannot do that quietly — its own
+    terminate raises a line above the status check — so the number alone is the clue,
+    and FFmpeg's own "received signal" line makes it certain.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.settings = Settings(config_dir=base / "config", photos_dir=base / "photos", videos_dir=base / "videos",
+                                 output_dir=base / "out", music_dir=base / "music", fonts_dir=base / "config" / "fonts")
+        for directory in (self.settings.fonts_dir, self.settings.photos_dir, self.settings.work_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        self.renderer = Renderer(Database(base / "kill.db"), self.settings)
+        self.log = self.settings.work_dir / "job" / "ffmpeg.log"
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        self.log.write_text("=== Slide 45/112 start ===\n\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def run_with_log(self, printed: str) -> str:
+        """`_run_ffmpeg` against a child that exits 255 after writing `printed`."""
+        class FakeProcess:
+            returncode = 255
+
+            def poll(self) -> int:
+                return 255
+
+        def fake_popen(argv, **kwargs):
+            handle = kwargs.get("stdout")
+            handle.write(printed)
+            handle.flush()
+            return FakeProcess()
+
+        command = [self.settings.ffmpeg_bin, "-i", "in.mp4", "out.mp4"]
+        with mock.patch.object(self.renderer, "graph_script_flag", return_value=None), \
+                mock.patch.object(subprocess, "Popen", side_effect=fake_popen):
+            try:
+                self.renderer._run_ffmpeg(command, threading.Event(), self.log)
+            except RenderError as exc:
+                return str(exc)
+        self.fail("a non-zero exit has to raise")
+
+    def test_a_caught_signal_is_named_as_a_stop_from_outside(self) -> None:
+        message = self.run_with_log("Exiting normally, received signal 15.\n")
+        self.assertIn("FFmpeg exited with status 255.", message)
+        self.assertIn("terminated from outside the app", message)
+        self.assertIn("the slideshow itself is fine", message.lower())
+
+    def test_a_real_ffmpeg_failure_is_left_as_it_was(self) -> None:
+        message = self.run_with_log("No such filter: 'gl_cube'\n")
+        self.assertIn("FFmpeg exited with status 255.", message)
+        self.assertNotIn("outside the app", message,
+                         "a broken graph must not be excused as somebody else's signal")

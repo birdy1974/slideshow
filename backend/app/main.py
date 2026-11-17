@@ -30,6 +30,7 @@ from .transition_previews import PreviewUnavailable, TransitionPreviewCache, slu
 from .text_effect_previews import TextEffectPreviewCache
 from .diagnostics import diagnose
 from .font_registry import fonts_status
+from .job_recovery import recover_jobs
 from .uploads import UploadRejected, store_upload, uploads_status
 from .filmstrips import FilmstripUnavailable, build_filmstrip
 from .video_preview import PreviewUnavailable as VideoPreviewUnavailable, build_video_preview
@@ -145,6 +146,12 @@ async def lifespan(_: FastAPI):
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     db.initialize()
     log.info("Database ready at %s", settings.database_path)
+    # A row the instance before this one left in a non-terminal status can never
+    # settle: its cancel event lived in memory and died with the process, so the
+    # queue polls a frozen progress bar and POST /api/jobs/<id>/cancel answers 409
+    # "Job is not running". Clear those rows, and stop any FFmpeg the old instance
+    # left encoding into the work directory, before the first status poll arrives.
+    recover_jobs(db, settings, log=log)
     # Fill the ffmpeg/Quick Sync capability caches in the background so
     # /api/health answers instantly and never spawns a probe itself.
     renderer.warm_capabilities()
@@ -946,7 +953,10 @@ def get_job(job_id: str) -> dict[str, Any]:
 @app.post("/api/jobs/{job_id}/cancel", status_code=202)
 def cancel_job(job_id: str) -> dict[str, str]:
     if not renderer.cancel(job_id): raise HTTPException(409, "Job is not running")
-    return {"status": "cancelling"}
+    # The row, not a fixed word: a job that had not started yet is cancelled outright,
+    # and answering "cancelling" for a row that already says "cancelled" makes a client
+    # wait for a stop that has nothing left to do. The GUI polls /api/jobs anyway.
+    return {"status": (db.get_job(job_id) or {}).get("status") or "cancelling"}
 
 
 @app.api_route("/api/jobs/{job_id}/file", methods=["GET", "HEAD"])
