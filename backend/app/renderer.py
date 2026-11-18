@@ -27,7 +27,7 @@ from .colour import SCALE_COLOUR, TIMELINE_COLOUR_ARGS, TIMELINE_COLOURSPACE  # 
 from .collage import bg_blur_radius, bg_fit_filter, collage_background, collage_graph, collage_inputs, normalize_collage
 from .config import Settings
 from .database import Database, utcnow
-from .ffmpeg_argv import graph_script_command, probe_graph_script_flag, remove_quietly
+from .ffmpeg_argv import graph_script_command, oversized_graph_positions, probe_graph_script_flag, remove_quietly
 from .filter_values import quote_filter_value
 from .media import UnsafePath, mounted_path, source_path
 from .media_probe import whole_video
@@ -1825,7 +1825,7 @@ class Renderer:
         remove the working directory once a job has stopped running. Scoped to
         the single job so concurrent renders are never disturbed.
 
-        When ``keep_log`` is True (a failed render) the ``ffmpeg.log`` is kept
+        When ``keep_log`` is True (a failed or cancelled render) the ``ffmpeg.log`` is kept
         so ``/api/jobs/{id}/log`` and the file-system still show exactly which
         slide and filter broke — the 2026-09-15 ``No such filter`` class of
         bugs otherwise erased its own evidence. Only the log is kept.
@@ -2027,7 +2027,7 @@ class Renderer:
             # per-job so concurrent renders stay untouched. On failure the
             # ffmpeg.log is kept — its slide-marked === Slide 2/3 === sections
             # are the only way to diagnose which filter tripped.
-            self._cleanup_job_work(job_id, keep_log=_run_status == "failed")
+            self._cleanup_job_work(job_id, keep_log=_run_status in ("failed", "cancelled"))
             # Prune stale proxy previews, keeping the newest so the preview that
             # just finished (or is being watched) still plays.
             try:
@@ -2060,6 +2060,8 @@ class Renderer:
         directory — returns the original command with a note. A render that might still
         work inline must not be broken by the machinery that tries to help it.
         """
+        if not oversized_graph_positions(command):
+            return list(command), [], []
         flag = self.graph_script_flag()
         if not flag:
             return list(command), [], []
@@ -2079,7 +2081,12 @@ class Renderer:
         # sections plus this line are how a bad filter is found, and a path to a
         # temporary file is not a record. What was actually exec'ed is written next to
         # it, one indented line per graph that moved into a file.
+        if cancelled.is_set():
+            raise RenderError("Render cancelled by user")
         exec_command, notes, scratch = self._oversized_graphs_to_files(command, log_file)
+        if cancelled.is_set():
+            remove_quietly(scratch)
+            raise RenderError("Render cancelled by user")
         with log_file.open("a", encoding="utf-8") as logs:
             logs.write("\n$ " + " ".join(command) + "\n")
             for note in notes:
@@ -2698,7 +2705,11 @@ class Renderer:
                              f":y={quote_filter_value(layer.overlay_y)}[v]")
                 else:
                     graph = head + "".join(photo_lines) + f"[{last}]{','.join(tail)}[v]"
-                command += ["-filter_complex", graph, "-map", "[v]"]
+                # A collage may have hundreds of scale and overlay filters.
+                # FFmpeg's default graph thread count follows the host CPU count;
+                # on a NAS this can multiply memory and threads for every filter
+                # before the first frame. Use one graph worker for this segment.
+                command += ["-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[v]"]
             elif cut_out is not None:
                 mask_path = work / f"mask-{index:04d}.pgm"
                 mask_path.write_bytes(lasso_mask_pgm(cut_out["points"]))

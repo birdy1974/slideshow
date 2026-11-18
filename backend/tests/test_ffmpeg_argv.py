@@ -228,6 +228,19 @@ class RunFFmpegWiringTest(unittest.TestCase):
         self.assertIn(str(MAX_ARG_STRLEN), text)
         self.assertFalse(script.exists(), "a render leaves no graph files behind")
 
+    def test_cancel_stops_a_running_child(self) -> None:
+        import sys
+        cancelled = threading.Event()
+        timer = threading.Timer(0.4, cancelled.set)
+        timer.start()
+        try:
+            with mock.patch.object(self.renderer, "graph_script_flag", return_value=None):
+                with self.assertRaisesRegex(RenderError, "cancelled"):
+                    self.renderer._run_ffmpeg(
+                        [sys.executable, "-c", "import time; time.sleep(30)"], cancelled, self.log)
+        finally:
+            timer.cancel()
+
     def test_a_small_graph_is_executed_unchanged(self) -> None:
         command = [self.settings.ffmpeg_bin, "-filter_complex", "[0:v]scale=2[v]", "-map", "[v]",
                    "-y", str(self.base / "work" / "p.mp4")]

@@ -1576,7 +1576,7 @@ class CollageTwinTest(unittest.TestCase):
         assert graph.count("split=") == 3                            # last photo has no pusher
         for i in range(3):
             cw = int(re.search(rf"\[m{i}b\]pad=(\d+):", graph).group(1))
-            sizes = [int(m) for m in re.findall(rf"\[b{i}_\d+\]scale=(\d+):", graph)]
+            sizes = [int(m) for m in re.findall(rf"\[b{i}_\d+\](?:select='[^']*',)?scale=(\d+):", graph)]
             assert 1 < len(sizes) < 80, (i, len(sizes))
             # photo i is pushed by the 3-i photos after it: it settles at
             # (1 - 0.06*(3-i)) of its canvas, give or take a pixel of rounding
@@ -1646,7 +1646,7 @@ class CollageTwinTest(unittest.TestCase):
         assert "sendcmd=commands=" in fgraph and "eq@dim0" in fgraph
         # flip's width run is a ladder of static scales with windowed enables;
         # the width climbs from edge-on to the full canvas width
-        flevels = re.findall(r"\[b0_\d+\]scale=(\d+):(\d+)", fgraph)
+        flevels = re.findall(r"\[b0_\d+\](?:select='[^']*',)?scale=(\d+):(\d+)", fgraph)
         assert 5 < len(flevels) < 80
         full_w = int(re.search(r"\[m0b\]pad=(\d+):", fgraph).group(1))
         assert min(int(w) for w, _ in flevels) < 0.35 * full_w    # edge-on start
@@ -1720,11 +1720,11 @@ class CollageTwinTest(unittest.TestCase):
         """
         def levels_of(graph: str, i: int) -> list[tuple[int, int, list[tuple[float, float | None]]]]:
             """(W, H, windows) per level, in graph order."""
-            single = re.search(rf"\[sp{i}f\]scale=(\d+):(\d+)", graph)
+            single = re.search(rf"\[sp{i}f\](?:select='[^']*',)?scale=(\d+):(\d+)", graph)
             if single and f"[b{i}_0]" not in graph:
                 return [(int(single.group(1)), int(single.group(2)), [(0.0, None)])]
             out = []
-            for m in re.finditer(rf"\[b{i}_(\d+)\]scale=(\d+):(\d+)", graph):
+            for m in re.finditer(rf"\[b{i}_(\d+)\](?:select='[^']*',)?scale=(\d+):(\d+)", graph):
                 k, w, h = m.group(1), int(m.group(2)), int(m.group(3))
                 ov = re.search(rf"\[lv{i}_{k}\]overlay=x='[^']*':y='[^']*'(?::enable='([^']*)')?", graph)
                 windows: list[tuple[float, float | None]] = []
