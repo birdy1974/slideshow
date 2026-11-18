@@ -1021,6 +1021,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         self.assertTrue(str(inputs[1]).endswith("photos/a.jpg"), inputs)
         self.assertTrue(str(inputs[2]).endswith("photos/b.jpg"), inputs)
         self.assertNotIn("-vf", collage)
+        self.assertEqual("1", collage[collage.index("-filter_complex_threads") + 1])
         self.assertIn("-map", collage)
         graph = collage[collage.index("-filter_complex") + 1]
         # the colour base, the two photo sprites and their overlays, the caption tail
@@ -2954,6 +2955,21 @@ class CancelledWhileQueuedTest(unittest.TestCase):
         self.assertEqual("cancelling", row["status"], "a running render is a process to terminate, and that takes a moment")
         self.assertEqual("Stopping FFmpeg", row["stage"])
         self.assertIsNone(row["finished_at"])
+
+    def test_cancelled_render_keeps_its_log(self) -> None:
+        event = self.job("keep-log")
+        def cancel_during_render(project, kind, work, cancelled, progress):
+            (work / "ffmpeg.log").write_text("encoding started")
+            (work / "segment.mp4").write_bytes(b"temporary")
+            cancelled.set()
+            raise RenderError("Render cancelled by user")
+        with mock.patch("app.renderer.shutil.which", return_value="ffmpeg"), \
+             mock.patch.object(self.renderer, "render", side_effect=cancel_during_render):
+            self.renderer._run("keep-log", {"media": []}, "render", event)
+        work = self.settings.work_dir / "keep-log"
+        self.assertEqual("cancelled", self.db.get_job("keep-log")["status"])
+        self.assertEqual("encoding started", (work / "ffmpeg.log").read_text())
+        self.assertFalse((work / "segment.mp4").exists())
 
     def test_a_cancelled_row_still_in_the_queue_is_not_run_when_its_turn_comes(self) -> None:
         event = self.job("q2")

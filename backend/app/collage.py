@@ -3586,6 +3586,20 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                     runs[-1][1] = k
                 else:
                     runs.append([k, k, w_, h_, mp, kind])
+            # Very slow entrances or mirrored exits can otherwise create one
+            # scale/overlay pair per frame for many seconds. Six photos at slow
+            # speeds can produce hundreds of filters and exhaust a NAS before
+            # FFmpeg even emits its first frame. Keep ordinary animations exact;
+            # only coalesce exceptionally large size ladders, using scale steps
+            # relative to the resting canvas so the full-size point stays exact.
+            # Reveal steps remain unchanged: they encode a different visual mask.
+            distinct_sizes = {(r[2], r[3]) for r in runs}
+            if len(distinct_sizes) > 80:
+                steps = 48
+                for run in runs:
+                    run[2] = max(2, int(round(cw * round(run[2] / cw * steps) / steps)))
+                    run[3] = max(2, int(round(ch * round(run[3] / ch * steps) / steps)))
+
             # windows cut at frame midpoints, padded a few ms either way:
             # ffmpeg computes t as pts*(1/fps) which can land one ulp below
             # the exact k/fps an expression boundary would use, and a
@@ -3791,7 +3805,13 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                              f"scale={W}:{H},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{a_expr}'"
                              f"{rot_seg}[lv{i}_{k}];")
             else:
-                lines.append(f"[{src}]scale={W}:{H}{rot_seg}[lv{i}_{k}];")
+                # A ladder can contain dozens of sizes per photo, but only one
+                # is visible at a time. Avoid scaling and rotating every branch
+                # for the entire slide. Keep the original timestamps: overlay's
+                # framesync needs them to line up with the enabled windows (and
+                # a level can be reused in several non-adjacent windows).
+                selection = f"select='{select_expr(windows)}'," if len(levels) > 1 and enable else ""
+                lines.append(f"[{src}]{selection}scale={W}:{H}{rot_seg}[lv{i}_{k}];")
             lines.append(f"[{prev}][lv{i}_{k}]overlay=x='{x_expr}':y='{y_expr}'{enable}[{out}];")
             prev = out
 

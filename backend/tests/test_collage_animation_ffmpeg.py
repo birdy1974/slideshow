@@ -692,7 +692,7 @@ class CollagePhotoLooksRenderTest(unittest.TestCase):
                           animation="none", hold=3)
         frames, spec, duration = _render_lanes(ffmpeg, item)
         graph = "".join(collage_graph(item, W, H, FPS, duration, 0, 1, "cb")[0])
-        levels = re.findall(r"\[b0_(\d+)\]scale=(\d+):(\d+)", graph)
+        levels = re.findall(r"\[b0_(\d+)\](?:select='[^']*',)?scale=(\d+):(\d+)", graph)
         self.assertGreater(len(levels), 2, "a breathing photo needs more than one ladder level")
         early = _lane_stats(frames[int(0.2 * FPS)], "red")
         late = _lane_stats(frames[-2], "red")

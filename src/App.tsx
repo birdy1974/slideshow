@@ -6133,7 +6133,8 @@ function RenderQueue({ projectId,onBack }: { projectId:number|null,onBack: () =>
           ? job.fileAvailable===false
             ? <span className="queue-missing" title="The file was pruned or deleted — re-render to restore it"><AlertTriangle size={13}/> File missing <button type="button" className="btn soft" disabled={rerendering===job.id} onClick={()=>rerenderJob(job)}>{rerendering===job.id?<RefreshCw className="spin" size={13}/>:<RefreshCw size={13}/>} Re-render</button></span>
             : <a className="btn soft" href={`/api/jobs/${job.id}/file`} download title={job.size_bytes?`Download · ${formatFileSize(job.size_bytes)}`:'Download'}><Download size={15}/> Download</a>
-          : <a className="btn soft" href={`/api/jobs/${job.id}/log`} target="_blank">View log</a>}
+          : null}
+      <a className="btn soft" href={`/api/jobs/${job.id}/log`} target="_blank" rel="noreferrer">View log</a>
     </section>
   })}</main>
 }
