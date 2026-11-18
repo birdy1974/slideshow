@@ -228,6 +228,17 @@ class RunFFmpegWiringTest(unittest.TestCase):
         self.assertIn(str(MAX_ARG_STRLEN), text)
         self.assertFalse(script.exists(), "a render leaves no graph files behind")
 
+    def test_reports_progress_from_the_current_process_log(self) -> None:
+        import sys
+        seen = []
+        script = ("import sys,time; "
+                  "sys.stderr.write('frame= 10 time=00:00:01.25\\r'); "
+                  "sys.stderr.flush(); time.sleep(2.5)")
+        with mock.patch.object(self.renderer, "graph_script_flag", return_value=None):
+            self.renderer._run_ffmpeg([sys.executable, "-c", script], threading.Event(),
+                                      self.log, on_time=seen.append)
+        self.assertIn(1.25, seen)
+
     def test_cancel_stops_a_running_child(self) -> None:
         import sys
         cancelled = threading.Event()

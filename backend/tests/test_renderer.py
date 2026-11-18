@@ -544,7 +544,7 @@ class OutputDecodabilityTest(unittest.TestCase):
     def test_the_repair_uses_the_software_encoder_and_the_timeline_colour_stamps(self) -> None:
         seen: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             seen.append(list(command))
             Path(command[-1]).write_bytes(b"repaired")
 
@@ -593,7 +593,7 @@ class FitToAudioFloorTest(unittest.TestCase):
         """Every hold part's length, for a five-photo show against a given soundtrack."""
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"part")
 
@@ -812,7 +812,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         project = {"id": 1, "media": media, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"segment")
 
@@ -829,7 +829,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         project = {"id": 1, "media": media, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"segment")
 
@@ -1066,7 +1066,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         media["photos"] = [{"path": "/photos/missing.jpg", "name": "missing.jpg"}]
         project = {"id": 1, "media": [media], "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
         with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
-             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=lambda command, cancelled, log_file: Path(command[-1]).write_bytes(b"segment")), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=lambda command, cancelled, log_file, **kwargs: Path(command[-1]).write_bytes(b"segment")), \
              mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
              mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
             work = self.settings.work_dir / "job"
@@ -1135,7 +1135,7 @@ class SegmentFilterSelectionTest(unittest.TestCase):
         media = self._collage_media(backgroundImage="/photos/gone.jpg")
         project = {"id": 1, "media": [media], "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
         with mock.patch.object(self.renderer, "_validate_media", return_value=None), \
-             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=lambda command, cancelled, log_file: Path(command[-1]).write_bytes(b"segment")), \
+             mock.patch.object(self.renderer, "_run_ffmpeg", side_effect=lambda command, cancelled, log_file, **kwargs: Path(command[-1]).write_bytes(b"segment")), \
              mock.patch.object(self.renderer, "_make_soundtrack", return_value=None), \
              mock.patch.object(self.renderer, "_probe_duration", return_value=2.0):
             work = self.settings.work_dir / "job"
@@ -1175,7 +1175,7 @@ class TransitionPreviewTrimTest(unittest.TestCase):
         }
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"x")
 
@@ -1411,7 +1411,7 @@ class VideoPlaysToEndTest(unittest.TestCase):
             },
         }
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             self.commands.append(list(command))
             Path(command[-1]).write_bytes(b"segment")
 
@@ -1785,7 +1785,7 @@ class MovieTrimTest(unittest.TestCase):
         project = {"id": 1, "media": media, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"segment")
 
@@ -2157,7 +2157,7 @@ class VaapiEncodingTest(unittest.TestCase):
         settings, renderer, project = self._hw_renderer()
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"part")
 
@@ -2213,7 +2213,7 @@ class VaapiEncodingTest(unittest.TestCase):
         settings, renderer, project = self._hw_renderer()
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             if "h264_vaapi" in command:
                 raise RenderError("broken VA-API driver")
@@ -2243,7 +2243,7 @@ class VaapiEncodingTest(unittest.TestCase):
         renderer._vaapi_rc_mode = "cqp"
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"part")
 
@@ -2269,7 +2269,7 @@ class VaapiEncodingTest(unittest.TestCase):
         renderer._vaapi_rc_mode = "cqp"
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             if "h264_vaapi" in command:
                 raise RenderError("broken VA-API driver")
@@ -2324,7 +2324,7 @@ class MovieToMovieAudioTest(unittest.TestCase):
         project = {"id": 1, "media": media, "soundtrack": {}, "output": {"resolution": "Full HD · 1080p", "frameRate": "30 fps", "bitrate": "8 Mbps", "encoder": "CPU · x264", "path": "/output", "filename": "movie.mp4"}}
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"part")
 
@@ -2441,7 +2441,7 @@ class FastPreviewTest(unittest.TestCase):
     def _render(self, project: dict) -> tuple[list[list[str]], mock.Mock]:
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"x")
 
@@ -2513,7 +2513,7 @@ class UniformStitchTest(unittest.TestCase):
         commands: list[list[str]] = []
         state = {"failed": False}
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             if fail_first_hold_on_qsv and "h264_qsv" in command and "hold-0000" in command[-1] and not state["failed"]:
                 state["failed"] = True
@@ -2619,7 +2619,7 @@ class UniformStitchTest(unittest.TestCase):
         # Fail the *second* hold instead: the first hold and the transition
         # were already encoded on QSV and must be redone on the CPU.
         commands: list[list[str]] = []
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             if "h264_qsv" in command and "hold-0001" in command[-1]:
                 raise RenderError("qsv rejected")
@@ -2863,7 +2863,7 @@ class MovieCaptionWindowTest(unittest.TestCase):
         """The window is only as good as the number the render loop passes in."""
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"segment")
 

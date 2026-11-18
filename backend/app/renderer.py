@@ -29,7 +29,7 @@ from .config import Settings
 from .database import Database, utcnow
 from .ffmpeg_argv import graph_script_command, oversized_graph_positions, probe_graph_script_flag, remove_quietly
 from .filter_values import quote_filter_value
-from .media import UnsafePath, mounted_path, source_path
+from .media import VIDEO_EXTENSIONS, UnsafePath, mounted_path, source_path
 from .media_probe import whole_video
 from .picture_crop import crop_filters, lasso_graph, lasso_inputs, lasso_mask_pgm, lasso_plan, normalize_crop
 from .picture_filters import picture_look
@@ -2076,7 +2076,8 @@ class Renderer:
             log.warning("Could not move the filter graph into a file: %s", exc)
             return list(command), [f"the filter graph is too long for one argument and could not be written to a file ({exc}); trying it inline"], []
 
-    def _run_ffmpeg(self, command: list[str], cancelled: threading.Event, log_file: Path) -> None:
+    def _run_ffmpeg(self, command: list[str], cancelled: threading.Event, log_file: Path,
+                    on_time: Callable[[float], None] | None = None) -> None:
         # The log keeps the command as built, graph and all: the `=== Slide 2/3 ===`
         # sections plus this line are how a bad filter is found, and a path to a
         # temporary file is not a record. What was actually exec'ed is written next to
@@ -2092,6 +2093,7 @@ class Renderer:
             for note in notes:
                 logs.write("  " + note + "\n")
             logs.flush()
+            log_offset = logs.tell()
             try:
                 process = subprocess.Popen(exec_command, stdout=logs, stderr=subprocess.STDOUT, text=True)
             except OSError as exc:
@@ -2104,12 +2106,30 @@ class Renderer:
                 logs.write(f"Could not start FFmpeg: {exc}\n")
                 raise RenderError(f"Could not start FFmpeg: {exc}") from exc
             try:
+                last_update = 0.0
                 while process.poll() is None:
                     if cancelled.wait(.2):
                         process.terminate()
                         try: process.wait(5)
-                        except subprocess.TimeoutExpired: process.kill()
+                        except subprocess.TimeoutExpired: process.kill(); process.wait()
                         raise RenderError("Render cancelled by user")
+                    if on_time and time.monotonic() - last_update >= 2:
+                        last_update = time.monotonic()
+                        # FFmpeg writes carriage-return-delimited status lines to
+                        # the log. Read only this command's tail, never its huge
+                        # filter graph or a previous command's progress.
+                        try:
+                            with log_file.open("rb") as reader:
+                                reader.seek(0, os.SEEK_END)
+                                end = reader.tell()
+                                reader.seek(max(log_offset, end - 8192))
+                                tail = reader.read().decode("utf-8", errors="replace")
+                            times = re.findall(r"\btime=\s*(\d+):(\d+):(\d+(?:\.\d+)?)", tail)
+                            if times:
+                                h, m, s = times[-1]
+                                on_time(int(h) * 3600 + int(m) * 60 + float(s))
+                        except OSError:
+                            pass
                 if process.returncode:
                     text = log_file.read_text(encoding="utf-8", errors="replace")
                     summary = _summarize_ffmpeg_log(text)
@@ -2517,14 +2537,15 @@ class Renderer:
                 # input per photo; the composite graph is built below.
                 if collage_open is not None:
                     try:
-                        video_ext = {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi", ".mpg", ".mpeg"}
                         for photo_src in collage_inputs(self.settings, item):
-                            if Path(photo_src).suffix.lower() in video_ext:
-                                # PhotoGrid-style video-in-cell: loop the clip to
-                                # fill the collage hold (still photos stay -loop 1).
+                            if Path(photo_src).suffix.lower() in VIDEO_EXTENSIONS:
+                                # Video cells remain moving streams.
                                 command += ["-stream_loop", "-1", "-t", clip_t, "-i", photo_src]
                             else:
-                                command += ["-loop", "1", "-framerate", str(fps), "-t", clip_t, "-i", photo_src]
+                                # Decode once; collage_graph repeats the already
+                                # fitted still, rather than decoding a full-size
+                                # JPEG once per frame.
+                                command += ["-framerate", str(fps), "-i", photo_src]
                     except (FileNotFoundError, UnsafePath) as exc:
                         raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
             else:
@@ -2677,7 +2698,8 @@ class Renderer:
                 base_chain = ",".join(base_filters)
                 photo_lines, last = collage_graph(
                     item, width, height, fps, duration, lead_in,
-                    1 + (1 if colour_change is not None else 0), "cb", self.settings)
+                    1 + (1 if colour_change is not None else 0), "cb", self.settings,
+                    loop_stills=True, compact_ladders=True)
                 tail = ([text_filter] if isinstance(text_filter, str) and text_filter else []) + \
                        ["format=yuv420p", "settb=AVTB", "setpts=PTS-STARTPTS"]
                 if colour_change is not None:
@@ -2755,7 +2777,11 @@ class Renderer:
                 pass
             progress(5 + 45 * index / len(media), f"Encoding slide {slide_label} — {kind_name} ({format_ffmpeg_number(duration)}s)")
             try:
-                self._run_ffmpeg(command, cancelled, log_file)
+                def slide_progress(seconds: float) -> None:
+                    fraction = min(1.0, max(0.0, seconds / max(duration, 0.001)))
+                    progress(5 + 45 * (index + fraction) / len(media),
+                             f"Encoding slide {slide_label} — {kind_name} ({min(seconds, duration):.1f}s / {duration:.1f}s)")
+                self._run_ffmpeg(command, cancelled, log_file, on_time=slide_progress)
             except RenderError as exc:
                 # stage is overwritten to 'Failed' on exit; slide must be in error_message
                 raise RenderError(f"Slide {slide_label} failed — {exc}") from exc
