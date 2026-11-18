@@ -286,7 +286,7 @@ class SegmentLookTest(unittest.TestCase):
                                                        "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
         commands: list[list[str]] = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             commands.append(list(command))
             Path(command[-1]).write_bytes(b"segment")
 

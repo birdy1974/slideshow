@@ -2929,7 +2929,8 @@ def _shape_mask(fr: dict[str, Any], w: int, h: int) -> str:
 
 def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                   duration: float, lead_in: float, first_input: int, base_label: str,
-                  settings: Any = None) -> tuple[list[str], str] | None:
+                  settings: Any = None, loop_stills: bool = False,
+                  compact_ladders: bool = False) -> tuple[list[str], str] | None:
     """Filter-graph lines that composite the collage photos onto ``base_label``.
 
     Returns (lines, last_label) — each photo's sprite (mat + soft shadow) is
@@ -3739,10 +3740,17 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         else:
             scale_chain = (f"scale={photo_w}:{photo_h}:force_original_aspect_ratio=increase,"
                            f"crop={photo_w}:{photo_h}")
+        # A still is decoded and fitted once, then repeated at the segment's
+        # frame rate. Re-decoding multi-megapixel JPEGs for every frame is
+        # particularly costly when sparse ladder branches seek ahead to their
+        # first visible frame. Keep video cells as normal moving streams.
+        still_loop = (f"loop=loop=-1:size=1:start=0,setpts=N/({_n(fps)}*TB),"
+                      if loop_stills and Path(str(photo.get("path") or "")).suffix.lower() not in VIDEO_EXTENSIONS
+                      else "")
         if use_shadow:
             lines.append(
                 f"[{inp}:v]{pre}{scale_chain},"
-                f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
+                f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},{still_loop}"
                 f"{dim_seg}{look_seg}format=rgba{mask},split[{m}a][{m}b];"
             )
             lines.append(f"[{m}b]pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[{t_}];")
@@ -3754,10 +3762,39 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
         else:
             lines.append(
                 f"[{inp}:v]{pre}{scale_chain},"
-                f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},"
+                f"pad={mat_w}:{mat_h}:{border}:{border}:color={pad_color},{still_loop}"
                 f"{dim_seg}{look_seg}format=rgba{mask},pad={cw}:{ch}:{mat_x}:{mat_y}:color=black@0.0[sp{i}];"
             )
         lines.append(f"[sp{i}]{mid},format=rgba[sp{i}f];")
+        # A split into sparse streams makes framesync seek ahead to the first
+        # frame of every branch before it can output frame zero. With delayed
+        # exits that can mean decoding the entire slide before showing progress.
+        # Where no reveal mask is needed, use a single time-varying scale and
+        # a fixed transparent canvas instead. The dimensions still come from
+        # the same sampled ladder as the reference graph.
+        compact = (compact_ladders and len(levels) > 1 and
+                   all(not use_expr and (mp is None or mp >= 1.0)
+                       for _w, _h, mp, _kind, _windows, use_expr in levels))
+        if compact:
+            max_w = max(cw, *(w for w, _h, _mp, _kind, _ws, _use in levels))
+            max_h = max(ch, *(h for _w, h, _mp, _kind, _ws, _use in levels))
+            def dimension(axis: int, default: int) -> str:
+                terms = [str(default)]
+                for level in levels:
+                    value, windows = level[axis], level[4]
+                    if value != default:
+                        terms.append(f"({value - default})*({select_expr(windows)})")
+                return "+".join(terms)
+            w_expr, h_expr = dimension(0, cw), dimension(1, ch)
+            lines.append(f"[sp{i}f]scale=w='{w_expr}':h='{h_expr}':eval=frame,format=rgba,"
+                         f"pad={max_w}:{max_h}:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame"
+                         f"{rot_seg}[lv{i}_compact];")
+            x_expr = f"{_n(ax_px - max_w / 2)}{ex_x}{extra_x}{mo_x}"
+            y_expr = f"{_n(ay_px - max_h / 2)}{fall}{ex_y}{extra_y}{mo_y}"
+            visible = enable_expr([[max(0.0, t0 - 0.003), None if t_end is None else t_end + 0.003]])
+            lines.append(f"[{prev}][lv{i}_compact]overlay=x='{x_expr}':y='{y_expr}'{visible}[o{i}];")
+            prev = f"o{i}"
+            continue
         if len(levels) > 1:
             lines.append(f"[sp{i}f]split={len(levels)}" +
                          "".join(f"[b{i}_{k}]" for k in range(len(levels))) + ";")

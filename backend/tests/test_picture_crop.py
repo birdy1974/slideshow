@@ -565,7 +565,7 @@ class SegmentCropTest(unittest.TestCase):
                                                        "bitrate": "8 Mbps", "encoder": "libx264", "path": "/output", "filename": "movie"}}
         self.commands = []
 
-        def fake_run(command, cancelled, log_file):
+        def fake_run(command, cancelled, log_file, **kwargs):
             self.commands.append(list(command))
             Path(command[-1]).write_bytes(b"segment")
 
