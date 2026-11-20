@@ -74,7 +74,7 @@ const TILE_SPEC = (id: string, dir: 0 | 1, out = false): CollageSpec => ({
   // counts a 'none' arrival as instant (only the hold), so with the default 0.15 s
   // delay the fly would start before the photo exists — and since the envelope says a
   // photo is invisible outside its own two windows, the tile would be an empty square.
-  frame: 'none', photos: [{ src: '', anim: id, delay: 0 }],
+  frame: 'none', photos: [{ src: '', anim: id, delay: 0, until: 120 }],
   // …and for an exit, the same id on the *departure* lane with nothing arriving of
   // its own. `hold: 0` starts the exit as early as the engine allows, so the tile is
   // the leaving and not the waiting, and the mirrored curve runs over the length that
@@ -85,7 +85,7 @@ const TILE_SPEC = (id: string, dir: 0 | 1, out = false): CollageSpec => ({
   // exactly what choosing it does to this photo.)
   ...(out ? {
     animation: id === 'reverse' ? 'drop' as const : 'none' as const,
-    hold: 0, exit: id as CollageSpec['exit'], photos: [{ src: '', delay: 0, exit: id as CollageSpec['exit'] }],
+    hold: 0, exit: id as CollageSpec['exit'], photos: [{ src: '', delay: 0, exit: id as CollageSpec['exit'], ...(id === 'none' ? { until: 120 } : {}) }],
   } : {}),
 } as unknown as CollageSpec)
 

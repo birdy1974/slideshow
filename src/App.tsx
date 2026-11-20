@@ -15,7 +15,7 @@ import {
 import type { EtaSample, JobKind, RenderRate } from './renderEstimate'
 import type { MediaItem } from './mediaItem'
 import { animHasDirection, animLabelOf, animSpeed, ANIM_FAMILIES, COLLAGE_GEOM_CHOICES,
-  COLLAGE_LOOK_ENTRANCE_CHOICES, collageAnimRows, collageShuffle, COLLAGE_EXIT_ROWS, animHintOf, exitChoice, entranceLength, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, exitTotal, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageAnimFamily, type CollageAnimation,
+  COLLAGE_LOOK_ENTRANCE_CHOICES, collageAnimRows, collageShuffle, COLLAGE_EXIT_ROWS, animHintOf, exitChoice, entranceLength, COLLAGE_REVEAL_CHOICES, COLLAGE_REVEAL_GEOM, isCollageReveal, revealMaskStyle, MAX_COLLAGE_PHOTOS, MOTION_AMOUNT_MAX, MOTION_AMOUNT_MIN, MOTION_DURATION_MAX, MOTION_DURATION_MIN, MOVE_RANGE, TURN_RANGE, COLLAGE_LOOK_ANIMS, COLLAGE_TARGET_MOTIONS, COLLAGE_TEMPLATES, bgBlurCssPx, bgFitStyle, cameraState, collageDuration, collageTemplate, defaultDelay, arrangementSlots, exitSpeed, frameBorderFrac, frameClipPath, freeDragCenter, freeFromDisplayed, matFilterCss, matHeight, normalizeCollage, photoDelay, photoFrame, photoShape, photoSize, photoStart, photoState, photoAnim, photoAspect, photoLookAnim, photoLookState, photoMatHeight, photoMotion, photoMove, photoTilt, photoTurnTo, writePhotoWindow, pinAnchor, placements, pointerAngle, rotateDragTilt, rotateKnobLift, scaleAllPhotoSizes, selectionAfterMove, selectionAfterRemove, setPhotoRot, setPhotoSize, slideLocalBeats, type CollageAnim, type CollageAnimFamily, type CollageAnimation,
   type CollageBgFit, type CollageExit, type CollageFrameShape, type CollageLookAnim, type CollageMotion, type CollagePhoto, type CollageShape, type CollageSpec, type CollageStickers } from './collageCore'
 import { MovieEditor, movieIsTrimmed, movieKeptLabel } from './MovieEditor'
 import { MovieBlurBackdrop, movieBackgroundOf, movieFrameStyle } from './movieFrame'
@@ -4786,7 +4786,13 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
   /** One photo's enter / while / exit lane. An empty value means "inherit the
    *  collage's setting" and removes the override again, so a photo follows
    *  later changes to the collage-wide animation. */
-  const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim' | 'at' | 'until', value: string) => forSelected(index, target => {
+  const setPhotoLane = (index: number, lane: 'anim' | 'animDir' | 'animSpeed' | 'animLock' | 'exit' | 'motion' | 'lookAnim' | 'at' | 'until', value: string) => {
+    if (lane === 'at' || lane === 'until') {
+      // Group drags send each row separately; never expand a timing write.
+      setSpec({ photos: writePhotoWindow(specNow(), index, lane, value) })
+      return
+    }
+    forSelected(index, target => {
     setSpec({
       photos: photosNow().map((p, i) => {
         if (i !== target) return p
@@ -4800,14 +4806,6 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
           else delete next.animSpeed
         }
         else if (lane === 'animLock') { if (value === '1') next.animLock = true; else delete next.animLock }
-        // The window's two edges, in seconds from the start of the collage. A blank
-        // value is not 0: it means "the schedule owns this one again", which is the
-        // only way a pinned photo goes back to being auto-staggered by hand.
-        else if (lane === 'at' || lane === 'until') {
-          const v = value === '' ? NaN : Number(value)
-          if (Number.isFinite(v) && v >= 0) next[lane] = Math.round(Math.min(600, v) * 1000) / 1000
-          else delete next[lane]
-        }
         else if (lane === 'exit') { if (value === '') delete next.exit; else next.exit = value as CollageExit }
         else if (lane === 'lookAnim') { if (value === 'none') delete next.lookAnim; else next.lookAnim = value as CollageLookAnim }
         else if (value === 'none') {
@@ -4823,7 +4821,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
         return next
       }),
     })
-  })
+    })
+  }
   const setPhotoMotionAmount = (index: number, v: number) => setSpec({
     photos: photosNow().map((p, i) => i === index
       ? { ...p, motionAmount: v === 1 ? undefined : Math.max(MOTION_AMOUNT_MIN, Math.min(MOTION_AMOUNT_MAX, v)) }
@@ -5537,8 +5536,8 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
                 will do. Drag the middle to move the window, an edge to set one of
                 its ends (the right one ends the photo's *exit*), Shift/Ctrl-click a spot
                 to pin the start or the stop there,
-                double-click the row to hand the photo back to the schedule. A row
-                nobody touches writes nothing at all. */}
+                double-click the row to hand the photo back to the schedule. Editing
+                a window pins the others to their displayed times. */}
             <div className="collage-window-head">
               <span>When each photo is on screen</span>
               <small>Drag a block to move it, its left edge to set when it appears, its right edge to set when its exit has finished · snapped to the render's 25 fps frames · tick the box beside a number to edit several photos at once (their entrances, exits, size and windows all change together), or click the number for that photo alone</small>
@@ -5563,7 +5562,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
               <input className="collage-all-size-slider" type="range" min={50} max={300} step={1} value={averageSize} aria-label="Scale all photo sizes together" onChange={e => setAllSizes(Number(e.target.value) / 100)} />
               <b className="collage-all-size-value">{averageSize}%</b>
             </>}
-            <span title="How long the finished collage stays on screen after the last photo has landed">Hold after last</span>
+            <span title="Background-only pause after the last photo has exited; photos without an exit are cut at that point">Hold after last</span>
             <NumberStepper value={spec.hold ?? 2} min={0} max={60} step={0.5} ariaLabel="Hold after the last photo" onChange={v => setSpec({ hold: Math.max(0, v) })} />
             <span>sec</span>
             <span className="collage-timing-actions">
@@ -5584,9 +5583,7 @@ function CollageEditor({ item, isNew = false, stacked = false, livePatch, onSave
             <span>%</span>
           </div>}
           {spec.randomSize && photos.length > 0 && <small>Random sizes are repeatable from the seed; use Shuffle to reroll. A row slider overrides random sizing for that photo only.</small>}
-          <small>{!anyEntrance
-            ? `All ${photos.length} photos appear immediately and the slide holds for ${spec.hold ?? 2}s. The size sliders work in every animation mode.`
-            : `The slide lasts exactly as long as the photos need: waits and entrances finish at ${lastLanded.toFixed(2)}s, plus the hold${exitTotal(spec) > 0 ? `, then the exit takes ${exitTotal(spec).toFixed(2)}s` : ''} — ${total}s in total. The storyline duration follows automatically. Bigger photos overlap their neighbours; smaller ones tuck in.`}</small></div>
+          <small>Photos finish arriving at {lastLanded.toFixed(2)}s. After the last photo exits, the background remains for {spec.hold ?? 2}s — {total}s in total. Photos without an exit are cut when the last exit finishes. Editing a window pins the other displayed windows; use auto to return them to the schedule.</small></div>
         <div className={`collage-choices-group${closedSections['beat-sync'] ? ' closed' : ''}`}><CollageGroupHead id="beat-sync" open={!closedSections['beat-sync']} onToggle={toggleSection}>Beat sync</CollageGroupHead>
           <label className={`collage-check${anyEntrance ? '' : ' disabled'}`}>
             <input type="checkbox" checked={spec.beatSync === true} disabled={!anyEntrance} onChange={e => setSpec({ beatSync: e.target.checked })} />

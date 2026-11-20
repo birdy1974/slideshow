@@ -172,7 +172,7 @@ class AuthoredWindowTest(unittest.TestCase):
         spec = _spec(hold=1.0)
         legacy = base_duration(spec)
         spec["photos"][0]["until"] = legacy + 2.0
-        self.assertGreaterEqual(base_duration(spec), legacy + 2.0 - 1e-6,
+        self.assertGreaterEqual(collage_duration(spec), legacy + 3.0 - 1e-6,
                                 "the slide has to stay up while a photo is on it")
         self.assertGreater(collage_duration(spec), legacy, "and the frame follows, not just the base")
         self.assertAlmostEqual(_windows(spec)[0][1], LEAD_IN + legacy + 2.0, delta=0.05,
@@ -181,7 +181,7 @@ class AuthoredWindowTest(unittest.TestCase):
         tight = _spec(hold=6.0)
         tight["photos"][0]["until"] = 1.5
         self.assertEqual(base_duration(tight), base_duration(_spec(hold=6.0)))
-        self.assertGreater(_alpha(tight, 1, LEAD_IN + 3.0), 0.0)
+        self.assertGreater(_alpha(tight, 1, LEAD_IN + 1.0), 0.0)
 
     def test_a_stopping_photo_with_no_exit_is_cut_not_frozen(self) -> None:
         spec = _spec(exit="none")
@@ -189,11 +189,11 @@ class AuthoredWindowTest(unittest.TestCase):
         self.assertEqual(exit_fly_length(spec, 1), 0.0, "'none' has no fly")
         self.assertEqual(_alpha(spec, 1, LEAD_IN + 1.8), 0.0, "the preview cuts it")
         self.assertGreater(_alpha(spec, 1, LEAD_IN + 1.8 - 0.04), 0.0)
-        self.assertEqual(_alpha(spec, 0, LEAD_IN + 1.8 + 0.5), 1.0, "the others keep staying to the end")
+        self.assertEqual(_alpha(spec, 0, LEAD_IN + 1.8 + 0.5), 0.0, "the background hold starts after the last cut")
         win = _windows(spec)[1]
         self.assertAlmostEqual(win[1], LEAD_IN + 1.8, delta=0.01,
                                msg="the render closes the overlay window too, or the last level holds forever")
-        self.assertEqual(_windows(spec)[0][1], float("inf"), "a photo with no exit stays to the end of the slide")
+        self.assertAlmostEqual(_windows(spec)[0][1], LEAD_IN + 1.8, delta=0.01)
 
     def test_a_stopping_photo_with_an_exit_is_cut_when_its_fly_ends(self) -> None:
         spec = _spec(exit="fade")
@@ -252,7 +252,7 @@ class PopupWiringTest(unittest.TestCase):
         cls.core = (REPO / "src" / "collageCore.ts").read_text()
 
     def test_the_lane_asks_the_engine_instead_of_remembering(self) -> None:
-        for helper in ("photoStart", "photoAt", "photoUntil", "exitStart", "exitFlyLength", "entranceLength"):
+        for helper in ("photoWindow", "photoAt", "photoUntil", "exitFlyLength", "entranceLength"):
             self.assertIn(f"{helper}(", self.lane, f"{helper}() must be the lane's source of truth")
         self.assertIn("from './collageCore'", self.lane,
                       "the lane reads the shared engine, so it cannot drift from the render")
@@ -296,7 +296,7 @@ class PopupWiringTest(unittest.TestCase):
     def test_the_popup_writes_both_fields_as_seconds(self) -> None:
         self.assertIn("'at' | 'until'", self.app, "setPhotoLane has to accept the lane's two fields")
         self.assertIn("lane === 'at' || lane === 'until'", self.app)
-        self.assertRegex(self.app, r"Math\.round\(Math\.min\(600[^\n]*\) \* 1000\) / 1000")
+        self.assertRegex(self.core, r"Math\.round\(Math\.min\(600[^\n]*\) \* 1000\) / 1000")
         self.assertRegex(self.app, r"<CollageTimingLanes[\s\S]{0,400}onChange=\{\(i, lane, value\) => setPhotoLane")
 
     def test_both_normalisers_round_and_validate_the_same_way(self) -> None:

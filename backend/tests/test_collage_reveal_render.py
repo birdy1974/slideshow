@@ -42,6 +42,8 @@ def _graph_lines(anim: str, photos: int = 2, hold: float = 1.1, **extra) -> str:
     spec_photos = [{"path": f"/photos/r{i}.jpg"} for i in range(photos)]
     for i, ph in enumerate(spec_photos):
         ph["anim"] = anim
+    if extra.pop("photos_override", False):
+        spec_photos[0]["until"] = 3.0
     item = {"collage": {
         "layout": "grid", "animation": anim, "shape": "4:3", "seed": 1,
         "hold": hold, "frame": {"shape": "none", "shadow": False},
@@ -373,7 +375,7 @@ class RevealMaskLadderTest(unittest.TestCase):
         # level that holds the rest of the slide — otherwise every remaining
         # frame pays for a mask that does nothing.
         kind = "wipeUp"
-        graph = _graph_lines(kind, photos=1, hold=3.0)
+        graph = _graph_lines(kind, photos=1, hold=3.0, photos_override=True)
         lines = [l for l in graph.split(";") if l.strip()]
         final = [l for l in lines if l.endswith("[o0]")]
         self.assertEqual(len(final), 1, "photo 0's chain should close once")
@@ -382,7 +384,7 @@ class RevealMaskLadderTest(unittest.TestCase):
         level = [l for l in lines if l.endswith(f"[{src.group(1)}]")]
         self.assertEqual(len(level), 1, src.group(1))
         self.assertNotIn(GEQ_HEAD, level[0], "the resting level is still masked")
-        self.assertIn("enable='gte(t", final[0], "the resting level should run to the end of the slide")
+        self.assertIn("enable='between(t", final[0], "the resting level should end at the pinned stop")
         # …and the level before it was masked, or this proves nothing: and its
         # last window has to stop where the resting one begins, or the two would
         # both be on and the mask would outlive the sweep.
@@ -390,7 +392,7 @@ class RevealMaskLadderTest(unittest.TestCase):
         self.assertEqual(len(swept), 1, [e[:40] for _, e in swept])
         ends = [b for a, b in swept[0][0] if b is not None]
         self.assertTrue(ends, "the sweep's last window is open-ended")
-        rest = re.search(r"enable='gte\(t,([-0-9.]+)\)'", final[0])
+        rest = re.search(r"enable='between\(t,([-0-9.]+),", final[0])
         assert rest is not None
         self.assertLess(max(ends), float(rest.group(1)),
                         "the sweep is still masked when the photo is at rest")

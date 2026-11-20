@@ -158,7 +158,7 @@ class MirroredFlyLengthTest(unittest.TestCase):
         spec = _spec("iris")
         n = len(spec["photos"])
         want = EXIT_STAGGER["reverse"] * (n - 1) + ENTRANCE_LENGTH["iris"]
-        self.assertAlmostEqual(collage_duration(spec) - base_duration(spec), want, places=6)
+        self.assertAlmostEqual(collage_duration(spec) - base_duration(spec), want + spec.get("hold", 2), places=6)
         # and a photo that stays on adds nothing for itself
         mixed = _spec("iris")
         mixed["photos"][1]["exit"] = "none"

@@ -1687,8 +1687,7 @@ def photo_until(spec: dict[str, Any], i: int) -> float | None:
 def exit_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
     """When photo i starts leaving — the single place that answer is kept.
 
-    Normally the end of the hold, moved by the photo's own exit offset (every
-    photo lingers until the slide ends unless something pulls it out earlier).
+    Normally the last landing, moved by the photo's own exit offset.
     An authored `until` wins, read back over the fly so the number in the UI and
     the number in the graph are the same event seen from the same end; and it can
     never pull a departure in front of the photo's own arrival, which would ask
@@ -1701,7 +1700,7 @@ def exit_start(spec: dict[str, Any], i: int, lead_in: float = 0.0) -> float:
 
 
 def exit_offset(spec: dict[str, Any], i: int) -> float:
-    """When photo i starts leaving, relative to the end of the hold. 'deal'
+    """When photo i starts leaving, relative to the last landing. 'deal'
     clears the top of the pile first (photo n-1 leaves first). exitReverse
     flips the order so the last/top photo leaves first in every mode. A photo
     that stays (its own exit "none") has no offset at all."""
@@ -1739,11 +1738,28 @@ def _round2(v: float) -> float:
 
 
 def base_duration(spec: dict[str, Any]) -> float:
-    """The slide duration before any exit: last photo's start + its entrance
-    + the hold after it ('none' photos are all on screen from the first
-    frame, so just the hold). 0 for an empty collage."""
+    """Start of the automatic exit schedule, once all entrances have landed."""
     photos = spec.get("photos") or []
     if not photos:
+        return 0.0
+    return _round2(max(photo_start(spec, i) + entrance_length(spec, i) for i in range(len(photos))))
+
+
+def collage_exit_end(spec: dict[str, Any]) -> float:
+    """End of the last departure, before the background hold."""
+    photos = spec.get("photos") or []
+    if not photos:
+        return 0.0
+    end = base_duration(spec)
+    for i in range(len(photos)):
+        if exit_mode(spec, i) != "none" or photo_until(spec, i) is not None:
+            end = max(end, exit_start(spec, i) + exit_fly_length(spec, i))
+    return end
+
+
+def collage_duration(spec: dict[str, Any]) -> float:
+    """Last actual departure plus the background hold, matching collageCore.ts."""
+    if not spec.get("photos"):
         return 0.0
     try:
         hold = float(spec.get("hold"))
@@ -1752,34 +1768,7 @@ def base_duration(spec: dict[str, Any]) -> float:
     if not math.isfinite(hold):
         hold = 2.0
     hold = max(0.0, min(120.0, hold))
-    # With per-photo entrances the slide has to stay up until the LAST photo
-    # has finished arriving — not necessarily the last one to start. A collage
-    # whose photos all just appear is on screen from frame one, so it is only
-    # the hold (the stagger delays are not waiting time then).
-    last = 0.0
-    animated = False
-    for i in range(len(photos)):
-        a = photo_anim(spec, i)
-        if a != "none":
-            animated = True
-        last = max(last, photo_start(spec, i, 0.0) + entrance_length(spec, i))
-    base = hold if not animated else last + hold
-    # …and a photo authored to *leave* later than the pile drags the slide with
-    # it, or its own stop would fall past the end of the frame. Only authored
-    # departures are consulted, so there is no loop: exit_start() reads
-    # base_duration() only when the photo has no `until` of its own.
-    for i in range(len(photos)):
-        if photo_until(spec, i) is not None:
-            base = max(base, exit_start(spec, i, 0.0) + exit_fly_length(spec, i))
-    return _round2(base)
-
-
-def collage_duration(spec: dict[str, Any]) -> float:
-    """The slide duration implied by the photo timings: entrances + hold +
-    the exit fly at the end. This is what the editor writes into the slide."""
-    if not (spec.get("photos") or []):
-        return 0.0
-    return _round2(base_duration(spec) + exit_total(spec))
+    return _round2(max(0.2, collage_exit_end(spec) + hold))
 
 
 def bg_fit_filter(fit: str | None, width: int, height: int) -> str:
@@ -2139,7 +2128,7 @@ def photo_state(spec: dict[str, Any], i: int, t: float, lead_in: float = 0.0, as
         st["alpha"] = 0.0
     elif ex_mode != "none" and t >= ex_start + exit_fly_length(spec, i):
         st["alpha"] = 0.0
-    elif ex_mode == "none" and photo_until(spec, i) is not None and t >= ex_start:
+    elif ex_mode == "none" and t >= (ex_start if photo_until(spec, i) is not None else lead_in + collage_exit_end(spec)):
         # An authored stop is a stop even when nothing was picked to leave with:
         # the photo is simply not composited after it. A cut rather than a fade,
         # because "no exit" plus a dragged lane edge is the lane saying *gone*, and
@@ -3212,11 +3201,10 @@ def collage_graph(item: dict[str, Any], width: int, height: int, fps: float,
                 ex_dx = 75 * math.cos(a) / 100 * width
                 ex_dy = 55 * math.sin(a) / 100 * height
                 ex_rot = (hash01(seed, i, 75) - 0.5) * 40
-        elif photo_until(spec, i) is not None:
-            # Same rule as photo_state's envelope: the authored stop ends the
-            # overlay window even with no exit chosen, or the last baked level of
-            # that photo would hold on screen for the rest of the slide.
-            t_end = lead_in + float(photo_until(spec, i))
+        else:
+            # A photo with no exit is cut at its pinned stop or at the last
+            # departure, leaving the hold background-only, just as in preview.
+            t_end = exit_start(spec, i, lead_in) if photo_until(spec, i) is not None else lead_in + collage_exit_end(spec)
 
         def fly_term(value: float, expr: str) -> str:
             # Sign-aware term so generated expressions never contain '+-'.
