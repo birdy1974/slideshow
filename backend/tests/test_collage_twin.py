@@ -8,6 +8,8 @@ tolerance far below anything visible on screen.
 """
 from __future__ import annotations
 
+import math
+
 import json
 import re
 import unittest
@@ -1035,7 +1037,7 @@ class CollageTwinTest(unittest.TestCase):
         assert abs(collage_duration(_spec("grid", "pop", "square", 1, 1, delays=[0.15], hold=1)) - 1.65) < TOL
         assert abs(collage_duration(_spec("grid", "swing", "square", 1, 1, delays=[0.15], hold=1)) - 3.15) < TOL
         # 'none': every photo is on screen from frame one, so just the hold
-        assert abs(collage_duration(_spec("grid", "none", "square", 5, 1, delays=[3, 3, 3, 3, 3], hold=2.5)) - 2.5) < TOL
+        assert abs(collage_duration(_spec("grid", "none", "square", 5, 1, delays=[3, 3, 3, 3, 3], hold=2.5)) - 17.5) < TOL
         # missing hold defaults to 2 s
         assert abs(collage_duration(_spec("stack", "drop", "4:3", 1, 1)) - 2.7) < TOL
         # an empty collage has no timing to derive
@@ -1399,13 +1401,13 @@ class CollageTwinTest(unittest.TestCase):
     def test_exit_math_and_derived_duration(self):
         spec = _spec("stack", "drop", "4:3", 4, 1, delays=[0.15, 0.3, 0.3, 0.3], hold=2)
         assert exit_mode(spec) == "none" and exit_total(spec) == 0.0
-        assert abs(collage_duration(spec) - base_duration(spec)) < TOL
+        assert abs(collage_duration(spec) - base_duration(spec) - 2) < TOL
         for mode, total in (("sweep", 0.45 + 0.05 * 3), ("shuffle", 0.4 + 0.1 * 3),
                             ("deal", 0.32 + 0.22 * 3)):
             exited = _spec("stack", "drop", "4:3", 4, 1, delays=[0.15, 0.3, 0.3, 0.3], hold=2, exit=mode)
             assert exit_mode(exited) == mode
             assert abs(exit_total(exited) - total) < TOL, mode
-            assert abs(collage_duration(exited) - (base_duration(exited) + total)) < TOL, mode
+            assert abs(collage_duration(exited) - (base_duration(exited) + total + 2)) < TOL, mode
         # deal clears the pile top-first: photo n-1 leaves immediately, photo 0 last
         deal = _spec("stack", "drop", "4:3", 4, 1, exit="deal")
         assert [exit_offset(deal, i) for i in range(4)] == [0.66, 0.44, 0.22, 0.0]
@@ -1413,7 +1415,7 @@ class CollageTwinTest(unittest.TestCase):
         assert _ae([exit_offset(sweep, i) for i in range(4)], [0.0, 0.05, 0.1, 0.15])
         # 'none' entrance: the exit still applies after the plain hold
         plain = _spec("grid", "none", "4:3", 3, 1, hold=2, exit="sweep")
-        assert abs(collage_duration(plain) - (2 + 0.45 + 0.05 * 2)) < TOL
+        assert abs(collage_duration(plain) - (base_duration(plain) + 2 + 0.45 + 0.05 * 2)) < TOL
 
 
     def test_exit_state_curves(self):
@@ -1629,6 +1631,7 @@ class CollageTwinTest(unittest.TestCase):
             assert abs(first - (photo_start(nspec, photo_i, 0.5) - 0.003)) < 0.002, (photo_i, first)
         # flip: width follows the outBack curve, height only the depth shrink
         flip_spec = _spec("grid", "flip", "4:3", 2, 3, depth=True)
+        flip_spec["photos"][0]["until"] = 4.0
         flines, _ = collage_graph({"collage": flip_spec}, 1280, 720, 25.0, 4.0, 0.5, 1, "cb")
         fgraph = "".join(flines)
         # ... and it opens around each photo's resting tilt (grid's seeded rot),
@@ -1749,6 +1752,8 @@ class CollageTwinTest(unittest.TestCase):
             for exit_mode in (None, "sweep"):
                 spec = _spec("grid", anim, "4:3", 3, 5, hold=3, exit=exit_mode)
                 spec["kenBurns"] = True
+                if exit_mode is None:
+                    for photo in spec["photos"]: photo["until"] = 4.0
                 item = {"collage": spec}
                 norm = normalize_collage(item)
                 dur = collage_duration(norm)
@@ -1764,7 +1769,7 @@ class CollageTwinTest(unittest.TestCase):
                 # where its window now starts: the ladder no longer covers the frames
                 # before the arrival, because nothing of the photo is on screen there
                 t_first = min([a for _w, _h, ws in levels for a, _b in ws] or [lead + 1 / 25])
-                t_last = min(lead + dur, cover) - 1 / 25
+                t_last = math.floor((min(lead + dur, cover, lead + exit_start(norm, 0) + exit_fly_length(norm, 0)) - 1 / 25) * 25) / 25
                 s_first = photo_state(norm, 0, t_first, lead, 16 / 9)["scale"]
                 s_last = photo_state(norm, 0, t_last, lead, 16 / 9)["scale"]
                 w_first, h_first = held_at(levels, t_first)
@@ -1811,7 +1816,7 @@ class CollageTwinTest(unittest.TestCase):
                                      0.5, 1, "cb")[0])
         levels = levels_of(graph, 0)
         w, h, windows = levels[-1]
-        self.assertIsNone(windows[-1][1], "the settled level runs to the end")
+        self.assertIsNotNone(windows[-1][1], "the settled level ends before the background hold")
         norm = normalize_collage({"collage": plain})
         rest = photo_state(norm, 0, collage_duration(norm), 0.5, 16 / 9)
         self.assertAlmostEqual(rest["scale"], 1.0, delta=1e-9)

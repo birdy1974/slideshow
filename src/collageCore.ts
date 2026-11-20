@@ -1948,7 +1948,7 @@ export function entranceFade (spec: CollageSpec, i: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Exits - how the photos leave after the hold
+// Exits - how the photos leave before the background hold
 // ---------------------------------------------------------------------------
 
 /** How long one photo's exit fly takes. */
@@ -2139,7 +2139,7 @@ export function photoUntil (spec: CollageSpec, i: number): number | undefined {
 }
 
 /** When photo i starts leaving — the single place that answer is kept, in both
- *  engines. Normally the end of the hold moved by the photo's own exit offset;
+ *  engines. Normally the last landing moved by the photo's own exit offset;
  *  an authored `until` wins, read back over the fly so the number in the lane and
  *  the number in the graph describe the same event from the same end, and never
  *  in front of the photo's own arrival (that would ask the curves to run
@@ -2168,44 +2168,60 @@ export function exitTotal (spec: CollageSpec): number {
 
 const round2 = (v: number) => Math.round(v * 100) / 100
 
-/** The slide duration before any exit: the last photo's start + its
- *  entrance + the hold after it ('none' photos are all on screen from the
- *  first frame, so just the hold). 0 for an empty collage. */
+/** Start of the automatic exit schedule: all entrances have finished. */
 export function baseDuration (spec: CollageSpec): number {
   const photos = spec.photos ?? []
   if (!photos.length) return 0
-  const h = Number(spec.hold)
-  const hold = Number.isFinite(h) ? Math.max(0, Math.min(120, h)) : 2
-  // With per-photo entrances the slide has to stay up until the LAST photo
-  // has finished arriving — which is not necessarily the last one to start.
-  // A collage whose photos all just appear is on screen from frame one, so it
-  // is only the hold (the stagger delays are not waiting time then).
-  let last = 0
-  let animated = false
-  for (let i = 0; i < photos.length; i++) {
-    const anim = photoAnim(spec, i)
-    if (anim !== 'none') animated = true
-    last = Math.max(last, photoStart(spec, i, 0) + entranceLength(spec, i))
-  }
-  let base = animated ? last + hold : hold
-  // …and a photo authored to *leave* later than the pile drags the slide with it,
-  // or its own stop would be cut off by the end of the frame. Only authored
-  // departures are consulted, so this cannot recurse: exitStart() reads
-  // baseDuration() only for a photo that has no `until` of its own.
-  for (let i = 0; i < photos.length; i++) {
-    if (photoUntil(spec, i) !== undefined) {
-      base = Math.max(base, exitStart(spec, i, 0) + exitFlyLength(spec, i))
-    }
-  }
-  return round2(base)
+  return round2(Math.max(...photos.map((_, i) => photoStart(spec, i, 0) + entranceLength(spec, i))))
 }
 
-/** The slide duration implied by the photo timings: entrances + hold + the
- *  exit fly at the end. This is what the editor writes into the slide. */
-export function collageDuration (spec: CollageSpec): number {
+/** The background hold starts after the last actual departure, not before exits.
+ *  An authored end is already an absolute time: do not add the automatic exit
+ *  allowance to it a second time. A photo with no exit is cut at the last
+ *  departure (or its pinned stop). */
+export function collageExitEnd (spec: CollageSpec): number {
   const photos = spec.photos ?? []
   if (!photos.length) return 0
-  return round2(baseDuration(spec) + exitTotal(spec))
+  let end = baseDuration(spec)
+  for (let i = 0; i < photos.length; i++) {
+    if (exitMode(spec, i) !== 'none' || photoUntil(spec, i) !== undefined) {
+      end = Math.max(end, exitStart(spec, i, 0) + exitFlyLength(spec, i))
+    }
+  }
+  return end
+}
+
+export function collageDuration (spec: CollageSpec): number {
+  if (!spec.photos?.length) return 0
+  const h = Number(spec.hold)
+  const hold = Number.isFinite(h) ? Math.max(0, Math.min(120, h)) : 2
+  return round2(Math.max(0.2, collageExitEnd(spec) + hold))
+}
+
+/** Visible timing window, shared by the lane and its write operation. */
+export function photoWindow (spec: CollageSpec, i: number): { from: number; to: number } {
+  const from = photoStart(spec, i)
+  const to = exitMode(spec, i) === 'none' && photoUntil(spec, i) === undefined
+    ? collageExitEnd(spec) : exitStart(spec, i) + exitFlyLength(spec, i)
+  return { from, to: Math.max(to, from + 0.12) }
+}
+
+/** Freeze currently displayed windows before a timing write changes the schedule. */
+export function writePhotoWindow (spec: CollageSpec, index: number, lane: 'at' | 'until', value: string): CollagePhoto[] {
+  return (spec.photos ?? []).map((p, i) => {
+    const next = { ...p }
+    if (value !== '') {
+      const w = photoWindow(spec, i)
+      if (next.at === undefined) next.at = w.from
+      if (next.until === undefined) next.until = w.to
+    }
+    if (i === index) {
+      const v = value === '' ? NaN : Number(value)
+      if (Number.isFinite(v) && v >= 0) next[lane] = Math.round(Math.min(600, v) * 1000) / 1000
+      else delete next[lane]
+    }
+    return next
+  })
 }
 
 /** Background blur: one CSS blur() radius in px on the 1920-wide stage (the
@@ -2429,7 +2445,7 @@ export function photoState (spec: CollageSpec, i: number, t: number, leadIn = 0,
   // so this is the preview catching up with the MP4, twin for twin.
   if (t < t0) st.alpha = 0
   else if (exMode !== 'none' && t >= exStart + exitFlyLength(spec, i)) st.alpha = 0
-  else if (exMode === 'none' && photoUntil(spec, i) !== undefined && t >= exStart) st.alpha = 0
+  else if (exMode === 'none' && t >= (photoUntil(spec, i) !== undefined ? exStart : leadIn + collageExitEnd(spec))) st.alpha = 0
   // An authored stop is a stop even when nothing was picked to leave with: the
   // photo is simply not composited after it. A cut, not a fade — 'none' plus a
   // dragged lane edge is the lane saying *gone*, and inventing a look nobody asked

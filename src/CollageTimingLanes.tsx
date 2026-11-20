@@ -4,20 +4,19 @@
 // the only place where appear and disappear can be set against each other.
 //
 // The collage's own model is a *sequence* — photo i arrives after the sum of the
-// delays in front of it, then stays until the end of the hold and leaves on its
+// delays in front of it, then leaves after the last arrival on its
 // exit offset — which is a good default and a bad way to say "this one only
 // during the second line". This is the lane that says it: the block is the photo's
 // real visible window (`photoStart` → `exitStart` + fly, the same two functions
 // the render clips its overlays to ✓ so a row can only ever show what the MP4
 // will do), and its two edges can be pulled to any frame on the slide.
 //
-// Leaving a row alone writes nothing at all: no `at`, no `until`, and the pile's
-// schedule owns the photo exactly as before. That is what makes the feature safe
-// on a slide that was never touched.
+// The first timing edit pins the displayed windows so untouched rows do not move.
+// The auto button hands a pinned row back to the automatic schedule.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CollageSpec } from './collageCore'
-import { entranceLength, exitChoice, exitFlyLength, exitMode, exitStart, photoAt, photoDelay, photoStart, photoUntil } from './collageCore'
-import { MIN_WINDOW, dragEdge, groupShift, moveWindow, nextSelection, pinStart, pinStop } from './CollageLaneMath'
+import { entranceLength, exitChoice, exitFlyLength, exitMode, photoAt, photoDelay, photoUntil, photoWindow } from './collageCore'
+import { dragEdge, groupShift, moveWindow, nextSelection, pinStart, pinStop } from './CollageLaneMath'
 import type { LaneRect } from './CollageLaneMath'
 
 
@@ -48,6 +47,7 @@ interface Drag {
   /** Pointer position and both times when the drag began, so the maths is always
    *  measured from a snapshot and cannot drift across frames. */
   x0: number
+  span: number
   at: number
   until: number
   /** The track this row's block lives in, grabbed once at the start. Not the
@@ -62,20 +62,13 @@ interface Drag {
 function exitLabel (spec: CollageSpec, i: number): string {
   const mode = exitMode(spec, i)
   const fly = exitFlyLength(spec, i)
-  if (mode === 'none') return 'no exit: stays until the slide ends, unless you stop it here'
+  if (mode === 'none') return 'no exit: cut at the last departure, unless you stop it here'
   const choice = exitChoice(spec, i)
   // A departure that names an arrival is that arrival running backwards, and the
   // id the user picked is the only name worth showing — `reverse` is what it
   // *behaves* like, not what they called it.
   const named = choice === 'reverse' || choice === mode ? mode : `${choice} (its arrival, backwards)`
   return `${named} out · ${fly.toFixed(2)}s fly`
-}
-
-/** The photo's visible window as the engines see it, authored or not. */
-export function photoWindow (spec: CollageSpec, i: number): { from: number; to: number } {
-  const from = photoStart(spec, i, 0)
-  const to = exitStart(spec, i, 0) + exitFlyLength(spec, i)
-  return { from, to: Math.max(to, from + MIN_WINDOW) }
 }
 
 export function CollageTimingLanes({ spec, duration, selected, onSelected, onChange }: CollageTimingLanesProps) {
@@ -132,7 +125,7 @@ export function CollageTimingLanes({ spec, duration, selected, onSelected, onCha
         })
       : []
     drag.current = {
-      index, kind, x0: event.clientX, rect: trackOf(event.currentTarget),
+      index, kind, x0: event.clientX, span, rect: trackOf(event.currentTarget),
       at: photoAt(spec, index) ?? win.from,
       until: photoUntil(spec, index) ?? win.to,
       group,
@@ -162,12 +155,12 @@ export function CollageTimingLanes({ spec, duration, selected, onSelected, onCha
       if (!held) return
       const to = event.clientX
       if (held.kind === 'both') {
-        const next = moveWindow(held.rect, span, held.x0, to, held.at, held.until)
+        const next = moveWindow(held.rect, held.span, held.x0, to, held.at, held.until)
         onChange(held.index, 'at', String(next.at))
         onChange(held.index, 'until', String(next.until))
         if (held.group.length) {
           // Same shift, own width, own clamp — see `groupShift`.
-          const moved = groupShift(held.rect, span, held.x0, to, { at: held.at, until: held.until }, held.group)
+          const moved = groupShift(held.rect, held.span, held.x0, to, { at: held.at, until: held.until }, held.group)
           held.group.forEach((g, k) => {
             onChange(g.index, 'at', String(moved[k].at))
             onChange(g.index, 'until', String(moved[k].until))
@@ -177,7 +170,7 @@ export function CollageTimingLanes({ spec, duration, selected, onSelected, onCha
       }
       // One edge at a time: the other end is left exactly where it is, which is
       // what makes the far edge a *start* or a *stop* and not a duration.
-      const value = dragEdge(held.rect, span, held.x0, to, held.at, held.until, held.kind)
+      const value = dragEdge(held.rect, held.span, held.x0, to, held.at, held.until, held.kind)
       onChange(held.index, held.kind === 'start' ? 'at' : 'until', String(value))
     }
     const off = () => end()

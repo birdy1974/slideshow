@@ -20,7 +20,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.collage import (ANIM_IDS, EXITS, base_duration, collage_duration, collage_graph,  # noqa: E402
+from app.collage import (ANIM_IDS, EXITS, base_duration, collage_duration, collage_exit_end, collage_graph,  # noqa: E402
                          entrance_length, exit_animation, exit_fly_length, exit_mode,
                          exit_offset, is_reveal, photo_start, photo_state, resolve_anim)
 from app.collage_reveal import REVEALS  # noqa: E402
@@ -126,8 +126,9 @@ class PreviewTest(unittest.TestCase):
         self.assertEqual(exit_mode(spec, 0), 'none')
         dur = collage_duration(spec)
         t0 = photo_start(spec, 0) + entrance_length(spec, 0) + 0.1
-        for t in (t0, dur / 2, dur - 0.02):
+        for t in (t0, collage_exit_end(spec) - 0.02):
             self.assertEqual(photo_state(spec, 0, t, 0.0, 16 / 9)['alpha'], 1.0, t)
+        self.assertEqual(photo_state(spec, 0, dur - 0.02, 0.0, 16 / 9)['alpha'], 0.0)
         self.assertEqual(photo_state(spec, 1, dur - 0.02, 0.0, 16 / 9)['alpha'], 0.0)
 
     def test_the_interior_is_untouched(self):
@@ -135,6 +136,7 @@ class PreviewTest(unittest.TestCase):
         # middle of an arrival is partly there, and after it the photo is whole
         for name in ('drop', 'fade', 'slide', 'pop', 'wipeUp', 'iris', 'glitch'):
             spec = _spec(animation=name)
+            for photo in spec["photos"]: photo["until"] = 10.0
             for i in range(N):
                 t0, ent = photo_start(spec, i), entrance_length(spec, i)
                 self.assertGreater(t0, 0.0, name)
@@ -157,12 +159,13 @@ class TileSampleTest(unittest.TestCase):
     this is the number that pins."""
 
     def _tile(self, name: str, out: bool) -> dict:
-        photo = {'src': '', 'delay': 0, 'exit': name} if out else {'src': '', 'delay': 0, 'anim': name}
+        photo = {'src': '', 'delay': 0, 'exit': name} if out else {'src': '', 'delay': 0, 'anim': name, 'until': 120}
         spec = {'layout': 'grid', 'cols': 1, 'rows': 1, 'shape': '4:3', 'seed': 5, 'frame': 'none',
                 'animDir': 0, 'photos': [photo], 'animation': name if not out else
                 ('drop' if name == 'reverse' else 'none')}
         if out:
             spec['hold'] = 0
+            if name == 'none': photo['until'] = 120
         return spec
 
     def test_every_sample_a_tile_draws_is_on_screen(self):
@@ -228,7 +231,7 @@ class GraphTest(unittest.TestCase):
         graph, dur = _graph(spec)
         for i in range(N):
             ends = [b for _a, b in _windows(graph, i)]
-            self.assertTrue(any(b is None or b >= dur - 0.01 for b in ends), (i, ends))
+            self.assertTrue(any(b is not None and abs(b - collage_exit_end(spec)) < 0.04 for b in ends), (i, ends))
 
     def test_the_photo_that_arrives_at_zero_is_untouched(self):
         # with no lead-in and no delay there is nothing to clip, and the envelope
